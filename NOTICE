@@ -1,0 +1,14 @@
+trust-ir
+Copyright 2026 Andrew Yates
+
+trust-ir is licensed under the ALab Academic Use License 1.0; the terms are in LICENSE.
+
+trust-ir's binaries include third-party components. Each remains under its own
+license, and nothing in the ALab Academic Use License limits the rights that license
+gives you.
+
+trust-ir's SemR semantics include a translation of an operator slice of the
+MiniRust specification (https://github.com/minirust/minirust, revision
+e8666821f7ee06282199e126a623679f8df85a36), licensed MIT OR Apache-2.0; the
+license texts are in licenses/. Rust crate dependencies keep the terms their
+packages declare.
