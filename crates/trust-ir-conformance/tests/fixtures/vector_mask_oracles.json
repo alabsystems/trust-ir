@@ -1,0 +1,410 @@
+[
+  {
+    "bit_order": "lsb_lane0",
+    "cross_check": {
+      "lean_file": "lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean",
+      "lean_theorem": "vector_mask_oracle_v16_bool_sparse_i32_stable"
+    },
+    "expected_interpreter": {
+      "compacted_integer": 41257,
+      "lean_output": "ok:value:int32:41257",
+      "mask_lanes": [
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true
+      ],
+      "rust_output": "ok:return:[int32:41257]"
+    },
+    "inputs": {
+      "kind": "logical_mask",
+      "mask_lanes": [
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true
+      ]
+    },
+    "lane_to_result_bit": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "mask_type": "<16 x bool>",
+    "name": "mask_to_bits_v16_bool_sparse_i32",
+    "operation": "vector.mask_to_bits",
+    "result_type": "i32",
+    "upper_zero": {
+      "result_bits": 32,
+      "zero_bits_from": 16,
+      "zero_bits_through": 31,
+      "zero_mask_hex": "0xffff0000"
+    }
+  },
+  {
+    "bit_order": "lsb_lane0",
+    "cross_check": {
+      "lean_file": "lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean",
+      "lean_theorem": "vector_mask_oracle_v8_bool_sparse_i32_stable"
+    },
+    "expected_interpreter": {
+      "compacted_integer": 141,
+      "lean_output": "ok:value:int32:141",
+      "mask_lanes": [
+        true,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        true
+      ],
+      "rust_output": "ok:return:[int32:141]"
+    },
+    "inputs": {
+      "kind": "logical_mask",
+      "mask_lanes": [
+        true,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    "lane_to_result_bit": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "mask_type": "<8 x bool>",
+    "name": "mask_to_bits_v8_bool_sparse_i32",
+    "operation": "vector.mask_to_bits",
+    "result_type": "i32",
+    "upper_zero": {
+      "result_bits": 32,
+      "zero_bits_from": 8,
+      "zero_bits_through": 31,
+      "zero_mask_hex": "0xffffff00"
+    }
+  },
+  {
+    "bit_order": "lsb_lane0",
+    "cross_check": {
+      "lean_file": "lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean",
+      "lean_theorem": "vector_mask_oracle_v4_bool_existing_i32_stable"
+    },
+    "expected_interpreter": {
+      "compacted_integer": 13,
+      "lean_output": "ok:value:int32:13",
+      "mask_lanes": [
+        true,
+        false,
+        true,
+        true
+      ],
+      "rust_output": "ok:return:[int32:13]"
+    },
+    "inputs": {
+      "kind": "logical_mask",
+      "mask_lanes": [
+        true,
+        false,
+        true,
+        true
+      ]
+    },
+    "lane_to_result_bit": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "mask_type": "<4 x bool>",
+    "name": "mask_to_bits_v4_bool_existing_i32",
+    "operation": "vector.mask_to_bits",
+    "result_type": "i32",
+    "upper_zero": {
+      "result_bits": 32,
+      "zero_bits_from": 4,
+      "zero_bits_through": 31,
+      "zero_mask_hex": "0xfffffff0"
+    }
+  },
+  {
+    "bit_order": "lsb_lane0",
+    "cross_check": {
+      "lean_file": "lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean",
+      "lean_theorem": "vector_mask_oracle_v2_bool_existing_i64_stable"
+    },
+    "expected_interpreter": {
+      "compacted_integer": 2,
+      "lean_output": "ok:value:int64:2",
+      "mask_lanes": [
+        false,
+        true
+      ],
+      "rust_output": "ok:return:[int64:2]"
+    },
+    "inputs": {
+      "kind": "logical_mask",
+      "mask_lanes": [
+        false,
+        true
+      ]
+    },
+    "lane_to_result_bit": [
+      0,
+      1
+    ],
+    "mask_type": "<2 x bool>",
+    "name": "mask_to_bits_v2_bool_existing_i64",
+    "operation": "vector.mask_to_bits",
+    "result_type": "i64",
+    "upper_zero": {
+      "result_bits": 64,
+      "zero_bits_from": 2,
+      "zero_bits_through": 63,
+      "zero_mask_hex": "0xfffffffffffffffc"
+    }
+  },
+  {
+    "bit_order": "lsb_lane0",
+    "cross_check": {
+      "lean_file": "lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean",
+      "lean_theorem": "vector_mask_oracle_compare_slt_v16_i8_i32_stable"
+    },
+    "expected_interpreter": {
+      "compacted_integer": 20597,
+      "lean_output": "ok:value:int32:20597",
+      "mask_lanes": [
+        true,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false
+      ],
+      "rust_output": "ok:return:[vector[bool:true,bool:false,bool:true,bool:false,bool:true,bool:true,bool:true,bool:false,bool:false,bool:false,bool:false,bool:false,bool:true,bool:false,bool:true,bool:false],int32:20597]"
+    },
+    "inputs": {
+      "compare_op": "slt",
+      "compare_ty": "<16 x i8>",
+      "expected_mask_lanes": [
+        true,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false
+      ],
+      "kind": "compare_mask",
+      "lhs_lanes": [
+        -1,
+        0,
+        1,
+        127,
+        -128,
+        5,
+        -6,
+        42,
+        100,
+        -56,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "rhs_lanes": [
+        1,
+        0,
+        2,
+        126,
+        127,
+        6,
+        -5,
+        40,
+        99,
+        -57,
+        15,
+        10,
+        18,
+        17,
+        21,
+        20
+      ]
+    },
+    "lane_to_result_bit": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "mask_type": "<16 x bool>",
+    "name": "compare_slt_v16_i8_mask_to_bits_i32",
+    "operation": "vector.mask_to_bits",
+    "result_type": "i32",
+    "upper_zero": {
+      "result_bits": 32,
+      "zero_bits_from": 16,
+      "zero_bits_through": 31,
+      "zero_mask_hex": "0xffff0000"
+    }
+  },
+  {
+    "bit_order": "lsb_lane0",
+    "cross_check": {
+      "lean_file": "lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean",
+      "lean_theorem": "vector_mask_oracle_compare_slt_v8_i16_i32_stable"
+    },
+    "expected_interpreter": {
+      "compacted_integer": 153,
+      "lean_output": "ok:value:int32:153",
+      "mask_lanes": [
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        true
+      ],
+      "rust_output": "ok:return:[vector[bool:true,bool:false,bool:false,bool:true,bool:true,bool:false,bool:false,bool:true],int32:153]"
+    },
+    "inputs": {
+      "compare_op": "slt",
+      "compare_ty": "<8 x i16>",
+      "expected_mask_lanes": [
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        true
+      ],
+      "kind": "compare_mask",
+      "lhs_lanes": [
+        -1,
+        0,
+        32767,
+        -32768,
+        100,
+        -25536,
+        7,
+        8
+      ],
+      "rhs_lanes": [
+        1,
+        0,
+        32766,
+        32767,
+        101,
+        -25537,
+        6,
+        9
+      ]
+    },
+    "lane_to_result_bit": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "mask_type": "<8 x bool>",
+    "name": "compare_slt_v8_i16_mask_to_bits_i32",
+    "operation": "vector.mask_to_bits",
+    "result_type": "i32",
+    "upper_zero": {
+      "result_bits": 32,
+      "zero_bits_from": 8,
+      "zero_bits_through": 31,
+      "zero_mask_hex": "0xffffff00"
+    }
+  }
+]

@@ -1,0 +1,25 @@
+# TrustIr — Trusted Mid-level Intermediate Representation
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+#
+# `trust-ir-fmt` — standalone canonical text pretty-printer CLI for TrustIr
+# (issue #62). Reads TrustIr text from a file path (or `-` for stdin), parses
+# it, canonicalizes, and writes the canonical text to stdout. Pure Rust,
+# zero external dependencies beyond `trust-ir` itself.
+
+[package]
+name = "trust-ir-fmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Canonical TrustIr text pretty-printer CLI (diff stability)"
+
+[[bin]]
+name = "trust-ir-fmt"
+path = "src/main.rs"
+
+[dependencies]
+trust-ir = { workspace = true, features = ["fmt", "parser"] }

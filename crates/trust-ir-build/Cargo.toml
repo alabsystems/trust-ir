@@ -1,0 +1,106 @@
+# trust-ir-build — Builder API for constructing TrustIr programs
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+
+[package]
+name = "trust-ir-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Builder API and validation for TrustIr programs"
+
+[features]
+# Translation validation remains on by default. Give-back library anchors are
+# deliberately opt-in: until a typed, width-aware ground proposition binds each
+# program to its proof, fixed theorem rechecks are theorem assurance rather than
+# certification authority.
+default = ["clean-tv-anchor"]
+serde = ["trust-ir/serde"]
+binary = ["trust-ir/binary"]
+# DEFAULT-ON: the in-process clean-backend TRANSLATION-VALIDATION anchor
+# (`KERNEL_ANCHOR_CLEAN_BACKEND_TV` = "clean_backend_tv") in the CleanCic
+# re-checker — the P2 semantics-preservation certificate for clean's
+# emit_trust_ir backend. The certified theorem is PER-DECLARATION, so the arm
+# (a) RE-DERIVES the emitted function's Fragment-2 denotation from the module
+# itself (trusted synthesis-by-recomputation — a post-emit tamper changes the
+# re-derived LHS and the equation no longer checks), (b) decodes the comparand
+# + proof term from the certificate payload (the shared exact, resource-bounded
+# legacy-bincode-compatible Clean Expr carrier), and (c) declares the equation into the
+# ground `Environment::with_prelude()` where the kernel type-checks it on
+# insertion, then runs the standard per-theorem rooted authority audit and
+# micro cross-check. When OFF, the "clean_backend_tv" anchor FAILS CLOSED: a
+# TranslationValidation obligation can never certify — never faith-accepted.
+clean-tv-anchor = ["trust-ir/clean-expr"]
+# DEFAULT-OFF: add the REAL Mathlib-dependent SlackCertZ kernel anchor to the
+# in-process CleanCic re-checker. When enabled, the re-checker can build the
+# `KERNEL_ANCHOR_SLACKCERTZ` environment by LOADING the vendored `.olean`
+# closure of `Crownproof.SlackCertZ` (Lean stdlib + Mathlib + Crownproof) and
+# re-check `Crownproof.SlackCertZ.checkSlackEntailmentZ_sound` — the literal
+# theorem Lean produced, not the constructive analog. This pulls the heavy
+# `clean-mathverse` olean-load pipeline, so it is OFF by default: the stock
+# `cargo build -p trust-ir-build` is UNCHANGED and never sees `clean-mathverse`.
+slackcertz-anchor = ["dep:clean-mathverse", "dep:clean-olean"]
+# DEFAULT-OFF: enable the in-process give-back kernel anchors
+# (`KERNEL_ANCHOR_GIVEBACK_*` = "rust_giveback_*") in the CleanCic re-checker.
+# The anchors require a clean-kernel sibling that provides the
+# `rust_giveback_*` declaration builders (`Environment::init_giveback_*` —
+# clean origin/main, `crates/clean-kernel/src/env/rust_giveback_refinement.rs`);
+# a sibling checkout that predates them cannot compile the anchor arms. When
+# this feature is OFF the give-back anchors FAIL CLOSED: any "rust_giveback*"
+# anchor is rejected by `build_anchor_env`, so a GiveBackRefinement obligation
+# can never certify — never faith-accepted. No extra dependencies: the gate
+# only selects which `build_anchor_env` arms (and their tests) compile.
+giveback-anchor = []
+
+[dependencies]
+trust-ir = { path = "../trust-ir" }
+rayon = { workspace = true }
+# In-process CleanCic kernel re-checker (de Bruijn criterion): the trusted
+# clean-kernel type-checker RE-CHECKS the emitted Farkas soundness proof TERM
+# in-process — no external `lean` subprocess, no PATH, no `#print axioms`
+# text parsing. `farkas-constructive` carries only the seven-module production
+# closure needed for NNVerify.farkas_scale / farkas_combine_2 /
+# farkas_combine_2_le_bound; the full experimental `math-overlays` surface is
+# deliberately excluded. GIT dependency
+# (pinned rev) so trust-ir-build is consumable as a cargo git dependency;
+# Public snapshots resolve this exact dependency through the attested Clean
+# release mapping. Combined workspaces may redirect the public URL with their
+# own checked-out Clean subrepo `[patch]` table.
+# These three revisions are the deliberately frozen, audited consumability
+# baseline and cycle cut. Update them together with trust-ir's declaration and
+# frontend/Cargo.lock; dependency_pin_coherence.rs enforces that atomic move.
+clean-kernel = { version = "1.3.0", git = "https://github.com/alabsystems/clean.git", rev = "a91aedd439a228b3255f221bbf0d25f6f113377d", features = ["farkas-constructive"] }
+# OPTIONAL (default-OFF, only via the `slackcertz-anchor` feature): the
+# `.olean` load pipeline used to materialize the literal Mathlib-dependent
+# `Crownproof.SlackCertZ` environment inside the trusted kernel. `optional =
+# true` keeps it OUT of the default dependency graph entirely (the stock build
+# never compiles it); it is activated by `slackcertz-anchor = ["dep:clean-mathverse"]`.
+# Clean's published manifests use exact Git dependencies for their AY crates,
+# so this default-off anchor is consumable directly from clean.git as well as
+# from workspaces that redirect Clean through a local [patch].
+clean-mathverse = { version = "1.3.0", git = "https://github.com/alabsystems/clean.git", rev = "a91aedd439a228b3255f221bbf0d25f6f113377d", optional = true }
+# OPTIONAL (default-OFF, only via `slackcertz-anchor`): the `.olean` search-path
+# resolver (`default_search_paths`) used to locate the Lean 4 stdlib dir before
+# loading the SlackCertZ closure. Already a transitive dep of `clean-mathverse`,
+# so this adds NOTHING to the default build (it is `optional = true` and only
+# activated by the feature).
+clean-olean = { version = "1.3.0", git = "https://github.com/alabsystems/clean.git", rev = "a91aedd439a228b3255f221bbf0d25f6f113377d", optional = true }
+# The give-back ELABORATOR — used by the TRUSTED relevance check in
+# `validate_certified_evidence`: for a GiveBackRefinement obligation that carries
+# its function, the validator RE-RUNS `elaborate_give_back` + `give_back_recheck_directive`
+# on that function (synthesis-by-recomputation, in the TCB) and requires the
+# producer's cert directive to MATCH the re-derived one — so a cited theorem must
+# actually be the one the function's give-back maps to (no mis-citation). The crate
+# stays untrusted as a PRODUCER; here the validator re-derives rather than trusting
+# its output. It is light (deps only `trust-ir`).
+trust-ir-giveback = { path = "../trust-ir-giveback" }
+# `clean-tv-anchor` enables trust-ir's shared, legacy-bincode-compatible Clean
+# Expr codec. It preserves the existing wire bytes while adding exact
+# whole-slice and byte/node/depth-bounded decode for untrusted term/context.
+
+[dev-dependencies]
+serde_json = "1.0"
+rmp-serde = "1.3"

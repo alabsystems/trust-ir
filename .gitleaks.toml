@@ -1,0 +1,6 @@
+# Publication policy: use the standard Gitleaks rules at full strength.
+# Repository-controlled allowlists are intentionally forbidden; exported
+# content must pass without suppressing findings.
+
+[extend]
+useDefault = true

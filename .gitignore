@@ -1,0 +1,50 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Lean / Lake build cache (never track; symlinking it across worktrees corrupts the repo)
+.lake/
+**/.lake
+
+# Python tooling caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors
+*~
+\#*\#
+.#*
+
+# OS junk
+.DS_Store
+# macOS partial-transfer / AppleDouble artifacts (a 0-byte pair slipped into
+# tests/fixtures once; keep them out for good).
+.!*
+._*
+
+# Credentials and secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+secrets.json
+*.secret
+.secrets/
+
+# Benchmark / eval run outputs (the harnesses write results under these)
+benchmarks/**/results/
+benchmarks/**/logs/
+evals/**/results/
+evals/**/logs/
+
+# Claude Code agent worktrees (transient)
+.claude/worktrees/
+.claude/
+
+# Publish tool work area (export tree, report, staging clone)
+publish/.out/

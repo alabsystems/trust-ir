@@ -1,0 +1,60 @@
+# trust-ir-ay — AY solver adapter for TrustIr
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+
+[package]
+name = "trust-ir-ay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "AY SMT encoding and proof-certificate adapter for TrustIr"
+
+[dependencies]
+trust-ir = { path = "../trust-ir" }
+# Pinned by `rev` (not `branch`) so the verified toolchain is reproducible: a
+# bare `cargo update` cannot silently retarget the SMT backend. Bump the rev
+# deliberately and re-run the conformance + adapter suites when updating ay.
+# Revision 0e35c3d5 is the adapter's audited frozen AY baseline for the public
+# dependency chain. This is an exact commit pin, not a moving branch; any bump
+# requires rerunning the conformance and adapter suites because a wrong
+# SAT/UNSAT answer could certify a false proof.
+ay = { version = "0.5.0", git = "https://github.com/alabsystems/ay.git", rev = "accc0b797b761caf71a99b87073e8cc1c758bdb1" }
+
+# The BIT-BLAST proof route (`bvblast`). A DIRECT dependency because the `ay`
+# facade does NOT re-export it: `ay::proof_emission` publishes only the
+# structured-slice `export_bv_blast_proof`, and `BvExpr` / the expression-shaped
+# `export_bv_blast_proof_expr` appear nowhere in `crates/ay/src`.
+#
+# Why this format and not the solver bundle: `bv_blast_export` is structurally
+# incapable of emitting a trust step ("there is no `trust` variant in this
+# format"), and the refutation is DERIVED by the ay-sat CDCL engine rather than
+# asserted by the exporter.
+#
+# MUST stay at the SAME rev as `ay` above — a split would put two ay graphs in
+# the lock, which is the exact failure `dependency_pin_coherence.rs` exists to
+# catch; that guard inventories this line too. Adds no new transitive
+# dependency: ay-core / ay-sat / num-* / serde / thiserror are already resolved
+# through `ay`.
+ay-proof = { version = "0.5.0", git = "https://github.com/alabsystems/ay.git", rev = "accc0b797b761caf71a99b87073e8cc1c758bdb1" }
+
+# Serializes ay's `SerializableProofBundle` — the offline-replayable UNSAT
+# payload captured by `vc::SmtReplayEvidence`. Already in the graph via ay
+# itself, so this adds no new transitive dependency. NOT a core-format dep: the
+# `trust-ir` crate stays zero-dep; this is the adapter, which already carries
+# the solver.
+serde_json = "1"
+
+# Derives for `bvblast::BvBlastCertPayload`, the certificate framing around ay's
+# already-`Serialize` `BvBlastProof`. Same rationale as `serde_json` above:
+# already in the graph via ay, so no new transitive dependency, and NOT a
+# core-format dep — `trust-ir` stays zero-dep.
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+trust-ir-build = { path = "../trust-ir-build" }
+# `parser` for the corpus-measurement example (reads real frontend-emitted
+# `.trust_ir` text modules); `serde` so tests can round-trip a module.
+trust-ir = { path = "../trust-ir", features = ["parser"] }

@@ -1,0 +1,27 @@
+# trust-ir-cli — Command-line inspector for TrustIr modules
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+
+[package]
+name = "trust-ir-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Command-line inspector for TrustIr modules (validate/dump/convert/show-gpu-eligibility)"
+
+[[bin]]
+name = "trust-ir"
+path = "src/main.rs"
+
+[dependencies]
+trust-ir = { path = "../trust-ir", features = ["parser", "binary", "serde"] }
+trust-ir-build = { path = "../trust-ir-build", features = ["serde"] }
+clap = { workspace = true }
+serde_json = "1.0"
+rmp-serde = "1.3"
+
+[dev-dependencies]
+tempfile = "3"

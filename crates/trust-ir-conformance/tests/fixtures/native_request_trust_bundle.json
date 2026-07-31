@@ -1,0 +1,3103 @@
+{
+  "schema_version": 6,
+  "producer": "Trust",
+  "input": {
+    "RustMir": {
+      "body_digest": {
+        "algorithm": "Sha256",
+        "bytes": [
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49,
+          49
+        ]
+      }
+    }
+  },
+  "provenance": {
+    "producer_version": "trust-native-bundle@1",
+    "source_language": "Rust",
+    "source_artifact": "crates/trust/tests/checked_add.rs",
+    "source_digest": {
+      "algorithm": "Sha256",
+      "bytes": [
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49
+      ]
+    },
+    "toolchain": [
+      {
+        "name": "rustc",
+        "version": "1.92.0-nightly",
+        "revision": "rustc-2026-04-29"
+      },
+      {
+        "name": "tRust",
+        "version": "native-request-schema-v1",
+        "revision": "eac751770e436657fa6ee3cef0d3e3c0f37bb76c"
+      }
+    ]
+  },
+  "serialization": {
+    "schema_version": 6,
+    "canonical_order": true,
+    "sort_unordered_sets": true,
+    "messagepack_named_fields": true,
+    "unknown_fields": "Reject"
+  },
+  "diagnostics": {
+    "level": "Trace",
+    "include_source_spans": true,
+    "include_lineage": true,
+    "emit_counterexamples": true,
+    "emit_unsat_cores": true,
+    "emit_proof_traces": true,
+    "max_counterexamples": 2
+  },
+  "trust_ir_module_digest": {
+    "algorithm": "Sha256",
+    "bytes": [
+      223,
+      91,
+      217,
+      8,
+      125,
+      105,
+      144,
+      208,
+      243,
+      192,
+      33,
+      250,
+      210,
+      99,
+      134,
+      78,
+      236,
+      8,
+      202,
+      50,
+      5,
+      234,
+      146,
+      18,
+      124,
+      58,
+      120,
+      67,
+      177,
+      38,
+      224,
+      232
+    ]
+  },
+  "compiler_facts": {
+    "adt_layouts": [
+      {
+        "id": 0,
+        "ty": {
+          "Struct": 0
+        },
+        "layout": {
+          "size_bits": 128,
+          "align_bits": 64,
+          "kind": {
+            "Struct": {
+              "id": 0,
+              "fields": [
+                {
+                  "field": 0,
+                  "name": "lhs",
+                  "ty_shape": {
+                    "Int": {
+                      "signed": false,
+                      "bits": 64
+                    }
+                  },
+                  "offset_bits": 0
+                },
+                {
+                  "field": 1,
+                  "name": "rhs",
+                  "ty_shape": {
+                    "Int": {
+                      "signed": false,
+                      "bits": 64
+                    }
+                  },
+                  "offset_bits": 64
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 1,
+        "ty": {
+          "Enum": 0
+        },
+        "layout": {
+          "size_bits": 64,
+          "align_bits": 64,
+          "kind": {
+            "Enum": {
+              "id": 0,
+              "variants": 2
+            }
+          }
+        },
+        "enum_layout": {
+          "enum_id": 0,
+          "tag_encoding": "Niche",
+          "niche": {
+            "variant_index": 0,
+            "valid_range": {
+              "start": 1,
+              "end": 255
+            }
+          },
+          "variants": [
+            {
+              "variant_index": 0,
+              "name": "None",
+              "discriminant": 0,
+              "size_bits": 0,
+              "align_bits": 8
+            },
+            {
+              "variant_index": 1,
+              "name": "Some",
+              "discriminant": 1,
+              "fields": [
+                {
+                  "field": 0,
+                  "name": "ptr",
+                  "ty_shape": "PtrConst",
+                  "offset_bits": 0
+                }
+              ],
+              "size_bits": 64,
+              "align_bits": 64
+            }
+          ]
+        }
+      }
+    ],
+    "fat_pointers": [
+      {
+        "id": 2,
+        "ty": {
+          "FatPtr": {
+            "Slice": 0
+          }
+        },
+        "layout": {
+          "data_bits": 64,
+          "metadata_bits": 64,
+          "metadata": {
+            "SliceLen": {
+              "elem": 0
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "ty": {
+          "FatPtr": "Str"
+        },
+        "layout": {
+          "data_bits": 64,
+          "metadata_bits": 64,
+          "metadata": "StrLen"
+        }
+      }
+    ],
+    "casts": [
+      {
+        "id": 4,
+        "function": 0,
+        "op": "Transmute",
+        "source_ty": {
+          "Struct": 0
+        },
+        "target_ty": {
+          "Array": [
+            1,
+            2
+          ]
+        },
+        "evidence": {
+          "SameSize": {
+            "size_bits": 128,
+            "src_align_bits": 64,
+            "dst_align_bits": 64
+          }
+        },
+        "span": {
+          "file": 0,
+          "line": 28,
+          "col": 13
+        },
+        "obligations": [
+          1
+        ]
+      }
+    ],
+    "monomorphizations": [
+      {
+        "id": 0,
+        "source_item": "crates/trust/tests/checked_add.rs::checked_add",
+        "symbol": "_RNvCs_trust_checked_addINtB4_7PairU64ELi2_E",
+        "generic_args": [
+          {
+            "Ty": {
+              "Struct": 0
+            }
+          },
+          {
+            "Const": {
+              "ty": "U64",
+              "value": {
+                "Int": 2
+              }
+            }
+          }
+        ],
+        "function": 0,
+        "stable_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            208,
+            26,
+            44,
+            80,
+            231,
+            35,
+            163,
+            64,
+            112,
+            114,
+            40,
+            170,
+            189,
+            54,
+            159,
+            185,
+            80,
+            4,
+            163,
+            88,
+            170,
+            78,
+            194,
+            205,
+            224,
+            133,
+            114,
+            254,
+            231,
+            116,
+            106,
+            148
+          ]
+        }
+      }
+    ],
+    "obligation_sources": [
+      {
+        "obligation": 0,
+        "public_obligation_id": "vc:checked_add:postcondition:0",
+        "function": 0,
+        "span": {
+          "file": 0,
+          "line": 24,
+          "col": 9
+        },
+        "assertion_id": 1,
+        "cause": "Postcondition",
+        "monomorphization": 0,
+        "facts": [
+          {
+            "AdtLayout": 0
+          },
+          {
+            "FatPointer": 2
+          },
+          {
+            "Monomorphization": 0
+          }
+        ]
+      },
+      {
+        "obligation": 1,
+        "public_obligation_id": "vc:checked_add:cast:1",
+        "function": 0,
+        "span": {
+          "file": 0,
+          "line": 28,
+          "col": 13
+        },
+        "assertion_id": 2,
+        "cause": "CastCheck",
+        "monomorphization": 0,
+        "facts": [
+          {
+            "AdtLayout": 0
+          },
+          {
+            "AdtLayout": 1
+          },
+          {
+            "Cast": 4
+          },
+          {
+            "Monomorphization": 0
+          }
+        ]
+      },
+      {
+        "obligation": 2,
+        "public_obligation_id": "vc:checked_add:assert:2",
+        "function": 0,
+        "span": {
+          "file": 0,
+          "line": 31,
+          "col": 5
+        },
+        "assertion_id": 0,
+        "cause": "Assert",
+        "monomorphization": 0,
+        "facts": [
+          {
+            "FatPointer": 2
+          },
+          {
+            "FatPointer": 3
+          },
+          {
+            "Monomorphization": 0
+          }
+        ]
+      }
+    ]
+  },
+  "module": {
+    "name": "trust_native_request_bundle",
+    "functions": [
+      {
+        "id": 0,
+        "name": "checked_add",
+        "ty": 0,
+        "entry": 0,
+        "blocks": [
+          {
+            "id": 0,
+            "params": [
+              [
+                0,
+                "I32"
+              ],
+              [
+                1,
+                "I32"
+              ]
+            ],
+            "body": [
+              {
+                "inst": {
+                  "BinOp": {
+                    "op": "Add",
+                    "ty": "I32",
+                    "lhs": 0,
+                    "rhs": 1
+                  }
+                },
+                "results": [
+                  2
+                ],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              },
+              {
+                "inst": {
+                  "Return": {
+                    "values": [
+                      2
+                    ]
+                  }
+                },
+                "results": [],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              }
+            ]
+          }
+        ],
+        "proofs": [],
+        "calling_conv": "C",
+        "linkage": "External",
+        "attrs": {
+          "readonly": false,
+          "readnone": false,
+          "inlinehint": false,
+          "cold": false
+        },
+        "summary": null,
+        "producer": null,
+        "value_names": null
+      }
+    ],
+    "structs": [
+      {
+        "id": 0,
+        "name": "PairU64",
+        "fields": [
+          {
+            "name": "lhs",
+            "ty": "U64",
+            "offset": 0
+          },
+          {
+            "name": "rhs",
+            "ty": "U64",
+            "offset": 8
+          }
+        ],
+        "size": 16,
+        "align": 8,
+        "repr": "Rust"
+      }
+    ],
+    "enums": [
+      {
+        "id": 0,
+        "name": "OptionConstU8Ptr",
+        "variants": [
+          {
+            "name": "None",
+            "fields": [],
+            "field_names": []
+          },
+          {
+            "name": "Some",
+            "fields": [
+              {
+                "PtrConst": "U8"
+              }
+            ],
+            "field_names": []
+          }
+        ],
+        "discriminants": [],
+        "repr": null,
+        "layout": null
+      }
+    ],
+    "records": [],
+    "closure_types": [],
+    "globals": [],
+    "func_types": [
+      {
+        "params": [
+          "I32",
+          "I32"
+        ],
+        "returns": [
+          "I32"
+        ],
+        "is_vararg": false
+      }
+    ],
+    "types": [
+      "U8",
+      "U64"
+    ],
+    "proof_obligations": [
+      {
+        "id": 0,
+        "kind": "Postcondition",
+        "status": "Certified",
+        "description": "kernel-replayed native TrustVc conformance postcondition",
+        "formula": {
+          "schema": "smtlib2",
+          "payload": "(>= 5 0)",
+          "smtlib": "(>= 5 0)",
+          "sort": "Bool"
+        },
+        "function": null,
+        "source": {
+          "source_id": "rust:crates/trust/tests/checked_add.rs::checked_add",
+          "assertion_id": "rust-assertion:1",
+          "range": {
+            "file": 0,
+            "start_line": 24,
+            "start_col": 9,
+            "end_line": 24,
+            "end_col": 10
+          },
+          "public": {
+            "obligation_id": "vc:checked_add:postcondition:0",
+            "semantic_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                255,
+                226,
+                76,
+                23,
+                104,
+                107,
+                236,
+                87,
+                212,
+                237,
+                104,
+                150,
+                29,
+                232,
+                201,
+                31,
+                99,
+                178,
+                141,
+                2,
+                196,
+                35,
+                117,
+                1,
+                236,
+                73,
+                151,
+                117,
+                253,
+                204,
+                208,
+                152
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 1,
+        "kind": "TranslationValidation",
+        "status": "Pending",
+        "description": "tRust MIR to TrustIr lowering preserves checked_add",
+        "formula": {
+          "schema": "smtlib2",
+          "payload": "(= (rust_mir.checked_add lhs rhs) (trust_ir.checked_add lhs rhs))",
+          "smtlib": "(= (rust_mir.checked_add lhs rhs) (trust_ir.checked_add lhs rhs))",
+          "sort": "Bool"
+        },
+        "function": null,
+        "source": {
+          "source_id": "rust:crates/trust/tests/checked_add.rs::checked_add",
+          "assertion_id": "rust-assertion:2",
+          "range": {
+            "file": 0,
+            "start_line": 28,
+            "start_col": 13,
+            "end_line": 28,
+            "end_col": 14
+          },
+          "public": {
+            "obligation_id": "vc:checked_add:cast:1",
+            "semantic_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                131,
+                179,
+                73,
+                121,
+                238,
+                199,
+                7,
+                254,
+                46,
+                148,
+                11,
+                233,
+                132,
+                41,
+                217,
+                240,
+                230,
+                155,
+                253,
+                236,
+                96,
+                252,
+                159,
+                194,
+                224,
+                101,
+                54,
+                18,
+                161,
+                11,
+                194,
+                162
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "kind": "Precondition",
+        "status": "Pending",
+        "description": "checked_add arguments satisfy verifier preconditions",
+        "formula": {
+          "schema": "smtlib2",
+          "payload": "(and (i32 lhs) (i32 rhs))",
+          "smtlib": "(and (i32 lhs) (i32 rhs))",
+          "sort": "Bool"
+        },
+        "function": null,
+        "source": {
+          "source_id": "rust:crates/trust/tests/checked_add.rs::checked_add",
+          "assertion_id": "rust-assertion:0",
+          "range": {
+            "file": 0,
+            "start_line": 31,
+            "start_col": 5,
+            "end_line": 31,
+            "end_col": 6
+          },
+          "public": {
+            "obligation_id": "vc:checked_add:assert:2",
+            "semantic_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                66,
+                236,
+                180,
+                14,
+                98,
+                243,
+                189,
+                90,
+                156,
+                148,
+                39,
+                156,
+                236,
+                105,
+                134,
+                204,
+                40,
+                175,
+                63,
+                22,
+                139,
+                137,
+                126,
+                214,
+                186,
+                236,
+                19,
+                1,
+                240,
+                20,
+                46,
+                204
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "proof_certificates": [
+      {
+        "obligation": 0,
+        "prover": "trust_vc-clean-kernel",
+        "evidence": {
+          "CleanCic": {
+            "term": [
+              4,
+              0,
+              0,
+              0,
+              4,
+              0,
+              0,
+              0,
+              3,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              69,
+              113,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              114,
+              101,
+              102,
+              108,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              3,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              66,
+              111,
+              111,
+              108,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              3,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              66,
+              111,
+              111,
+              108,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              116,
+              114,
+              117,
+              101,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "context": [],
+            "lineage": {
+              "algorithm": "Sha256",
+              "bytes": [
+                152,
+                189,
+                86,
+                98,
+                187,
+                96,
+                129,
+                254,
+                35,
+                132,
+                178,
+                63,
+                220,
+                169,
+                155,
+                139,
+                129,
+                110,
+                117,
+                104,
+                16,
+                201,
+                127,
+                212,
+                119,
+                56,
+                24,
+                209,
+                149,
+                224,
+                74,
+                25
+              ]
+            },
+            "kernel_recheck": null
+          }
+        }
+      }
+    ],
+    "target_info": {
+      "triple": "x86_64-unknown-linux-gnu",
+      "pointer_size": 8,
+      "endianness": "Little",
+      "abi": null,
+      "struct_passing": "NativeC"
+    },
+    "files": [
+      "crates/trust/tests/checked_add.rs"
+    ],
+    "obligation_diagnostics": [],
+    "spec_modules": [],
+    "universes": []
+  },
+  "lineage": {
+    "schema_version": 2,
+    "nodes": [
+      {
+        "id": 0,
+        "transform": {
+          "stage": "Frontend",
+          "name": "rustc-mir-to-trust_ir",
+          "producer": "tRust",
+          "version": "native-request-schema-v1"
+        },
+        "source_module": {
+          "algorithm": "Sha256",
+          "bytes": [
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49,
+            49
+          ]
+        },
+        "target_module": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "obligations": [
+          0,
+          1,
+          2
+        ],
+        "certificates": [
+          {
+            "obligation": 0,
+            "prover": "trust_vc-clean-kernel",
+            "evidence_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                100,
+                58,
+                228,
+                105,
+                102,
+                104,
+                137,
+                71,
+                221,
+                107,
+                222,
+                12,
+                65,
+                85,
+                7,
+                115,
+                112,
+                35,
+                108,
+                88,
+                149,
+                103,
+                5,
+                71,
+                87,
+                65,
+                162,
+                109,
+                39,
+                181,
+                153,
+                199
+              ]
+            }
+          }
+        ],
+        "replay": {
+          "engine": "trust-full-verify",
+          "invocation": "trust verify --emit-trust_ir-bundle",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              139,
+              119,
+              176,
+              96,
+              91,
+              88,
+              181,
+              107,
+              48,
+              61,
+              117,
+              66,
+              111,
+              130,
+              228,
+              220,
+              253,
+              239,
+              222,
+              142,
+              210,
+              242,
+              118,
+              208,
+              71,
+              158,
+              254,
+              213,
+              74,
+              10,
+              188,
+              59
+            ]
+          }
+        }
+      }
+    ],
+    "roots": [
+      0
+    ]
+  },
+  "requests": [
+    {
+      "TrustVc": {
+        "id": 0,
+        "mode": "ImportProofCertificates",
+        "obligations": [
+          0
+        ],
+        "certificates": [
+          {
+            "obligation": 0,
+            "prover": "trust_vc-clean-kernel",
+            "evidence_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                100,
+                58,
+                228,
+                105,
+                102,
+                104,
+                137,
+                71,
+                221,
+                107,
+                222,
+                12,
+                65,
+                85,
+                7,
+                115,
+                112,
+                35,
+                108,
+                88,
+                149,
+                103,
+                5,
+                71,
+                87,
+                65,
+                162,
+                109,
+                39,
+                181,
+                153,
+                199
+              ]
+            }
+          }
+        ],
+        "lineage_roots": [
+          0
+        ],
+        "options": {
+          "memory_semantics": "StackedBorrows",
+          "trusted_evidence": "Reject",
+          "merge_strategy": "RequireSameObligation",
+          "require_replay_identity": true
+        },
+        "diagnostics": {
+          "level": "Info",
+          "include_source_spans": true,
+          "include_lineage": true,
+          "emit_counterexamples": true,
+          "emit_unsat_cores": true,
+          "emit_proof_traces": true,
+          "max_counterexamples": 1
+        },
+        "provenance": {
+          "verifier_suite": "TrustVc",
+          "expected_verifier": {
+            "name": "trust_vc",
+            "version": "semantics-v1",
+            "revision": "trust_vc-2026-04-29"
+          },
+          "solvers": [
+            {
+              "name": "lean4",
+              "version": "4.18.0",
+              "revision": "trust_vc-proof-kernel"
+            }
+          ],
+          "replay": {
+            "engine": "trust_vc",
+            "invocation": "trust_vc import --native-bundle native_request_trust_bundle",
+            "transcript_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                244,
+                106,
+                219,
+                120,
+                38,
+                239,
+                191,
+                87,
+                71,
+                76,
+                142,
+                39,
+                227,
+                84,
+                36,
+                62,
+                233,
+                103,
+                94,
+                136,
+                168,
+                202,
+                27,
+                151,
+                63,
+                194,
+                113,
+                195,
+                96,
+                13,
+                24,
+                125
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "TrustMc": {
+        "id": 1,
+        "mode": "Chc",
+        "function": 0,
+        "obligations": [
+          1,
+          2
+        ],
+        "lineage_roots": [
+          0
+        ],
+        "options": {
+          "memory_model": "StackedBorrows",
+          "arithmetic_model": "RustChecked",
+          "bmc": {
+            "unwind_limit": 1,
+            "unwinding_assertions": true
+          },
+          "chc": {
+            "engine": "Spacer",
+            "invariant_source": "TrustIrProofObligations",
+            "pdr": {
+              "enabled": true,
+              "max_frames": 16,
+              "generalization": "Cubes"
+            },
+            "emit_horn_clauses": true
+          },
+          "slicing": "ObligationBackwardSlice"
+        },
+        "diagnostics": {
+          "level": "Info",
+          "include_source_spans": true,
+          "include_lineage": true,
+          "emit_counterexamples": true,
+          "emit_unsat_cores": true,
+          "emit_proof_traces": false,
+          "max_counterexamples": 2
+        },
+        "provenance": {
+          "verifier_suite": "TrustMc",
+          "expected_verifier": {
+            "name": "trust_mc",
+            "version": "chc-v1",
+            "revision": "trust_mc-2026-04-29"
+          },
+          "solvers": [
+            {
+              "name": "z3-spacer",
+              "version": "4.13.0",
+              "revision": "spacer"
+            }
+          ],
+          "replay": {
+            "engine": "trust_mc",
+            "invocation": "trust_mc chc --native-bundle native_request_trust_bundle --function checked_add",
+            "transcript_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                99,
+                26,
+                151,
+                43,
+                20,
+                162,
+                127,
+                128,
+                114,
+                113,
+                187,
+                151,
+                226,
+                69,
+                76,
+                229,
+                155,
+                205,
+                148,
+                201,
+                197,
+                236,
+                229,
+                161,
+                123,
+                125,
+                205,
+                152,
+                179,
+                147,
+                184,
+                7
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "TrustMc": {
+        "id": 2,
+        "mode": "Pdr",
+        "function": 0,
+        "obligations": [
+          1,
+          2
+        ],
+        "lineage_roots": [
+          0
+        ],
+        "options": {
+          "memory_model": "StackedBorrows",
+          "arithmetic_model": "RustChecked",
+          "bmc": {
+            "unwind_limit": 1,
+            "unwinding_assertions": true
+          },
+          "chc": {
+            "engine": "NativePdr",
+            "invariant_source": "TrustIrProofObligations",
+            "pdr": {
+              "enabled": true,
+              "max_frames": 32,
+              "generalization": "Interpolants"
+            },
+            "emit_horn_clauses": true
+          },
+          "slicing": "ConstraintIndependence"
+        },
+        "diagnostics": {
+          "level": "Info",
+          "include_source_spans": true,
+          "include_lineage": true,
+          "emit_counterexamples": true,
+          "emit_unsat_cores": true,
+          "emit_proof_traces": false,
+          "max_counterexamples": 2
+        },
+        "provenance": {
+          "verifier_suite": "TrustMc",
+          "expected_verifier": {
+            "name": "trust_mc",
+            "version": "chc-pdr-v1",
+            "revision": "trust_mc-2026-04-29"
+          },
+          "solvers": [
+            {
+              "name": "trust_mc-native-pdr",
+              "version": "pdr-v1"
+            }
+          ],
+          "replay": {
+            "engine": "trust_mc",
+            "invocation": "trust_mc pdr --native-bundle native_request_trust_bundle --function checked_add",
+            "transcript_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                38,
+                119,
+                177,
+                234,
+                95,
+                129,
+                245,
+                97,
+                63,
+                186,
+                33,
+                118,
+                230,
+                25,
+                51,
+                215,
+                99,
+                197,
+                243,
+                51,
+                180,
+                21,
+                190,
+                196,
+                76,
+                239,
+                48,
+                185,
+                9,
+                47,
+                239,
+                6
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "TrustWp": {
+        "id": 3,
+        "mode": "WeakestPrecondition",
+        "function": 0,
+        "obligations": [
+          1,
+          2
+        ],
+        "lineage_roots": [
+          0
+        ],
+        "options": {
+          "heap_model": "RustBorrowGraph",
+          "loop_strategy": "RequireInvariants",
+          "frame_policy": "BorrowRegions",
+          "panic_semantics": "PanicFreeRequired",
+          "max_abduced_preconditions": 8,
+          "emit_verification_conditions": true
+        },
+        "diagnostics": {
+          "level": "Info",
+          "include_source_spans": true,
+          "include_lineage": true,
+          "emit_counterexamples": true,
+          "emit_unsat_cores": true,
+          "emit_proof_traces": true,
+          "max_counterexamples": 1
+        },
+        "provenance": {
+          "verifier_suite": "TrustWp",
+          "expected_verifier": {
+            "name": "trust_wp",
+            "version": "wp-v1",
+            "revision": "trust_wp-2026-04-29"
+          },
+          "solvers": [
+            {
+              "name": "trust_wp-vcgen",
+              "version": "wp-v1"
+            }
+          ],
+          "replay": {
+            "engine": "trust_wp",
+            "invocation": "trust_wp wp --native-bundle native_request_trust_bundle --function checked_add",
+            "transcript_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                244,
+                128,
+                185,
+                201,
+                123,
+                75,
+                12,
+                221,
+                40,
+                160,
+                216,
+                208,
+                79,
+                166,
+                221,
+                97,
+                242,
+                160,
+                4,
+                171,
+                73,
+                102,
+                72,
+                40,
+                205,
+                223,
+                162,
+                193,
+                179,
+                69,
+                178,
+                143
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "TrustWp": {
+        "id": 4,
+        "mode": "StrongestPostcondition",
+        "function": 0,
+        "obligations": [
+          1,
+          2
+        ],
+        "lineage_roots": [
+          0
+        ],
+        "options": {
+          "heap_model": "TrustIrMemory",
+          "loop_strategy": "RequireInvariants",
+          "frame_policy": "Minimal",
+          "panic_semantics": "PanicFreeRequired",
+          "max_abduced_preconditions": 8,
+          "emit_verification_conditions": true
+        },
+        "diagnostics": {
+          "level": "Info",
+          "include_source_spans": true,
+          "include_lineage": true,
+          "emit_counterexamples": true,
+          "emit_unsat_cores": true,
+          "emit_proof_traces": true,
+          "max_counterexamples": 1
+        },
+        "provenance": {
+          "verifier_suite": "TrustWp",
+          "expected_verifier": {
+            "name": "trust_wp",
+            "version": "sp-v1",
+            "revision": "trust_wp-2026-04-29"
+          },
+          "solvers": [
+            {
+              "name": "trust_wp-vcgen",
+              "version": "sp-v1"
+            }
+          ],
+          "replay": {
+            "engine": "trust_wp",
+            "invocation": "trust_wp sp --native-bundle native_request_trust_bundle --function checked_add",
+            "transcript_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                250,
+                118,
+                232,
+                62,
+                211,
+                129,
+                83,
+                202,
+                132,
+                153,
+                139,
+                72,
+                104,
+                152,
+                236,
+                195,
+                86,
+                253,
+                59,
+                32,
+                171,
+                191,
+                65,
+                223,
+                194,
+                68,
+                77,
+                211,
+                0,
+                135,
+                32,
+                224
+              ]
+            }
+          },
+          "replay_context": {
+            "atoms": [
+              {
+                "id": 0,
+                "kind": "Assumption",
+                "formula": {
+                  "schema": "smtlib2",
+                  "payload": "(i32 lhs)",
+                  "smtlib": "(i32 lhs)",
+                  "sort": "Bool"
+                },
+                "payload_digest": {
+                  "algorithm": "Sha256",
+                  "bytes": [
+                    70,
+                    140,
+                    143,
+                    80,
+                    142,
+                    76,
+                    159,
+                    54,
+                    18,
+                    51,
+                    242,
+                    223,
+                    118,
+                    232,
+                    206,
+                    1,
+                    179,
+                    137,
+                    219,
+                    225,
+                    53,
+                    158,
+                    80,
+                    213,
+                    18,
+                    217,
+                    143,
+                    51,
+                    177,
+                    81,
+                    11,
+                    242
+                  ]
+                },
+                "obligation": 2,
+                "span": {
+                  "file": 0,
+                  "line": 31,
+                  "col": 5
+                }
+              },
+              {
+                "id": 1,
+                "kind": "Assumption",
+                "formula": {
+                  "schema": "smtlib2",
+                  "payload": "(i32 rhs)",
+                  "smtlib": "(i32 rhs)",
+                  "sort": "Bool"
+                },
+                "payload_digest": {
+                  "algorithm": "Sha256",
+                  "bytes": [
+                    176,
+                    100,
+                    231,
+                    95,
+                    94,
+                    198,
+                    31,
+                    47,
+                    116,
+                    11,
+                    53,
+                    115,
+                    34,
+                    76,
+                    104,
+                    110,
+                    227,
+                    226,
+                    117,
+                    210,
+                    178,
+                    35,
+                    202,
+                    216,
+                    82,
+                    236,
+                    237,
+                    99,
+                    168,
+                    33,
+                    103,
+                    101
+                  ]
+                },
+                "obligation": 2,
+                "span": {
+                  "file": 0,
+                  "line": 31,
+                  "col": 5
+                }
+              },
+              {
+                "id": 2,
+                "kind": "Assertion",
+                "formula": {
+                  "schema": "smtlib2",
+                  "payload": "(and (i32 lhs) (i32 rhs))",
+                  "smtlib": "(and (i32 lhs) (i32 rhs))",
+                  "sort": "Bool"
+                },
+                "payload_digest": {
+                  "algorithm": "Sha256",
+                  "bytes": [
+                    42,
+                    22,
+                    178,
+                    64,
+                    107,
+                    250,
+                    84,
+                    9,
+                    12,
+                    89,
+                    89,
+                    169,
+                    240,
+                    158,
+                    48,
+                    119,
+                    108,
+                    8,
+                    171,
+                    230,
+                    55,
+                    75,
+                    249,
+                    111,
+                    180,
+                    244,
+                    18,
+                    104,
+                    221,
+                    78,
+                    247,
+                    83
+                  ]
+                },
+                "obligation": 2,
+                "assertion_id": 0,
+                "span": {
+                  "file": 0,
+                  "line": 31,
+                  "col": 5
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "TrustWp": {
+        "id": 5,
+        "mode": "Abduction",
+        "function": 0,
+        "obligations": [
+          1,
+          2
+        ],
+        "lineage_roots": [
+          0
+        ],
+        "options": {
+          "heap_model": "SeparationLogic",
+          "loop_strategy": "InferInvariants",
+          "frame_policy": "BorrowRegions",
+          "panic_semantics": "EncodePanicsAsErrors",
+          "max_abduced_preconditions": 4,
+          "emit_verification_conditions": true
+        },
+        "diagnostics": {
+          "level": "Info",
+          "include_source_spans": true,
+          "include_lineage": true,
+          "emit_counterexamples": true,
+          "emit_unsat_cores": true,
+          "emit_proof_traces": true,
+          "max_counterexamples": 1
+        },
+        "provenance": {
+          "verifier_suite": "TrustWp",
+          "expected_verifier": {
+            "name": "trust_wp",
+            "version": "abduction-v1",
+            "revision": "trust_wp-2026-04-29"
+          },
+          "solvers": [
+            {
+              "name": "trust_wp-vcgen",
+              "version": "abduction-v1"
+            }
+          ],
+          "replay": {
+            "engine": "trust_wp",
+            "invocation": "trust_wp abduce --native-bundle native_request_trust_bundle --function checked_add",
+            "transcript_digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                41,
+                182,
+                180,
+                173,
+                220,
+                167,
+                238,
+                22,
+                41,
+                117,
+                249,
+                193,
+                235,
+                150,
+                77,
+                99,
+                187,
+                92,
+                17,
+                103,
+                31,
+                8,
+                149,
+                139,
+                106,
+                188,
+                47,
+                135,
+                71,
+                219,
+                166,
+                45
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "evidence_bundles": [
+    {
+      "TrustVc": {
+        "request": 0,
+        "mode": "ImportProofCertificates",
+        "obligations": [
+          0
+        ],
+        "verifier": {
+          "name": "trust_vc",
+          "version": "semantics-v1",
+          "revision": "trust_vc-2026-04-29"
+        },
+        "solvers": [
+          {
+            "name": "lean4",
+            "version": "4.18.0",
+            "revision": "trust_vc-proof-kernel"
+          }
+        ],
+        "replay": {
+          "engine": "trust_vc",
+          "invocation": "trust_vc import --native-bundle native_request_trust_bundle",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              244,
+              106,
+              219,
+              120,
+              38,
+              239,
+              191,
+              87,
+              71,
+              76,
+              142,
+              39,
+              227,
+              84,
+              36,
+              62,
+              233,
+              103,
+              94,
+              136,
+              168,
+              202,
+              27,
+              151,
+              63,
+              194,
+              113,
+              195,
+              96,
+              13,
+              24,
+              125
+            ]
+          }
+        },
+        "trust_ir_module_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "request_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            73,
+            82,
+            235,
+            50,
+            165,
+            43,
+            158,
+            188,
+            228,
+            52,
+            7,
+            40,
+            60,
+            202,
+            155,
+            251,
+            249,
+            248,
+            50,
+            138,
+            6,
+            6,
+            119,
+            9,
+            41,
+            246,
+            118,
+            136,
+            235,
+            73,
+            153,
+            194
+          ]
+        },
+        "artifacts": [
+          {
+            "name": "trust_vc-place-projection.import.lean",
+            "kind": "TrustVcCertificateImport",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                24,
+                142,
+                236,
+                162,
+                252,
+                122,
+                103,
+                50,
+                175,
+                180,
+                194,
+                6,
+                91,
+                149,
+                63,
+                119,
+                28,
+                207,
+                114,
+                138,
+                249,
+                100,
+                133,
+                251,
+                215,
+                144,
+                127,
+                60,
+                213,
+                35,
+                147,
+                119
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "TrustMc": {
+        "request": 1,
+        "mode": "Chc",
+        "obligations": [
+          1,
+          2
+        ],
+        "verifier": {
+          "name": "trust_mc",
+          "version": "chc-v1",
+          "revision": "trust_mc-2026-04-29"
+        },
+        "solvers": [
+          {
+            "name": "z3-spacer",
+            "version": "4.13.0",
+            "revision": "spacer"
+          }
+        ],
+        "replay": {
+          "engine": "trust_mc",
+          "invocation": "trust_mc chc --native-bundle native_request_trust_bundle --function checked_add",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              99,
+              26,
+              151,
+              43,
+              20,
+              162,
+              127,
+              128,
+              114,
+              113,
+              187,
+              151,
+              226,
+              69,
+              76,
+              229,
+              155,
+              205,
+              148,
+              201,
+              197,
+              236,
+              229,
+              161,
+              123,
+              125,
+              205,
+              152,
+              179,
+              147,
+              184,
+              7
+            ]
+          }
+        },
+        "trust_ir_module_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "request_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            86,
+            146,
+            7,
+            178,
+            220,
+            241,
+            0,
+            67,
+            130,
+            96,
+            206,
+            114,
+            0,
+            253,
+            136,
+            64,
+            182,
+            39,
+            129,
+            103,
+            136,
+            230,
+            211,
+            175,
+            102,
+            255,
+            254,
+            182,
+            242,
+            64,
+            167,
+            154
+          ]
+        },
+        "artifacts": [
+          {
+            "name": "trust_mc-checked-add.chc.smt2",
+            "kind": "TrustMcHornClauses",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                234,
+                116,
+                4,
+                243,
+                71,
+                238,
+                229,
+                45,
+                53,
+                212,
+                61,
+                62,
+                3,
+                44,
+                231,
+                7,
+                172,
+                34,
+                58,
+                183,
+                19,
+                95,
+                108,
+                169,
+                77,
+                110,
+                16,
+                105,
+                84,
+                240,
+                196,
+                133
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "TrustMc": {
+        "request": 2,
+        "mode": "Pdr",
+        "obligations": [
+          1,
+          2
+        ],
+        "verifier": {
+          "name": "trust_mc",
+          "version": "chc-pdr-v1",
+          "revision": "trust_mc-2026-04-29"
+        },
+        "solvers": [
+          {
+            "name": "trust_mc-native-pdr",
+            "version": "pdr-v1"
+          }
+        ],
+        "replay": {
+          "engine": "trust_mc",
+          "invocation": "trust_mc pdr --native-bundle native_request_trust_bundle --function checked_add",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              38,
+              119,
+              177,
+              234,
+              95,
+              129,
+              245,
+              97,
+              63,
+              186,
+              33,
+              118,
+              230,
+              25,
+              51,
+              215,
+              99,
+              197,
+              243,
+              51,
+              180,
+              21,
+              190,
+              196,
+              76,
+              239,
+              48,
+              185,
+              9,
+              47,
+              239,
+              6
+            ]
+          }
+        },
+        "trust_ir_module_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "request_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            94,
+            119,
+            237,
+            56,
+            173,
+            84,
+            162,
+            246,
+            94,
+            115,
+            40,
+            133,
+            55,
+            204,
+            139,
+            153,
+            18,
+            37,
+            182,
+            214,
+            27,
+            5,
+            254,
+            16,
+            71,
+            114,
+            20,
+            203,
+            141,
+            82,
+            189,
+            173
+          ]
+        },
+        "artifacts": [
+          {
+            "name": "trust_mc-checked-add.pdr.smt2",
+            "kind": "TrustMcHornClauses",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                21,
+                150,
+                101,
+                164,
+                37,
+                241,
+                148,
+                107,
+                226,
+                150,
+                208,
+                210,
+                26,
+                107,
+                27,
+                88,
+                135,
+                226,
+                129,
+                250,
+                104,
+                116,
+                178,
+                155,
+                23,
+                244,
+                210,
+                22,
+                52,
+                234,
+                223,
+                167
+              ]
+            }
+          },
+          {
+            "name": "trust_mc-checked-add.pdr.trace",
+            "kind": "TrustMcPdrTrace",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                44,
+                99,
+                1,
+                24,
+                66,
+                144,
+                84,
+                14,
+                52,
+                122,
+                148,
+                41,
+                180,
+                196,
+                92,
+                155,
+                89,
+                93,
+                86,
+                207,
+                252,
+                7,
+                144,
+                237,
+                178,
+                8,
+                114,
+                106,
+                234,
+                248,
+                18,
+                116
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "TrustWp": {
+        "request": 3,
+        "mode": "WeakestPrecondition",
+        "obligations": [
+          1,
+          2
+        ],
+        "verifier": {
+          "name": "trust_wp",
+          "version": "wp-v1",
+          "revision": "trust_wp-2026-04-29"
+        },
+        "solvers": [
+          {
+            "name": "trust_wp-vcgen",
+            "version": "wp-v1"
+          }
+        ],
+        "replay": {
+          "engine": "trust_wp",
+          "invocation": "trust_wp wp --native-bundle native_request_trust_bundle --function checked_add",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              244,
+              128,
+              185,
+              201,
+              123,
+              75,
+              12,
+              221,
+              40,
+              160,
+              216,
+              208,
+              79,
+              166,
+              221,
+              97,
+              242,
+              160,
+              4,
+              171,
+              73,
+              102,
+              72,
+              40,
+              205,
+              223,
+              162,
+              193,
+              179,
+              69,
+              178,
+              143
+            ]
+          }
+        },
+        "trust_ir_module_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "request_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            82,
+            105,
+            195,
+            100,
+            207,
+            98,
+            19,
+            89,
+            68,
+            198,
+            241,
+            114,
+            233,
+            175,
+            181,
+            50,
+            198,
+            253,
+            36,
+            249,
+            129,
+            130,
+            241,
+            48,
+            17,
+            28,
+            85,
+            211,
+            201,
+            44,
+            82,
+            189
+          ]
+        },
+        "artifacts": [
+          {
+            "name": "trust_wp-checked-add.wp.vc",
+            "kind": "TrustWpVerificationCondition",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                82,
+                128,
+                66,
+                61,
+                79,
+                152,
+                16,
+                53,
+                176,
+                49,
+                103,
+                29,
+                15,
+                37,
+                129,
+                2,
+                157,
+                180,
+                61,
+                102,
+                218,
+                176,
+                77,
+                72,
+                211,
+                153,
+                144,
+                79,
+                234,
+                115,
+                73,
+                116
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "TrustWp": {
+        "request": 4,
+        "mode": "StrongestPostcondition",
+        "obligations": [
+          1,
+          2
+        ],
+        "verifier": {
+          "name": "trust_wp",
+          "version": "sp-v1",
+          "revision": "trust_wp-2026-04-29"
+        },
+        "solvers": [
+          {
+            "name": "trust_wp-vcgen",
+            "version": "sp-v1"
+          }
+        ],
+        "replay": {
+          "engine": "trust_wp",
+          "invocation": "trust_wp sp --native-bundle native_request_trust_bundle --function checked_add",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              250,
+              118,
+              232,
+              62,
+              211,
+              129,
+              83,
+              202,
+              132,
+              153,
+              139,
+              72,
+              104,
+              152,
+              236,
+              195,
+              86,
+              253,
+              59,
+              32,
+              171,
+              191,
+              65,
+              223,
+              194,
+              68,
+              77,
+              211,
+              0,
+              135,
+              32,
+              224
+            ]
+          }
+        },
+        "trust_ir_module_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "request_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            124,
+            133,
+            0,
+            236,
+            142,
+            126,
+            49,
+            200,
+            238,
+            216,
+            57,
+            124,
+            170,
+            69,
+            79,
+            122,
+            124,
+            220,
+            80,
+            92,
+            100,
+            175,
+            152,
+            49,
+            95,
+            215,
+            221,
+            235,
+            24,
+            231,
+            11,
+            70
+          ]
+        },
+        "artifacts": [
+          {
+            "name": "trust_wp-checked-add.sp.vc",
+            "kind": "TrustWpVerificationCondition",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                11,
+                135,
+                191,
+                118,
+                72,
+                119,
+                43,
+                173,
+                1,
+                10,
+                238,
+                202,
+                4,
+                87,
+                77,
+                51,
+                215,
+                135,
+                250,
+                39,
+                206,
+                175,
+                187,
+                35,
+                135,
+                158,
+                83,
+                218,
+                74,
+                21,
+                110,
+                22
+              ]
+            }
+          },
+          {
+            "name": "trust_wp-checked-add.sp.replay",
+            "kind": "TrustWpReplayTrace",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                177,
+                242,
+                208,
+                144,
+                178,
+                60,
+                240,
+                225,
+                151,
+                219,
+                227,
+                58,
+                59,
+                89,
+                32,
+                225,
+                245,
+                248,
+                126,
+                79,
+                233,
+                124,
+                14,
+                255,
+                188,
+                77,
+                205,
+                197,
+                29,
+                178,
+                53,
+                156
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "TrustWp": {
+        "request": 5,
+        "mode": "Abduction",
+        "obligations": [
+          1,
+          2
+        ],
+        "verifier": {
+          "name": "trust_wp",
+          "version": "abduction-v1",
+          "revision": "trust_wp-2026-04-29"
+        },
+        "solvers": [
+          {
+            "name": "trust_wp-vcgen",
+            "version": "abduction-v1"
+          }
+        ],
+        "replay": {
+          "engine": "trust_wp",
+          "invocation": "trust_wp abduce --native-bundle native_request_trust_bundle --function checked_add",
+          "transcript_digest": {
+            "algorithm": "Sha256",
+            "bytes": [
+              41,
+              182,
+              180,
+              173,
+              220,
+              167,
+              238,
+              22,
+              41,
+              117,
+              249,
+              193,
+              235,
+              150,
+              77,
+              99,
+              187,
+              92,
+              17,
+              103,
+              31,
+              8,
+              149,
+              139,
+              106,
+              188,
+              47,
+              135,
+              71,
+              219,
+              166,
+              45
+            ]
+          }
+        },
+        "trust_ir_module_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            223,
+            91,
+            217,
+            8,
+            125,
+            105,
+            144,
+            208,
+            243,
+            192,
+            33,
+            250,
+            210,
+            99,
+            134,
+            78,
+            236,
+            8,
+            202,
+            50,
+            5,
+            234,
+            146,
+            18,
+            124,
+            58,
+            120,
+            67,
+            177,
+            38,
+            224,
+            232
+          ]
+        },
+        "request_digest": {
+          "algorithm": "Sha256",
+          "bytes": [
+            194,
+            19,
+            198,
+            68,
+            140,
+            29,
+            231,
+            204,
+            119,
+            51,
+            200,
+            150,
+            178,
+            139,
+            175,
+            160,
+            138,
+            255,
+            75,
+            123,
+            136,
+            21,
+            137,
+            19,
+            33,
+            178,
+            171,
+            253,
+            213,
+            18,
+            117,
+            187
+          ]
+        },
+        "artifacts": [
+          {
+            "name": "trust_wp-checked-add.abduction.vc",
+            "kind": "TrustWpVerificationCondition",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                190,
+                235,
+                73,
+                144,
+                254,
+                59,
+                13,
+                247,
+                131,
+                212,
+                241,
+                141,
+                58,
+                147,
+                16,
+                84,
+                222,
+                45,
+                9,
+                245,
+                199,
+                120,
+                105,
+                175,
+                31,
+                70,
+                229,
+                246,
+                140,
+                101,
+                118,
+                248
+              ]
+            }
+          },
+          {
+            "name": "trust_wp-checked-add.abduced-preconditions",
+            "kind": "TrustWpAbducedPrecondition",
+            "digest": {
+              "algorithm": "Sha256",
+              "bytes": [
+                210,
+                221,
+                235,
+                109,
+                56,
+                41,
+                116,
+                151,
+                102,
+                188,
+                143,
+                187,
+                13,
+                90,
+                142,
+                150,
+                232,
+                2,
+                92,
+                146,
+                43,
+                237,
+                177,
+                240,
+                75,
+                196,
+                208,
+                60,
+                92,
+                204,
+                130,
+                219
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

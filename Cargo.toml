@@ -1,0 +1,61 @@
+# TrustIr - Trusted Mid-level Intermediate Representation
+# Universal proof-carrying IR for the t* verified compilation stack
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+
+[workspace]
+resolver = "2"
+# trust-ir-ay is intentionally NOT a default member: it is the only crate that
+# pulls an external (git) dependency (ay), so the default `cargo build`/`cargo
+# test` graph stays offline-capable and matches the "zero required deps" core
+# contract. Build/test it explicitly with `-p trust-ir-ay` or `--workspace`.
+default-members = [
+    "crates/trust-ir",
+    "crates/trust-ir-build",
+    "crates/trust-ir-cli",
+    "crates/trust-ir-conformance",
+    "crates/trust-ir-contract",
+    "crates/trust-ir-diff",
+    "crates/trust-ir-fmt",
+    "crates/trust-ir-giveback",
+    "benchmarks/supremacy-fixture",
+    "benchmarks/raft-fixture",
+]
+members = [
+    "crates/trust-ir",
+    "crates/trust-ir-build",
+    "crates/trust-ir-cli",
+    "crates/trust-ir-conformance",
+    "crates/trust-ir-contract",
+    "crates/trust-ir-diff",
+    "crates/trust-ir-fmt",
+    "crates/trust-ir-giveback",
+    "crates/trust-ir-ay",
+    "benchmarks/supremacy-fixture",
+    "benchmarks/raft-fixture",
+]
+exclude = ["frontend"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/alabsystems/trust-ir"
+authors = ["Andrew Yates <andrewyates.name@gmail.com>"]
+
+[workspace.dependencies]
+trust-ir = { path = "crates/trust-ir" }
+trust-ir-build = { path = "crates/trust-ir-build" }
+trust-ir-contract = { path = "crates/trust-ir-contract" }
+rayon = "1.8"
+clap = { version = "4.5", features = ["derive"] }
+
+# Public source snapshots resolve the exact, ledger-mapped Clean Git
+# revisions declared in member manifests. No sibling checkout or path patch
+# is part of this workspace's public build contract.
+
+[workspace.metadata.atpkg]
+# The binaries atpkg shims onto PATH when `trust-ir` is installed. The *-fixture bins are
+# internal test fixtures, not user commands.
+expose = ["trust-ir", "trust-ir-diff", "trust-ir-fmt"]

@@ -1,0 +1,21 @@
+# trust-ir-giveback — Aeneas-style give-back view for `&mut` (untrusted oracle)
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+#
+# M1 elaborator over the decidable subset (non-nested, single-region `&mut`).
+# Everything outside that fragment FAILS CLOSED (declines). The elaborator is an
+# untrusted oracle: it can only fail to produce a checkable obligation, never
+# make a false one pass. See designs/2026-06-28-trust-ir-giveback.md.
+
+[package]
+name = "trust-ir-giveback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Aeneas-style give-back view elaborator for &mut functions (untrusted oracle, M1 decidable subset)"
+
+[dependencies]
+trust-ir = { workspace = true }

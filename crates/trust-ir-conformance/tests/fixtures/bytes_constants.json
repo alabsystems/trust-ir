@@ -1,0 +1,173 @@
+{
+  "name": "bytes_constants",
+  "functions": [
+    {
+      "id": 0,
+      "name": "ret_bytes",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [],
+          "body": [
+            {
+              "inst": {
+                "Const": {
+                  "ty": {
+                    "Array": [
+                      3,
+                      2
+                    ]
+                  },
+                  "value": {
+                    "Bytes": {
+                      "data": [
+                        111,
+                        107
+                      ],
+                      "utf8": true
+                    }
+                  }
+                }
+              },
+              "results": [
+                0
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    0
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [
+    {
+      "name": "RAW_BYTES",
+      "ty": {
+        "Array": [
+          0,
+          4
+        ]
+      },
+      "mutable": false,
+      "initializer": {
+        "Bytes": {
+          "data": [
+            0,
+            222,
+            173,
+            255
+          ],
+          "utf8": false
+        }
+      },
+      "linkage": "External",
+      "tls": null,
+      "align": null
+    },
+    {
+      "name": "UTF8_BYTES",
+      "ty": {
+        "Array": [
+          1,
+          6
+        ]
+      },
+      "mutable": false,
+      "initializer": {
+        "Bytes": {
+          "data": [
+            104,
+            195,
+            169,
+            108,
+            108,
+            111
+          ],
+          "utf8": true
+        }
+      },
+      "linkage": "External",
+      "tls": null,
+      "align": null
+    },
+    {
+      "name": "EMPTY_BYTES",
+      "ty": {
+        "Array": [
+          2,
+          0
+        ]
+      },
+      "mutable": false,
+      "initializer": {
+        "Bytes": {
+          "data": [],
+          "utf8": false
+        }
+      },
+      "linkage": "External",
+      "tls": null,
+      "align": null
+    }
+  ],
+  "func_types": [
+    {
+      "params": [],
+      "returns": [
+        {
+          "Array": [
+            3,
+            2
+          ]
+        }
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [
+    "U8",
+    "U8",
+    "U8",
+    "U8"
+  ],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": null,
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": []
+}

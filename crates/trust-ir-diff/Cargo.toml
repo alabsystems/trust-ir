@@ -1,0 +1,30 @@
+# trust-ir-diff — Semantic module diff CLI for TrustIr
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+#
+# Thin CLI wrapper around `trust-ir::diff` (crates/trust-ir, `diff` feature).
+# Reads two TrustIr modules from disk (serde JSON) and prints either a
+# unified-diff text report or a machine-readable JSON report.
+#
+# Exit codes mirror `Diff::exit_code`:
+#   0 — isomorphic
+#   1 — differences found
+#   2 — parse / I/O / validate error
+
+[package]
+name = "trust-ir-diff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Semantic module diff CLI for TrustIr (ignores ID renumbering and declaration order)"
+
+[[bin]]
+name = "trust-ir-diff"
+path = "src/main.rs"
+
+[dependencies]
+trust-ir = { path = "../trust-ir", features = ["diff", "serde"] }
+serde_json = "1.0"

@@ -1,0 +1,13 @@
+[package]
+name = "supremacy-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Benchmark fixture: emits a TrustIr module for the supremacy workload"
+
+[dependencies]
+trust-ir = { path = "../../crates/trust-ir", features = ["binary"] }
+trust-ir-build = { path = "../../crates/trust-ir-build" }
+clap = { workspace = true }

@@ -1,0 +1,117 @@
+; TrustIr text format v1
+module "proof_annotations"
+
+functy.0 = (i64) -> (i64)
+
+fn @carrier(functy.0) {
+    ; #proof: in_bounds, not_null, valid_borrow, unique_borrow, shared_borrow, valid_dealloc, no_overflow, no_wrap, div_nonzero, shift_in_range, wrapping, branch_weights(7,1), pure, terminates, deterministic, associative, commutative, data_race_free, atomic_ordering(relaxed), atomic_ordering(acquire), atomic_ordering(release), atomic_ordering(acq_rel), atomic_ordering(seq_cst), bounded_output(-1, 1), monotonic, no_alias, aligned(16), no_panic, no_undef, readonly_table, append_only_buffer, atomic_set_insert, parallel_map, bounded_loop(1024), divergence_class(uniform), divergence_class(low), divergence_class(high), custom(42), value_range(-170141183460469231731687303715884105728,170141183460469231731687303715884105727), known_bits(71777214294589695,18374686479671623680), proof_ref(7)
+bb0(%0: i64):
+    %1 = add i64 %0, %0  ; #proof: no_overflow, no_wrap, commutative, associative
+    ret %0
+}
+
+obligation 0 bounds_check pending "synthesized from function-level annotation(s) [in_bounds] on `carrier`" function 0
+
+obligation 1 memory_safety pending "synthesized from function-level annotation(s) [not_null, valid_borrow, unique_borrow, shared_borrow, valid_dealloc, no_alias, aligned(16), no_undef] on `carrier`" function 0
+
+obligation 2 arithmetic_safety pending "synthesized from function-level annotation(s) [no_overflow, no_wrap, div_nonzero, shift_in_range] on `carrier`" function 0
+
+obligation 3 liveness pending "synthesized from function-level annotation(s) [terminates] on `carrier`" function 0
+
+obligation 4 temporal_safety pending "synthesized from function-level annotation(s) [data_race_free] on `carrier`" function 0
+
+obligation 5 panic_freedom pending "synthesized from function-level annotation(s) [no_panic] on `carrier`" function 0
+
+obligation 6 precondition pending "Precondition/Pending" function 0 formula "smtlib2" "(> x 0)" smtlib "(> x 0)" sort "Bool"
+
+obligation 7 precondition discharged "Precondition/Discharged"
+
+obligation 8 precondition failed "Precondition/Failed"
+
+obligation 9 precondition trusted "Precondition/Trusted"
+
+obligation 10 postcondition pending "Postcondition/Pending"
+
+obligation 11 postcondition discharged "Postcondition/Discharged"
+
+obligation 12 postcondition failed "Postcondition/Failed"
+
+obligation 13 postcondition trusted "Postcondition/Trusted"
+
+obligation 14 loop_invariant pending "LoopInvariant/Pending"
+
+obligation 15 loop_invariant discharged "LoopInvariant/Discharged"
+
+obligation 16 loop_invariant failed "LoopInvariant/Failed"
+
+obligation 17 loop_invariant trusted "LoopInvariant/Trusted"
+
+obligation 18 type_invariant pending "TypeInvariant/Pending"
+
+obligation 19 type_invariant discharged "TypeInvariant/Discharged"
+
+obligation 20 type_invariant failed "TypeInvariant/Failed"
+
+obligation 21 type_invariant trusted "TypeInvariant/Trusted"
+
+obligation 22 refinement_type pending "RefinementType/Pending"
+
+obligation 23 refinement_type discharged "RefinementType/Discharged"
+
+obligation 24 refinement_type failed "RefinementType/Failed"
+
+obligation 25 refinement_type trusted "RefinementType/Trusted"
+
+obligation 26 translation_validation pending "TranslationValidation/Pending"
+
+obligation 27 translation_validation discharged "TranslationValidation/Discharged"
+
+obligation 28 translation_validation failed "TranslationValidation/Failed"
+
+obligation 29 translation_validation trusted "TranslationValidation/Trusted"
+
+obligation 30 memory_safety pending "MemorySafety/Pending"
+
+obligation 31 memory_safety discharged "MemorySafety/Discharged"
+
+obligation 32 memory_safety failed "MemorySafety/Failed"
+
+obligation 33 memory_safety trusted "MemorySafety/Trusted"
+
+obligation 34 panic_freedom pending "PanicFreedom/Pending"
+
+obligation 35 panic_freedom discharged "PanicFreedom/Discharged"
+
+obligation 36 panic_freedom failed "PanicFreedom/Failed"
+
+obligation 37 panic_freedom trusted "PanicFreedom/Trusted"
+
+obligation 38 temporal_safety pending "TemporalSafety/Pending"
+
+obligation 39 temporal_safety discharged "TemporalSafety/Discharged"
+
+obligation 40 temporal_safety failed "TemporalSafety/Failed"
+
+obligation 41 temporal_safety trusted "TemporalSafety/Trusted"
+
+obligation 42 liveness pending "Liveness/Pending"
+
+obligation 43 liveness discharged "Liveness/Discharged"
+
+obligation 44 liveness failed "Liveness/Failed"
+
+obligation 45 liveness trusted "Liveness/Trusted"
+
+certificate 0 "prover_0" smt [1, 2, 3]
+
+certificate 1 "prover_1" lean "exact rfl"
+
+certificate 2 "prover_2" kani "#[kani::proof] fn check() {}"
+
+certificate 3 "prover_3" gamma_crown 0.001 5
+
+certificate 4 "prover_4" translation_validation "const-fold" [171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171]
+
+certificate 5 "prover_5" trusted "manual audit by USER"
+
+certificate 6 "prover_6" inherited 0 0

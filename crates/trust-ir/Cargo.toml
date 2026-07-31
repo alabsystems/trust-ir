@@ -1,0 +1,98 @@
+# TrustIr — Trusted Mid-level Intermediate Representation
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+#
+# Zero external dependencies. This crate is the single source of truth
+# for the t* verified compilation stack.
+
+[package]
+name = "trust-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Universal proof-carrying IR for the t* verified compilation stack"
+
+[features]
+default = ["request-reexports"]
+
+# Re-export the cross-repo verification-request/bundle schema (the ~225-line
+# `pub use request::{...}` block) at the crate root. ON by default so the public
+# surface ty/ay/TrustCg import (`trust_ir::NativeVerificationBundle`, etc.)
+# stays unchanged. Turning it OFF (`default-features = false`) de-clutters the
+# crate root so the core IR API (`Module`/`Function`/`Inst`/`Ty`) is not buried
+# under ~330 solver/verification-bundle symbols; the schema is then reached via
+# its canonical `trust_ir::request::` path, which is always available regardless
+# of this feature (audit #55). Zero external deps either way.
+request-reexports = []
+
+parser = []
+
+# Expose the canonical TrustIr binary codec as public API. The implementation
+# is compiled privately even when this feature is off because whole-module
+# SHA-256 identity and native-bundle admission must always recompute from that
+# one canonical encoding rather than trust a producer-supplied digest.
+binary = []
+
+# Canonical text pretty-printer (`trust-ir::format::canonical`) for diff
+# stability (issue #62). Pure Rust, no external deps — feature-gated only
+# so downstream consumers that do not need canonicalization (e.g., TrustIr
+# production builds) do not pay the small compile-time cost.
+fmt = []
+
+serde = ["dep:serde"]
+
+# Enables example/reference `verif` helper APIs for docs, tests, and
+# prototyping. Off by default so the example does not pollute downstream
+# builds or read as the normative cross-repo API.
+dialect-verif-example = []
+
+# Semantic module diff (`trust-ir::diff`). Ignores ID renumbering and
+# declaration order; aligns by name + structure. Used by the `trust-ir-diff`
+# CLI and by CI gates comparing producer output. Zero external deps.
+diff = []
+
+# FUSION (design 2026-06-20): the obligation a node carries IS a
+# `clean_kernel::Expr`, stamped at construction. Off by default so the
+# "zero external dependencies" guarantee for the default trust-ir format
+# build is PRESERVED — only producers/consumers that need typed,
+# kernel-checkable proofs opt in. Pulls clean-kernel (optional dep) and
+# requires serde so `ExprObligation` round-trips. Acyclic: clean-kernel
+# has zero dependency on trust-ir; the new edge is
+# trust-ir --(feature)--> clean-kernel, the same direction the
+# clean-reflect bridge already uses, promoted out of the bridge.
+clean-expr = ["dep:clean-kernel", "dep:bincode", "serde"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"], optional = true }
+# SF-5: SHA-256 for proof-authority digests. The ProofDigestAlgorithm contract
+# (proof/evidence.rs) makes Sha256 MANDATORY for identities crossing an
+# untrusted boundary or participating in replay/authority selection;
+# `ProofDigest::sha256_of` is the shared producer so every lane mints the
+# same domain-separated construction. RustCrypto sha2, no_std-capable.
+sha2 = { version = "0.10", default-features = false }
+
+# Optional, feature-gated by `clean-expr` only. Used solely to (de)serialize a
+# kernel proof TERM (`clean_kernel::Expr`) into the opaque `term` bytes of a
+# `ProofEvidence::CleanCic` payload so the consumer-side kernel re-checker can
+# DECODE it and re-validate it against the obligation's own claim (the de Bruijn
+# criterion). Same 1.3 line + same `bincode::serialize`/`deserialize` codec the
+# `clean-auto` proof-reconstruct path uses for its certified terms, so the
+# encoding is uniform across the trust stack. The default zero-dependency
+# trust-ir format build never pulls it.
+bincode = { version = "1.3", optional = true }
+
+# Optional, feature-gated by `clean-expr` only. The public snapshot maps this
+# exact Git dependency to an attested Clean release revision, keeping plain
+# Cargo Git consumers self-contained. Combined workspaces may redirect the
+# public URL to a checked-out Clean subrepo with their own `[patch]`.
+# This revision is the deliberately frozen, audited consumability baseline and
+# cycle cut. Update it together with all three trust-ir-build declarations and
+# frontend/Cargo.lock; dependency_pin_coherence.rs enforces that atomic move.
+clean-kernel = { version = "1.3.0", git = "https://github.com/alabsystems/clean.git", rev = "a91aedd439a228b3255f221bbf0d25f6f113377d", optional = true }
+
+[dev-dependencies]
+rmp-serde = "1.3"
+serde_json = "1.0"

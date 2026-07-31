@@ -1,0 +1,84 @@
+# trust-ir-frontend — M1: automated THIR -> trust-ir lowering.
+#
+# A standalone `rustc_private` crate (sibling-style to
+# ~/trust-cg/crates/rustc-codegen-trust-cg, but a thin DRIVER not a codegen
+# backend) that reads `tcx.thir_body(def)` for a target fn and lowers a
+# single-match-over-enum bool-returning function into a `trust_ir::Function`
+# via the trust_ir_build ModuleBuilder/FunctionBuilder API.
+#
+# Build with the parent bootstrap's prepared rustc-private metadata. The public
+# stage1 sysroot does not ship every private host crate, while compiling this
+# tool with stage1 itself recursively invokes Trust verification. Canonical form:
+#   PRIVATE=<trust>/build/<host>/rustc-private-sysroots/rustc-private-tool-stage0-<host>-<hash>
+#   LLVM_CONFIG=<the llvm-config used to build rustc>
+#   RUSTC_BOOTSTRAP=1 RUSTC=<trust>/build/<host>/stage0/bin/rustc \
+#   CARGO_TARGET_DIR=target/stage1-private \
+#   RUSTFLAGS="-Lall=$PRIVATE/<host> -Lall=$PRIVATE/host -Lnative=$($LLVM_CONFIG --libdir)" \
+#   <trust>/build/<host>/stage0/bin/cargo build --bin trust_ir_mir
+# The native search path is required because rustc_driver can name static LLVM
+# support libraries (for example Polly) that are not copied into PRIVATE.
+# Run with the private dylib directory in DYLD_LIBRARY_PATH (macOS) or
+# LD_LIBRARY_PATH (ELF), RUSTC=<trust>/build/<host>/stage1/bin/rustc, and
+# preferably an explicit `--sysroot <trust>/build/<host>/stage1`.
+#
+# Author: M1 frontend (THIR -> trust-ir lowering)
+# License: Apache-2.0
+[package]
+name = "trust_ir_frontend"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A rustc_private driver binary: links rustc internals like rustc-codegen-trust-cg,
+# but invoked as `trust_ir_frontend <file.rs>` rather than loaded by rustc.
+[[bin]]
+name = "trust_ir_frontend"
+path = "src/main.rs"
+
+# A SECOND driver binary: the STAGE1-HOSTED MIR -> trust-ir whole-program path.
+# Unlike trust_ir_frontend (which hooks after_expansion for THIR), this hooks
+# after_analysis(tcx) — where MIR is already built and available — and uses the
+# monomorphization collector (collect_and_partition_mono_items) to enumerate
+# EVERY MonoItem::Fn of the crate, getting each one's MIR `Body` via
+# tcx.instance_mir(instance.def). Additive: shares the trust_ir_frontend lib but
+# does not touch the THIR modes.
+[[bin]]
+name = "trust_ir_mir"
+path = "src/mir_driver.rs"
+
+# A library so the pure THIR->trust-ir lowering core and the differential
+# harness can be unit-tested without a full rustc invocation.
+#
+# doctest = false: this crate has no doctests, and the doctest phase cannot
+# run here anyway — `cargo test` invokes rustdoc, which RUSTC= does NOT
+# redirect, so the ambient (Homebrew) rustdoc rejects the stage1-built rlibs
+# with E0514 ("compiled by an incompatible version of rustc"). The trust
+# stage1 sysroot ships no rustdoc (only rustc/trustc; the stage3-tools
+# rustdoc_tool_binary pairs with a librustc_driver hash that is no longer
+# present), so there is no compatible rustdoc to point RUSTDOC at. With
+# doctest = false, the canonical test invocation is green end-to-end:
+#   STAGE1=<trust>/build/<host>/stage1
+#   env -u RUSTUP_TOOLCHAIN RUSTFLAGS=-Zno-trust-verify \
+#   RUSTC=$STAGE1/bin/rustc \
+#   DYLD_FALLBACK_LIBRARY_PATH=$STAGE1/lib/rustlib/<host>/lib \
+#   $STAGE1/bin/cargo test
+# If doctests are ever added, build a stage1-paired rustdoc first
+# (`x.py build --stage 1 rustdoc` in the trust superproject) and wire it via
+# RUSTDOC= or .cargo/config.toml `build.rustdoc`.
+[lib]
+name = "trust_ir_frontend"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# The local trust-ir crate by PATH (per the task), with the features the
+# builder + interpreter + validator need.
+trust-ir = { path = "../crates/trust-ir", features = ["serde", "parser", "binary"] }
+trust-ir-build = { path = "../crates/trust-ir-build" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+# Keep this crate OUT of any cargo workspace: it needs the pinned stage1
+# toolchain and links rustc internals; those concerns must not leak.
+[workspace]
