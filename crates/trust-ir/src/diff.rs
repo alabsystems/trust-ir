@@ -17,7 +17,8 @@
 //!   in the module.
 //! * Claim-style debug metadata: `SourceSpan` and lexical-scope indices on
 //!   instruction nodes, plus function `value_names` and scope trees. These do
-//!   not affect execution or proof authority.
+//!   not affect execution or proof authority. `source_provenance` is explicitly
+//!   excluded from this list: it is proof-relevant function metadata.
 //!
 //! # What is compared
 //!
@@ -150,14 +151,14 @@ pub enum FuncChange {
         proof_changes: Vec<ProofChange>,
         /// Changes at the block level.
         block_changes: Vec<BlockChange>,
-        /// Function-metadata changes (currently: producer provenance, v23).
+        /// Function-metadata changes (producer and semantic source provenance).
         /// NOT gated by `ignore_proofs` — provenance is not proof coverage.
         meta_changes: Vec<MetaChange>,
     },
 }
 
 /// A function-metadata change on a matched function (non-proof, non-body):
-/// currently the v23 producer provenance tag.
+/// currently the producer tag and semantic source-provenance carrier.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaChange {
     /// Which metadata field changed (e.g. `"producer"`).
@@ -308,6 +309,13 @@ pub fn diff_with(a: &Module, b: &Module, opts: DiffOptions) -> Diff {
                         field: "producer".to_string(),
                         before: producer_fp(fa.producer.as_ref()),
                         after: producer_fp(fb.producer.as_ref()),
+                    });
+                }
+                if fa.source_provenance != fb.source_provenance {
+                    meta_changes.push(MetaChange {
+                        field: "source_provenance".to_string(),
+                        before: source_provenance_fp(fa.source_provenance.as_ref()),
+                        after: source_provenance_fp(fb.source_provenance.as_ref()),
                     });
                 }
                 let block_changes = diff_function(a, b, fa, fb, opts);
@@ -881,6 +889,48 @@ fn fp_proof_context(m: &Module, ctx: Option<&ProofContext>) -> String {
 /// absent tag so `None -> Some(...)` transitions render as `- -> trust`.
 fn producer_fp(p: Option<&crate::Producer>) -> String {
     p.map_or_else(|| "-".to_string(), ToString::to_string)
+}
+
+/// Render the complete proof-relevant source carrier in deterministic order.
+/// Do not fingerprint only its stored binding digest: a forged carrier that
+/// leaves that digest stale must still be visible in an audit diff.
+fn source_provenance_fp(p: Option<&crate::SourceProvenance>) -> String {
+    let Some(p) = p else {
+        return "-".to_string();
+    };
+    let mut out = format!(
+        "schema={};compiler={};semantic={};binding={};loops=[",
+        p.schema, p.compiler_source_digest, p.semantic_body_digest, p.binding_digest,
+    );
+    for (loop_index, source_loop) in p.loops.iter().enumerate() {
+        if loop_index != 0 {
+            out.push('|');
+        }
+        let _ = write!(
+            out,
+            "{}:{}:bb{}:(",
+            source_loop.source_loop_id,
+            source_loop.hir_local_id,
+            source_loop.header.index(),
+        );
+        for (binding_index, binding) in source_loop.bindings.iter().enumerate() {
+            if binding_index != 0 {
+                out.push(',');
+            }
+            let (place, index) = match binding.place {
+                crate::SourcePlace::FunctionParameter { index } => ("fn", index),
+                crate::SourcePlace::LoopParameter { index } => ("loop", index),
+            };
+            let _ = write!(
+                out,
+                "{:?}:{}:{place}{index}",
+                binding.name, binding.hir_local_id,
+            );
+        }
+        out.push(')');
+    }
+    out.push(']');
+    out
 }
 
 /// Order-stable structural fingerprint of a function's separate-compilation
@@ -2845,6 +2895,34 @@ mod tests {
         let mut a2 = single_return_module("m", 0, 0);
         a2.functions[0].producer = Some(crate::Producer::Clean);
         assert!(diff(&a2, &b_mod).is_empty());
+    }
+
+    #[test]
+    fn source_provenance_change_is_reported_and_survives_ignore_proofs() {
+        let a = single_return_module("m", 0, 0);
+        let mut b_mod = a.clone();
+        b_mod.functions[0].source_provenance = Some(crate::SourceProvenance::new(
+            crate::proof::ProofDigest::sha256([1; 32]),
+            crate::proof::ProofDigest::sha256([2; 32]),
+            Vec::new(),
+        ));
+
+        for opts in [
+            DiffOptions::default(),
+            DiffOptions {
+                ignore_proofs: true,
+            },
+        ] {
+            let result = diff_with(&a, &b_mod, opts);
+            assert_eq!(result.changes.len(), 1);
+            let FuncChange::Changed { meta_changes, .. } = &result.changes[0] else {
+                panic!("expected changed function");
+            };
+            assert_eq!(meta_changes.len(), 1);
+            assert_eq!(meta_changes[0].field, "source_provenance");
+            assert_eq!(meta_changes[0].before, "-");
+            assert!(meta_changes[0].after.contains("schema=1"));
+        }
     }
 
     /// v32/v33 debug names and lexical scopes are claim-style diagnostics,

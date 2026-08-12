@@ -193,7 +193,11 @@ fn v32_binary_debug_metadata_defaults_v33_scopes_without_desynchronizing() {
     assert_v32_debug_metadata(&module);
 
     let current = trust_ir::binary::serialize_module(&module);
-    assert_eq!(u32::from_le_bytes(current[8..12].try_into().unwrap()), 34);
+    assert_eq!(
+        u32::from_le_bytes(current[8..12].try_into().unwrap()),
+        trust_ir::binary::VERSION,
+        "re-encoded artifact must carry the current format version"
+    );
     let round_tripped = trust_ir::binary::deserialize_module(&current)
         .expect("v32 semantics re-encoded at the current VERSION must decode");
     assert_eq!(round_tripped, module);

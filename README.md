@@ -49,7 +49,7 @@ TrustIr module + proof lineage
       └──► TrustCg on supported code-generation paths
 ```
 
-> **Status:** TrustIr 0.2 is a preview under active development. The IR,
+> **Status:** TrustIr 0.3 is a preview under active development. The IR,
 > builders, validator, four module codecs, reference interpreter, lineage
 > carriers, command-line tools, conformance corpus, and Lean semantics package
 > are implemented. The schema and APIs are still evolving, and the project
@@ -61,7 +61,7 @@ TrustIr module + proof lineage
 
 ## Getting started
 
-The commands below were verified locally with Rust 1.97.1. TrustIr 0.2 does
+The commands below were verified locally with Rust 1.97.1. TrustIr 0.3 does
 not yet promise a minimum supported Rust version.
 
 ```bash
@@ -311,7 +311,7 @@ stronger guarantees that remain limited to particular fragments.
 
 | Surface | Implemented today | Important limit |
 | --- | --- | --- |
-| Core IR | Typed SSA modules, functions, blocks, scalars, aggregates, vectors, memory, borrowing/ARC, atomics, calls, control flow, ABI/target data, debug spans, producer metadata, and refinement predicates | The 0.2 schema and Rust API are still evolving |
+| Core IR | Typed SSA modules, functions, blocks, scalars, aggregates, vectors, memory, borrowing/ARC, atomics, calls, control flow, ABI/target data, debug spans, producer metadata, and refinement predicates | The 0.3 schema and Rust API are still evolving |
 | Proof transport | Function/instruction annotations, scoped obligations, certificates, diagnostics, function summaries, SHA-256 identities, lineage manifests, and native verification bundles | Carrying or structurally validating evidence is not itself an end-to-end proof; `Trusted` evidence remains faith-based |
 | Construction and validation | `ModuleBuilder`, `FunctionBuilder`, `validate_function`, `validate_module`, validation reports, and focused consumption/source-to-silicon gates | Builders are unchecked emitters; callers must run validation explicitly |
 | Module formats | Canonical text, canonical binary, serde JSON, and MessagePack, guarded by a byte-golden conformance corpus | Canonical text omits concrete layout facts and function summaries; binary, JSON, and MessagePack are the lossless paths for those fields; lineage travels as a separate sidecar |
@@ -334,7 +334,7 @@ stronger guarantees that remain limited to particular fragments.
 Extensions drive CLI auto-detection. An explicit `--format` overrides module
 auto-detection where the command exposes it.
 
-The module binary writer emits v33. Readers accept v23–v25 and v29–v33; v26–v28
+The module binary writer emits v36. Readers accept v23–v25 and v29–v36; v26–v28
 are rejected because those version numbers were used by byte-incompatible
 development lines. Proof-lineage `.tmpl` sidecars use their own v2 format.
 

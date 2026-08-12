@@ -38,7 +38,8 @@ use crate::value::{
 };
 use crate::{
     Block, CallingConv, Endianness, FuncAttrs, Function, FunctionSummary, Global, Linkage, Module,
-    ParamAttrs, Producer, StructPassingPolicy, TargetInfo, TlsModel,
+    ParamAttrs, Producer, SourceBindingProvenance, SourceLoopProvenance, SourcePlace,
+    SourceProvenance, StructPassingPolicy, TargetInfo, TlsModel,
 };
 
 use std::collections::BTreeMap;
@@ -210,7 +211,13 @@ const MAGIC: &[u8; 8] = b"TRUST_IR";
 //   field exists because `ProofObligation.function` (B4) scopes an obligation
 //   to a whole FUNCTION, which is not enough to bind a per-check obligation to
 //   the one solver condition that actually backs it.
-const VERSION: u32 = 34;
+// v35 (semantic source provenance, ADDITIVE): `Function.source_provenance` —
+//   compiler-source, non-circular semantic-body, and complete binding digests,
+//   followed by exact source-loop/header/name/place rows. A v34 reader sees no
+//   carrier; a v35 consumer must validate it before use.
+/// The format version this build serializes. Public so conformance tests
+/// assert against the canonical constant instead of a stale literal.
+pub const VERSION: u32 = 36;
 const MIN_READ_VERSION: u32 = 23;
 const PROOF_LINEAGE_MAGIC: &[u8; 4] = b"TMPL";
 const PROOF_LINEAGE_VERSION: u32 = 2;
@@ -485,6 +492,14 @@ fn collect_strings(module: &Module) -> StringPool {
         if let Some(names) = &f.value_names {
             for (_, n) in names {
                 pool.intern(n.clone());
+            }
+        }
+        // v35: semantic source-binding names.
+        if let Some(provenance) = &f.source_provenance {
+            for source_loop in &provenance.loops {
+                for binding in &source_loop.bindings {
+                    pool.intern(binding.name.clone());
+                }
             }
         }
         // v23: producer provenance — only the Other escape carries a string.
@@ -4080,6 +4095,38 @@ fn write_function(buf: &mut Vec<u8>, pool: &mut StringPool, func: &Function) {
             }
         }
     }
+    // v35+: semantic source-loop/place provenance.
+    match &func.source_provenance {
+        None => write_u8(buf, 0),
+        Some(provenance) => {
+            write_u8(buf, 1);
+            write_v32(buf, provenance.schema);
+            write_proof_digest(buf, &provenance.compiler_source_digest);
+            write_proof_digest(buf, &provenance.semantic_body_digest);
+            write_proof_digest(buf, &provenance.binding_digest);
+            write_v32(buf, len_u32(provenance.loops.len()));
+            for source_loop in &provenance.loops {
+                write_v32(buf, source_loop.source_loop_id);
+                write_v32(buf, source_loop.hir_local_id);
+                write_block_id(buf, source_loop.header);
+                write_v32(buf, len_u32(source_loop.bindings.len()));
+                for binding in &source_loop.bindings {
+                    write_str(buf, pool, &binding.name);
+                    write_v32(buf, binding.hir_local_id);
+                    match binding.place {
+                        SourcePlace::FunctionParameter { index } => {
+                            write_u8(buf, 0);
+                            write_v32(buf, index);
+                        }
+                        SourcePlace::LoopParameter { index } => {
+                            write_u8(buf, 1);
+                            write_v32(buf, index);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn read_function(r: &mut Reader<'_>, version: u32) -> Result<Function, BinaryError> {
@@ -4175,6 +4222,60 @@ fn read_function(r: &mut Reader<'_>, version: u32) -> Result<Function, BinaryErr
     } else {
         None
     };
+    let source_provenance = if version >= 35 {
+        match r.read_u8()? {
+            0 => None,
+            1 => {
+                let schema = r.read_v32()?;
+                let compiler_source_digest = read_proof_digest(r)?;
+                let semantic_body_digest = read_proof_digest(r)?;
+                let binding_digest = read_proof_digest(r)?;
+                let loop_count = r.read_checked_len()?;
+                let mut loops = Vec::with_capacity(loop_count);
+                for _ in 0..loop_count {
+                    let source_loop_id = r.read_v32()?;
+                    let hir_local_id = r.read_v32()?;
+                    let header = r.read_block_id()?;
+                    let binding_count = r.read_checked_len()?;
+                    let mut bindings = Vec::with_capacity(binding_count);
+                    for _ in 0..binding_count {
+                        let name = r.read_str()?;
+                        let hir_local_id = r.read_v32()?;
+                        let place = match r.read_u8()? {
+                            0 => SourcePlace::FunctionParameter {
+                                index: r.read_v32()?,
+                            },
+                            1 => SourcePlace::LoopParameter {
+                                index: r.read_v32()?,
+                            },
+                            tag => return Err(BinaryError::InvalidTag(tag)),
+                        };
+                        bindings.push(SourceBindingProvenance {
+                            name,
+                            hir_local_id,
+                            place,
+                        });
+                    }
+                    loops.push(SourceLoopProvenance {
+                        source_loop_id,
+                        hir_local_id,
+                        header,
+                        bindings,
+                    });
+                }
+                Some(SourceProvenance {
+                    schema,
+                    compiler_source_digest,
+                    semantic_body_digest,
+                    binding_digest,
+                    loops,
+                })
+            }
+            tag => return Err(BinaryError::InvalidTag(tag)),
+        }
+    } else {
+        None
+    };
     Ok(Function {
         id,
         name,
@@ -4189,6 +4290,7 @@ fn read_function(r: &mut Reader<'_>, version: u32) -> Result<Function, BinaryErr
         producer,
         value_names,
         scopes,
+        source_provenance,
     })
 }
 
@@ -4466,20 +4568,15 @@ pub fn deserialize_native_verification_bundle(
             .ok_or(BinaryError::InvalidMagic)?;
         let module = deserialize_module(&rest[module_pos..])?;
 
-        return Ok(crate::request::NativeVerificationBundle {
-            schema_version,
+        let mut bundle = crate::request::NativeVerificationBundle::new(
             producer,
             input,
-            provenance: crate::request::NativeBundleProvenance::default(),
-            serialization: crate::request::NativeSerializationPolicy::default(),
-            diagnostics: crate::request::NativeDiagnosticsPolicy::default(),
             trust_ir_module_digest,
-            compiler_facts: crate::request::NativeCompilerFacts::default(),
             module,
             lineage,
-            requests: Vec::new(),
-            evidence_bundles: Vec::new(),
-        });
+        );
+        bundle.schema_version = schema_version;
+        return Ok(bundle);
     }
 
     Err(BinaryError::InvalidMagic)
@@ -4822,6 +4919,9 @@ pub fn serialize_module(module: &Module) -> Vec<u8> {
                 match ti.struct_passing {
                     StructPassingPolicy::NativeC => 0,
                     StructPassingPolicy::AlwaysMemory => 1,
+                    // v36: additive tag. A pre-v36 reader never sees it — the version gate
+                    // rejects a v36 blob before reaching this byte — so MIN_READ_VERSION holds.
+                    StructPassingPolicy::Unclassified => 2,
                 },
             );
         }
@@ -5007,6 +5107,7 @@ pub fn deserialize_module(bytes: &[u8]) -> Result<Module, BinaryError> {
                 let struct_passing = match r.read_u8()? {
                     0 => StructPassingPolicy::NativeC,
                     1 => StructPassingPolicy::AlwaysMemory,
+                    2 => StructPassingPolicy::Unclassified,
                     t => return Err(BinaryError::InvalidTag(t)),
                 };
                 (abi, struct_passing)
@@ -7421,6 +7522,58 @@ mod tests {
         round_trip(&module);
     }
 
+    #[test]
+    fn semantic_source_provenance_v35_round_trip() {
+        let mut module = Module::new("source_provenance");
+        let ft = module.add_func_type(FuncTy {
+            params: vec![Ty::U64],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut func = Function::new(FuncId::new(0), "looping", ft, b(0));
+        let mut entry = Block::new(b(0));
+        entry.params.push((v(0), Ty::U64));
+        entry.body.push(InstrNode::new(Inst::Br {
+            target: b(1),
+            args: vec![v(0)],
+        }));
+        let mut header = Block::new(b(1));
+        header.params.push((v(1), Ty::U64));
+        header.body.push(InstrNode::new(Inst::Br {
+            target: b(1),
+            args: vec![v(1)],
+        }));
+        func.blocks.extend([entry, header]);
+        func.source_provenance = Some(SourceProvenance::new(
+            d(7),
+            d(8),
+            vec![SourceLoopProvenance {
+                source_loop_id: 0,
+                hir_local_id: 41,
+                header: b(1),
+                bindings: vec![
+                    SourceBindingProvenance {
+                        name: "limit".into(),
+                        hir_local_id: 9,
+                        place: SourcePlace::FunctionParameter { index: 0 },
+                    },
+                    SourceBindingProvenance {
+                        name: "x".into(),
+                        hir_local_id: 10,
+                        place: SourcePlace::LoopParameter { index: 0 },
+                    },
+                ],
+            }],
+        ));
+        module.add_function(func);
+
+        let back = round_trip(&module);
+        assert_eq!(
+            back.functions[0].source_provenance,
+            module.functions[0].source_provenance,
+        );
+    }
+
     // --- Constant edge cases ---
 
     #[test]
@@ -7755,22 +7908,16 @@ mod tests {
         // Use NON-default scalar metadata so the round-trip would visibly
         // mis-decode if the codec fabricated values (the old bug).
         let digest = crate::proof::ProofDigest::trust_ir_stable("bundle_test", b"abc");
-        let bundle = NativeVerificationBundle {
-            schema_version: 7,
-            producer: NativeBundleProducer::TSwift,
-            input: NativeAdapterInput::RustMir {
+        let mut bundle = NativeVerificationBundle::new(
+            NativeBundleProducer::TSwift,
+            NativeAdapterInput::RustMir {
                 body_digest: crate::proof::ProofDigest::sha256([3u8; 32]),
             },
-            provenance: Default::default(),
-            serialization: Default::default(),
-            diagnostics: Default::default(),
-            trust_ir_module_digest: digest,
-            compiler_facts: Default::default(),
+            digest,
             module,
-            lineage: proof_lineage_manifest(),
-            requests: Vec::new(),
-            evidence_bundles: Vec::new(),
-        };
+            proof_lineage_manifest(),
+        );
+        bundle.schema_version = 7;
 
         let bytes = serialize_native_verification_bundle(&bundle).expect("serialize bundle");
         let back = deserialize_native_verification_bundle(&bytes).expect("deserialize bundle");
@@ -7799,20 +7946,13 @@ mod tests {
     fn native_verification_bundle_rejects_unrepresentable_requests() {
         use crate::request::*;
         let module = Module::new("rejects");
-        let mut bundle = NativeVerificationBundle {
-            schema_version: NativeVerificationBundle::SCHEMA_VERSION,
-            producer: NativeBundleProducer::TrustIr,
-            input: NativeAdapterInput::TrustIrModule,
-            provenance: Default::default(),
-            serialization: Default::default(),
-            diagnostics: Default::default(),
-            trust_ir_module_digest: crate::proof::ProofDigest::zero(),
-            compiler_facts: Default::default(),
+        let mut bundle = NativeVerificationBundle::new(
+            NativeBundleProducer::TrustIr,
+            NativeAdapterInput::TrustIrModule,
+            crate::proof::ProofDigest::zero(),
             module,
-            lineage: proof_lineage_manifest(),
-            requests: Vec::new(),
-            evidence_bundles: Vec::new(),
-        };
+            proof_lineage_manifest(),
+        );
         // A non-default serialization policy cannot be carried by the binary
         // envelope; serialize must refuse rather than silently drop it.
         bundle.serialization.canonical_order = !bundle.serialization.canonical_order;

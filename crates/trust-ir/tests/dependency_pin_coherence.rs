@@ -40,12 +40,13 @@ CLEAN legs:
      the pin:  git -C ../clean fetch && git -C ../clean checkout <sha>
 
 AY legs:
-  1. crates/trust-ir-ay/Cargo.toml            ay                      (1 rev)
+  1. crates/trust-ir-ay/Cargo.toml            ay + ay-proof          (2 revs)
   2. crates/trust-ir-ay/src/vc.rs             pub const AY_REV        (1 rev)
-  3. crates/trust-ir/tests/dependency_pin_coherence.rs  AY_REVISION
-  4. Cargo.lock (root) — 36 ay packages; refresh with the metadata line
-  5. ../clean/Cargo.toml PINS ay TOO (7 declarations). If it disagrees,
-     the root lock carries TWO ay graphs (36 packages at each rev) and
+  3. crates/trust-ir-ay/src/bvblast.rs        BVBLAST_PROVER          (1 rev)
+  4. crates/trust-ir/tests/dependency_pin_coherence.rs  AY_REVISION
+  5. Cargo.lock (root) — 37 ay packages; refresh with the metadata line
+  6. ../clean/Cargo.toml PINS ay TOO (7 declarations). If it disagrees,
+     the root lock carries TWO ay graphs (37 packages at each rev) and
      this guard fails. Move ../clean first; trust-ir cannot bump ay alone.
 
 VERIFY: scripts/run-targo.sh test -p trust-ir --test dependency_pin_coherence
@@ -57,15 +58,16 @@ verification for a "pure pin bump" — CANNOT catch it.
 "#;
 
 const CLEAN_REPOSITORY: &str = "https://github.com/alabsystems/clean.git";
-const CLEAN_REVISION: &str = "a91aedd439a228b3255f221bbf0d25f6f113377d";
-const CLEAN_VERSION: &str = "1.3.0";
+const CLEAN_REVISION: &str = "14b87173175c5e4f2c6358c018a8e1b0000d0fe2";
+const CLEAN_VERSION: &str = "1.4.0";
 const AY_REPOSITORY: &str = "https://github.com/alabsystems/ay.git";
-const AY_REVISION: &str = "accc0b797b761caf71a99b87073e8cc1c758bdb1";
-const AY_VERSION: &str = "0.5.0";
+const AY_REVISION: &str = "f574ce67c85d9df1e2e2bea3b776a5112c98bc47";
+const AY_VERSION: &str = "0.8.0";
 
 const TRUST_IR_MANIFEST: &str = include_str!("../Cargo.toml");
 const TRUST_IR_AY_MANIFEST: &str = include_str!("../../trust-ir-ay/Cargo.toml");
 const TRUST_IR_AY_VC: &str = include_str!("../../trust-ir-ay/src/vc.rs");
+const TRUST_IR_AY_BVBLAST: &str = include_str!("../../trust-ir-ay/src/bvblast.rs");
 const TRUST_IR_BUILD_MANIFEST: &str = include_str!("../../trust-ir-build/Cargo.toml");
 const ROOT_LOCK: &str = include_str!("../../../Cargo.lock");
 const FRONTEND_LOCK: &str = include_str!("../../../frontend/Cargo.lock");
@@ -200,7 +202,7 @@ fn ay_manifest_and_root_lock_are_exact_and_atomic() {
         );
     }
 
-    // The sixth leg, and the one no lockfile can catch: `AY_REV` is stamped
+    // One provenance leg no lockfile can catch: `AY_REV` is stamped
     // into every emitted verification bundle as solver provenance. A stale
     // value compiles, links, and silently misreports which solver replayed a
     // proof — there is no resolution step that could disagree with it.
@@ -210,6 +212,14 @@ fn ay_manifest_and_root_lock_are_exact_and_atomic() {
             .lines()
             .any(|line| line.trim() == exact_ay_rev),
         "crates/trust-ir-ay/src/vc.rs AY_REV disagrees with the frozen AY revision; it stamps evidence provenance into every emitted bundle and a stale value silently misreports which solver replayed a proof{PIN_MOVE_PROTOCOL}"
+    );
+    let exact_bvblast_prover =
+        format!("pub const BVBLAST_PROVER: &str = \"trust-ir-ay/bvblast@{AY_REVISION}\";");
+    assert!(
+        TRUST_IR_AY_BVBLAST
+            .lines()
+            .any(|line| line.trim() == exact_bvblast_prover),
+        "crates/trust-ir-ay/src/bvblast.rs BVBLAST_PROVER disagrees with the frozen AY revision; it is the authority identity stamped into every stored bit-blast certificate{PIN_MOVE_PROTOCOL}"
     );
 
     let selector = format!("git+{AY_REPOSITORY}?rev={AY_REVISION}");
@@ -259,7 +269,7 @@ fn ay_manifest_and_root_lock_are_exact_and_atomic() {
     );
 }
 
-/// AY leg 5 lives in ANOTHER repository. `../clean/Cargo.toml` declares the
+/// AY leg 6 lives in ANOTHER repository. `../clean/Cargo.toml` declares the
 /// same AY authority (7 declarations), and the root `[patch]` pulls Clean in by
 /// path — so if the two disagree the root lock resolves two ay graphs and the
 /// assertions above fail with a split selector. Checking it here names the
@@ -274,7 +284,7 @@ fn clean_sibling_agrees_with_the_frozen_ay_authority() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../clean/Cargo.toml");
     let Ok(manifest) = std::fs::read_to_string(&sibling) else {
         eprintln!(
-            "SKIP: no Clean sibling manifest at {} — AY leg 5 unchecked",
+            "SKIP: no Clean sibling manifest at {} — AY leg 6 unchecked",
             sibling.display()
         );
         return;

@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0
 
 use super::*;
+use std::sync::Arc;
 
 /// Native request bundle produced by a frontend and consumed by proof tools.
 ///
@@ -37,6 +38,132 @@ pub struct NativeVerificationBundle {
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
     pub evidence_bundles: Vec<NativeEvidenceBundle>,
+    /// Private, transient identity shared with a source-generation authority.
+    ///
+    /// The field is skipped by serde and its `Clone` implementation deliberately
+    /// clears the identity. Keeping it private prevents safe downstream code from
+    /// transplanting a live identity onto a decoded or independently constructed
+    /// bundle.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    source_generation_live: SourceGenerationLiveMarker,
+}
+
+#[derive(Debug, Default)]
+struct SourceGenerationLiveMarker(Option<Arc<SourceGenerationNonce>>);
+
+#[derive(Debug)]
+struct SourceGenerationNonce;
+
+impl SourceGenerationLiveMarker {
+    fn mint() -> (Self, Arc<SourceGenerationNonce>) {
+        let nonce = Arc::new(SourceGenerationNonce);
+        (Self(Some(Arc::clone(&nonce))), nonce)
+    }
+
+    fn matches(&self, nonce: &Arc<SourceGenerationNonce>) -> bool {
+        self.0.as_ref().is_some_and(|live| Arc::ptr_eq(live, nonce))
+    }
+}
+
+impl Clone for SourceGenerationLiveMarker {
+    fn clone(&self) -> Self {
+        // A clone is new storage, not the exact live bundle instance certified
+        // by the trusted producer seam. Never duplicate transient authority.
+        Self::default()
+    }
+}
+
+impl PartialEq for SourceGenerationLiveMarker {
+    fn eq(&self, _other: &Self) -> bool {
+        // Transient authority is deliberately excluded from content equality.
+        true
+    }
+}
+
+/// Error returned when a trusted producer cannot mint source-generation
+/// authority for a native bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceGenerationAuthorityMintError {
+    /// The bundle failed its ordinary native-bundle validation.
+    InvalidBundle(Vec<NativeVerificationBundleError>),
+    /// Authority is one-shot: this exact live bundle already has an identity.
+    AlreadyMinted,
+}
+
+impl core::fmt::Display for SourceGenerationAuthorityMintError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidBundle(errors) => {
+                write!(
+                    f,
+                    "source-generation bundle failed validation: {} error(s)",
+                    errors.len()
+                )
+            }
+            Self::AlreadyMinted => {
+                f.write_str("source-generation authority was already minted for this bundle")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SourceGenerationAuthorityMintError {}
+
+/// Non-serializable capability proving that one exact
+/// [`NativeVerificationBundle`] instance came through a trusted live
+/// source-generation seam.
+///
+/// The capability is bound both to a private allocation identity and to the
+/// bundle's full canonical digest. The identity is erased by cloning and every
+/// serialization path, while the digest makes post-mint content mutation fail
+/// closed. The type is neither `Clone` nor serializable.
+#[derive(Debug)]
+pub struct SourceGenerationAuthority {
+    nonce: Arc<SourceGenerationNonce>,
+    bundle_digest: ProofDigest,
+}
+
+impl SourceGenerationAuthority {
+    /// Mint one authority for a bundle built directly from live source lowering.
+    ///
+    /// The method validates the bundle, installs a private one-shot identity, and
+    /// binds the returned capability to the bundle's complete canonical digest.
+    ///
+    /// # Trust boundary
+    ///
+    /// The caller must be the audited producer boundary that has just lowered
+    /// live compiler source into `bundle`. In particular, callers must not invoke
+    /// this method for a bundle obtained from bytes, IPC, a cache, or any other
+    /// unauthenticated input. This is an explicit *semantic* TCB seam. It is a
+    /// safe Rust function because violating the contract cannot cause memory
+    /// unsafety; the constellation's call-site gate must nevertheless treat each
+    /// invocation as an authority issuer. Safe code cannot construct or
+    /// transplant the private identity except through this conspicuous method.
+    pub fn mint_from_live_lowering(
+        bundle: &mut NativeVerificationBundle,
+    ) -> Result<Self, SourceGenerationAuthorityMintError> {
+        if bundle.source_generation_live.0.is_some() {
+            return Err(SourceGenerationAuthorityMintError::AlreadyMinted);
+        }
+        bundle
+            .validate()
+            .map_err(SourceGenerationAuthorityMintError::InvalidBundle)?;
+        let bundle_digest = bundle.stable_digest();
+        let (marker, nonce) = SourceGenerationLiveMarker::mint();
+        bundle.source_generation_live = marker;
+        Ok(Self {
+            nonce,
+            bundle_digest,
+        })
+    }
+
+    /// Whether this authority still belongs to this exact, valid bundle.
+    #[must_use]
+    pub fn authorizes_bundle(&self, bundle: &NativeVerificationBundle) -> bool {
+        bundle.source_generation_live.matches(&self.nonce)
+            && self.bundle_digest == bundle.stable_digest()
+            && bundle.validate().is_ok()
+    }
 }
 
 impl NativeVerificationBundle {
@@ -62,6 +189,7 @@ impl NativeVerificationBundle {
             lineage,
             requests: Vec::new(),
             evidence_bundles: Vec::new(),
+            source_generation_live: SourceGenerationLiveMarker::default(),
         }
     }
 

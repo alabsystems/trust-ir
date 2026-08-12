@@ -8,12 +8,11 @@
 //! # What this route is, and why it is not the solver-bundle route
 //!
 //! The adapter's other proof path ([`crate::vc`]) drives ay's `Solver` and
-//! captures an `ay.proofbundle/v2`. That path is a dead end for real work,
-//! measured rather than assumed: a genuinely symbolic goal exports a bundle
-//! whose offline replay REJECTS it (`UnsupportedTheoryLemmaKind { kind: Generic
-//! }`), while a goal ay's term constructor folds to a literal replays fine and
-//! proves `false |- ⊥`. Every certificate that path could mint was of the second
-//! shape, and a vacuity gate now refuses them.
+//! captures an `ay.proofbundle/v2`. At the pinned revision, supported symbolic
+//! BV bundles replay offline with zero trust steps, while a vacuity gate still
+//! rejects goals that folded to a literal before solving. That path does not yet
+//! independently bind the replayed formula to a goal re-derived from the live
+//! IR, so it records evidence but cannot mint discharge authority.
 //!
 //! This route uses `ay_proof::export_bv_blast_proof_expr` instead. Its format is
 //! *structurally incapable* of a trust step — `bv_blast_export` states there is
@@ -22,10 +21,12 @@
 //!
 //! # The soundness problem this module actually solves
 //!
-//! `BvBlastProof::validate()` is a real re-check: it re-derives every gate's
-//! Tseitin clause set from an exhaustive truth-table walk and replays every
-//! resolution step. Tampering is caught — dropping the last step, corrupting a
-//! gate kind, and flipping a clause literal were each measured to fail.
+//! `BvBlastProof::validate()` is a real re-check: it requires an inhabitable
+//! gate graph, re-derives every gate's Tseitin clause set from an exhaustive
+//! truth-table walk, requires exactly one well-formed disequality over all
+//! `BitEq` outputs, and replays every resolution step. Tampering is caught —
+//! dropping the last step, corrupting a gate kind, flipping a clause literal,
+//! or injecting junk disequality clauses were each measured to fail.
 //!
 //! But `validate()` says nothing about *which* fact was proved:
 //!
@@ -36,14 +37,14 @@
 //! * Leaf NAMES are erased — `VarRole::InputLeaf` carries an index only — so
 //!   proofs of goals over entirely different program variables are
 //!   byte-identical.
-//! * `ClauseProvenance::Disequality` is unchecked (the match arm is empty), so
-//!   arbitrary starting axioms are accepted. A 441-byte object with two
-//!   contradictory junk units and one resolution step validates.
+//! * The object does not authenticate its own construction from a live source
+//!   formula. A valid proof for a different graph remains a valid proof object,
+//!   and its descriptive metadata can be relabelled without changing that
+//!   graph.
 //!
 //! So `validate() == Ok` means only: *this object is an internally-consistent
-//! resolution refutation of the CNF it itself carries*. Granting proof authority
-//! on that alone would make one 441-byte artifact a universal certificate for
-//! every obligation in the module.
+//! resolution refutation of its internally authenticated Boolean graph*. It is
+//! not evidence that the graph came from this module's obligation.
 //!
 //! [`BvBlastAuthority`] closes this by RE-DERIVATION, never by reading the
 //! payload's own claims:
@@ -92,7 +93,7 @@ use crate::vc::AY_REV;
 /// certificate rather than silently re-interpreting it: `ProofCertificateRef`
 /// is `(obligation, prover, evidence_digest)`, and the authority capability
 /// requires an exact match on this string.
-pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@286c85566bcc409a63391f839d8f9fae3b281781";
+pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@f574ce67c85d9df1e2e2bea3b776a5112c98bc47";
 
 /// Schema tag of the certificate payload carried inside
 /// [`ProofEvidence::SmtProof`].
@@ -247,6 +248,32 @@ fn classify(err: BvExprExportError) -> ProveError {
             ProveError::Incomplete("solver returned unknown".into())
         }
         BvExprExportError::RefutationNotSurfaceable(detail) => ProveError::Incomplete(detail),
+        BvExprExportError::ResourceLimit {
+            resource,
+            limit,
+            actual,
+        } => ProveError::Incomplete(format!(
+            "proof resource `{resource}` exceeded limit {limit} (actual {actual})"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::{BvExprExportError, ProveError, classify};
+
+    #[test]
+    fn proof_resource_exhaustion_is_incomplete_not_falsity() {
+        let classified = classify(BvExprExportError::ResourceLimit {
+            resource: "resolution-steps",
+            limit: 10,
+            actual: 11,
+        });
+        assert!(matches!(
+            classified,
+            ProveError::Incomplete(detail)
+                if detail == "proof resource `resolution-steps` exceeded limit 10 (actual 11)"
+        ));
     }
 }
 
@@ -519,9 +546,11 @@ pub struct BvBlastAttachOutcome {
 ///     not one it chose;
 /// 11. the payload's own `validate()` replays every resolution step.
 ///
-/// Gate 10 is the whole design. Without it, `ClauseProvenance::Disequality`
-/// being unchecked by `validate()` means arbitrary starting axioms are accepted,
-/// and a 441-byte hand-built object validates.
+/// Gate 10 is the source-binding step. AY's replay now rejects malformed gate
+/// graphs and disequality clauses, but it deliberately does not authenticate a
+/// serialized graph against the caller's live source formula. Without exact
+/// equality to the graph re-derived here, a valid proof of a different formula
+/// could be relabelled and granted authority for this obligation.
 ///
 /// # Cost
 ///

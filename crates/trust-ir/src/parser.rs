@@ -25,7 +25,8 @@ use crate::value::{
     RecordId, ScopeData, SourceSpan, StructId, TyId, ValueId,
 };
 use crate::{
-    Block, CallingConv, Endianness, Function, Global, Linkage, Module, Producer, TargetInfo,
+    Block, CallingConv, Endianness, Function, Global, Linkage, Module, Producer,
+    SourceBindingProvenance, SourceLoopProvenance, SourcePlace, SourceProvenance, TargetInfo,
     TlsModel,
 };
 
@@ -304,6 +305,38 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    /// Parse the exact quoted representation emitted by [`ProofDigest`], for
+    /// example `"sha256:0123..."`. Source-provenance digests are kept as one
+    /// token so their algorithm and fixed width cannot be separated by a
+    /// comment or ambiguous whitespace.
+    fn read_source_provenance_digest(&mut self) -> Result<ProofDigest, ParseError> {
+        let encoded = self.read_quoted_string()?;
+        let Some((algorithm, hex)) = encoded.split_once(':') else {
+            return Err(self.error("source-provenance digest must contain an algorithm prefix"));
+        };
+        let algorithm = match algorithm {
+            "sha256" => ProofDigestAlgorithm::Sha256,
+            "trust_ir-stable-v1" => ProofDigestAlgorithm::TrustIrStableV1,
+            other => {
+                return Err(self.error(format!(
+                    "unknown source-provenance digest algorithm: '{other}'"
+                )));
+            }
+        };
+        if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(
+                self.error("source-provenance digest must contain exactly 64 hexadecimal digits")
+            );
+        }
+        let mut bytes = [0_u8; 32];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let start = index * 2;
+            *byte = u8::from_str_radix(&hex[start..start + 2], 16)
+                .map_err(|_| self.error("invalid source-provenance digest hex"))?;
+        }
+        Ok(ProofDigest { algorithm, bytes })
     }
 
     /// Read a u32 integer.
@@ -2644,6 +2677,93 @@ impl<'a> Parser<'a> {
                     )));
                 }
                 scopes.push(scope);
+            } else if self.try_str("#source-provenance:") {
+                if func.source_provenance.is_some() {
+                    return Err(self.error("duplicate #source-provenance directive"));
+                }
+                self.expect_str("schema")?;
+                let schema = self.read_u32()?;
+                self.expect_str("compiler")?;
+                let compiler_source_digest = self.read_source_provenance_digest()?;
+                self.expect_str("semantic")?;
+                let semantic_body_digest = self.read_source_provenance_digest()?;
+                self.expect_str("binding")?;
+                let binding_digest = self.read_source_provenance_digest()?;
+                func.source_provenance = Some(SourceProvenance {
+                    schema,
+                    compiler_source_digest,
+                    semantic_body_digest,
+                    binding_digest,
+                    loops: Vec::new(),
+                });
+            } else if self.try_str("#source-loop:") {
+                let source_loop_id = self.read_u32()?;
+                self.expect_str("hir")?;
+                let hir_local_id = self.read_u32()?;
+                self.expect_str("header")?;
+                let header = BlockId::new(self.read_u32()?);
+                let Some(provenance) = func.source_provenance.as_mut() else {
+                    return Err(self
+                        .error("#source-loop requires a preceding #source-provenance directive"));
+                };
+                if provenance
+                    .loops
+                    .iter()
+                    .any(|source_loop| source_loop.source_loop_id == source_loop_id)
+                {
+                    return Err(self.error(format!("duplicate #source-loop id {source_loop_id}")));
+                }
+                provenance.loops.push(SourceLoopProvenance {
+                    source_loop_id,
+                    hir_local_id,
+                    header,
+                    bindings: Vec::new(),
+                });
+            } else if self.try_str("#source-binding:") {
+                self.expect_str("loop")?;
+                let source_loop_id = self.read_u32()?;
+                self.expect_str("name")?;
+                let name = self.read_quoted_string()?;
+                self.expect_str("hir")?;
+                let hir_local_id = self.read_u32()?;
+                self.skip_whitespace_no_newline();
+                let place = if self.try_str("function-param") {
+                    SourcePlace::FunctionParameter {
+                        index: self.read_u32()?,
+                    }
+                } else if self.try_str("loop-param") {
+                    SourcePlace::LoopParameter {
+                        index: self.read_u32()?,
+                    }
+                } else {
+                    return Err(self.error(
+                        "expected #source-binding place kind 'function-param' or 'loop-param'",
+                    ));
+                };
+                let Some(provenance) = func.source_provenance.as_mut() else {
+                    return Err(self.error(
+                        "#source-binding requires a preceding #source-provenance directive",
+                    ));
+                };
+                let matches = provenance
+                    .loops
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, source_loop)| source_loop.source_loop_id == source_loop_id)
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                let [source_loop_index] = matches.as_slice() else {
+                    return Err(self.error(format!(
+                        "#source-binding loop {source_loop_id} must name exactly one preceding #source-loop"
+                    )));
+                };
+                provenance.loops[*source_loop_index]
+                    .bindings
+                    .push(SourceBindingProvenance {
+                        name,
+                        hir_local_id,
+                        place,
+                    });
             } else {
                 // Unknown `; #...` directive: skip the rest of the line.
                 self.skip_line();
@@ -6172,6 +6292,61 @@ functy.0 = ({ty}) -> ()
         // Structural equality through print→parse covers every producer field
         // (Function's PartialEq includes `producer`).
         round_trip_eq(&m);
+    }
+
+    #[test]
+    fn round_trip_semantic_source_provenance_directives() {
+        let mut m = Module::new("source_provenance_text");
+        let ft = m.add_func_type(FuncTy {
+            params: vec![Ty::U64],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut func = Function::new(FuncId::new(0), "looping", ft, b(0));
+        let mut entry = Block::new(b(0));
+        entry.params.push((v(0), Ty::U64));
+        entry.body.push(InstrNode::new(Inst::Br {
+            target: b(1),
+            args: vec![v(0)],
+        }));
+        let mut header = Block::new(b(1));
+        header.params.push((v(1), Ty::U64));
+        header.body.push(InstrNode::new(Inst::Br {
+            target: b(1),
+            args: vec![v(1)],
+        }));
+        func.blocks.extend([entry, header]);
+        func.source_provenance = Some(SourceProvenance::new(
+            ProofDigest::sha256([0x11; 32]),
+            ProofDigest::sha256([0x22; 32]),
+            vec![SourceLoopProvenance {
+                source_loop_id: 0,
+                hir_local_id: 71,
+                header: b(1),
+                bindings: vec![SourceBindingProvenance {
+                    name: "x, quoted \"source\"".into(),
+                    hir_local_id: 72,
+                    place: SourcePlace::LoopParameter { index: 0 },
+                }],
+            }],
+        ));
+        m.add_function(func);
+
+        let text = format!("{m}");
+        assert!(text.contains("; #source-provenance: schema 1"), "{text}");
+        assert!(text.contains("; #source-loop: 0 hir 71 header 1"), "{text}");
+        assert!(text.contains("loop-param 0"), "{text}");
+        round_trip_eq(&m);
+    }
+
+    #[test]
+    fn source_binding_without_preceding_loop_is_rejected() {
+        let digest = ProofDigest::sha256([1; 32]);
+        let text = format!(
+            "; TrustIr text format v1\nmodule \"bad_source\"\n\nfuncty.0 = () -> ()\n\nfn @f(functy.0) {{\n    ; #source-provenance: schema 1 compiler \"{digest}\" semantic \"{digest}\" binding \"{digest}\"\n    ; #source-binding: loop 0 name \"x\" hir 1 loop-param 0\nbb0():\n    ret\n}}\n"
+        );
+        let error = parse_module(&text).expect_err("binding without loop must fail closed");
+        assert!(error.message.contains("exactly one preceding #source-loop"));
     }
 
     /// v32/v33: value names, the lexical-scope tree, and per-node scope

@@ -715,47 +715,24 @@ fn constant_folded_assert_is_proved_but_carries_no_vacuous_evidence() {
          the term builder did the reasoning, not the checkable proof"
     );
     // Still no status minted, and still bound to exactly this obligation.
-    assert_eq!(
-        vc.obligations,
-        vec![(pid, VcObligationOutcome::ProvedByVc)]
-    );
+    assert_eq!(vc.obligations, vec![(pid, VcObligationOutcome::ProvedByVc)]);
     let mut module = module;
     let transitions = trust_ir_ay::vc::apply_vc_outcomes(&mut module, &vc).unwrap();
     assert!(transitions.is_empty());
     assert_eq!(module.proof_obligations[0].status, ProofStatus::Pending);
 }
 
-/// A sited obligation over a lowered assert with a FREE SYMBOL is proved by ay
-/// — and carries NO attached evidence, because a genuinely symbolic BV proof
-/// does not survive offline re-check.
+/// A sited obligation over a lowered assert with a FREE SYMBOL is proved by AY
+/// and now carries a symbolic bundle that independently replays with zero trust
+/// steps.
 ///
-/// THIS IS THE HONEST STATE OF THE SOLVER-BUNDLE PATH, and it is the opposite
-/// of what the path appeared to deliver. Measured directly against the pinned
-/// ay:
-///
-/// * Symbolic goal `(x & 15) <u 16` over a free `x: u64` — canonical form is
-///   `(not (bvult (bvand x #b…1111) #b…10000))`, i.e. NOT constant-folded.
-///   `check_sat` returns UNSAT and a 928-byte `ay.proofbundle/v2` bundle
-///   exports, but `replay_bundle_offline` REJECTS it:
-///   `UnsupportedTheoryLemmaKind { step: ProofId(1), kind: Generic }`. Real
-///   bit-vector reasoning collapses into a theory lemma no independent checker
-///   can re-derive.
-/// * Constant goal `3 <u 10` — folds to the literal `false` before `check_sat`,
-///   so its bundle DOES replay with zero trust steps, but proves
-///   `false |- _|_` and says nothing about the program (see the sibling test).
-///
-/// So through this path the ONLY bundles that replay offline are the vacuous
-/// ones. That is why the vacuity gate matters: without it the path reports
-/// exactly the useless certificates as its successes, and reports nothing for
-/// every proof that actually did work.
-///
-/// The real route for genuine arithmetic is `ay_proof::export_bv_blast_proof_expr`,
-/// which is structurally incapable of emitting a trust step — but it needs a
-/// TrustIr -> `BvExpr` lowering that does not exist yet. Until that lands, an
-/// honest `Discharged` is unreachable here, and this test pins that rather than
-/// papering over it.
+/// The bundle is useful evidence but is not yet discharge authority: this
+/// generic solver path carries the producer's canonical goal label, while the
+/// validator does not independently re-derive that goal from the live IR and
+/// compare it with the replayed proof. The separate `BvBlastAuthority` lane has
+/// that binding; this generic bundle lane therefore remains `Pending`.
 #[test]
-fn sited_obligation_is_proved_but_symbolic_bundle_does_not_replay() {
+fn symbolic_bundle_replays_but_stays_pending_without_goal_binding() {
     let (mut module, site) = build_symbolic_lowered_assert();
     let pid = push_sited(&mut module, 0, ObligationKind::BoundsCheck, site);
     assert!(
@@ -777,17 +754,17 @@ fn sited_obligation_is_proved_but_symbolic_bundle_does_not_replay() {
         "the site binds the proof to exactly this obligation"
     );
 
-    // NO evidence is attached: the bundle for a genuinely symbolic BV proof
-    // fails offline re-check with `UnsupportedTheoryLemmaKind { kind: Generic }`,
-    // and a payload that does not replay is a claim, not evidence — so it is
-    // never attached. Pin this, so that if a future ay gains checkable BV
-    // lemmas the test fails LOUDLY and we upgrade the path deliberately rather
-    // than discovering it by accident.
-    assert!(
-        vc.conditions[0].evidence.is_none(),
-        "a symbolic BV bundle must not be attached while it cannot be re-checked \
-         offline; if this now fails, ay gained independently-checkable BV lemmas \
-         and the discharge path should be revisited"
+    let evidence = vc.conditions[0]
+        .evidence
+        .as_ref()
+        .expect("the symbolic BV bundle must replay at the pinned AY revision");
+    assert_eq!(evidence.ay_rev, trust_ir_ay::vc::AY_REV);
+    assert_eq!(evidence.bundle_schema, ay::PROOF_BUNDLE_SCHEMA);
+    assert_eq!(evidence.trust_count, 0);
+    assert!(!evidence.goal_canonical.trim().is_empty());
+    assert_eq!(
+        trust_ir_ay::vc::replay_bundle_offline(&evidence.bundle_bytes),
+        Ok(0)
     );
 
     // ...and applying the VC still mints NO status.
@@ -803,16 +780,16 @@ fn sited_obligation_is_proved_but_symbolic_bundle_does_not_replay() {
         module.obligation_diagnostics[0].severity,
         trust_ir::proof::DiagnosticSeverity::Note
     );
-    // The diagnostic must say the payload was NOT captured/replayed — never
-    // "REPLAYED OFFLINE", which would overstate what happened.
+    // The diagnostic records exactly what was gained and exactly what is still
+    // missing: offline replay succeeded, but live goal binding did not.
     let message = &module.obligation_diagnostics[0].message;
     assert!(
-        message.contains("no replayable UNSAT payload"),
-        "expected the honest no-payload note, got: {message}"
+        message.contains("REPLAYED OFFLINE") && message.contains("status stays Pending"),
+        "expected the replay-without-authority note, got: {message}"
     );
     assert!(
-        !message.contains("REPLAYED OFFLINE"),
-        "must not claim an offline replay that did not happen: {message}"
+        message.contains("bind to this obligation's goal"),
+        "the residual binding gap must remain explicit: {message}"
     );
 }
 

@@ -4,9 +4,101 @@ Notable TrustIr changes are tracked here for Trust integration and release
 review.
 
 Entries are grouped under `Unreleased` until a release is cut. The most recent
-release is `0.2.0`.
+release is `0.3.0`.
 
 ## Unreleased
+
+### Changed (2026-08-11)
+
+- Dependency authorities converged post-release on the single-A9 set: the AY
+  legs now pin ay `6118a522` (v0.8.0) and the Clean-backed legs pin clean
+  `034a73f5` (the v1.4.0 release rev), moved coherently across every manifest
+  leg — including the three legs the 0.7.0 move had left at the 0.6.0 rev.
+
+## 0.3.0 — 2026-08-11
+
+Cut by `pub bump` (workspace 0.2.0 → 0.3.0; the public tag is `v0.3.0`).
+
+### Added (2026-07-27 – 2026-08-08)
+
+- Binary v34 adds the additive `ProofObligation.site` IR-position backref
+  (function, block, instruction index), binding a per-check obligation to the
+  one VC condition that actually backs it. A v33 blob decodes with
+  `site = None`, which fail-closed consumers must treat as "not bindable to a
+  VC condition", never as a wildcard.
+- Binary v35 adds optional `Function.source_provenance`: compiler-source,
+  non-circular semantic-body, and complete-binding digests followed by exact
+  source-loop/header/name/place rows, authenticated by the validator before
+  use.
+- Binary v36 adds `StructPassingPolicy::Unclassified` — a producer that emits
+  no `ParamAttrs` classification can now say so truthfully instead of
+  claiming `NativeC`/`AlwaysMemory` or failing `TargetInfoRequired`. It is a
+  declaration of ABSENCE, not a third convention: a backend that needs a
+  classification must refuse the module, never infer one. `MIN_READ_VERSION`
+  stays 23 across all three bumps.
+- The Rust producer records panic-class proof obligations from MIR `Assert`
+  terminators (`BoundsCheck` / `ArithmeticSafety` / `PanicFreedom`), always
+  with status `Pending` — a recorded claim, not a proof. There is a single
+  mint site and no promotion path; measured 70 obligations against 70 corpus
+  `Assert` terminators, exact in both the unwind and panic=abort lanes.
+- The first honest discharge route: goal-bound bv-blast proofs earn
+  `Discharged` for 9 of the 385 recorded obligations. The binding is
+  re-derivation, not replay — `proof/bvgoal.rs` reconstructs the goal from
+  the module IR at the obligation site, and the validator re-blasts it and
+  demands the payload's CNF equal the re-derived one exactly.
+- `TrustVcVerificationMode::DischargeProofObligations` (append-only and
+  digest-neutral) makes the native discharge request expressible, and
+  `TrustVcNativeRequest.function` names the function under discharge.
+- A sealed source-generation authority for the one audited in-process
+  source-lowering lane: a non-Clone, non-serializable token bound to the full
+  canonical bundle digest. Cloning, serde/binary round-trips, re-minting,
+  equal-content reconstruction, and cross-instance transplants all fail
+  closed.
+- The ICmp and integer-resize validation allowlists learn `Ty::Char` (#194):
+  `'a' == 'b'`, `'h' as u8`, and `0u8 as char` now validate as well-formed,
+  matching what the interpreter already executed.
+
+### Fixed (2026-07-27 – 2026-08-06)
+
+- Three defects in the discharge path, each pinned by a test that fails
+  without the fix: a positional-MessagePack corruption
+  (`ProofObligation.source` kept `skip_serializing_if` after v34 appended
+  `site` behind it, shifting the site record into the source slot); assert
+  polarity inferred from block shape, which could invert in the unwind lane
+  and prove the NEGATION of an obligation (now fails closed on a diverging
+  THEN arm); and vacuous certificates — all 45 "offline-replayable"
+  certificates proved `false ⊢ ⊥`, so a vacuity gate now refuses evidence
+  whose goal canonicalises to a constant (honest replayable count via the
+  Solver-bundle path: zero).
+- The stable request digest gained the `TrustVcNativeRequest::function`
+  writer arm that its own coverage test demanded.
+- Validator corrections, each with accept controls: the ZST test is
+  module-aware (a zero-sized STRUCT field is a ZST, unblocking
+  `NonNull`/`PhantomData` transparent layouts); `repr(transparent)` takes AT
+  MOST one non-ZST field, not exactly one; the `repr(Rust)` FFI-boundary
+  checks (`FfiStructReprUnpinned` and `first_ffi_boundary`) require a FOREIGN
+  calling convention, no longer flagging ordinary Rust cross-crate
+  declarations; and a first-class closure VALUE exposes its captures as
+  fields to `ExtractField`, exactly the read the interpreter performs.
+- The interpreter accepts the null pointer constant (`Constant::Int(0)` at
+  `Ty::Ptr`), resolving a validator/interpreter disagreement. Zero only: a
+  nonzero integer at `Ty::Ptr` stays fail-closed on the type-error path.
+- A Rust-2024 let chain in the workspace-excluded `frontend/` crate (edition
+  2021) had made HEAD uncompilable; desugared.
+- A partial Clean/AY pin move is now mechanically impossible, not just
+  detectable: pin moves go through `scripts/bump-dep-pin.sh` (a six-leg
+  atomic move) and the toolchain-free pin census joined
+  `scripts/ci_gates.sh` gate 0.
+- The bv-blast proof authority is bound to the exact AY source revision, and
+  the dev gates accept linked Clean worktrees.
+
+### Changed (2026-08-11)
+
+- At the 0.3.0 cut the module binary writer emits v36; readers accept v23–v25
+  and v29–v36 (v26–v28 remain rejected).
+- Dependency authorities at the cut: the AY legs pin the released ay v0.7.0
+  (`937092bb`) and the Clean-backed legs pin the clean v1.4.0 release rev
+  (`4d2325a3`).
 
 ### Added (2026-07-26)
 

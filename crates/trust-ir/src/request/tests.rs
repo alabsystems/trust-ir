@@ -324,6 +324,10 @@ fn native_bundle() -> NativeVerificationBundle {
                         b"trust_vc-import",
                     )),
             ),
+            // Stays None: this fixture's obligation sources are hand-built, so a
+            // Some(_) here would newly arm the `MissingFunction` /
+            // `RequestObligationFunctionMismatch` checks in bundle.rs.
+            function: None,
         }));
     bundle
         .requests
@@ -378,6 +382,88 @@ fn native_bundle() -> NativeVerificationBundle {
             ),
         }));
     bundle
+}
+
+fn source_generation_authority_bundle() -> NativeVerificationBundle {
+    let mut bundle = native_bundle();
+    remove_unreplayed_trust_vc_fixture(&mut bundle);
+    bundle
+}
+
+#[test]
+fn source_generation_authority_is_one_shot_instance_and_content_bound() {
+    let mut bundle = source_generation_authority_bundle();
+    bundle.validate().expect("authority fixture must be valid");
+
+    let authority = SourceGenerationAuthority::mint_from_live_lowering(&mut bundle)
+        .expect("the audited live producer seam should mint once");
+    assert!(authority.authorizes_bundle(&bundle));
+
+    let same_content_new_instance = bundle.clone();
+    assert_eq!(same_content_new_instance, bundle);
+    assert!(
+        !authority.authorizes_bundle(&same_content_new_instance),
+        "Clone must erase the private live-instance identity"
+    );
+    assert!(
+        !authority.authorizes_bundle(&source_generation_authority_bundle()),
+        "equal independently constructed content must not accept a transplanted authority"
+    );
+
+    assert!(
+        matches!(
+            SourceGenerationAuthority::mint_from_live_lowering(&mut bundle),
+            Err(SourceGenerationAuthorityMintError::AlreadyMinted)
+        ),
+        "the issuer is one-shot for an exact live bundle"
+    );
+
+    bundle.provenance.source_artifact = Some("renamed_checked_add.rs".to_string());
+    bundle
+        .validate()
+        .expect("the content mutation remains structurally valid");
+    assert!(
+        !authority.authorizes_bundle(&bundle),
+        "post-mint canonical content mutation must invalidate authority"
+    );
+}
+
+#[test]
+fn source_generation_authority_invalid_mint_fails_without_poisoning_bundle() {
+    let mut bundle = source_generation_authority_bundle();
+    let requests = core::mem::take(&mut bundle.requests);
+    let error = SourceGenerationAuthority::mint_from_live_lowering(&mut bundle)
+        .expect_err("invalid bundles cannot receive source authority");
+    assert!(matches!(
+        error,
+        SourceGenerationAuthorityMintError::InvalidBundle(errors)
+            if errors.contains(&NativeVerificationBundleError::EmptyRequests)
+    ));
+
+    bundle.requests = requests;
+    let authority = SourceGenerationAuthority::mint_from_live_lowering(&mut bundle)
+        .expect("a failed validation must not consume the one-shot issuer");
+    assert!(authority.authorizes_bundle(&bundle));
+}
+
+#[test]
+#[cfg(feature = "serde")]
+fn source_generation_authority_does_not_survive_serde_round_trip() {
+    let mut bundle = source_generation_authority_bundle();
+    let authority = SourceGenerationAuthority::mint_from_live_lowering(&mut bundle)
+        .expect("the audited live producer seam should mint");
+    let encoded = serde_json::to_vec(&bundle).expect("serialize native bundle");
+    let decoded: NativeVerificationBundle =
+        serde_json::from_slice(&encoded).expect("deserialize native bundle");
+
+    assert_eq!(decoded, bundle, "transient identity is not bundle content");
+    decoded
+        .validate()
+        .expect("round-tripped content remains valid");
+    assert!(
+        !authority.authorizes_bundle(&decoded),
+        "a retained token must not authorize a byte-round-tripped bundle instance"
+    );
 }
 
 fn refresh_native_bundle_module_identity(bundle: &mut NativeVerificationBundle) {
@@ -11991,4 +12077,57 @@ fn manifest_field_sets_have_no_drift() {
             "field {field:?} appears in both PROVIDED_FIELDS and EXTERNAL_FIELDS"
         );
     }
+}
+
+/// Both halves of the `TrustVcNativeRequest::function` stable-writer contract.
+///
+/// (a) NEUTRALITY. The hex constant was captured from the tree BEFORE the
+///     writer arm in `write_native_request_stable` learned about `function`.
+///     It is the pin proving a `None` function is wire-invisible, so no
+///     pre-existing TrustVc request digest, evidence `request_digest`, or
+///     compiler artifact metadata value moved. Pin the REQUEST digest directly:
+///     the enclosing bundle also covers the TrustIR module digest, which moves
+///     legitimately when the module binary schema gains a semantic field.
+///
+/// (b) COVERAGE. The stable writers enumerate fields BY HAND with no
+///     exhaustive `let Self { .. }` destructuring, so simply forgetting the
+///     writer arm compiles clean and silently weakens request identity. Half
+///     (b) is what makes that omission fail loudly.
+#[test]
+fn native_bundle_stable_digest_covers_trust_vc_function() {
+    // Captured from the tree BEFORE the writer arm learned about `function`.
+    const PRE_CHANGE_TRUST_VC_REQUEST_DIGEST: &str =
+        "sha256:76b7df9c9fe2e4a4e8729acb3eacbdad66930c5bfa1ec2d86f5cd9da564c50b7";
+
+    let bundle = native_bundle();
+    let baseline_request = bundle.requests[0].stable_digest();
+    let baseline_bundle = bundle.stable_digest();
+
+    // (a) captured pre-change — see PRE_CHANGE_TRUST_VC_REQUEST_DIGEST above.
+    assert_eq!(
+        baseline_request.to_string(),
+        PRE_CHANGE_TRUST_VC_REQUEST_DIGEST,
+        "a None `function` must be wire-invisible; this digest moving means the \
+         field was tagged rather than written as a trailing conditional"
+    );
+
+    // (b) the field must actually reach the writer.
+    let mut changed = bundle.clone();
+    match &mut changed.requests[0] {
+        NativeVerificationRequest::TrustVc(request) => {
+            assert_eq!(request.function, None, "fixture precondition");
+            request.function = Some(FuncId::new(0));
+        }
+        other => panic!("expected requests[0] to be TrustVc, got {other:?}"),
+    }
+    assert_ne!(
+        baseline_request,
+        changed.requests[0].stable_digest(),
+        "`function` is not covered by the stable request digest"
+    );
+    assert_ne!(
+        baseline_bundle,
+        changed.stable_digest(),
+        "the request identity change is not covered by the bundle digest"
+    );
 }

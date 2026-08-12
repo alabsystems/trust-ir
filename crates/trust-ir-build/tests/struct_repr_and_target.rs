@@ -62,6 +62,70 @@ fn transparent_with_zst_companions_ok() {
     )));
 }
 
+/// Trust (#171 Part A): a transparent wrapper whose companion is a zero-sized STRUCT.
+///
+/// This is the real-world shape the spelling-only ZST test rejected:
+/// `#[repr(transparent)] struct Unique<T> { pointer: NonNull<T>, _marker: PhantomData<T> }`.
+/// `PhantomData<T>` lowers to `Ty::Struct(..)` with a recorded `size: Some(0)`, so counting by
+/// SPELLING alone saw two non-ZST fields and rejected a well-formed module. Five such rejections
+/// were measured in the ui corpus.
+fn module_with_zst_companion(companion_size: Option<u64>) -> Module {
+    let mut m = Module::new("repr");
+    // struct 0: the zero-sized companion (PhantomData's stand-in).
+    m.add_struct(StructDef {
+        id: StructId::new(0),
+        name: "Marker".into(),
+        fields: vec![],
+        size: companion_size,
+        align: Some(1),
+        repr: StructRepr::Rust,
+    });
+    // struct 1: the transparent wrapper — one real field plus the ZST companion.
+    m.add_struct(StructDef {
+        id: StructId::new(1),
+        name: "Wrapper".into(),
+        fields: vec![
+            field("pointer", Ty::Ptr),
+            field("_marker", Ty::Struct(StructId::new(0))),
+        ],
+        size: Some(8),
+        align: Some(8),
+        repr: StructRepr::Transparent,
+    });
+    m
+}
+
+#[test]
+fn transparent_with_zero_sized_struct_companion_ok() {
+    let m = module_with_zst_companion(Some(0));
+    assert!(
+        !has(&m, |e| matches!(
+            e,
+            ValidationError::TransparentReprFieldCount { .. }
+        )),
+        "a companion struct with a PROVEN size of 0 must count as a ZST"
+    );
+}
+
+#[test]
+fn transparent_with_unsized_struct_companion_still_rejected() {
+    // THE FAIL-CLOSED TWIN, and the reason the widening is safe. `size: None` is what both
+    // producers record when rustc's layout query declines — a generic/param-bearing type, an
+    // unregistered id, a non-faithful lane. An UNPROVEN ZST must still count as non-ZST, or the
+    // check becomes fail-open on exactly the modules least able to afford it.
+    let m = module_with_zst_companion(None);
+    assert!(
+        has(&m, |e| matches!(
+            e,
+            ValidationError::TransparentReprFieldCount {
+                actual_non_zst: 2,
+                ..
+            }
+        )),
+        "a companion struct of UNPROVEN size must still count as non-ZST (fail-closed)"
+    );
+}
+
 #[test]
 fn transparent_with_two_non_zst_fields_rejected() {
     let m = module_with_struct(
@@ -77,15 +141,42 @@ fn transparent_with_two_non_zst_fields_rejected() {
     )));
 }
 
+/// CORRECTED (#171 residue): zero non-ZST fields is LEGAL, not an error.
+///
+/// This test previously asserted the opposite, pinning an "exactly one" rule. The Rust reference
+/// says a `repr(transparent)` type has "the same layout and ABI as their single non-zero-sized
+/// field, IF ANY" — at most one, and zero is fine, the type then being a ZST itself.
+/// `#[repr(transparent)] struct Foo(());` compiles.
+///
+/// It is not hypothetical: `ManuallyDrop<T>` and `MaybeDangling<T>` over a zero-sized `T` are
+/// exactly this shape, and the Trust producer emits them at `size=0 align=1 repr=transparent`.
+/// The old rule called 12 occurrences of correct Rust malformed across the ui corpus. The
+/// original assertion carried no rationale (unlike every other check in this file) and came from
+/// the batch commit that introduced repr classification generally, so it reads as a simplified
+/// reading of the rule rather than a considered decision.
 #[test]
-fn transparent_with_zero_non_zst_fields_rejected() {
+fn transparent_with_zero_non_zst_fields_accepted() {
     let m = module_with_struct(vec![field("z", Ty::Unit)], StructRepr::Transparent);
-    assert!(has(&m, |e| matches!(
+    assert!(
+        !has(&m, |e| matches!(
+            e,
+            ValidationError::TransparentReprFieldCount { .. }
+        )),
+        "a transparent struct whose only field is a ZST is legal Rust (at most one non-ZST)"
+    );
+}
+
+/// The `> 1` half of the rule must still fire — two non-ZST fields have no single field whose
+/// layout and ABI the struct can take, which is what `transparent` means.
+#[test]
+fn transparent_with_zero_non_zst_but_two_zsts_accepted() {
+    let m = module_with_struct(
+        vec![field("a", Ty::Unit), field("b", Ty::Unit)],
+        StructRepr::Transparent,
+    );
+    assert!(!has(&m, |e| matches!(
         e,
-        ValidationError::TransparentReprFieldCount {
-            actual_non_zst: 0,
-            ..
-        }
+        ValidationError::TransparentReprFieldCount { .. }
     )));
 }
 

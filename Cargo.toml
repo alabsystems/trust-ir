@@ -38,7 +38,7 @@ members = [
 exclude = ["frontend"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/alabsystems/trust-ir"
@@ -54,6 +54,28 @@ clap = { version = "4.5", features = ["derive"] }
 # Public source snapshots resolve the exact, ledger-mapped Clean Git
 # revisions declared in member manifests. No sibling checkout or path patch
 # is part of this workspace's public build contract.
+
+# AY's strict Bool/BV authority has a production wall-clock envelope around
+# proof construction and independent replay.  Building the solver stack at
+# opt-level 0 makes a small 32-bit associativity proof consume that envelope
+# deterministically, even though the same proof completes in ~200 ms in an
+# optimized build.  Keep TrustIR itself fast to iterate on, but compile the
+# external solver hot path the way it is deployed.  This mirrors TrustVC's
+# existing dev-profile policy and does not relax any proof or resource limit.
+[profile.dev.package.ay-core]
+opt-level = 3
+[profile.dev.package.ay-dpll]
+opt-level = 3
+[profile.dev.package.ay-frontend]
+opt-level = 3
+[profile.dev.package.ay-proof]
+opt-level = 3
+[profile.dev.package.ay-sat]
+opt-level = 3
+[profile.dev.package.ay-sys]
+opt-level = 3
+[profile.dev.package.num-bigint]
+opt-level = 3
 
 [workspace.metadata.atpkg]
 # The binaries atpkg shims onto PATH when `trust-ir` is installed. The *-fixture bins are

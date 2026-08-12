@@ -213,7 +213,10 @@ fi
 # bug-catchers: the root [patch] and the sibling Clean checkout's co-ownership of the AY pin both
 # live outside this repository's leg table.
 if [[ "$DEP" == "clean" ]]; then
-    [[ -d "$CLEAN_SIBLING/.git" ]] \
+    # A linked `git worktree` has a `.git` FILE pointing at the shared object
+    # store, not a `.git` directory. Ask Git whether this is a work tree rather
+    # than rejecting the exact checkout shape used for isolated pin gates.
+    [[ "$(git -C "$CLEAN_SIBLING" rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] \
         || die "no Clean sibling checkout at $CLEAN_SIBLING
       The root [patch] resolves clean.git to that path; without it the
       workspace cannot resolve at all. Set TRUST_IR_CLEAN_SIBLING."
@@ -249,7 +252,7 @@ if [[ "$DEP" == "clean" ]]; then
       that working tree, so it is building something other than $REV."
     fi
 else
-    # AY leg 5: the sibling Clean checkout's Cargo.toml pins ay too (7 declarations). If it
+    # AY leg 6: the sibling Clean checkout's Cargo.toml pins ay too (7 declarations). If it
     # disagrees, the root lock resolves TWO ay graphs and the guard fails.
     if [[ -f "$CLEAN_SIBLING/Cargo.toml" ]]; then
         # Match the URL and the rev INDEPENDENTLY of their order on the line:
@@ -276,7 +279,7 @@ else
             die "$CLEAN_SIBLING/Cargo.toml co-owns the AY pin and holds:
 $(printf '        %s\n' $SIBLING_AY_REVS)
       trust-ir cannot bump AY alone: the root lock would carry two ay graphs
-      (36 packages at each revision) and the coherence guard would fail.
+      (37 packages at each revision) and the coherence guard would fail.
       Move the sibling's AY declarations to $REV first, then re-run."
         fi
     else

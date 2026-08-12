@@ -1543,6 +1543,28 @@ pub(crate) fn write_native_request_stable(out: &mut Vec<u8>, request: &NativeVer
             write_trust_vc_options_stable(out, &request.options);
             write_diagnostics_policy_stable(out, &request.diagnostics);
             write_request_provenance_stable(out, &request.provenance);
+            // DELIBERATE: `function` is written LAST and UNTAGGED, so `None`
+            // emits zero bytes and every pre-existing TrustVc request digest
+            // stays byte-identical. Do NOT normalize this to match the TrustMc
+            // / TrustWp arms below, which write `function` mid-record, and do
+            // NOT route it through `write_option_u32_stable` — either change
+            // appends a discriminant byte to every existing stream and moves
+            // every TrustVc request digest, the bundle digest, every evidence
+            // `request_digest`, and every compiler artifact metadata value,
+            // forcing a version bump of both the request and bundle domains.
+            //
+            // "None writes nothing" is NOT the whole argument. This is the
+            // SECOND stacked trailing conditional: `write_request_provenance_stable`
+            // already ends in one (`if !provenance.replay_context.is_empty()`).
+            // Non-collision holds only because a written replay_context is >=16
+            // bytes — `write_replay_context_stable` emits two unconditional u64
+            // length prefixes — while this tail is exactly 4. So (empty ctx,
+            // Some) and (non-empty ctx, None) cannot alias. Adding a THIRD
+            // trailing conditional, or making this one variable-width, breaks
+            // that argument and needs a fresh proof.
+            if let Some(function) = request.function {
+                write_u32_stable(out, function.index());
+            }
         }
         NativeVerificationRequest::TrustMc(request) => {
             write_u8_stable(out, 1);

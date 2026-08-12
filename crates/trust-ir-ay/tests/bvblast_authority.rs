@@ -251,8 +251,8 @@ fn a_certificate_minted_for_a_different_obligation_is_refused() {
 fn a_payload_relabelled_with_the_right_digest_still_fails_the_cnf_check() {
     // The mirror case: fix up the payload's self-reported digest so gate (8)
     // passes, and let gate (10) — "the payload's CNF IS the re-derived CNF" —
-    // do the work. This is the gate that closes the unchecked-`Disequality`
-    // hole; without it a refutation of any formula would be accepted.
+    // do the work. AY authenticates the payload's internal graph, but only this
+    // consumer-side comparison binds that graph to the live TrustIR goal.
     let mut donor = build_mask_bound(15, 16, ObligationKind::BoundsCheck);
     let donor_cert = discharge(&mut donor);
     let mut donor_payload = payload_of(&donor_cert);
@@ -293,15 +293,13 @@ fn a_payload_relabelled_with_the_right_digest_still_fails_the_cnf_check() {
     );
 }
 
-/// The universal-certificate forgery: an object built from NOTHING that ay's own
-/// `validate()` accepts.
+/// The former universal-certificate forgery: an object built from nothing that
+/// older AY revisions accepted.
 ///
-/// `ClauseProvenance::Disequality` is entirely unchecked by `validate()` — the
-/// match arm is empty — so arbitrary starting axioms are admitted. Two
-/// contradictory junk units resolved to the empty clause is a complete,
-/// internally-consistent refutation of a CNF that says nothing about anything.
-/// `VarTable.roles` is a `pub` field, so there is no privacy barrier to
-/// constructing this from outside ay.
+/// Current AY requires an inhabitable graph and exactly one disequality over all
+/// `BitEq` outputs, so these contradictory junk units must fail native replay.
+/// Keep the adversarial constructor as a cross-repository regression: TrustIR's
+/// independent re-derived-CNF gate must also reject it, even if AY regresses.
 fn universal_forgery() -> ay_proof::BvBlastProof {
     use ay_proof::{
         BvBlastProof, BvOp, Clause, ClauseProvenance, Lit, OperandRef, Refutation, ResRule,
@@ -345,13 +343,12 @@ fn universal_forgery() -> ay_proof::BvBlastProof {
 }
 
 #[test]
-fn the_universal_forgery_validates_in_ay_but_is_refused_here() {
-    // FIRST, the premise this whole module is built on: ay accepts it.
+fn the_legacy_universal_forgery_is_rejected_by_ay_and_here() {
+    // FIRST, native AY replay closes the historical arbitrary-axiom hole.
     let forgery = universal_forgery();
     assert!(
-        forgery.validate().is_ok(),
-        "premise failed: ay's validate() was expected to accept the junk-Disequality forgery. \
-         If this now fails, ay closed the hole and the CNF-equality gate can be revisited."
+        forgery.validate().is_err(),
+        "AY accepted contradictory junk Disequality axioms without an inhabitable BitEq graph"
     );
     let bytes = serde_json::to_vec(&forgery).unwrap();
     assert!(
@@ -360,8 +357,11 @@ fn the_universal_forgery_validates_in_ay_but_is_refused_here() {
         bytes.len()
     );
 
-    // SECOND, that the capability refuses it anyway: its CNF is not the CNF
-    // re-derived from the obligation's own goal.
+    // SECOND, the TrustIR capability independently refuses it. Gate (9a) runs
+    // AY's native replay before the more expensive source re-derivation, so the
+    // strengthened checker rejects this malformed graph immediately. The later
+    // re-derived-CNF gate remains independently covered by the relabelled-payload
+    // tests above.
     let mut fixture = build_mask_bound(15, 16, ObligationKind::BoundsCheck);
     discharge(&mut fixture);
     let mut payload = payload_of(
@@ -376,7 +376,7 @@ fn the_universal_forgery_validates_in_ay_but_is_refused_here() {
     restamp(&mut fixture.module, fixture.obligation, &payload);
     assert!(
         !accepts(&fixture.module),
-        "a universal certificate was accepted as proof authority"
+        "the legacy universal certificate was accepted as proof authority"
     );
 
     let authority = BvBlastAuthority::new();
@@ -396,8 +396,8 @@ fn the_universal_forgery_validates_in_ay_but_is_refused_here() {
         .explain(&fixture.module, obligation, certificate)
         .unwrap_err();
     assert!(
-        err.contains("re-derived"),
-        "gate (10) must be what rejects this, got: {err}"
+        err.contains("stored refutation does not replay") && err.contains("MissingGateDefinition"),
+        "gate (9a) must reject the malformed proof graph, got: {err}"
     );
 }
 
@@ -406,8 +406,8 @@ fn a_forged_proof_of_a_false_neighbour_is_refused() {
     // The decision-relevant forgery. `(x & 127) <u 127` is FALSE and the honest
     // exporter refuses it. Take the real proof of the neighbouring TRUE goal
     // `(x & 127) <u 128`, append junk Disequality units, and repoint the
-    // refutation at them: ay's validate() accepts the result while it purports
-    // to prove the false goal.
+    // refutation at them. Current AY must reject this malformed graph before it
+    // can purport to prove the false goal.
     let mut donor = build_mask_bound(127, 128, ObligationKind::BoundsCheck);
     discharge(&mut donor);
     let mut payload = payload_of(
@@ -447,8 +447,8 @@ fn a_forged_proof_of_a_false_neighbour_is_refused() {
         }],
     };
     assert!(
-        payload.proof.validate().is_ok(),
-        "premise: ay accepts the spliced object"
+        payload.proof.validate().is_err(),
+        "AY accepted a spliced refutation over contradictory junk axioms"
     );
 
     // Attach it to a FALSE obligation: `(x & 127) <u 127`.
@@ -469,7 +469,7 @@ fn a_forged_proof_of_a_false_neighbour_is_refused() {
         .unwrap()
         .clone();
     assert!(
-        matches!(derive_site_goal(&target.module, &obligation), Ok(_)),
+        derive_site_goal(&target.module, &obligation).is_ok(),
         "the false goal is still DERIVABLE — it is simply not provable"
     );
     let false_goal = derive_site_goal(&target.module, &obligation).unwrap();
@@ -494,8 +494,10 @@ fn a_forged_proof_of_a_false_neighbour_is_refused() {
         !accepts(&target.module),
         "a FALSE obligation was discharged by a spliced proof"
     );
-    // And it dies for the right reason: re-deriving a refutation for a
-    // satisfiable goal fails, so gate (9) never even reaches the comparison.
+    // And it dies for the right reason: strengthened AY replay rejects the
+    // malformed splice at gate (9a), before the more expensive source
+    // re-derivation. A well-formed proof relabelled onto a different goal reaches
+    // the independent binding gates, as covered by the tests above.
     let authority = BvBlastAuthority::new();
     let obligation = target
         .module
@@ -513,8 +515,8 @@ fn a_forged_proof_of_a_false_neighbour_is_refused() {
         .explain(&target.module, obligation, certificate)
         .unwrap_err();
     assert!(
-        err.contains("re-deriving a refutation"),
-        "gate (9) must reject a satisfiable goal, got: {err}"
+        err.contains("stored refutation does not replay") && err.contains("MissingGateDefinition"),
+        "gate (9a) must reject the malformed proof splice, got: {err}"
     );
 }
 
@@ -1248,7 +1250,8 @@ fn a_bvblast_discharge_does_not_back_an_unrelated_proof_ref() {
         // backed by a ProofRef to the genuinely-proved bounds obligation.
         let node = &mut fixture.module.functions[0].blocks[0].body[1];
         node.proofs.push(claim.clone());
-        node.proofs.push(ProofAnnotation::ProofRef(fixture.obligation));
+        node.proofs
+            .push(ProofAnnotation::ProofRef(fixture.obligation));
 
         assert!(
             !accepts(&fixture.module),

@@ -79,8 +79,11 @@ pub fn canonical(module: &Module) -> String {
 /// Return a new [`Module`] whose SSA values have been renumbered to a
 /// dense canonical 0..N per function.
 ///
-/// The returned in-memory module preserves every field. Its canonical text
-/// can be fed back through the parser when `parser` is enabled, but the text
+/// The returned in-memory module preserves every field unless canonicalization
+/// actually rewrites that function. A rewritten function loses
+/// [`Function::source_provenance`]: an ordinary syntactic transform is not
+/// authorized to re-seal compiler source authority for a changed artifact.
+/// Its canonical text can be fed back through the parser when `parser` is enabled, but the text
 /// surface intentionally omits v31 enum field names and concrete layout
 /// descriptors; use binary or serde when those producer facts must survive.
 ///
@@ -158,6 +161,13 @@ pub(crate) fn canonical_function(func: &Function) -> String {
 /// rewrite every `ValueId` that appears in the function (definitions and
 /// uses) via the dense remap table.
 fn canonicalize_function(func: &mut Function) {
+    // Temporarily remove proof-bearing source provenance while deciding
+    // whether this pass changes the function. If it does, fail closed by
+    // leaving the carrier absent. An already-canonical function can retain its
+    // byte-identical carrier.
+    let source_provenance = func.source_provenance.take();
+    let before = func.clone();
+
     // 0. Trim trailing empty per-parameter attribute slots. The text printer
     //    emits `#param_attrs {i}:` only for non-empty entries by index, and the
     //    parser reconstructs the vector up to the highest non-empty index — so a
@@ -191,6 +201,10 @@ fn canonicalize_function(func: &mut Function) {
         for (value, _) in names {
             *value = *map.get(value).unwrap_or(value);
         }
+    }
+
+    if *func == before {
+        func.source_provenance = source_provenance;
     }
 }
 
@@ -257,6 +271,35 @@ mod tests {
             Inst::Return { values } => assert_eq!(values[0], v(2)),
             _ => panic!("expected Return"),
         }
+    }
+
+    #[test]
+    fn canonicalize_invalidates_only_when_it_rewrites_source_bound_body() {
+        use crate::SourceProvenance;
+        use crate::proof::ProofDigest;
+
+        let carrier = || {
+            SourceProvenance::new(
+                ProofDigest::sha256([1; 32]),
+                ProofDigest::sha256([2; 32]),
+                Vec::new(),
+            )
+        };
+        let mut sparse = sparse_add_module();
+        sparse.functions[0].source_provenance = Some(carrier());
+        let dense = canonicalize(&sparse);
+        assert!(
+            dense.functions[0].source_provenance.is_none(),
+            "SSA renumbering must invalidate compiler source authority"
+        );
+
+        let mut already_dense = dense;
+        already_dense.functions[0].source_provenance = Some(carrier());
+        let unchanged = canonicalize(&already_dense);
+        assert_eq!(
+            unchanged.functions[0].source_provenance, already_dense.functions[0].source_provenance,
+            "an actually byte-identical canonicalization may preserve the carrier"
+        );
     }
 
     #[test]

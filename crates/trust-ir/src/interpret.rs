@@ -1565,6 +1565,45 @@ impl<'m> Interpreter<'m> {
             (ty, Constant::Int(value)) if int_shape(ty).is_some() => {
                 InterpretValue::int(ty.clone(), *value).map_err(|e| e.with_block(block))
             }
+            // THE NULL POINTER CONSTANT. `shape_matches_ty` has admitted
+            // `(Constant::Int(_), Ty::Ptr)` since the initial commit
+            // (`shape.rs`), so this pairing is already encodable, already
+            // validator-accepted, and already present in the on-disk format —
+            // but the interpreter had no arm for it, and `int_shape(Ty::Ptr)`
+            // is `None`, so it fell through to the type-error arm below. That
+            // was a genuine disagreement between two authorities about what
+            // inhabits `Ty::Ptr`, with the VALIDATOR as the loose side. This
+            // arm removes the disagreement rather than widening the format:
+            // no new constructor, no new `Ty`, no serialised-shape change.
+            //
+            // ZERO ONLY, and the restriction is the whole point. A NONZERO
+            // integer at `Ty::Ptr` would be a fabricated address with no
+            // provenance and no allocation behind it; it stays fail-closed on
+            // the type-error arm (`a_nonzero_int_at_ptr_is_still_a_type_error`).
+            // Zero is different in kind: `InterpretValueKind::NullPtr` is a
+            // DISTINGUISHED, already-modelled value — `Inst::NullPtr` produces
+            // exactly this, and the type relation already admits it at
+            // `Ty::Ptr` (`(Ty::Ptr, Ptr(_) | NullPtr) => true`). So this mints
+            // no new value kind either; it only lets a constant reach one that
+            // an instruction could already produce.
+            //
+            // SOUND UNDER THE DIFFERENTIAL GATE, which is why this pairing and
+            // not `SymbolAddr`. `constant_materializes_uncomparable_identity`
+            // classifies `Constant::Int(_)` as comparable
+            // (`trust-thir-lower/src/differential.rs`), so a body seeded this
+            // way stays gate-comparable — whereas `SymbolAddr`/`FnDef`/
+            // `Closure` are module/linker-local identities the gate refuses
+            // syntactically, and an interpreter arm for those would buy no
+            // verdicts without first deleting that refusal, which is the
+            // unsound step. Every observation channel for a null is LOUD: a
+            // deref faults in `expect_pointer`, and a returned `NullPtr`
+            // against the oracle's `Ptr(..)` is a cross-kind pair reported as
+            // a real divergence. A placeholder that is silently wrong is the
+            // hazard; this one cannot be silently anything.
+            (Ty::Ptr, Constant::Int(0)) => Ok(InterpretValue {
+                ty: Ty::Ptr,
+                kind: InterpretValueKind::NullPtr,
+            }),
             // v24: a canonical U128 constant (value > i128::MAX) is only
             // faithfully representable at width 128 - narrower declared
             // types fall through to the type-error arm (fail closed).
@@ -12111,4 +12150,76 @@ mod tests {
             .expect_err("seq_map requires a sequence operand");
         assert_eq!(error.code, InterpretErrorCode::TypeError);
     }
+
+    /// Build a one-block function that returns `const <ty> <value>`.
+    fn returns_const(ty: Ty, value: Constant) -> Module {
+        let mut function = Function::new(FuncId::new(0), "k", crate::FuncTyId::new(0), b(0));
+        let mut block = Block::new(b(0));
+        block
+            .body
+            .push(result(Inst::Const { ty: ty.clone(), value }, v(0)));
+        block.body.push(void(Inst::Return { values: vec![v(0)] }));
+        function.blocks.push(block);
+        module_with_function(function, vec![ty])
+    }
+
+    /// THE ACCEPT CONTROL. `shape_matches_ty` has admitted `(Constant::Int(_),
+    /// Ty::Ptr)` since the initial commit, so this pairing was always
+    /// encodable and validator-accepted — the interpreter simply had no arm
+    /// and it died on the type-error path, which is a disagreement between two
+    /// authorities about what inhabits `Ty::Ptr`. Without this control the two
+    /// tests below would pass vacuously against an interpreter that still
+    /// refuses every `Int` at `Ty::Ptr`.
+    #[test]
+    fn a_zero_int_constant_at_ptr_is_the_null_pointer() {
+        let module = returns_const(Ty::Ptr, Constant::Int(0));
+        let outcome = Interpreter::with_module(&module)
+            .execute_func(FuncId::new(0), [])
+            .expect("a null-pointer constant must execute");
+        assert!(
+            matches!(outcome.returns[0].kind, InterpretValueKind::NullPtr),
+            "expected NullPtr, got {:?}",
+            outcome.returns[0].kind,
+        );
+        assert_eq!(outcome.returns[0].ty, Ty::Ptr);
+    }
+
+    /// ZERO ONLY, and this is the wall that makes the arm safe. A NONZERO
+    /// integer at `Ty::Ptr` is a fabricated address with no allocation and no
+    /// provenance behind it; admitting it would be exactly the silent
+    /// wrongness the null case avoids by being loud. It stays fail-closed.
+    #[test]
+    fn a_nonzero_int_at_ptr_is_still_a_type_error() {
+        for raw in [1_i128, -1, 8, 4096, i128::from(u32::MAX)] {
+            let module = returns_const(Ty::Ptr, Constant::Int(raw));
+            let error = Interpreter::with_module(&module)
+                .execute_func(FuncId::new(0), [])
+                .expect_err("a nonzero address constant has no provenance and must fail closed");
+            assert_eq!(
+                error.code,
+                InterpretErrorCode::TypeError,
+                "raw {raw} must stay on the type-error path, got {error:?}",
+            );
+        }
+    }
+
+    /// THE SPLIT IS BY TYPE, NOT BY VALUE. `Constant::Int(0)` at an INTEGER
+    /// type must still be an integer zero — the new arm sits after the
+    /// `int_shape(ty).is_some()` guard and must not shadow it. `int_shape`
+    /// answers `None` only for `Ty::Ptr`, and this pins that.
+    #[test]
+    fn a_zero_int_at_an_integer_ty_is_still_an_integer() {
+        for ty in [Ty::I32, Ty::I64, Ty::U8, Ty::Usize, Ty::Isize] {
+            let module = returns_const(ty.clone(), Constant::Int(0));
+            let outcome = Interpreter::with_module(&module)
+                .execute_func(FuncId::new(0), [])
+                .expect("an integer zero must execute");
+            assert!(
+                matches!(outcome.returns[0].kind, InterpretValueKind::Int(_)),
+                "{ty:?} zero must stay an integer, got {:?}",
+                outcome.returns[0].kind,
+            );
+        }
+    }
+
 }

@@ -550,6 +550,12 @@ pub fn promote_allocas_function(func: &mut Function) -> usize {
         return 0;
     }
 
+    // This pass changes the semantic TrustIR artifact. The source-provenance
+    // carrier is compiler authority, so a generic transform must invalidate it
+    // rather than recomputing self-authenticating digests around a stale
+    // compiler-source claim.
+    func.source_provenance = None;
+
     // 3b. Resolve forwarding chains. A promoted load can forward a value that
     //     is *itself* a promoted load result (e.g. `store(P,%5); %6=load(P);
     //     store(Q,%6); %7=load(Q)` yields `%6->%5, %7->%6`). `%6`'s load is
@@ -810,6 +816,11 @@ mod tests {
     #[test]
     fn single_block_promotion() {
         let mut f = empty_func();
+        f.source_provenance = Some(crate::SourceProvenance::new(
+            crate::proof::ProofDigest::sha256([1; 32]),
+            crate::proof::ProofDigest::sha256([2; 32]),
+            Vec::new(),
+        ));
         let mut blk = Block::new(b(0));
         // %0 = alloca i64
         blk.body.push(alloca(0));
@@ -827,6 +838,10 @@ mod tests {
 
         let n = promote_allocas_function(&mut f);
         assert_eq!(n, 1, "exactly one alloca promoted");
+        assert!(
+            f.source_provenance.is_none(),
+            "a semantic rewrite must invalidate compiler source authority"
+        );
 
         let blk = &f.blocks[0];
         let (allocas, loads, stores) = block_count_kinds(blk);

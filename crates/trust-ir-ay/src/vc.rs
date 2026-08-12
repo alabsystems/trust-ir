@@ -161,7 +161,7 @@ pub struct SmtReplayEvidence {
 }
 
 /// The exact ay revision this adapter is pinned to (see `Cargo.toml`).
-pub const AY_REV: &str = "accc0b797b761caf71a99b87073e8cc1c758bdb1";
+pub const AY_REV: &str = "f574ce67c85d9df1e2e2bea3b776a5112c98bc47";
 
 /// Re-check a captured proof bundle OFFLINE — no solver run, no network, no
 /// producer cooperation.
@@ -203,9 +203,10 @@ pub fn replay_bundle_offline(bundle_bytes: &[u8]) -> Result<u32, String> {
 pub enum VcObligationOutcome {
     /// Every VC condition the body produced was proved (and there was at
     /// least one), so the in-process solver backs this obligation. This is a
-    /// solver verdict, not replayable proof authority: ay does not currently
-    /// export an UNSAT proof payload, so applying this outcome leaves the
-    /// public obligation status `Pending`.
+    /// solver verdict, not discharge authority. AY can export a zero-trust
+    /// replayable bundle for supported symbolic goals, but this generic path
+    /// does not independently bind the replayed goal to the live IR; applying
+    /// this outcome therefore leaves the public obligation status `Pending`.
     ProvedByVc,
     /// The VC does not back the obligation: no encodable conditions, or at
     /// least one condition failed to prove.

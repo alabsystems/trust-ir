@@ -65,10 +65,12 @@ class LegTableTests(unittest.TestCase):
             paths = [candidate.relpath for candidate in PIN.LEGS[dep]]
             self.assertIn(PIN.GUARD_TEST, paths)
 
-    def test_the_ay_provenance_constant_is_a_leg(self) -> None:
-        # vc.rs stamps AY_REV into emitted bundles; no lockfile can catch it.
+    def test_the_ay_provenance_constants_are_legs(self) -> None:
+        # Both constants stamp AY identity into evidence; no lockfile catches
+        # a stale string literal after the dependency itself moves.
         paths = [candidate.relpath for candidate in PIN.LEGS["ay"]]
         self.assertIn("crates/trust-ir-ay/src/vc.rs", paths)
+        self.assertIn("crates/trust-ir-ay/src/bvblast.rs", paths)
 
     def test_the_workspace_excluded_frontend_lock_is_a_leg(self) -> None:
         paths = [candidate.relpath for candidate in PIN.LEGS["clean"]]
@@ -352,6 +354,13 @@ class BumpScriptTests(unittest.TestCase):
         result = self.run_bump("clean", "b" * 40, "--force")
         self.assertEqual(result.returncode, 2)
         self.assertIn("unknown option", result.stderr)
+
+    def test_clean_sibling_check_accepts_linked_worktrees(self) -> None:
+        script = BUMP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(
+            'git -C "$CLEAN_SIBLING" rev-parse --is-inside-work-tree', script
+        )
+        self.assertNotIn('[[ -d "$CLEAN_SIBLING/.git" ]]', script)
 
 
 class RepositoryCoherenceTests(unittest.TestCase):

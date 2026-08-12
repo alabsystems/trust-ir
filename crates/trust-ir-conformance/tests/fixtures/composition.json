@@ -39,7 +39,8 @@
         "proved": true
       },
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 1,
@@ -97,7 +98,8 @@
         "proved": true
       },
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     }
   ],
   "structs": [],

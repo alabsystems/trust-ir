@@ -43,7 +43,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 1,
@@ -87,7 +88,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 2,
@@ -131,7 +133,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 3,
@@ -175,7 +178,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 4,
@@ -219,7 +223,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 5,
@@ -295,7 +300,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 6,
@@ -371,7 +377,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 7,
@@ -447,7 +454,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 8,
@@ -523,7 +531,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 9,
@@ -599,7 +608,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 10,
@@ -677,7 +687,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 11,
@@ -755,7 +766,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 12,
@@ -833,7 +845,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 13,
@@ -877,7 +890,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 14,
@@ -921,7 +935,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 15,
@@ -973,7 +988,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 16,
@@ -1006,7 +1022,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     }
   ],
   "structs": [],

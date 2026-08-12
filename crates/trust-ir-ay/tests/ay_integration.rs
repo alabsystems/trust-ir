@@ -908,10 +908,10 @@ fn float_types_map_to_ay_fp_sorts() {
     let _fadd_result = encode_binop(&mut solver, BinOp::FAdd, fb_val, fb_val).unwrap();
 }
 
-/// Build a program with constrained addition (both operands in [0, 100])
-/// and verify no overflow is possible in that range.
+/// Build a program with constrained addition (both operands in [0, 100]) and
+/// confirm that AY supplies strict proof authority for the overflow theorem.
 #[test]
-fn constrained_addition_no_overflow() {
+fn constrained_addition_has_a_strict_bv_proof() {
     // --- Build TrustIr ---
     let mut mb = ModuleBuilder::new("constrained");
     let ft = mb.add_func_type(vec![Ty::I32, Ty::I32], vec![Ty::I32]);
@@ -959,8 +959,12 @@ fn constrained_addition_no_overflow() {
     let not_safe = solver.not(safe);
     solver.assert_term(not_safe);
 
-    // Should be UNSAT: no values in [0, 100] can cause i32 overflow
-    assert!(solver.check_sat().is_unsat());
+    // The upgraded AY proof boundary strictly checks this mixed BV derivation
+    // and publishes the one-shot UNSAT witness. Keep this as a coverage
+    // ratchet: Unknown would mean certified capability regressed.
+    let result = solver.check_sat();
+    assert!(result.is_unsat(), "strictly proved theorem became {result}");
+    assert!(result.has_unsat_emission_witness());
 }
 
 #[test]

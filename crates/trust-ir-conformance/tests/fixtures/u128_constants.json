@@ -54,7 +54,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 1,
@@ -109,7 +110,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 2,
@@ -164,7 +166,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     }
   ],
   "structs": [],

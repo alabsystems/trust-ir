@@ -445,6 +445,45 @@ impl fmt::Display for Function {
                 writeln!(f)?;
             }
         }
+        // v35 semantic source-loop/place provenance. Unlike the debug lines
+        // above, these directives carry proof-relevant identity and therefore
+        // round-trip every digest and binding field exactly.
+        if let Some(provenance) = &self.source_provenance {
+            writeln!(
+                f,
+                "    ; #source-provenance: schema {} compiler {:?} semantic {:?} binding {:?}",
+                provenance.schema,
+                provenance.compiler_source_digest.to_string(),
+                provenance.semantic_body_digest.to_string(),
+                provenance.binding_digest.to_string(),
+            )?;
+            for source_loop in &provenance.loops {
+                writeln!(
+                    f,
+                    "    ; #source-loop: {} hir {} header {}",
+                    source_loop.source_loop_id,
+                    source_loop.hir_local_id,
+                    source_loop.header.index(),
+                )?;
+                for binding in &source_loop.bindings {
+                    let (place, index) = match binding.place {
+                        crate::SourcePlace::FunctionParameter { index } => {
+                            ("function-param", index)
+                        }
+                        crate::SourcePlace::LoopParameter { index } => ("loop-param", index),
+                    };
+                    writeln!(
+                        f,
+                        "    ; #source-binding: loop {} name {:?} hir {} {} {}",
+                        source_loop.source_loop_id,
+                        binding.name,
+                        binding.hir_local_id,
+                        place,
+                        index,
+                    )?;
+                }
+            }
+        }
 
         for block in &self.blocks {
             write!(f, "{block}")?;

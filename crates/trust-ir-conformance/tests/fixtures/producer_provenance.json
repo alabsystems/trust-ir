@@ -43,7 +43,8 @@
       },
       "summary": null,
       "producer": "Clean",
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 1,
@@ -87,7 +88,8 @@
       },
       "summary": null,
       "producer": "Trust",
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 2,
@@ -131,7 +133,8 @@
       },
       "summary": null,
       "producer": "TrustIr",
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 3,
@@ -175,7 +178,8 @@
       },
       "summary": null,
       "producer": "tSwift",
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 4,
@@ -219,7 +223,8 @@
       },
       "summary": null,
       "producer": "tC",
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 5,
@@ -265,7 +270,8 @@
       "producer": {
         "Other": "custom \"exotic\" frontend v1"
       },
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     },
     {
       "id": 6,
@@ -309,7 +315,8 @@
       },
       "summary": null,
       "producer": null,
-      "value_names": null
+      "value_names": null,
+      "scopes": null
     }
   ],
   "structs": [],

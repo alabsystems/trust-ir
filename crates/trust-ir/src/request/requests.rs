@@ -270,6 +270,18 @@ pub struct TrustVcNativeRequest {
     pub diagnostics: NativeDiagnosticsPolicy,
     #[cfg_attr(feature = "serde", serde(default))]
     pub provenance: NativeRequestProvenance,
+    /// Function these obligations are discharged against.
+    ///
+    /// Trailing, and `skip_serializing_if`, ON PURPOSE — see the digest note in
+    /// `write_native_request_stable`. `None` must stay wire-invisible.
+    ///
+    /// This crate sets `deny_unknown_fields` nowhere, so an OLD consumer reading
+    /// a new bundle silently DROPS this key, recomputes a 4-bytes-shorter digest,
+    /// and reports `EvidenceRequestDigestMismatch` rather than a version error.
+    /// That is why a producer may only start emitting `Some` after every consumer
+    /// has been advanced.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub function: Option<FuncId>,
 }
 
 /// Native TrustMc request: run BMC/CHC over a TrustIr function.
@@ -350,7 +362,7 @@ impl NativeVerificationRequest {
 
     pub fn function(&self) -> Option<FuncId> {
         match self {
-            NativeVerificationRequest::TrustVc(_) => None,
+            NativeVerificationRequest::TrustVc(request) => request.function,
             NativeVerificationRequest::TrustMc(request) => Some(request.function),
             NativeVerificationRequest::TrustWp(request) => Some(request.function),
         }

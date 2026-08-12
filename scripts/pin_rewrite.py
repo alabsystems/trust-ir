@@ -132,6 +132,15 @@ AY_LEGS: Tuple[Leg, ...] = (
         expected=1,
     ),
     Leg(
+        relpath="crates/trust-ir-ay/src/bvblast.rs",
+        pattern=rf'(?m)^pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@{SHA}";$',
+        note=(
+            "stamps the exact AY revision into stored bit-blast proof authority; "
+            "a stale value accepts the right payload under a false solver identity"
+        ),
+        expected=1,
+    ),
+    Leg(
         relpath=GUARD_TEST,
         pattern=rf'(?m)^const AY_REVISION: &str = "{SHA}";$',
         note="the guard test's own frozen constant",

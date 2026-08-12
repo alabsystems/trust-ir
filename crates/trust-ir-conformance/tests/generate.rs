@@ -2460,6 +2460,11 @@ pub fn build_trust_native_request_bundle() -> NativeBundleFixture {
                     b"native-request-trust-bundle-trust_vc",
                 )),
             ),
+            // MUST stay None. A Some(_) here appends 4 bytes to the request
+            // digest and MOVES both committed goldens plus the evidence
+            // `request_digest` inside them — destroying the byte-identity
+            // check that is the whole proof this change is digest-neutral.
+            function: None,
         }));
     bundle
         .requests

@@ -94,7 +94,10 @@ fn binary_current_version_roundtrip_preserves_complete_embedded_identity() {
     // assertion tracks the current version rather than pinning 29: the
     // source-identity bytes are unmoved by those changes, and the round-trip
     // below is what proves it.
-    assert_eq!(u32::from_le_bytes(encoded[8..12].try_into().unwrap()), 34);
+    assert_eq!(
+        u32::from_le_bytes(encoded[8..12].try_into().unwrap()),
+        trust_ir::binary::VERSION,
+    );
     let decoded = trust_ir::binary::deserialize_module(&encoded).expect("decode module");
     assert_eq!(decoded, module);
 }

@@ -11,7 +11,10 @@ use trust_ir::proof::{
 };
 use trust_ir::ty::{FuncTy, Ty};
 use trust_ir::value::{FuncId, ValueId};
-use trust_ir::{Constant, DEFAULT_POINTER_BITS, Function, Linkage, Module};
+use trust_ir::{
+    Constant, DEFAULT_POINTER_BITS, Function, Linkage, Module, SOURCE_PROVENANCE_SCHEMA_V1,
+    SourcePlace,
+};
 
 // `#[non_exhaustive]`: validation is expected to grow new checks (and thus new
 // diagnostic variants) over time; that must not be a breaking change for
@@ -49,6 +52,14 @@ pub enum ValidationError {
     /// malformed: an empty clause schema, or `params` whose arity does not match
     /// the function signature. `function` is the `FuncId` index.
     InvalidFunctionSummary {
+        function: u32,
+        detail: String,
+    },
+    /// A v35 semantic source-loop/place carrier is malformed, stale relative
+    /// to its exact TrustIR function, or cannot be validated without its module.
+    /// Compiler/HIR authenticity is deliberately rechecked by the compiler
+    /// consumer and is outside generic TrustIR validation.
+    InvalidSourceProvenance {
         function: u32,
         detail: String,
     },
@@ -1113,6 +1124,12 @@ impl core::fmt::Display for ValidationError {
             ValidationError::InvalidFunctionSummary { function, detail } => {
                 write!(f, "function {function} has an invalid summary: {detail}")
             }
+            ValidationError::InvalidSourceProvenance { function, detail } => {
+                write!(
+                    f,
+                    "function {function} has invalid source provenance: {detail}"
+                )
+            }
             ValidationError::BlockMissingTerminator(id) => {
                 write!(f, "bb{id} has no terminator instruction")
             }
@@ -2002,6 +2019,7 @@ fn validate_function_with_context(
 
     // Pass 0: structural checks (empty, dup blocks, entry, terminators)
     errors.extend(validate_structure(func));
+    errors.extend(validate_source_provenance(func, context.module));
 
     // A bare `Function` carries only table IDs, not the module tables that
     // give a refinement's base and predicate meaning. Reject every directly
@@ -2245,6 +2263,21 @@ fn is_bodyless_external_declaration(func: &Function) -> bool {
     func.blocks.is_empty() && matches!(func.linkage, Linkage::External)
 }
 
+/// Is this declaration a REAL foreign-ABI boundary — one where two separately-compiled objects
+/// must agree on layout byte-for-byte?
+///
+/// [`is_bodyless_external_declaration`] answers a WEAKER question: "has no body here, linked
+/// externally". That is true of an ordinary Rust CROSS-CRATE call as much as of a C import, and
+/// conflating them is wrong for any check whose justification is byte-level ABI agreement between
+/// independent compilers. Under one Rust compiler, `repr(Rust)` layout IS agreed — that agreement
+/// is what the Rust ABI is. A `CallingConv::Rust` declaration therefore is NOT such a boundary.
+///
+/// Kept separate rather than narrowing the original predicate: its other caller asks the weaker
+/// question and must keep getting the weaker answer.
+fn is_foreign_abi_boundary(func: &Function) -> bool {
+    is_bodyless_external_declaration(func) && !matches!(func.calling_conv, trust_ir::CallingConv::Rust)
+}
+
 /// Validate a function's separate-compilation contract (the
 /// [`trust_ir::FunctionSummary`]). Every clause must name a routing schema, and a
 /// non-empty `params` list must match the function signature's parameter arity —
@@ -2342,6 +2375,208 @@ fn validate_structure(func: &Function) -> Vec<ValidationError> {
 
     if !entry_found {
         errors.push(ValidationError::EntryBlockNotFound(func.entry.index()));
+    }
+
+    errors
+}
+
+/// Validate the TrustIR-owned integrity half of the v35 source-provenance
+/// carrier. This deliberately cannot authenticate `compiler_source_digest`:
+/// only a compiler consumer with a fresh `TyCtxt` can do that. It does ensure
+/// that no malformed, ambiguous, stale-body, or non-injective carrier reaches
+/// that boundary as nominally well-formed TrustIR.
+fn validate_source_provenance(func: &Function, module: Option<&Module>) -> Vec<ValidationError> {
+    let Some(provenance) = &func.source_provenance else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    let mut invalid = |detail: String| {
+        errors.push(ValidationError::InvalidSourceProvenance {
+            function: func.id.index(),
+            detail,
+        });
+    };
+
+    if provenance.schema != SOURCE_PROVENANCE_SCHEMA_V1 {
+        invalid(format!(
+            "unsupported schema {} (expected {})",
+            provenance.schema, SOURCE_PROVENANCE_SCHEMA_V1,
+        ));
+    }
+    for (name, digest) in [
+        ("compiler_source_digest", provenance.compiler_source_digest),
+        ("semantic_body_digest", provenance.semantic_body_digest),
+        ("binding_digest", provenance.binding_digest),
+    ] {
+        if digest.algorithm != ProofDigestAlgorithm::Sha256 {
+            invalid(format!("{name} must use sha256, not {}", digest.algorithm));
+        }
+        if digest.is_zero() {
+            invalid(format!("{name} must not be zero"));
+        }
+    }
+
+    if !provenance.binding_digest_is_valid() {
+        invalid("binding_digest does not cover the stored identity/body/map".to_string());
+    }
+
+    match module {
+        None => invalid("module context is required to rederive semantic_body_digest".to_string()),
+        Some(module) => match module.source_provenance_semantic_digest(func.id) {
+            Ok(expected) if expected != provenance.semantic_body_digest => invalid(format!(
+                "semantic_body_digest is stale: stored {}, expected {}",
+                provenance.semantic_body_digest, expected,
+            )),
+            Err(detail) => invalid(format!("cannot derive semantic_body_digest: {detail}")),
+            Ok(_) => {}
+        },
+    }
+
+    if provenance.loops.is_empty() {
+        invalid("a present carrier must contain at least one source loop".to_string());
+        return errors;
+    }
+
+    let entry = func.blocks.iter().find(|block| block.id == func.entry);
+    let dominators = compute_dominators(func);
+    let mut loop_hir_ids = BTreeSet::new();
+    let mut loop_headers = BTreeSet::new();
+
+    // Across loops, a compiler HIR local must retain one spelling and exact
+    // place. A function parameter's place is global; a loop parameter's place
+    // is scoped by its source-loop row.
+    let mut global_hir_to_binding: BTreeMap<u32, (String, (u8, u32, u32))> = BTreeMap::new();
+    let mut global_place_to_hir: BTreeMap<(u8, u32, u32), u32> = BTreeMap::new();
+
+    for (position, source_loop) in provenance.loops.iter().enumerate() {
+        let expected_id = u32::try_from(position).unwrap_or(u32::MAX);
+        if source_loop.source_loop_id != expected_id {
+            invalid(format!(
+                "source-loop row {position} has id {}, expected dense ordered id {expected_id}",
+                source_loop.source_loop_id,
+            ));
+        }
+        if !loop_hir_ids.insert(source_loop.hir_local_id) {
+            invalid(format!(
+                "source loop HIR local id {} is duplicated",
+                source_loop.hir_local_id,
+            ));
+        }
+        if !loop_headers.insert(source_loop.header.index()) {
+            invalid(format!(
+                "TrustIR loop header bb{} is claimed by more than one source loop",
+                source_loop.header.index(),
+            ));
+        }
+
+        let header = func
+            .blocks
+            .iter()
+            .find(|block| block.id == source_loop.header);
+        let Some(header) = header else {
+            invalid(format!(
+                "source loop {} names missing header bb{}",
+                source_loop.source_loop_id,
+                source_loop.header.index(),
+            ));
+            continue;
+        };
+        let has_backedge = func.blocks.iter().any(|latch| {
+            latch.terminator().is_some_and(|terminator| {
+                terminator_successors(&terminator.inst)
+                    .into_iter()
+                    .any(|successor| successor == source_loop.header.index())
+                    && (latch.id == source_loop.header
+                        || dominators
+                            .get(&latch.id.index())
+                            .is_some_and(|strict| strict.contains(&source_loop.header.index())))
+            })
+        });
+        if !has_backedge {
+            invalid(format!(
+                "bb{} is not a reachable natural-loop header with a dominated backedge",
+                source_loop.header.index(),
+            ));
+        }
+
+        let mut prior_name: Option<&str> = None;
+        let mut local_hir_ids = BTreeSet::new();
+        let mut local_places = BTreeSet::new();
+        for binding in &source_loop.bindings {
+            if binding.name.trim().is_empty() {
+                invalid(format!(
+                    "source loop {} contains a blank binding name",
+                    source_loop.source_loop_id,
+                ));
+            }
+            if prior_name.is_some_and(|prior| prior >= binding.name.as_str()) {
+                invalid(format!(
+                    "source loop {} bindings are not strictly name-sorted at {:?}",
+                    source_loop.source_loop_id, binding.name,
+                ));
+            }
+            prior_name = Some(binding.name.as_str());
+            if !local_hir_ids.insert(binding.hir_local_id) {
+                invalid(format!(
+                    "source loop {} duplicates binding HIR local id {}",
+                    source_loop.source_loop_id, binding.hir_local_id,
+                ));
+            }
+            if !local_places.insert(binding.place) {
+                invalid(format!(
+                    "source loop {} maps more than one identifier to {:?}",
+                    source_loop.source_loop_id, binding.place,
+                ));
+            }
+
+            let scoped_place = match binding.place {
+                SourcePlace::FunctionParameter { index } => {
+                    if entry.is_none_or(|block| index as usize >= block.params.len()) {
+                        invalid(format!(
+                            "binding {:?} names missing function parameter {index}",
+                            binding.name,
+                        ));
+                    }
+                    (0, 0, index)
+                }
+                SourcePlace::LoopParameter { index } => {
+                    if index as usize >= header.params.len() {
+                        invalid(format!(
+                            "binding {:?} names missing bb{} loop parameter {index}",
+                            binding.name,
+                            source_loop.header.index(),
+                        ));
+                    }
+                    (1, source_loop.source_loop_id, index)
+                }
+            };
+
+            match global_hir_to_binding.get(&binding.hir_local_id) {
+                Some((name, place)) if name != &binding.name || *place != scoped_place => {
+                    invalid(format!(
+                        "HIR local id {} is inconsistently mapped as {:?}/{scoped_place:?}",
+                        binding.hir_local_id, binding.name,
+                    ));
+                }
+                None => {
+                    global_hir_to_binding
+                        .insert(binding.hir_local_id, (binding.name.clone(), scoped_place));
+                }
+                Some(_) => {}
+            }
+            match global_place_to_hir.get(&scoped_place) {
+                Some(hir_local_id) if *hir_local_id != binding.hir_local_id => {
+                    invalid(format!(
+                        "place {scoped_place:?} is ambiguously mapped to HIR locals {hir_local_id} and {}",
+                        binding.hir_local_id,
+                    ));
+                }
+                None => {
+                    global_place_to_hir.insert(scoped_place, binding.hir_local_id);
+                }
+                Some(_) => {}
+            }
+        }
     }
 
     errors
@@ -2869,12 +3104,19 @@ fn validate_types(func: &Function, context: ValidationContext<'_>) -> Vec<Valida
                         *rhs,
                         &val_ty,
                     );
-                    // ICmp requires integer or pointer types
+                    // ICmp requires integer or pointer types.
+                    //
+                    // Trust (#194): `Ty::Char` belongs here. B1/v25 made `char` a first-class
+                    // scalar on the producer, and the INTERPRETER already accepts it — `eval_icmp`
+                    // does `expect_ty` then `expect_int_value`, and a char value is an `Int`
+                    // carrier. This allowlist was the sole outlier, so `'a' == 'b'` validated as
+                    // ill-formed while executing correctly.
                     if !ty.is_integer()
                         && !ty.is_integer_vector()
                         && !ty.is_bool_vector()
                         && *ty != Ty::Ptr
                         && *ty != Ty::Bool
+                        && *ty != Ty::Char
                     {
                         errors.push(ValidationError::ICmpRequiresIntegerOrPtr {
                             block: block_id,
@@ -4062,7 +4304,10 @@ fn check_unop_operand(
 /// from Bool and `trunc` to Bool. Vector casts remain unsupported until every
 /// consumer implements their lane-wise semantics.
 fn is_integer_resize_scalar(ty: &Ty) -> bool {
-    ty.is_integer() || *ty == Ty::Bool
+    // Trust (#194): `Ty::Char` is resizable for the same reason it is comparable — it has
+    // `bit_width() == Some(32)`, so the trunc/zext width-direction check is well-defined, and the
+    // interpreter already evaluates both (`'h' as u8` truncates, `0u8 as char` zero-extends).
+    ty.is_integer() || *ty == Ty::Bool || *ty == Ty::Char
 }
 
 /// Check cast operation compatibility between source and destination types.
@@ -5821,10 +6066,54 @@ use rayon::prelude::*;
 
 /// Validate every function and every module-level invariant. This is the
 /// authoritative full check; [`validate_changed`] is a sound optimization of it.
-/// Conservative zero-size-type test used by the `repr(transparent)` check: the
-/// unit type, the empty tuple, and a zero-length array are zero-sized. Anything
-/// else (including nested structs, which may themselves be ZST) is treated as
-/// non-zero-size — the check only needs to count the obvious non-ZST fields.
+/// Trust (#171 Part A): the MODULE-AWARE zero-size test — [`ty_is_zero_sized`] plus the one case
+/// spelling alone cannot decide: a `Ty::Struct(sid)` whose own `StructDef` records `size:
+/// Some(0)`.
+///
+/// WHY THIS EXISTS. `ty_is_zero_sized`'s doc says nested structs are treated as non-zero-size
+/// because "the check only needs to count the obvious non-ZST fields". That was true until the
+/// producers began emitting real Rust layouts. `#[repr(transparent)] struct Unique<T> { pointer:
+/// NonNull<T>, _marker: PhantomData<T> }` has TWO fields, of which `PhantomData<T>` is a
+/// zero-sized STRUCT — so the spelling-only test counts 2 non-ZST fields and rejects a module
+/// that is perfectly well-formed. Five such rejections were measured in the ui corpus, all in the
+/// `Unique`/`NonNull`/`PhantomData` family.
+///
+/// The module HAS the answer already: both producers record the size from rustc's own layout
+/// query — the THIR producer at `register_struct` and the MIR-side extractor at its struct
+/// lowering — so `size == Some(0)` is rustc's authoritative verdict carried verbatim, not an
+/// inference of ours.
+///
+/// FAIL-CLOSED BY CONSTRUCTION, and this is the load-bearing part. `size: None` returns FALSE,
+/// exactly as today. `None` is what both producers record when the layout query declines — a
+/// generic/param-bearing type, an unregistered id, a non-faithful lane — so an unproven ZST is
+/// still counted as non-ZST and still rejected. The widening admits only defs that carry a
+/// PROVEN zero size.
+///
+/// Deliberately NOT recursive into field types: `size == Some(0)` is the whole answer, and
+/// re-deriving it from fields would be a second, weaker computation that could disagree with the
+/// one rustc actually performed.
+fn ty_is_zero_sized_in(module: &trust_ir::Module, ty: &trust_ir::Ty) -> bool {
+    if ty_is_zero_sized(ty) {
+        return true;
+    }
+    match ty {
+        trust_ir::Ty::Struct(sid) => module
+            .structs
+            .iter()
+            .find(|sd| sd.id == *sid)
+            .is_some_and(|sd| sd.size == Some(0)),
+        _ => false,
+    }
+}
+
+/// Conservative zero-size-type test: the unit type, the empty tuple, and a zero-length array are
+/// zero-sized. Anything else — INCLUDING a nested struct that may itself be a ZST — is treated as
+/// non-zero-size, because the spelling alone cannot prove it.
+///
+/// Prefer [`ty_is_zero_sized_in`] wherever the `Module` is in scope: it resolves exactly that
+/// nested-struct case against the recorded layout. This spelling-only form remains for callers
+/// with no module context, where treating an unresolvable type as non-ZST is the fail-closed
+/// answer.
 fn ty_is_zero_sized(ty: &trust_ir::Ty) -> bool {
     use trust_ir::Ty;
     match ty {
@@ -5897,8 +6186,11 @@ fn validate_target_pinned_struct_layouts(module: &Module) -> Vec<ValidationError
                 // and size 4). Keep equality fail-closed for every type that
                 // `ty_is_zero_sized` cannot prove is a ZST: accepting an
                 // ordinary field there would place it outside the allocation.
+                // Trust (#171 Part A): module-aware for the same reason — a trailing
+                // zero-sized STRUCT legally sits at exactly the struct size.
                 if let Some(offset) = field.offset
-                    && (offset > size || (offset == size && !ty_is_zero_sized(&field.ty)))
+                    && (offset > size
+                        || (offset == size && !ty_is_zero_sized_in(module, &field.ty)))
                 {
                     errors.push(ValidationError::StructLayoutInconsistent {
                         struct_id: sid,
@@ -5944,7 +6236,11 @@ fn validate_ffi_struct_repr(module: &Module) -> Vec<ValidationError> {
     };
 
     for func in &module.functions {
-        if !is_bodyless_external_declaration(func) {
+        // Trust (#180): only a FOREIGN-ABI boundary. A `repr(Rust)` aggregate crossing a
+        // Rust-ABI cross-crate call is not an ABI hazard — both sides are the same compiler and
+        // agree on the layout by construction. Flagging those made this the second-largest
+        // validation class (253 occurrences) entirely from Rust-to-Rust declarations.
+        if !is_foreign_abi_boundary(func) {
             continue;
         }
         let Some(func_ty) = module.func_types.get(func.ty.as_usize()) else {
@@ -7805,12 +8101,22 @@ fn validate_module_filtered(
     for sd in &module.structs {
         match sd.repr {
             trust_ir::StructRepr::Transparent => {
+                // Trust (#171 Part A): module-aware, so a zero-sized STRUCT field
+                // (`PhantomData<T>` and friends) counts as the ZST it is.
                 let non_zst = sd
                     .fields
                     .iter()
-                    .filter(|f| !ty_is_zero_sized(&f.ty))
+                    .filter(|f| !ty_is_zero_sized_in(module, &f.ty))
                     .count();
-                if non_zst != 1 {
+                // Trust (#171 residue): AT MOST one, not EXACTLY one. The Rust reference says a
+                // `repr(transparent)` type "must have at most one non-zero-sized field" — zero is
+                // legal, and the type is then itself a ZST. `ManuallyDrop<T>` / `MaybeDangling<T>`
+                // over a zero-sized `T` are exactly that, and the producer emits them at
+                // `size=0 align=1 repr=transparent`. Rejecting them called correct Rust malformed.
+                //
+                // The `> 1` case stays an error: two non-ZST fields have no single field to take
+                // the layout and ABI of, which is what `transparent` means.
+                if non_zst > 1 {
                     errors.push(ValidationError::TransparentReprFieldCount {
                         struct_id: sd.id.index(),
                         actual_non_zst: non_zst,
@@ -8804,7 +9110,7 @@ fn validated_authority_refs(
     if !certified_errors.is_empty() {
         return (BTreeSet::new(), BTreeSet::new());
     }
-    let mut refs: BTreeSet<trust_ir::proof::ProofCertificateRef> = module
+    let refs: BTreeSet<trust_ir::proof::ProofCertificateRef> = module
         .proof_obligations
         .iter()
         .filter(|obligation| obligation.status == ProofStatus::Certified)
@@ -11811,10 +12117,10 @@ fn validate_field_access(
     };
 
     // Resolve the field type list for the aggregate, if it is a recognized
-    // field-bearing aggregate. `None` => operand is not a struct/record/tuple
-    // (enums carry per-variant fields, so we only range-check the variant 0
-    // payload positionally is not well-defined; treat enum aggregates as
-    // opaque here and skip the field-type check).
+    // field-bearing aggregate. `None` => operand is not a
+    // struct/record/tuple/closure (enums carry per-variant fields, so we only
+    // range-check the variant 0 payload positionally is not well-defined; treat
+    // enum aggregates as opaque here and skip the field-type check).
     let field_tys: Option<Vec<Ty>> = match aggregate_ty {
         Ty::Struct(id) => module
             .struct_def(*id)
@@ -11823,6 +12129,18 @@ fn validate_field_access(
             .record_def(*id)
             .map(|r| r.fields.iter().map(|f| f.ty.clone()).collect()),
         Ty::Tuple(elems) => Some(elems.clone()),
+        // A first-class closure VALUE exposes its CAPTURES as fields, positionally,
+        // in `ClosureTy` declaration order (`trust-ir/src/ty.rs` — "Types of captured
+        // environment slots, in declaration order"). That is exactly the read the
+        // interpreter performs: `eval_extract_field`'s
+        // `InterpretValueKind::Closure { captures, .. } => captures.get(field)`
+        // (`trust-ir/src/interpret.rs`). NO LAYOUT is involved and none is claimed —
+        // `Ty::Closure(_)` has no layout at all (`trust-ir/src/shape.rs`,
+        // `Err(LayoutError::UnsupportedTyShape)`); this is a register-level aggregate
+        // read, the same status a non-empty `Ty::Tuple` already has here. An
+        // unresolvable `ClosureTyId` yields `None` and falls into the "undefined
+        // definition" error below, so a dangling id stays fail-closed.
+        Ty::Closure(id) => module.closure_type(*id).map(|c| c.captures.clone()),
         // Enum field access is variant-relative and not expressible through a
         // single flat field index here; leave to dedicated enum lowering.
         Ty::Enum(_) => return,
@@ -11831,7 +12149,8 @@ fn validate_field_access(
                 block: block_id,
                 op: op.to_string(),
                 reason: format!(
-                    "aggregate operand must be a struct/record/tuple/enum, got {aggregate_ty}"
+                    "aggregate operand must be a struct/record/tuple/enum/closure, got \
+                     {aggregate_ty}"
                 ),
             });
             return;
@@ -12125,6 +12444,7 @@ fn check_ty_references(
 ///   Without this, `Discharged` is indistinguishable from `Pending` yet
 ///   satisfies a `ProofRef`, so an unproven obligation could back a whole-
 ///   program proof.
+///
 /// Every `ProofObligation::site` must resolve to a real instruction node, and
 /// must agree with the obligation's B4 `function` scope when both are present.
 ///
@@ -12139,15 +12459,15 @@ fn validate_obligation_sites(module: &Module) -> Vec<ValidationError> {
         let Some(site) = &oblig.site else {
             continue;
         };
-        if let Some(scope) = oblig.function {
-            if scope != site.function {
-                errors.push(ValidationError::ObligationSiteFunctionMismatch {
-                    obligation: oblig.id.index(),
-                    site_function: site.function.index(),
-                    scope_function: scope.index(),
-                });
-                continue;
-            }
+        if let Some(scope) = oblig.function
+            && scope != site.function
+        {
+            errors.push(ValidationError::ObligationSiteFunctionMismatch {
+                obligation: oblig.id.index(),
+                site_function: site.function.index(),
+                scope_function: scope.index(),
+            });
+            continue;
         }
         let out_of_range = |reason| ValidationError::ObligationSiteOutOfRange {
             obligation: oblig.id.index(),
@@ -13993,6 +14313,328 @@ mod tests {
             .push(InstrNode::new(Inst::Return { values: vec![] }));
         func.blocks.push(block);
         func
+    }
+
+    fn valid_source_provenance_module() -> Module {
+        use trust_ir::proof::ProofDigest;
+        use trust_ir::{
+            SourceBindingProvenance, SourceLoopProvenance, SourcePlace, SourceProvenance,
+        };
+
+        let mut module = Module::new("source-provenance");
+        let ft = module.add_func_type(FuncTy {
+            params: vec![Ty::U64],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut function = Function::new(FuncId::new(0), "looping", ft, BlockId::new(0));
+        let mut entry = Block::new(BlockId::new(0));
+        entry.params.push((ValueId::new(0), Ty::U64));
+        entry.body.push(InstrNode::new(Inst::Br {
+            target: BlockId::new(1),
+            args: vec![ValueId::new(0)],
+        }));
+        let mut header = Block::new(BlockId::new(1));
+        header.params.push((ValueId::new(1), Ty::U64));
+        header.body.push(InstrNode::new(Inst::Br {
+            target: BlockId::new(1),
+            args: vec![ValueId::new(1)],
+        }));
+        function.blocks.extend([entry, header]);
+        module.add_function(function);
+
+        let semantic = module
+            .source_provenance_semantic_digest(FuncId::new(0))
+            .expect("unique fixture function");
+        module.functions[0].source_provenance = Some(SourceProvenance::new(
+            ProofDigest::sha256_domain("test.compiler-source.v1", b"looping"),
+            semantic,
+            vec![SourceLoopProvenance {
+                source_loop_id: 0,
+                hir_local_id: 40,
+                header: BlockId::new(1),
+                bindings: vec![
+                    SourceBindingProvenance {
+                        name: "limit".into(),
+                        hir_local_id: 41,
+                        place: SourcePlace::FunctionParameter { index: 0 },
+                    },
+                    SourceBindingProvenance {
+                        name: "x".into(),
+                        hir_local_id: 42,
+                        place: SourcePlace::LoopParameter { index: 0 },
+                    },
+                ],
+            }],
+        ));
+        module
+    }
+
+    fn reseal_test_binding_digest(module: &mut Module, function: usize) {
+        let old = module.functions[function]
+            .source_provenance
+            .take()
+            .expect("test carrier");
+        module.functions[function].source_provenance = Some(trust_ir::SourceProvenance::new(
+            old.compiler_source_digest,
+            old.semantic_body_digest,
+            old.loops,
+        ));
+    }
+
+    fn has_source_provenance_error(module: &Module, needle: &str) -> bool {
+        validate_module(module).iter().any(|error| {
+            matches!(error, ValidationError::InvalidSourceProvenance { .. })
+                && error.to_string().contains(needle)
+        })
+    }
+
+    #[test]
+    fn source_provenance_accepts_exact_natural_loop_and_requires_module_context() {
+        let module = valid_source_provenance_module();
+        let errors = validate_module(&module);
+        assert!(errors.is_empty(), "exact carrier must validate: {errors:?}");
+
+        assert!(
+            validate_function(&module.functions[0]).iter().any(|error| {
+                matches!(error, ValidationError::InvalidSourceProvenance { .. })
+                    && error.to_string().contains("module context is required")
+            }),
+            "a bare Function cannot authenticate its containing semantic artifact"
+        );
+    }
+
+    #[test]
+    fn source_provenance_rejects_stale_forged_and_ambiguous_carriers() {
+        use trust_ir::SourcePlace;
+        use trust_ir::proof::{ProofDigest, ProofDigestAlgorithm};
+
+        let baseline = valid_source_provenance_module();
+
+        let mut stale_body = baseline.clone();
+        stale_body.functions[0].name = "semantically_changed".into();
+        assert!(has_source_provenance_error(
+            &stale_body,
+            "semantic_body_digest is stale"
+        ));
+
+        let mut stale_binding = baseline.clone();
+        stale_binding.functions[0]
+            .source_provenance
+            .as_mut()
+            .unwrap()
+            .loops[0]
+            .bindings[0]
+            .name = "changed".into();
+        assert!(has_source_provenance_error(
+            &stale_binding,
+            "binding_digest"
+        ));
+
+        let mut reordered = baseline.clone();
+        reordered.functions[0]
+            .source_provenance
+            .as_mut()
+            .unwrap()
+            .loops[0]
+            .bindings
+            .swap(0, 1);
+        reseal_test_binding_digest(&mut reordered, 0);
+        assert!(has_source_provenance_error(
+            &reordered,
+            "not strictly name-sorted"
+        ));
+
+        let mut duplicate_place = baseline.clone();
+        duplicate_place.functions[0]
+            .source_provenance
+            .as_mut()
+            .unwrap()
+            .loops[0]
+            .bindings[1]
+            .place = SourcePlace::FunctionParameter { index: 0 };
+        reseal_test_binding_digest(&mut duplicate_place, 0);
+        assert!(has_source_provenance_error(
+            &duplicate_place,
+            "more than one identifier"
+        ));
+
+        let mut duplicate_hir = baseline.clone();
+        duplicate_hir.functions[0]
+            .source_provenance
+            .as_mut()
+            .unwrap()
+            .loops[0]
+            .bindings[1]
+            .hir_local_id = 41;
+        reseal_test_binding_digest(&mut duplicate_hir, 0);
+        assert!(has_source_provenance_error(
+            &duplicate_hir,
+            "duplicates binding HIR"
+        ));
+
+        let mut bad_header = baseline.clone();
+        bad_header.functions[0]
+            .source_provenance
+            .as_mut()
+            .unwrap()
+            .loops[0]
+            .header = BlockId::new(0);
+        reseal_test_binding_digest(&mut bad_header, 0);
+        assert!(has_source_provenance_error(
+            &bad_header,
+            "not a reachable natural-loop header"
+        ));
+
+        let mut legacy_digest = baseline.clone();
+        let provenance = legacy_digest.functions[0]
+            .source_provenance
+            .as_mut()
+            .unwrap();
+        provenance.compiler_source_digest = ProofDigest {
+            algorithm: ProofDigestAlgorithm::TrustIrStableV1,
+            bytes: [7; 32],
+        };
+        reseal_test_binding_digest(&mut legacy_digest, 0);
+        assert!(has_source_provenance_error(
+            &legacy_digest,
+            "must use sha256"
+        ));
+
+        let mut zero_digest = baseline.clone();
+        let provenance = zero_digest.functions[0].source_provenance.as_mut().unwrap();
+        provenance.compiler_source_digest = ProofDigest::zero();
+        reseal_test_binding_digest(&mut zero_digest, 0);
+        assert!(has_source_provenance_error(
+            &zero_digest,
+            "must not be zero"
+        ));
+
+        let mut cross_function_splice = baseline.clone();
+        let mut second = cross_function_splice.functions[0].clone();
+        second.id = FuncId::new(1);
+        second.name = "other".into();
+        cross_function_splice.add_function(second);
+        assert!(has_source_provenance_error(
+            &cross_function_splice,
+            "semantic_body_digest is stale"
+        ));
+    }
+
+    /// Build a one-block closure-env body: entry param `%0: closure.0` over the
+    /// declared `captures`, then `%1 = extract_field <read_ty> %0, field`.
+    ///
+    /// This is the exact shape `trust-thir-lower`'s by-VALUE (`FnOnce`) env
+    /// `UpvarRef` lane emits: the closure VALUE is the aggregate, read
+    /// positionally — no `Load`, no pointer, no layout.
+    fn closure_field_module(captures: Vec<Ty>, field: u32, read_ty: Ty) -> Module {
+        use trust_ir::ty::ClosureTy;
+        let mut module = Module::new("closure_field");
+        let inner = module.add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let cid = module.add_closure_type(ClosureTy {
+            func: inner,
+            captures,
+        });
+        let ft = module.add_func_type(FuncTy {
+            params: vec![Ty::Closure(cid)],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut func = Function::new(FuncId::new(0), "env_read", ft, BlockId::new(0));
+        let mut block = Block::new(BlockId::new(0));
+        block.params.push((ValueId::new(0), Ty::Closure(cid)));
+        block.body.push(
+            InstrNode::new(Inst::ExtractField {
+                ty: read_ty,
+                aggregate: ValueId::new(0),
+                field,
+            })
+            .with_result(ValueId::new(1)),
+        );
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        func.blocks.push(block);
+        module.add_function(func);
+        module
+    }
+
+    /// Only the field-access verdicts this trio is about; unrelated module
+    /// well-formedness errors must not make an assertion pass or fail by
+    /// accident.
+    fn field_access_errors(module: &Module) -> Vec<String> {
+        validate_module(module)
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    ValidationError::FieldAccessInvalid { .. }
+                        | ValidationError::OperandTypeMismatch { .. }
+                )
+            })
+            .map(|e| format!("{e}"))
+            .collect()
+    }
+
+    /// THE ACCEPT CONTROL. Without it the two rejection tests below could both
+    /// pass vacuously against a validator that rejects every closure field read
+    /// — which is exactly the pre-change behaviour this arm replaces.
+    #[test]
+    fn extract_field_on_a_closure_capture_validates() {
+        let module = closure_field_module(vec![Ty::Ptr], 0, Ty::Ptr);
+        assert_eq!(
+            field_access_errors(&module),
+            Vec::<String>::new(),
+            "a positional read of capture 0 (declared `Ptr`) is well-formed",
+        );
+    }
+
+    /// The range check applies to closures exactly as it does to tuples: the
+    /// module's OWN declared capture list is the bound, and a read past it is a
+    /// malformed instruction, not an opaque aggregate.
+    #[test]
+    fn extract_field_on_a_closure_out_of_range_is_rejected() {
+        let module = closure_field_module(vec![Ty::Ptr], 1, Ty::Ptr);
+        let errors = field_access_errors(&module);
+        assert!(
+            errors.iter().any(|e| e.contains("out of range")),
+            "field 1 of a one-capture closure must be rejected: {errors:?}",
+        );
+    }
+
+    /// And the declared-vs-actual field type check applies too: an
+    /// `ExtractField { ty: I64 }` against a `Ptr` capture is a type error.
+    #[test]
+    fn extract_field_on_a_closure_with_a_wrong_field_ty_is_rejected() {
+        let module = closure_field_module(vec![Ty::Ptr], 0, Ty::I64);
+        let errors = validate_module(&module);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::OperandTypeMismatch { op, role, .. }
+                    if op == "extract_field" && role == "field"
+            )),
+            "reading a `Ptr` capture as `I64` must be a field type mismatch: {errors:?}",
+        );
+    }
+
+    /// A dangling `ClosureTyId` resolves to no capture list at all, and that is
+    /// the "undefined definition" path — never a silently-skipped check.
+    #[test]
+    fn extract_field_on_a_dangling_closure_id_is_rejected() {
+        use trust_ir::value::ClosureTyId;
+        let mut module = closure_field_module(vec![Ty::Ptr], 0, Ty::Ptr);
+        let dangling = Ty::Closure(ClosureTyId::new(7));
+        module.functions[0].blocks[0].params[0].1 = dangling;
+        let errors = field_access_errors(&module);
+        assert!(
+            errors.iter().any(|e| e.contains("undefined definition")),
+            "an unresolvable closure id must fail closed: {errors:?}",
+        );
     }
 
     /// Trust (B3-1): the enum well-formedness + constant negative controls —

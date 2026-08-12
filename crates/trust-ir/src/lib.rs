@@ -283,7 +283,8 @@ pub use request::{
     PetriSuccessorTrustMcChcProofEvidenceIdentityReplayReport,
     PetriSuccessorTrustMcChcProofEvidenceIdentityReplayStatus,
     PetriSuccessorTrustMcChcProofHandoffReason, PetriSuccessorTrustMcChcProofHandoffReport,
-    PetriSuccessorTrustMcChcProofHandoffStatus, TRUST_TRUST_MC_NATIVE_ADMISSION_CONTRACT_VERSION,
+    PetriSuccessorTrustMcChcProofHandoffStatus, SourceGenerationAuthority,
+    SourceGenerationAuthorityMintError, TRUST_TRUST_MC_NATIVE_ADMISSION_CONTRACT_VERSION,
     TY_SHARED_PRIMITIVE_MANIFEST, TY_SHARED_PRIMITIVE_MANIFEST_COMPONENT_NAMES,
     TY_SHARED_PRIMITIVE_MANIFEST_REASON_CODES, TY_SHARED_PRIMITIVE_MANIFEST_SCHEMA,
     TY_SHARED_PRIMITIVE_MANIFEST_SCHEMA_VERSION, TY_SHARED_PRIMITIVE_MANIFEST_SOURCE_PACKAGE,
@@ -675,6 +676,23 @@ pub enum StructPassingPolicy {
     /// pointer parameter or an `sret` return slot — regardless of size. The
     /// conservative scheme that needs no per-target classification table.
     AlwaysMemory,
+    /// The producer performs NO aggregate classification, and says so.
+    ///
+    /// Both schemes above are CLAIMS: each requires the producer to mark memory-classed
+    /// parameters and returns `byval`/`sret` ([`ParamAttrs`]). A producer that emits no
+    /// `ParamAttrs` satisfies neither, so stamping either asserts a contract the module does not
+    /// carry — and since `struct_passing` feeds `Module::stable_digest`, that false claim travels
+    /// in the module's identity too.
+    ///
+    /// This lets such a producer pin the parts of `TargetInfo` that ARE facts about the target
+    /// (`triple`, `pointer_size`, `endianness`) while stating honestly that aggregate passing is
+    /// unclassified. A CONSUMER MUST NOT infer either scheme from it — it is a declaration of
+    /// absence, not a third convention. A backend needing a classification must refuse the module
+    /// rather than pick one.
+    ///
+    /// Binary codec: tag 2, VERSION 36 (additive; a pre-v36 reader rejects the blob on the
+    /// version gate before reaching this byte, so MIN_READ_VERSION is unchanged).
+    Unclassified,
 }
 
 impl core::fmt::Display for StructPassingPolicy {
@@ -682,6 +700,7 @@ impl core::fmt::Display for StructPassingPolicy {
         f.write_str(match self {
             StructPassingPolicy::NativeC => "native_c",
             StructPassingPolicy::AlwaysMemory => "always_memory",
+            StructPassingPolicy::Unclassified => "unclassified",
         })
     }
 }
@@ -917,7 +936,15 @@ impl Module {
     /// description feeds the validator's `TargetInfoRequired` diagnostic.
     pub fn first_ffi_boundary(&self) -> Option<String> {
         for func in &self.functions {
-            if func.blocks.is_empty() && matches!(func.linkage, Linkage::External) {
+            // Trust (#180): a bodyless external declaration is an FFI boundary only when its
+            // calling convention is FOREIGN. "No body here, linked externally" is equally true of
+            // an ordinary Rust CROSS-CRATE call, and a target must be pinned for byte-level ABI
+            // agreement between SEPARATELY COMPILED objects — which Rust-to-Rust under one
+            // compiler already has by construction. Same conflation the repr(Rust) check had.
+            if func.blocks.is_empty()
+                && matches!(func.linkage, Linkage::External)
+                && func.calling_conv != CallingConv::Rust
+            {
                 return Some(format!("bodyless external declaration `{}`", func.name));
             }
         }
@@ -1585,6 +1612,48 @@ impl Module {
         crate::proof::ProofDigest::sha256_domain("trust_ir.module.v2", &bytes)
     }
 
+    /// Hash the exact containing module and target function while excluding
+    /// every [`Function::source_provenance`] field.
+    ///
+    /// The target function is retained as the sole function in the digest
+    /// image, while module/type/global tables and the module name remain. This
+    /// binds a carrier to its function and compilation artifact without making
+    /// the digest recursively depend on itself or on a sibling carrier.
+    pub fn source_provenance_semantic_digest(
+        &self,
+        function: FuncId,
+    ) -> Result<crate::proof::ProofDigest, String> {
+        if self
+            .functions
+            .iter()
+            .filter(|candidate| candidate.id == function)
+            .count()
+            != 1
+        {
+            return Err(format!(
+                "source provenance target function #{} is missing or duplicated",
+                function.index(),
+            ));
+        }
+        let mut semantic = self.clone();
+        semantic
+            .functions
+            .retain(|candidate| candidate.id == function);
+        semantic.functions[0].source_provenance = None;
+        let module_digest = semantic.stable_digest();
+        let mut bytes = Vec::with_capacity(4 + 1 + 32);
+        bytes.extend_from_slice(&function.index().to_be_bytes());
+        bytes.push(match module_digest.algorithm {
+            crate::proof::ProofDigestAlgorithm::Sha256 => 0,
+            crate::proof::ProofDigestAlgorithm::TrustIrStableV1 => 1,
+        });
+        bytes.extend_from_slice(&module_digest.bytes);
+        Ok(crate::proof::ProofDigest::sha256_domain(
+            "trust_ir.source_provenance.semantic_function.v1",
+            &bytes,
+        ))
+    }
+
     /// Content-address a `(module, obligation)` pair (v23): the SHA-256
     /// [`ObligationDigest`] used as the WS4-M2 cert-cache key. Returns `None`
     /// when `id` names no obligation in this module, or when the obligation's
@@ -1701,6 +1770,151 @@ fn enum_def_structurally_eq(a: &EnumDef, b: &EnumDef) -> bool {
         && *layout == b.layout
 }
 
+/// Current schema for the semantic source-loop/place provenance carrier.
+pub const SOURCE_PROVENANCE_SCHEMA_V1: u32 = 1;
+
+/// An exact SSA parameter place that the MIR consumer can reconstruct without
+/// consulting debug names or guessing from instruction order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SourcePlace {
+    /// Parameter `index` of the function entry block.
+    FunctionParameter { index: u32 },
+    /// Parameter `index` of the owning [`SourceLoopProvenance::header`] block.
+    LoopParameter { index: u32 },
+}
+
+/// One compiler-owned source identifier and its exact reconstructed place.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SourceBindingProvenance {
+    /// Source spelling authenticated by the compiler contract query.
+    pub name: String,
+    /// Compiler-owned HIR-local binding identity in the owning function.
+    pub hir_local_id: u32,
+    /// Exact entry/header parameter that reconstructs the MIR whole-local.
+    pub place: SourcePlace,
+}
+
+/// One compiler-owned source loop and its exact TrustIR natural-loop header.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SourceLoopProvenance {
+    /// Dense source-loop identity from the compiler contract query.
+    pub source_loop_id: u32,
+    /// HIR-local identity of the source loop expression.
+    pub hir_local_id: u32,
+    /// TrustIR block reconstructed as the MIR natural-loop header.
+    pub header: BlockId,
+    /// Canonical, name-sorted source binding map for clauses on this loop.
+    pub bindings: Vec<SourceBindingProvenance>,
+}
+
+/// Semantic source-loop/place authority for one function (v35).
+///
+/// This is deliberately separate from [`Function::value_names`] and lexical
+/// scopes: those fields are cosmetic debugger claims. A consumer may use this
+/// carrier only after all three independent bindings hold:
+///
+/// * `compiler_source_digest` exactly matches a digest freshly regenerated
+///   from the compiler-owned HIR/query catalog for the same function;
+/// * `semantic_body_digest` matches [`Module::source_provenance_semantic_digest`],
+///   which hashes the containing module/function after removing every source
+///   provenance field and therefore avoids a circular self-hash;
+/// * `binding_digest` passes [`SourceProvenance::binding_digest_is_valid`],
+///   binding the exact injective loop/name/place map to both identities.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SourceProvenance {
+    pub schema: u32,
+    pub compiler_source_digest: crate::proof::ProofDigest,
+    pub semantic_body_digest: crate::proof::ProofDigest,
+    pub binding_digest: crate::proof::ProofDigest,
+    pub loops: Vec<SourceLoopProvenance>,
+}
+
+impl SourceProvenance {
+    /// Construct a v1 carrier and seal its mapping digest. The semantic digest
+    /// is supplied by the owning module's non-circular digest helper.
+    #[must_use]
+    pub fn new(
+        compiler_source_digest: crate::proof::ProofDigest,
+        semantic_body_digest: crate::proof::ProofDigest,
+        loops: Vec<SourceLoopProvenance>,
+    ) -> Self {
+        let mut provenance = Self {
+            schema: SOURCE_PROVENANCE_SCHEMA_V1,
+            compiler_source_digest,
+            semantic_body_digest,
+            binding_digest: crate::proof::ProofDigest::zero(),
+            loops,
+        };
+        provenance.binding_digest = provenance.compute_binding_digest();
+        provenance
+    }
+
+    /// Check the domain-separated digest of the source identity, semantic body
+    /// identity, and complete ordered loop/name/place map. There is
+    /// intentionally no public refresh/reseal operation: ordinary transforms
+    /// must drop the carrier, while a compiler producer constructs a fresh one
+    /// with [`SourceProvenance::new`].
+    #[must_use]
+    pub fn binding_digest_is_valid(&self) -> bool {
+        self.binding_digest == self.compute_binding_digest()
+    }
+
+    fn compute_binding_digest(&self) -> crate::proof::ProofDigest {
+        fn u32_bytes(out: &mut Vec<u8>, value: u32) {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        fn digest_bytes(out: &mut Vec<u8>, digest: crate::proof::ProofDigest) {
+            out.push(match digest.algorithm {
+                crate::proof::ProofDigestAlgorithm::Sha256 => 0,
+                crate::proof::ProofDigestAlgorithm::TrustIrStableV1 => 1,
+            });
+            out.extend_from_slice(&digest.bytes);
+        }
+        fn string_bytes(out: &mut Vec<u8>, value: &str) {
+            let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
+            u32_bytes(out, len);
+            out.extend_from_slice(value.as_bytes());
+        }
+
+        let mut bytes = Vec::new();
+        u32_bytes(&mut bytes, self.schema);
+        digest_bytes(&mut bytes, self.compiler_source_digest);
+        digest_bytes(&mut bytes, self.semantic_body_digest);
+        u32_bytes(
+            &mut bytes,
+            u32::try_from(self.loops.len()).unwrap_or(u32::MAX),
+        );
+        for source_loop in &self.loops {
+            u32_bytes(&mut bytes, source_loop.source_loop_id);
+            u32_bytes(&mut bytes, source_loop.hir_local_id);
+            u32_bytes(&mut bytes, source_loop.header.index());
+            u32_bytes(
+                &mut bytes,
+                u32::try_from(source_loop.bindings.len()).unwrap_or(u32::MAX),
+            );
+            for binding in &source_loop.bindings {
+                string_bytes(&mut bytes, &binding.name);
+                u32_bytes(&mut bytes, binding.hir_local_id);
+                match binding.place {
+                    SourcePlace::FunctionParameter { index } => {
+                        bytes.push(0);
+                        u32_bytes(&mut bytes, index);
+                    }
+                    SourcePlace::LoopParameter { index } => {
+                        bytes.push(1);
+                        u32_bytes(&mut bytes, index);
+                    }
+                }
+            }
+        }
+        crate::proof::ProofDigest::sha256_domain("trust_ir.source_provenance.binding.v1", &bytes)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Function {
@@ -1783,18 +1997,23 @@ pub struct Function {
     /// case carries no information a consumer could not supply itself, and
     /// `Some(vec![root])` would only invite a reader to think it did.
     ///
-    /// Declared LAST and `skip_serializing_if = Option::is_none`: as the SOLE
-    /// trailing optional it is positional-MessagePack-safe (present → one
-    /// extra array element; absent → the array stops at `value_names`, and
-    /// every shorter historical form still decodes — each trailing field
-    /// defaults). The binary codec is version-gated (v33). When adding the
-    /// NEXT optional field, repeat this move: make `scopes` always-emitted and
-    /// append the newcomer as the sole trailing skipped field.
+    /// ALWAYS emitted by serde since v35: source provenance is now the sole
+    /// trailing conditionally-skipped field, so `scopes` keeps its positional
+    /// index even when absent.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scopes: Option<Vec<ScopeData>>,
+    /// Trust (E4/E5 source provenance, v35): compiler-authenticated source-loop
+    /// identity plus an injective source-identifier-to-reconstructible-place
+    /// map. This is semantic authority, not debug metadata. Consumers must
+    /// recheck its compiler, semantic-body, and binding digests before use.
+    ///
+    /// Declared LAST and conditionally skipped so all pre-v35 positional serde
+    /// arrays continue to decode with `None`.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub scopes: Option<Vec<ScopeData>>,
+    pub source_provenance: Option<SourceProvenance>,
 }
 
 /// A function's separate-compilation contract: the preconditions a caller must
@@ -1955,6 +2174,7 @@ impl Function {
             producer: None,
             value_names: None,
             scopes: None,
+            source_provenance: None,
         }
     }
 
@@ -1986,6 +2206,7 @@ impl Function {
             producer: None,
             value_names: None,
             scopes: None,
+            source_provenance: None,
         }
     }
 
@@ -2371,9 +2592,10 @@ mod tests {
             "summary",
             "producer",
             "value_names",
-            // `scopes` is NOT here: as of v33 it is the sole trailing skipped
-            // optional. When the next field lands, `scopes` joins this list and
-            // the newcomer takes its place as the only absentee.
+            "scopes",
+            // `source_provenance` is NOT here: as of v35 it is the sole trailing
+            // skipped optional. `scopes` is now always emitted at its stable
+            // positional index.
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected, "positional-index discipline broken: {json}");
@@ -2382,6 +2604,7 @@ mod tests {
         assert!(back.producer.is_none());
         assert!(back.value_names.is_none());
         assert!(back.scopes.is_none());
+        assert!(back.source_provenance.is_none());
 
         // Present summary round-trips losslessly through JSON.
         let summary = FunctionSummary::new()
@@ -2601,6 +2824,65 @@ mod tests {
             assert_eq!(back.producer, Some(Producer::TRust));
             assert_eq!(back.value_names, value_names);
             assert!(back.scopes.is_none());
+            assert!(back.source_provenance.is_none());
+        }
+    }
+
+    /// v35 source-provenance backward compatibility: v33/v34 ended with
+    /// `scopes` as the sole skipped optional. Both the short and long v34
+    /// positional arrays decode with no invented source authority.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn v34_msgpack_with_scopes_still_decodes_without_source_provenance() {
+        #[derive(serde::Serialize)]
+        struct V34Function {
+            id: FuncId,
+            name: String,
+            ty: FuncTyId,
+            entry: BlockId,
+            blocks: Vec<Block>,
+            proofs: Vec<ProofAnnotation>,
+            calling_conv: CallingConv,
+            linkage: Linkage,
+            attrs: FuncAttrs,
+            summary: Option<FunctionSummary>,
+            producer: Option<Producer>,
+            value_names: Option<Vec<(ValueId, String)>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            scopes: Option<Vec<ScopeData>>,
+        }
+
+        let mk = |scopes| V34Function {
+            id: FuncId::new(34),
+            name: "v34".into(),
+            ty: FuncTyId::new(0),
+            entry: BlockId::new(0),
+            blocks: vec![],
+            proofs: vec![],
+            calling_conv: CallingConv::C,
+            linkage: Linkage::External,
+            attrs: FuncAttrs::default(),
+            summary: None,
+            producer: Some(Producer::TRust),
+            value_names: Some(vec![(ValueId::new(4), "x".into())]),
+            scopes,
+        };
+
+        for scopes in [
+            None,
+            Some(vec![ScopeData {
+                parent: None,
+                span: None,
+            }]),
+        ] {
+            let bytes = rmp_serde::to_vec(&mk(scopes.clone())).expect("encode v34 function");
+            let back: Function =
+                rmp_serde::from_slice(&bytes).expect("decode v34 function under v35 layout");
+            assert_eq!(back.scopes, scopes);
+            assert!(
+                back.source_provenance.is_none(),
+                "legacy bytes must never synthesize source authority"
+            );
         }
     }
 

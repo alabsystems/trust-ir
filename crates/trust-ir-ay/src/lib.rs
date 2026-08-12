@@ -2522,7 +2522,7 @@ mod tests {
     // ---- Combined encoding: BinOp + ICmp ----
 
     #[test]
-    fn combined_binop_icmp_verify_addition_positive() {
+    fn combined_binop_icmp_theorem_has_strict_unsat_witness() {
         // For any a > 0 and b > 0, if no overflow, then a + b > 0
         let mut solver = create_bv_solver().unwrap();
         let sort = Sort::BitVec(BitVecSort { width: 32 });
@@ -2533,23 +2533,31 @@ mod tests {
 
         // Constraints: a > 0, b > 0 (signed)
         let a_pos = encode_icmp(&mut solver, ICmpOp::Sgt, a, zero);
-        solver.assert_term(a_pos);
         let b_pos = encode_icmp(&mut solver, ICmpOp::Sgt, b, zero);
-        solver.assert_term(b_pos);
 
         // No overflow
         let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b);
-        solver.assert_term(safe);
 
         // a + b
         let sum = encode_binop(&mut solver, BinOp::Add, a, b).unwrap();
 
         // Assert sum <= 0 (negation of sum > 0)
         let sum_not_pos = encode_icmp(&mut solver, ICmpOp::Sle, sum, zero);
-        solver.assert_term(sum_not_pos);
 
-        // Should be UNSAT: if a>0, b>0, no overflow => a+b > 0
-        assert!(solver.check_sat().is_unsat());
+        // Keep the exact authored query as one conjunction. AY's mandatory
+        // UNSAT boundary replays a strict proof against this immutable source
+        // root.
+        let positive_inputs = solver.and(a_pos, b_pos);
+        let premises = solver.and(positive_inputs, safe);
+        let contradiction = solver.and(premises, sum_not_pos);
+        solver.assert_term(contradiction);
+
+        // Ratchet the upgraded AY proof boundary: this mixed BV derivation is
+        // now strictly checked and must carry the one-shot UNSAT witness. A
+        // future regression to Unknown is a loss of certified coverage.
+        let result = solver.check_sat();
+        assert!(result.is_unsat(), "strictly proved theorem became {result}");
+        assert!(result.has_unsat_emission_witness());
     }
 
     // ---- Cast + ICmp combination ----

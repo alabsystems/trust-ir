@@ -7,13 +7,15 @@
 //!
 //! # Why this module exists, and why it is here rather than in the adapter
 //!
-//! A bit-blasted refutation payload (ay's `BvBlastProof`) certifies that *some*
-//! CNF is unsatisfiable. It does **not** say which program fact that CNF is
-//! about: at the pinned ay revision the exporter writes a hardcoded
-//! `asserted_smt` placeholder and a fabricated `obligation` record, and its
-//! `validate()` consults neither. A consumer that granted proof authority on
-//! `validate() == Ok` alone would accept a refutation of an unrelated formula —
-//! or of nothing at all — as discharge for any obligation in the module.
+//! A bit-blasted refutation payload (ay's `BvBlastProof`) certifies that its
+//! internally authenticated Boolean graph and exact disequality are
+//! unsatisfiable. It does **not** say which live program fact produced that
+//! graph: `asserted_smt` is descriptive text, expression-tree `obligation`
+//! metadata is lineage rather than source authentication, and `validate()`
+//! intentionally checks the graph rather than a caller's source. A consumer
+//! that granted proof authority on `validate() == Ok` alone could therefore
+//! accept a valid refutation of an unrelated formula as discharge for an
+//! obligation in the module.
 //!
 //! The binding therefore cannot come from the payload. It must be
 //! **re-derived**: given the module and the obligation, reconstruct the exact
@@ -923,7 +925,7 @@ struct Lowering<'a> {
 impl<'a> Lowering<'a> {
     fn ty_width(&self, ty: &Ty) -> Result<u32, GoalDeriveError> {
         match ty.bit_width_with(self.pointer_bits) {
-            Some(width) if width >= 1 && width <= BVGOAL_MAX_WIDTH => Ok(width),
+            Some(width) if (1..=BVGOAL_MAX_WIDTH).contains(&width) => Ok(width),
             Some(width) => Err(GoalDeriveError::Unsupported {
                 detail: format!("type {ty} has width {width}, outside 1..={BVGOAL_MAX_WIDTH}"),
             }),

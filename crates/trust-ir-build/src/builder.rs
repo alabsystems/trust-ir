@@ -271,20 +271,15 @@ impl ModuleBuilder {
         lineage: trust_ir::ProofLineageManifest,
     ) -> trust_ir::request::NativeVerificationBundle {
         let module = self.module;
-        trust_ir::request::NativeVerificationBundle {
-            schema_version: 1,
-            producer: trust_ir::request::NativeBundleProducer::TrustIr,
-            input: trust_ir::request::NativeAdapterInput::TrustIrModule,
-            provenance: Default::default(),
-            serialization: Default::default(),
-            diagnostics: Default::default(),
-            trust_ir_module_digest: trust_ir::proof::ProofDigest::zero(),
-            compiler_facts: Default::default(),
+        let mut bundle = trust_ir::request::NativeVerificationBundle::new(
+            trust_ir::request::NativeBundleProducer::TrustIr,
+            trust_ir::request::NativeAdapterInput::TrustIrModule,
+            trust_ir::proof::ProofDigest::zero(),
             module,
             lineage,
-            requests: Vec::new(),
-            evidence_bundles: Vec::new(),
-        }
+        );
+        bundle.schema_version = 1;
+        bundle
     }
 
     /// Sign the module by attaching a proof-lineage manifest containing the supplied
@@ -339,20 +334,15 @@ impl ModuleBuilder {
         manifest.nodes.push(node);
         manifest.roots.push(ProofLineageId::new(0));
 
-        NativeVerificationBundle {
-            schema_version: 1,
-            producer: NativeBundleProducer::TrustIr,
-            input: NativeAdapterInput::TrustIrModule,
-            provenance: Default::default(),
-            serialization: Default::default(),
-            diagnostics: Default::default(),
-            trust_ir_module_digest: module_digest,
-            compiler_facts: Default::default(),
+        let mut bundle = NativeVerificationBundle::new(
+            NativeBundleProducer::TrustIr,
+            NativeAdapterInput::TrustIrModule,
+            module_digest,
             module,
-            lineage: manifest,
-            requests: Vec::new(),
-            evidence_bundles: Vec::new(),
-        }
+            manifest,
+        );
+        bundle.schema_version = 1;
+        bundle
     }
 }
 
