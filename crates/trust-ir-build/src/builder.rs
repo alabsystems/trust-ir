@@ -779,12 +779,9 @@ impl<'m> FunctionBuilder<'m> {
         let derived = self.ptr_extent(base).and_then(|e| e.offset_by(offset));
         let idx = self.iconst(Ty::I64, i128::from(offset));
         let result = match derived {
-            Some(_) => self.gep_inbounds_proven(
-                Ty::I8,
-                base,
-                vec![idx],
-                vec![ProofAnnotation::InBounds],
-            ),
+            Some(_) => {
+                self.gep_inbounds_proven(Ty::I8, base, vec![idx], vec![ProofAnnotation::InBounds])
+            }
             None => self.gep(Ty::I8, base, vec![idx]),
         };
         if let Some(extent) = derived {
@@ -2719,10 +2716,7 @@ mod tests {
 
         let module = mb.build();
         let gep_node = &module.functions[0].blocks[0].body[1];
-        assert!(matches!(
-            gep_node.inst,
-            Inst::GEP { inbounds: true, .. }
-        ));
+        assert!(matches!(gep_node.inst, Inst::GEP { inbounds: true, .. }));
         assert_eq!(gep_node.proofs.len(), 2);
         assert!(gep_node.has_proof(&ProofAnnotation::InBounds));
         assert!(gep_node.has_proof(&ProofAnnotation::Aligned(4)));
@@ -2810,7 +2804,13 @@ mod tests {
             .find(|n| n.results == vec![g])
             .unwrap();
         assert!(
-            matches!(node.inst, Inst::GEP { inbounds: false, .. }),
+            matches!(
+                node.inst,
+                Inst::GEP {
+                    inbounds: false,
+                    ..
+                }
+            ),
             "8 > the narrowed 4-byte extent, so the claim must not be made"
         );
     }

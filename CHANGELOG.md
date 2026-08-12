@@ -10,10 +10,12 @@ release is `0.3.0`.
 
 ### Changed (2026-08-11)
 
-- Dependency authorities converged post-release on the single-A9 set: the AY
-  legs now pin ay `6118a522` (v0.8.0) and the Clean-backed legs pin clean
-  `034a73f5` (the v1.4.0 release rev), moved coherently across every manifest
-  leg — including the three legs the 0.7.0 move had left at the 0.6.0 rev.
+- Dependency authorities converged post-release on the final single-A9 set: the
+  AY legs now pin ay `b5e2523b` (v0.9.0) and the Clean-backed legs pin clean
+  `4a2387da` (v1.4.0), moved coherently across every manifest and lockfile leg.
+- Regenerated the live conformance corpus at the already-ratified v36 schema
+  and added a ratchet requiring every current `.tmbc` golden and both normative
+  format documents to track `binary::FORMAT_VERSION` exactly.
 
 ## 0.3.0 — 2026-08-11
 

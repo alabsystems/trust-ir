@@ -215,9 +215,17 @@ const MAGIC: &[u8; 8] = b"TRUST_IR";
 //   compiler-source, non-circular semantic-body, and complete binding digests,
 //   followed by exact source-loop/header/name/place rows. A v34 reader sees no
 //   carrier; a v35 consumer must validate it before use.
-/// The format version this build serializes. Public so conformance tests
-/// assert against the canonical constant instead of a stale literal.
+// v36 (target layout completeness, ADDITIVE):
+//   `StructPassingPolicy::Unclassified` at target-info struct-passing tag 2.
+//   A conforming pre-v36 producer never emits that new tag, while pre-v36
+//   readers reject a v36 header before reaching it. The value records that a
+//   producer has not classified aggregate passing; consumers that require a
+//   concrete ABI policy must fail closed rather than infer one.
+/// The format version this build serializes. Public so conformance tests and
+/// consumers assert against the canonical constant instead of a stale literal.
 pub const VERSION: u32 = 36;
+/// Current TrustIR binary wire-format version emitted by [`serialize_module`].
+pub const FORMAT_VERSION: u32 = VERSION;
 const MIN_READ_VERSION: u32 = 23;
 const PROOF_LINEAGE_MAGIC: &[u8; 4] = b"TMPL";
 const PROOF_LINEAGE_VERSION: u32 = 2;
@@ -5107,7 +5115,7 @@ pub fn deserialize_module(bytes: &[u8]) -> Result<Module, BinaryError> {
                 let struct_passing = match r.read_u8()? {
                     0 => StructPassingPolicy::NativeC,
                     1 => StructPassingPolicy::AlwaysMemory,
-                    2 => StructPassingPolicy::Unclassified,
+                    2 if version >= 36 => StructPassingPolicy::Unclassified,
                     t => return Err(BinaryError::InvalidTag(t)),
                 };
                 (abi, struct_passing)
@@ -6631,6 +6639,37 @@ mod tests {
         let ti = back.target_info.expect("target info survives");
         assert_eq!(ti.abi, None);
         assert_eq!(ti.struct_passing, StructPassingPolicy::NativeC);
+    }
+
+    #[test]
+    fn target_info_unclassified_is_v36_gated() {
+        let mut module = Module::new("target_unclassified");
+        module.target_info = Some(TargetInfo {
+            triple: "aarch64-unknown-none".into(),
+            pointer_size: 8,
+            endianness: Endianness::Little,
+            abi: Some("aapcs64".into()),
+            struct_passing: StructPassingPolicy::Unclassified,
+        });
+
+        let bytes = serialize_module(&module);
+        let back = deserialize_module(&bytes).expect("v36 unclassified target info must decode");
+        assert_eq!(
+            back.target_info
+                .expect("target info survives")
+                .struct_passing,
+            StructPassingPolicy::Unclassified
+        );
+
+        // Tag 2 did not exist in v35. Merely lowering the header must not let
+        // a malformed pre-v36 blob smuggle the new policy through an older
+        // schema identity.
+        let mut forged_v35 = bytes;
+        forged_v35[8..12].copy_from_slice(&35_u32.to_le_bytes());
+        assert_eq!(
+            deserialize_module(&forged_v35),
+            Err(BinaryError::InvalidTag(2))
+        );
     }
 
     // --- fast-3 D.2: GEP.inbounds (v8) ---

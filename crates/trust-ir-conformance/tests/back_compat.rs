@@ -52,6 +52,69 @@ fn read_compat(name: &str) -> Vec<u8> {
 }
 
 #[test]
+fn current_binary_goldens_and_normative_docs_track_format_version() {
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let mut current_binary_fixtures = 0usize;
+    for entry in std::fs::read_dir(&fixture_dir).expect("read current fixture directory") {
+        let path = entry.expect("read current fixture entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("tmbc") {
+            continue;
+        }
+        current_binary_fixtures += 1;
+        let bytes = std::fs::read(&path).expect("read current binary fixture");
+        assert!(
+            bytes.len() >= 12 && &bytes[..8] == b"TRUST_IR",
+            "{} is not a TrustIR module binary",
+            path.display()
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            trust_ir::binary::FORMAT_VERSION,
+            "{} is a current-format golden and must be regenerated whenever FORMAT_VERSION changes",
+            path.display()
+        );
+    }
+    assert!(
+        current_binary_fixtures > 0,
+        "the current binary conformance corpus must not be empty"
+    );
+
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let expected_marker = format!(
+        "<!-- TRUST_IR_BINARY_FORMAT_VERSION: {} -->",
+        trust_ir::binary::FORMAT_VERSION
+    );
+    for relative in ["docs/binary-format.md", "docs/formats.md"] {
+        let path = repo.join(relative);
+        // docs/ is denied from every public export (the publication
+        // baseline's central path-deny), so the normative-doc marker half of
+        // this test is dev-tree-only; the golden-fixture half above runs in
+        // every checkout including the public clone.
+        if !path.exists() {
+            eprintln!(
+                "skipping normative-doc marker check: {relative} not present \
+                 in this checkout (docs/ never ships)"
+            );
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path).expect("read normative format document");
+        let markers: Vec<_> = contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("<!-- TRUST_IR_BINARY_FORMAT_VERSION:"))
+            .collect();
+        assert_eq!(
+            markers,
+            [expected_marker.as_str()],
+            "{} must carry exactly one FORMAT_VERSION marker, and it must be `{expected_marker}`",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn v22_binary_blob_rejected_below_read_floor() {
     // v24 floor move: BOTH pinned v22 blobs must be rejected wholesale at
     // the header version check — no decoder arm may run on them. This is
@@ -195,7 +258,7 @@ fn v32_binary_debug_metadata_defaults_v33_scopes_without_desynchronizing() {
     let current = trust_ir::binary::serialize_module(&module);
     assert_eq!(
         u32::from_le_bytes(current[8..12].try_into().unwrap()),
-        trust_ir::binary::VERSION,
+        trust_ir::binary::FORMAT_VERSION,
         "re-encoded artifact must carry the current format version"
     );
     let round_tripped = trust_ir::binary::deserialize_module(&current)

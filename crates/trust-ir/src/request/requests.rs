@@ -280,7 +280,10 @@ pub struct TrustVcNativeRequest {
     /// and reports `EvidenceRequestDigestMismatch` rather than a version error.
     /// That is why a producer may only start emitting `Some` after every consumer
     /// has been advanced.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub function: Option<FuncId>,
 }
 

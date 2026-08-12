@@ -37,8 +37,8 @@
 // Format-specific notes:
 //
 // * Binary (`.tmbc`): produced via `trust-ir::binary::serialize_module`
-//   (header carries `binary::VERSION`, currently v34; v23 is
-//   MIN_READ_VERSION; readers accept v23–v25 and v29–v34 and reject ambiguous
+//   (header carries `binary::FORMAT_VERSION`; v23 is
+//   MIN_READ_VERSION; readers accept v23–v25 and v29–v36 and reject ambiguous
 //   v26–v28). The per-section tag layout is documented in
 //   `docs/binary-format.md` (the TrustIr#65 freeze doc, normative for
 //   the wire format).

@@ -277,7 +277,11 @@ impl BvTerm {
         let here = match self {
             Self::Shl(..) | Self::Lshr(..) | Self::Ashr(..) => {
                 // ceil(log2 w) for w >= 1.
-                let log = if w <= 1 { 1 } else { 64 - (w - 1).leading_zeros() as u64 };
+                let log = if w <= 1 {
+                    1
+                } else {
+                    64 - (w - 1).leading_zeros() as u64
+                };
                 w.saturating_mul(log)
             }
             _ => w,
@@ -1461,7 +1465,14 @@ mod tests {
         // A chain of 128-bit shifts, well under BVGOAL_MAX_NODES.
         let mut term = BvTerm::leaf("x", 128);
         for _ in 0..40 {
-            term = BvTerm::Shl(term.boxed(), BvTerm::Const { value: 1, width: 128 }.boxed());
+            term = BvTerm::Shl(
+                term.boxed(),
+                BvTerm::Const {
+                    value: 1,
+                    width: 128,
+                }
+                .boxed(),
+            );
         }
         let nodes = term.node_count();
         assert!(
@@ -1493,13 +1504,21 @@ mod tests {
         let shifted = BvTerm::Lshr(x.boxed(), BvTerm::leaf("k", 32).boxed());
         let masked = BvTerm::And(
             shifted.boxed(),
-            BvTerm::Const { value: 0xF, width: 32 }.boxed(),
+            BvTerm::Const {
+                value: 0xF,
+                width: 32,
+            }
+            .boxed(),
         );
         let widened = BvTerm::ZeroExt(masked.boxed(), 32);
         let cond = BvTerm::Not(
             BvTerm::CarryOut {
                 lhs: widened.boxed(),
-                rhs: BvTerm::Const { value: 16, width: 64 }.boxed(),
+                rhs: BvTerm::Const {
+                    value: 16,
+                    width: 64,
+                }
+                .boxed(),
                 is_sub: true,
             }
             .boxed(),

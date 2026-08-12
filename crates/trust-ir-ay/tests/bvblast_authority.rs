@@ -759,8 +759,9 @@ fn a_ground_goal_is_refused_before_it_reaches_the_solver() {
 #[test]
 fn mul_is_refused_structurally() {
     // Measured: bit-blasting a width-8 multiply goal costs 1,617,446 resolution
-    // steps and 1.29 GB of JSON, and width 16 does not terminate. The exporter
-    // has no budget, so the node must not exist in the goal type at all.
+    // steps and 1.29 GB of JSON. The bounded exporter now rejects that work, and
+    // the narrower TrustIR authority keeps Mul outside its goal language too:
+    // an expensive operation cannot become eligible through a later cap bump.
     let mut mb = ModuleBuilder::new("mul");
     let ft = mb.add_func_type(vec![Ty::U64], vec![]);
     let mut fb = mb.function("mul", ft);

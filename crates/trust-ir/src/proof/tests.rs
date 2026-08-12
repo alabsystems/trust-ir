@@ -2078,8 +2078,10 @@ fn obligation_msgpack_survives_every_source_site_combination() {
         let bytes = rmp_serde::to_vec(&obligation)
             .unwrap_or_else(|e| panic!("serialize (source={want_source}, site={want_site}): {e}"));
         let back: ProofObligation = rmp_serde::from_slice(&bytes).unwrap_or_else(|e| {
-            panic!("DECODE FAILED (source={want_source}, site={want_site}): {e} — a non-trailing \
-                    field is being skipped, shifting every later field by one slot")
+            panic!(
+                "DECODE FAILED (source={want_source}, site={want_site}): {e} — a non-trailing \
+                    field is being skipped, shifting every later field by one slot"
+            )
         });
         assert_eq!(
             back, obligation,

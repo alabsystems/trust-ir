@@ -2275,7 +2275,8 @@ fn is_bodyless_external_declaration(func: &Function) -> bool {
 /// Kept separate rather than narrowing the original predicate: its other caller asks the weaker
 /// question and must keep getting the weaker answer.
 fn is_foreign_abi_boundary(func: &Function) -> bool {
-    is_bodyless_external_declaration(func) && !matches!(func.calling_conv, trust_ir::CallingConv::Rust)
+    is_bodyless_external_declaration(func)
+        && !matches!(func.calling_conv, trust_ir::CallingConv::Rust)
 }
 
 /// Validate a function's separate-compilation contract (the

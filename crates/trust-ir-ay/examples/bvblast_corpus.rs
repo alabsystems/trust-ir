@@ -176,7 +176,11 @@ fn main() {
         if report.errors().is_empty() {
             authority_accepted += discharged;
         } else {
-            authority_rejected.push(format!("{:?}: {:?}", path.file_name().unwrap(), report.errors()));
+            authority_rejected.push(format!(
+                "{:?}: {:?}",
+                path.file_name().unwrap(),
+                report.errors()
+            ));
         }
         // The same module WITHOUT the capability must be rejected.
         if !trust_ir_build::validate_module(&module).is_empty() {

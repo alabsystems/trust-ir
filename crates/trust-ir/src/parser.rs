@@ -3985,6 +3985,7 @@ pub fn parse_module(input: &str) -> Result<Module, ParseError> {
                 struct_passing = match policy.as_str() {
                     "native_c" => crate::StructPassingPolicy::NativeC,
                     "always_memory" => crate::StructPassingPolicy::AlwaysMemory,
+                    "unclassified" => crate::StructPassingPolicy::Unclassified,
                     other => {
                         return Err(p.error(format!("unknown struct-passing policy: '{}'", other)));
                     }
@@ -4233,6 +4234,25 @@ mod tests {
     #[test]
     fn round_trip_add_module() {
         round_trip(&build_add_module());
+    }
+
+    #[test]
+    fn unclassified_struct_passing_round_trips_through_canonical_text() {
+        let mut module = Module::new("unclassified_target");
+        module.target_info = Some(TargetInfo {
+            triple: "aarch64-unknown-none".into(),
+            pointer_size: 8,
+            endianness: Endianness::Little,
+            abi: Some("aapcs64".into()),
+            struct_passing: crate::StructPassingPolicy::Unclassified,
+        });
+
+        let text = format!("{module}");
+        assert!(
+            text.contains("structpass=unclassified"),
+            "the canonical writer must preserve the explicit absence of an ABI classification: {text}"
+        );
+        round_trip_eq(&module);
     }
 
     #[test]

@@ -12155,9 +12155,13 @@ mod tests {
     fn returns_const(ty: Ty, value: Constant) -> Module {
         let mut function = Function::new(FuncId::new(0), "k", crate::FuncTyId::new(0), b(0));
         let mut block = Block::new(b(0));
-        block
-            .body
-            .push(result(Inst::Const { ty: ty.clone(), value }, v(0)));
+        block.body.push(result(
+            Inst::Const {
+                ty: ty.clone(),
+                value,
+            },
+            v(0),
+        ));
         block.body.push(void(Inst::Return { values: vec![v(0)] }));
         function.blocks.push(block);
         module_with_function(function, vec![ty])
@@ -12221,5 +12225,4 @@ mod tests {
             );
         }
     }
-
 }
