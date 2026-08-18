@@ -637,7 +637,7 @@ fn build_lowered_assert(k: i128, limit: i128) -> (Module, trust_ir::ObligationSi
 }
 
 /// A lowered assert whose condition is NOT constant-foldable: `(x & 15) <u 16`
-/// over a free block parameter `x: u64`.
+/// over a free block parameter of the requested integer type.
 ///
 /// `build_lowered_assert` compares two CONSTANTS, so ay's term constructor folds
 /// the negated goal to the literal `false` before `check_sat` runs and the
@@ -646,10 +646,10 @@ fn build_lowered_assert(k: i128, limit: i128) -> (Module, trust_ir::ObligationSi
 /// `vc::capture_replay_evidence`). This builder forces the solver to do real
 /// bit-level work, so a `Proved` verdict here is backed by a bundle that
 /// actually witnesses the property.
-fn build_symbolic_lowered_assert() -> (Module, trust_ir::ObligationSite) {
+fn build_symbolic_lowered_assert(ty: Ty) -> (Module, trust_ir::ObligationSite) {
     let mut mb = ModuleBuilder::new("sited_symbolic");
     // The entry block's params ARE the signature, so `x` must appear in it.
-    let ft = mb.add_func_type(vec![Ty::I32, Ty::U64], vec![Ty::I32]);
+    let ft = mb.add_func_type(vec![Ty::I32, ty.clone()], vec![Ty::I32]);
     let fid = mb.peek_next_func_id();
     let mut fb = mb.function("sited_symbolic", ft);
     let entry = fb.create_block();
@@ -657,12 +657,12 @@ fn build_symbolic_lowered_assert() -> (Module, trust_ir::ObligationSite) {
     let panic_arm = fb.create_block();
     let ret = fb.add_block_param(entry, Ty::I32);
     // The free symbol the proof must quantify over.
-    let x = fb.add_block_param(entry, Ty::U64);
+    let x = fb.add_block_param(entry, ty.clone());
     fb.switch_to_block(entry);
-    let mask = fb.iconst(Ty::U64, 15);
-    let masked = fb.binop(trust_ir::inst::BinOp::And, Ty::U64, x, mask);
-    let sixteen = fb.iconst(Ty::U64, 16);
-    let cond = fb.icmp(ICmpOp::Ult, Ty::U64, masked, sixteen);
+    let mask = fb.iconst(ty.clone(), 15);
+    let masked = fb.binop(trust_ir::inst::BinOp::And, ty.clone(), x, mask);
+    let sixteen = fb.iconst(ty.clone(), 16);
+    let cond = fb.icmp(ICmpOp::Ult, ty, masked, sixteen);
     fb.condbr(cond, ok, vec![], panic_arm, vec![]);
     let (block, index) = fb
         .last_emitted_position()
@@ -733,7 +733,10 @@ fn constant_folded_assert_is_proved_but_carries_no_vacuous_evidence() {
 /// that binding; this generic bundle lane therefore remains `Pending`.
 #[test]
 fn symbolic_bundle_replays_but_stays_pending_without_goal_binding() {
-    let (mut module, site) = build_symbolic_lowered_assert();
+    // Keep this proof-producing fixture inside AY's bounded strict-checker
+    // envelope. It is still genuinely symbolic: no term constructor can fold
+    // `(x & 15) < 16` for an unconstrained `x: u8`.
+    let (mut module, site) = build_symbolic_lowered_assert(Ty::U8);
     let pid = push_sited(&mut module, 0, ObligationKind::BoundsCheck, site);
     assert!(
         validate_module(&module).is_empty(),
@@ -791,6 +794,47 @@ fn symbolic_bundle_replays_but_stays_pending_without_goal_binding() {
         message.contains("bind to this obligation's goal"),
         "the residual binding gap must remain explicit: {message}"
     );
+}
+
+/// The `u64` width of the symbolic identity, which is the sibling of the test
+/// above at the widest lowered integer width.
+///
+/// HISTORY: until ay 0c053832 this case EXCEEDED ay's mandatory aggregate
+/// strict-proof validation envelope, and this test pinned the fail-closed
+/// behavior for the resource-bounded lane (`Unknown`, no evidence, obligation
+/// pending). The strict-check precharge fixes in that release (metered
+/// ArrayRowChain accounting b9f2ba20f1, O(total) arg-free resolution
+/// c604ecf9f1, poll throttling 0aad6da973) brought the bundle inside the
+/// envelope: ay now returns a CHECKER-ACCEPTED proof for it — verified by
+/// probe, `verdict=Proved, evidence_present=true` — so the assertion below
+/// records the improved truth. The fail-closed contract itself is unchanged
+/// and still enforced by the adapter; what this file has LOST is a live
+/// in-envelope-exhaustion instance, and it cannot fabricate one until ay
+/// exposes a budget knob. If such a knob appears, reinstate a companion test
+/// that pins `Unknown` + no evidence under an artificially small envelope.
+#[test]
+fn wide_symbolic_bundle_proves_with_checker_accepted_evidence() {
+    let (mut module, site) = build_symbolic_lowered_assert(Ty::U64);
+    let pid = push_sited(&mut module, 0, ObligationKind::BoundsCheck, site);
+    assert!(validate_module(&module).is_empty());
+
+    let vc = verify_function(&module, site.function).unwrap();
+    assert_eq!(vc.conditions.len(), 1, "one sited condition");
+    assert_eq!(vc.conditions[0].verdict, VcVerdict::Proved);
+    assert!(
+        vc.conditions[0].evidence.is_some(),
+        "a strict-checker-accepted proof must carry its evidence bundle"
+    );
+    assert_eq!(vc.obligations, vec![(pid, VcObligationOutcome::ProvedByVc)]);
+
+    // Same discharge discipline as every Proved path: evidence is not
+    // authority, so no status is minted and the obligation stays pending.
+    let transitions = trust_ir_ay::vc::apply_vc_outcomes(&mut module, &vc).unwrap();
+    assert!(
+        transitions.is_empty(),
+        "a solver proof does not mint a public status"
+    );
+    assert_eq!(module.proof_obligations[0].status, ProofStatus::Pending);
 }
 
 /// A statically-FALSE lowered assert is refuted, never proved — and the sited

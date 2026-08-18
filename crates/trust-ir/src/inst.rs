@@ -43,6 +43,20 @@ pub enum BinOp {
     Shl,
     LShr,
     AShr,
+    /// Logical conjunction on the boolean 0/1 carrier. DISTINCT from [`BinOp::And`]
+    /// above, whose doc admits both readings ("bitwise for integer …; logical for
+    /// boolean") — an overloading the LEAN semantics does not share, where
+    /// `semIntBinOp .And` is `Int.land` unconditionally. That gap is not academic:
+    /// a Bool connective lowered onto `And` denotes through an OPAQUE integer
+    /// carrier, so its refinement closes by `rfl` while asserting nothing a
+    /// consumer contract (`ensures r == (a && b)`) can discharge against. These
+    /// three are the unambiguous target — total, computable, decidable — and a
+    /// frontend that means the connective must say so.
+    BAnd,
+    /// Logical disjunction on the boolean 0/1 carrier. See [`BinOp::BAnd`].
+    BOr,
+    /// Logical exclusive-or on the boolean 0/1 carrier. See [`BinOp::BAnd`].
+    BXor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -191,6 +205,9 @@ impl core::fmt::Display for BinOp {
             BinOp::Shl => "shl",
             BinOp::LShr => "lshr",
             BinOp::AShr => "ashr",
+            BinOp::BAnd => "band",
+            BinOp::BOr => "bor",
+            BinOp::BXor => "bxor",
         })
     }
 }

@@ -461,11 +461,14 @@ inductive EnumTagRepr where
   deriving BEq, Repr
 
 /-- How an enum's discriminant is represented in memory. Mirrors Rust
-    trust_ir::EnumTagEncoding (wire v31). -/
+    trust_ir::EnumTagEncoding (wire v31; `untagged` added in v37). -/
 inductive EnumTagEncoding where
   | direct (tagOffset : Nat)
   | niche (untaggedVariant nicheVariantsStart nicheVariantsEnd : Nat)
       (nicheStart : Nat) (nicheOffset : Nat) (nicheTy : EnumTagRepr)
+  /-- No stored tag: the image is the sole variant's payload alone. Well-formed
+      only for a one-variant enum, since nothing in the image discriminates. -/
+  | untagged
   deriving BEq, Repr
 
 /-- Producer-supplied concrete enum layout. It is normative when present.

@@ -122,6 +122,16 @@ pub enum ValidationError {
         op: String,
         ty: String,
     },
+    /// A boolean connective (`BAnd`/`BOr`/`BXor`) applied to a non-boolean type.
+    /// These are DELIBERATELY stricter than `And`/`Or`/`Xor`, which admit both
+    /// integers and booleans: the whole reason the connectives exist as separate
+    /// opcodes is that the overloaded ones cannot be given a boolean denotation
+    /// without going through an opaque integer carrier.
+    BinOpRequiresBool {
+        block: u32,
+        op: String,
+        ty: String,
+    },
     ICmpRequiresIntegerOrPtr {
         block: u32,
         ty: String,
@@ -1185,6 +1195,9 @@ impl core::fmt::Display for ValidationError {
             }
             ValidationError::BinOpRequiresInteger { block, op, ty } => {
                 write!(f, "bb{block}: {op} requires integer type, got {ty}")
+            }
+            ValidationError::BinOpRequiresBool { block, op, ty } => {
+                write!(f, "bb{block}: {op} requires bool type, got {ty}")
             }
             ValidationError::BinOpRequiresFloat { block, op, ty } => {
                 write!(f, "bb{block}: {op} requires float type, got {ty}")
@@ -4202,6 +4215,19 @@ fn check_binop_operand(
         | BinOp::AShr => {
             if !category_ty.is_integer() && !category_ty.is_integer_vector() {
                 errors.push(ValidationError::BinOpRequiresInteger {
+                    block: block_id,
+                    op: op_str,
+                    ty: format!("{declared_ty}"),
+                });
+            }
+        }
+        // The BOOLEAN connectives: bool (or bool-vector) ONLY. Stricter than the
+        // overloaded `And`/`Or`/`Xor` arm below on purpose -- an integer operand
+        // here means the frontend picked the wrong opcode, and admitting it would
+        // reintroduce exactly the ambiguity these three exist to remove.
+        BinOp::BAnd | BinOp::BOr | BinOp::BXor => {
+            if category_ty != &Ty::Bool && !category_ty.is_bool_vector() {
+                errors.push(ValidationError::BinOpRequiresBool {
                     block: block_id,
                     op: op_str,
                     ty: format!("{declared_ty}"),
@@ -7746,6 +7772,20 @@ fn validate_module_filtered(
             }
         }
         match &layout.encoding {
+            // v37 `Untagged`: no tag lane exists, so every tag-placement and
+            // tag/field-disjointness check above is vacuous. The one claim that
+            // still has content is that a variant can be RECOVERED without
+            // reading anything — which holds exactly when there is one variant.
+            // A multi-variant untagged descriptor is undiscriminable, so reject
+            // it here rather than let a consumer pick a variant arbitrarily.
+            trust_ir::EnumTagEncoding::Untagged => {
+                if enm.variants.len() != 1 {
+                    push_layout_error(
+                        "exactly one variant under the untagged encoding".to_string(),
+                        format!("{} variants", enm.variants.len()),
+                    );
+                }
+            }
             trust_ir::EnumTagEncoding::Direct { tag_offset } => {
                 if let Some(repr) = enm.canonical_tag_repr() {
                     let tag_size = enum_tag_repr_bytes(repr);
@@ -14852,6 +14892,178 @@ mod tests {
             validate_module(&wrong_names)
                 .iter()
                 .any(|error| format!("{error}").contains("field names"))
+        );
+
+        // v37 `Untagged`. The payload bounds still apply; the ONE claim
+        // specific to this encoding is that the variant is recoverable without
+        // reading anything, which holds exactly for a single-variant enum.
+        let untagged_with = |variant_count: usize, size: u64| {
+            let mut module = Module::new("untagged-layout");
+            let mut variants = vec![EnumVariant {
+                name: "Only".into(),
+                fields: vec![Ty::I32],
+                field_names: vec!["field".into()],
+            }];
+            let mut offsets = vec![vec![0]];
+            for extra in 1..variant_count {
+                variants.push(EnumVariant {
+                    name: format!("Extra{extra}"),
+                    fields: vec![],
+                    field_names: Vec::new(),
+                });
+                offsets.push(Vec::new());
+            }
+            let mut def = EnumDef::new(EnumId::new(0), "U", variants);
+            def.layout = Some(EnumLayoutDescriptor {
+                encoding: EnumTagEncoding::Untagged,
+                size,
+                align: 4,
+                variant_field_offsets: offsets,
+            });
+            module.add_enum(def);
+            module
+        };
+        assert_eq!(
+            layout_errors(&untagged_with(1, 4)),
+            0,
+            "a single-variant untagged descriptor sized to its payload is well-formed"
+        );
+        let undiscriminable = untagged_with(2, 4);
+        assert!(
+            layout_errors(&undiscriminable) > 0,
+            "nothing in an untagged image discriminates, so >1 variant must fail closed"
+        );
+        assert!(
+            undiscriminable.enum_layout_shape(EnumId::new(0)).is_err(),
+            "the public shape API must agree with the validator"
+        );
+        assert!(
+            layout_errors(&untagged_with(1, 2)) > 0,
+            "an untagged descriptor still has to contain its own payload"
+        );
+    }
+
+    /// The exact defect the v37 `Untagged` encoding exists to fix, end to end.
+    ///
+    /// A corpus module carried `enum UnOp { Not(Vec<()>) }` (rustc: 24 bytes,
+    /// payload at 0, NO stored tag) and `Option<UnOp>` (rustc: also 24, niche
+    /// in Vec's non-null pointer). Both descriptors were correct. Validation
+    /// still rejected the module, because the descriptor grammar had no way to
+    /// SAY "untagged" — so `UnOp` shipped without a descriptor, and a
+    /// descriptor-less enum falls back to the canonical tagged-union layout,
+    /// which budgets a tag and makes the field 32 bytes:
+    ///
+    /// ```text
+    /// ConstTypeMismatch { location: "enum.1 (Option) layout",
+    ///   expected: "variant 1 field 0 entirely within size 24",
+    ///   actual:   "offset 0, field size 32" }
+    /// ```
+    ///
+    /// Both halves are asserted: with the descriptor the module validates, and
+    /// WITHOUT it the original error still fires — so this test fails if the
+    /// encoding regresses AND if the canonical fallback ever silently changes
+    /// to hide the disagreement instead of reporting it.
+    #[test]
+    fn untagged_encoding_closes_the_option_over_a_tagless_enum_rejection() {
+        use trust_ir::ty::{
+            EnumDef, EnumLayoutDescriptor, EnumTagEncoding, EnumTagRepr, EnumVariant, FieldDef,
+            StructDef,
+        };
+        use trust_ir::value::{EnumId, StructId};
+
+        // `Vec<()>`: three pointer-width words, 24 bytes.
+        let vec_like = StructDef {
+            id: StructId::new(0),
+            name: "Vec".into(),
+            fields: (0..3)
+                .map(|i| FieldDef {
+                    name: format!("w{i}"),
+                    ty: Ty::Usize,
+                    offset: Some(i * 8),
+                })
+                .collect(),
+            size: Some(24),
+            align: Some(8),
+            repr: trust_ir::ty::StructRepr::Rust,
+        };
+
+        let build = |unop_layout: Option<EnumLayoutDescriptor>| {
+            let mut module = Module::new("option-over-tagless-enum");
+            module.add_struct(vec_like.clone());
+
+            let mut unop = EnumDef::new(
+                EnumId::new(0),
+                "UnOp",
+                vec![EnumVariant {
+                    name: "Not".into(),
+                    fields: vec![Ty::Struct(StructId::new(0))],
+                    field_names: vec!["operand".into()],
+                }],
+            );
+            unop.layout = unop_layout;
+            module.add_enum(unop);
+
+            let mut option = EnumDef::new(
+                EnumId::new(1),
+                "Option",
+                vec![
+                    EnumVariant {
+                        name: "None".into(),
+                        fields: vec![],
+                        field_names: Vec::new(),
+                    },
+                    EnumVariant {
+                        name: "Some".into(),
+                        fields: vec![Ty::Enum(EnumId::new(0))],
+                        field_names: Vec::new(),
+                    },
+                ],
+            );
+            // Option's own descriptor is correct and unchanged by this fix:
+            // rustc puts the discriminant in Vec's non-null pointer niche, so
+            // the whole thing is still 24 bytes.
+            option.layout = Some(EnumLayoutDescriptor {
+                encoding: EnumTagEncoding::Niche {
+                    untagged_variant: 1,
+                    niche_variants_start: 0,
+                    niche_variants_end: 0,
+                    niche_start: 0,
+                    niche_offset: 0,
+                    niche_ty: EnumTagRepr::U64,
+                },
+                size: 24,
+                align: 8,
+                variant_field_offsets: vec![vec![], vec![0]],
+            });
+            module.add_enum(option);
+            module
+        };
+
+        let untagged = build(Some(EnumLayoutDescriptor {
+            encoding: EnumTagEncoding::Untagged,
+            size: 24,
+            align: 8,
+            variant_field_offsets: vec![vec![0]],
+        }));
+        let errors = validate_module(&untagged);
+        assert!(
+            errors.is_empty(),
+            "the layouts were always correct; saying `untagged` is what makes \
+             them expressible: {errors:#?}"
+        );
+
+        // The pre-v37 spelling — decline a descriptor — still fails, with the
+        // ORIGINAL message. The canonical layout is deliberately unchanged.
+        let declined = build(None);
+        let errors = validate_module(&declined);
+        assert!(
+            errors.iter().any(|error| {
+                let text = format!("{error}");
+                text.contains("variant 1 field 0 entirely within size 24")
+                    && text.contains("offset 0, field size 32")
+            }),
+            "a descriptor-less tagless enum must still be REPORTED, not silently \
+             reinterpreted: {errors:#?}"
         );
     }
 

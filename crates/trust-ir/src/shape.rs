@@ -1060,6 +1060,23 @@ impl Module {
                     }
                 }
                 match &desc.encoding {
+                    // v37: no tag lane exists, so every tag-PLACEMENT check is
+                    // vacuous — there is no offset to align, nothing to fit
+                    // inside `desc.size`, and nothing that could overlap a
+                    // payload field. The per-field bound above still ran and is
+                    // what makes this encoding safe: the fields must lie inside
+                    // the declared size exactly as for the tagged encodings.
+                    //
+                    // The one check with content is that a variant is
+                    // RECOVERABLE without reading anything, which holds exactly
+                    // when there is one. This mirrors the interpreter and the
+                    // validator: all three must agree, or a shape query would
+                    // report a size for an enum the interpreter refuses to load.
+                    crate::ty::EnumTagEncoding::Untagged => {
+                        if ed.variants.len() != 1 {
+                            return Err(LayoutError::EnumLayoutUnavailable(id));
+                        }
+                    }
                     crate::ty::EnumTagEncoding::Direct { tag_offset } => {
                         let tag_size = tag_size_bits / 8;
                         if tag_size > desc.align

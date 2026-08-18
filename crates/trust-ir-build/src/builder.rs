@@ -1432,6 +1432,16 @@ impl<'m> FunctionBuilder<'m> {
         self.emit(Inst::Undef { ty })
     }
 
+    /// Emit an [`Inst::Undef`] with explicit proof annotations.
+    ///
+    /// In particular, [`ProofAnnotation::FreshSymbolicHavoc`] records that a
+    /// consumer may interpret this instruction as a fresh unconstrained value.
+    /// The annotation is not producer authentication and does not authorize any
+    /// constraint on that value; proof-grade consumers must enforce those rules.
+    pub fn undef_proven(&mut self, ty: Ty, proofs: Vec<ProofAnnotation>) -> ValueId {
+        self.emit_with_proofs(Inst::Undef { ty }, proofs)
+    }
+
     // --- Binding frames (typed quantifier lowering) ---
     //
     // Binding frames provide a typed representation for `\E i \in S` and

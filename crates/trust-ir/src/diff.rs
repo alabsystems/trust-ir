@@ -987,6 +987,7 @@ fn fp_proof(p: &ProofAnnotation) -> String {
         ProofAnnotation::DataRaceFree => "DataRaceFree".to_string(),
         ProofAnnotation::Tainted => "Tainted".to_string(),
         ProofAnnotation::TrustedSink => "TrustedSink".to_string(),
+        ProofAnnotation::FreshSymbolicHavoc => "FreshSymbolicHavoc".to_string(),
         ProofAnnotation::AtomicOrdering(o) => format!("AtomicOrdering({:?})", o),
         ProofAnnotation::BoundedOutput { lo, hi } => {
             format!("BoundedOutput({},{})", lo.to_bits(), hi.to_bits())
@@ -1695,6 +1696,13 @@ fn fp_enum_ref(m: &Module, id: EnumId) -> String {
                 Some(layout) => {
                     let _ = write!(s, ";layout={}:{}:", layout.size, layout.align);
                     match &layout.encoding {
+                        // Distinct from the `layout=canonical` spelling above:
+                        // that one means NO descriptor, this one is a declared
+                        // tag-free image. Confusing them would make an enum
+                        // that gained a descriptor look unchanged.
+                        crate::ty::EnumTagEncoding::Untagged => {
+                            s.push_str("untagged");
+                        }
                         crate::ty::EnumTagEncoding::Direct { tag_offset } => {
                             let _ = write!(s, "direct@{tag_offset}");
                         }

@@ -48,6 +48,18 @@ inductive BinOp where
   | Shl   : BinOp
   | LShr  : BinOp
   | AShr  : BinOp
+  -- Boolean connectives. DISTINCT from the bitwise `And`/`Or`/`Xor` above, which
+  -- denote `Int.land`/`Int.lor`/`Int.xor` -- opaque carriers that say nothing
+  -- about a SYMBOLIC operand. A Rust `bool` is carried here as the Int 0/1
+  -- value, and MIR spells `BitAnd`/`BitOr`/`BitXor` for both the Bool connective
+  -- and the integer operator, distinguishing them only by operand TYPE. A
+  -- frontend that lowered a Bool connective onto the bitwise variants would
+  -- produce a refinement that closes by `rfl` while asserting nothing a consumer
+  -- contract (`ensures r == (a || b)`) could ever discharge against. These three
+  -- are the honest target: total, computable, and decidable on the carrier.
+  | BAnd  : BinOp
+  | BOr   : BinOp
+  | BXor  : BinOp
   deriving DecidableEq, Repr
 
 /-- Unary operation. Mirrors Rust `trust_ir::UnOp` (4 variants). -/
@@ -70,12 +82,17 @@ inductive OverflowOp where
     Used in proof obligations and optimizations. -/
 def BinOp.isCommutative : BinOp → Bool
   | .Add | .Mul | .FAdd | .FMul | .And | .Or | .Xor => true
+  | .BAnd | .BOr | .BXor => true
   | _ => false
 
 /-- Returns true if the binary operation is an integer operation. -/
 def BinOp.isInteger : BinOp → Bool
   | .Add | .Sub | .Mul | .UDiv | .SDiv | .URem | .SRem => true
   | .And | .Or | .Xor | .Shl | .LShr | .AShr => true
+  -- The Bool connectives operate on the Int 0/1 carrier, so they are integer
+  -- ops for typing purposes (and NOT float ops -- `binop_progress` discharges
+  -- the float cases by contradiction against this predicate).
+  | .BAnd | .BOr | .BXor => true
   | _ => false
 
 /-- Returns true if the binary operation is a floating-point operation. -/

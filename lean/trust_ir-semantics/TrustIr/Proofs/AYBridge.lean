@@ -209,6 +209,13 @@ def encodeBinOp (op : BinOp) (lhs rhs : TrustIrExpr) : TrustIrExpr :=
   | .Shl   => .bvShl lhs rhs
   | .LShr  => .bvLShr lhs rhs
   | .AShr  => .bvAShr lhs rhs
+  -- Bool connectives. On the 0/1 carrier the bitwise BV ops agree pointwise with
+  -- the logical ones, so this encoding is exact for well-formed Bool operands --
+  -- and the SOLVER side, unlike the Clean prelude's opaque `Int.lor`, reasons
+  -- about `bvAnd`/`bvOr`/`bvXor` natively.
+  | .BAnd  => .bvAnd lhs rhs
+  | .BOr   => .bvOr lhs rhs
+  | .BXor  => .bvXor lhs rhs
 
 /-- Encode a TrustIr ICmpOp as a TrustIrExpr combinator. -/
 def encodeICmp (op : ICmpOp) (lhs rhs : TrustIrExpr) : TrustIrExpr :=

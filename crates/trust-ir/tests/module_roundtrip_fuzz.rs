@@ -161,7 +161,14 @@ fn all_binops() -> Vec<BinOp> {
     use BinOp::*;
     vec![
         Add, Sub, Mul, UDiv, SDiv, URem, SRem, FAdd, FSub, FMul, FDiv, FRem, And, Or, Xor, Shl,
-        LShr, AShr,
+        LShr,
+        AShr,
+        // NOTE: FMin/FMax and the boolean connectives BAnd/BOr/BXor are
+        // deliberately absent. This catalog feeds generated modules that must
+        // TYPE-CHECK, and these ops are not applicable to the integer operands
+        // the generator produces -- BAnd/BOr/BXor are Bool-only by validation.
+        // Their wire tags are covered directly by
+        // `binary::bool_connective_tag_tests` instead.
     ]
 }
 

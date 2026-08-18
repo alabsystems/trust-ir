@@ -58,11 +58,11 @@ verification for a "pure pin bump" — CANNOT catch it.
 "#;
 
 const CLEAN_REPOSITORY: &str = "https://github.com/alabsystems/clean.git";
-const CLEAN_REVISION: &str = "537aa6b4b3c75457260f58132ae62cfce11cca84";
-const CLEAN_VERSION: &str = "1.5.0";
+const CLEAN_REVISION: &str = "bc2923ca9a1d0b7ec060803dc922b5e621309378";
+const CLEAN_VERSION: &str = "1.6.0";
 const AY_REPOSITORY: &str = "https://github.com/alabsystems/ay.git";
-const AY_REVISION: &str = "882800fa351d5045e6f8ca67c756b4081ffbf2cf";
-const AY_VERSION: &str = "0.9.0";
+const AY_REVISION: &str = "ac00c30a825721e7a6dd82043e43d01af35e7b60";
+const AY_VERSION: &str = "0.10.0";
 
 const TRUST_IR_MANIFEST: &str = include_str!("../Cargo.toml");
 const TRUST_IR_AY_MANIFEST: &str = include_str!("../../trust-ir-ay/Cargo.toml");

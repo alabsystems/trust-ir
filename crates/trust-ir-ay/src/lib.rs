@@ -281,9 +281,11 @@ fn rne(solver: &mut Solver) -> Term {
 
 /// Encode a TrustIr `BinOp` as a ay operation.
 ///
-/// Supports all 18 BinOp variants:
+/// Supports all 23 BinOp variants:
 /// - 13 integer variants (Add through AShr) use bitvector operations
-/// - 5 float variants (FAdd through FRem) use FP operations with RNE rounding
+/// - 3 boolean connectives (BAnd/BOr/BXor) reuse the bitwise BV ops, exact on
+///   the 0/1 carrier
+/// - 7 float variants (FAdd through FMax) use FP operations with RNE rounding
 pub fn encode_binop(solver: &mut Solver, op: BinOp, lhs: Term, rhs: Term) -> Result<Term, AYError> {
     match op {
         BinOp::Add => Ok(solver.bvadd(lhs, rhs)),
@@ -299,6 +301,14 @@ pub fn encode_binop(solver: &mut Solver, op: BinOp, lhs: Term, rhs: Term) -> Res
         BinOp::Shl => Ok(solver.bvshl(lhs, rhs)),
         BinOp::LShr => Ok(solver.bvlshr(lhs, rhs)),
         BinOp::AShr => Ok(solver.bvashr(lhs, rhs)),
+        // Boolean connectives. The operands are the bool 0/1 carrier, encoded
+        // here as bitvectors like every other scalar, and on 0/1 the bitwise BV
+        // ops agree pointwise with the logical ones -- the same encoding
+        // `AYBridge.lean`'s `encodeBinOp` uses, kept identical so the solver and
+        // the Lean bridge cannot disagree about the same opcode.
+        BinOp::BAnd => Ok(solver.bvand(lhs, rhs)),
+        BinOp::BOr => Ok(solver.bvor(lhs, rhs)),
+        BinOp::BXor => Ok(solver.bvxor(lhs, rhs)),
         BinOp::FAdd => {
             let rm = rne(solver);
             Ok(solver.fp_add(rm, lhs, rhs))

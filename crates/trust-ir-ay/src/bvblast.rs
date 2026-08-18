@@ -100,7 +100,7 @@ use crate::vc::AY_REV;
 /// certificate rather than silently re-interpreting it: `ProofCertificateRef`
 /// is `(obligation, prover, evidence_digest)`, and the authority capability
 /// requires an exact match on this string.
-pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@882800fa351d5045e6f8ca67c756b4081ffbf2cf";
+pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@ac00c30a825721e7a6dd82043e43d01af35e7b60";
 
 /// Schema tag of the certificate payload carried inside
 /// [`ProofEvidence::SmtProof`].

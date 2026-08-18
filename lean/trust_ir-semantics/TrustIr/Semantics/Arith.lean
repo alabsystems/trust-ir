@@ -104,6 +104,15 @@ def semIntBinOp (op : BinOp) (width : Nat) (lhs rhs : Int) : Except SemError Int
   | .And  => .ok (wrap (Int.land lhs rhs))
   | .Or   => .ok (wrap (Int.lor lhs rhs))
   | .Xor  => .ok (wrap (Int.xor lhs rhs))
+  -- Boolean connectives on the Int 0/1 carrier. TOTAL and computable: no UB
+  -- guard, no `wrap` (the result is already the canonical 0 or 1), and -- unlike
+  -- `Int.land`/`Int.lor` above -- fully decidable, so a downstream obligation
+  -- stated over these reduces instead of resting on an opaque symbol. Any
+  -- nonzero operand counts as true, which matches the `bool` ABI (0/1) while
+  -- staying total on operands outside it.
+  | .BAnd => .ok (if (lhs != 0) && (rhs != 0) then 1 else 0)
+  | .BOr  => .ok (if (lhs != 0) || (rhs != 0) then 1 else 0)
+  | .BXor => .ok (if Bool.xor (lhs != 0) (rhs != 0) then 1 else 0)
   -- Shifts: a shift amount >= bit width is UNDEFINED (poison), matching the
   -- Rust reference interpreter and LLVM `shl`/`lshr`/`ashr`. The frontend must
   -- discharge the `ShiftInRange` obligation; the amount is NOT masked. See

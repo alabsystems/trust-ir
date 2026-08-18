@@ -165,6 +165,18 @@ pub enum ProofAnnotation {
     /// `Uniform` and `Low` are GPU-safe; `High` forces CPU/SIMD fallback.
     DivergenceClass(Divergence),
 
+    /// Marks an [`Inst::Undef`](crate::Inst::Undef) whose consumer semantics are
+    /// a fresh, unconstrained value.
+    ///
+    /// This marker is deliberately inert: it proves no proposition, authenticates
+    /// no producer, and grants no authority to import constraints. It is public and
+    /// survives binary serialization, so a proof-grade consumer may use it only to
+    /// select an already-audited havoc interpretation that is an over-approximation
+    /// of the producer operation. In particular, a consumer must independently
+    /// reject or authenticate any `Assume`, pointer metadata, or other operation
+    /// that could narrow the fresh value.
+    FreshSymbolicHavoc,
+
     // Extensible
     Custom(ProofTag),
 
@@ -303,6 +315,7 @@ impl ProofAnnotation {
             ProofAnnotation::BranchWeights(_) => "BranchWeights",
             ProofAnnotation::Tainted => "Tainted",
             ProofAnnotation::TrustedSink => "TrustedSink",
+            ProofAnnotation::FreshSymbolicHavoc => "FreshSymbolicHavoc",
             #[cfg(feature = "clean-expr")]
             ProofAnnotation::Goal(_) => "Goal",
         }
@@ -567,6 +580,7 @@ impl core::fmt::Display for ProofAnnotation {
             ProofAnnotation::NoUndef => f.write_str("no_undef"),
             ProofAnnotation::Tainted => f.write_str("tainted"),
             ProofAnnotation::TrustedSink => f.write_str("trusted_sink"),
+            ProofAnnotation::FreshSymbolicHavoc => f.write_str("fresh_symbolic_havoc"),
             ProofAnnotation::ReadonlyTable => f.write_str("readonly_table"),
             ProofAnnotation::AppendOnlyBuffer => f.write_str("append_only_buffer"),
             ProofAnnotation::AtomicSetInsert => f.write_str("atomic_set_insert"),

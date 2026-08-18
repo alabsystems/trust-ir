@@ -829,6 +829,42 @@ pub enum EnumTagEncoding {
         /// In-memory width and signedness of the niche scalar.
         niche_ty: EnumTagRepr,
     },
+    /// No runtime tag: the variant is statically known, so the memory image is
+    /// the payload alone.
+    ///
+    /// This is the shape rustc gives a single-INHABITED-variant `repr(Rust)`
+    /// enum — `enum UnOp { Not(Vec<()>) }` is exactly its 24-byte payload, with
+    /// no discriminant stored anywhere. Before this encoding existed the
+    /// producer had to DECLINE a descriptor for such a def (the grammar could
+    /// only say `Direct` or `Niche`, and neither is true), and a descriptor-less
+    /// enum falls back to the canonical tagged-union layout — which budgets a
+    /// tag. The gap was not cosmetic: it made `Option<UnOp>` unvalidatable,
+    /// because Option's own (correct, rustc-derived) descriptor says 24 while
+    /// the canonical recomputation of its `UnOp` field says 8 + 24 = 32.
+    ///
+    /// NOT the same predicate as "one variant". rustc drops the tag only when
+    /// `present_second.is_none() && !repr.inhibit_enum_layout_opt()`, and
+    /// `inhibit` is `repr.c() || repr.int.is_some()` — so `#[repr(C)] enum H
+    /// { X(u8) }` (size 8, field at 4) and `#[repr(u8)] enum C2 { X(u8) }`
+    /// (size 2, field at 1) BOTH keep a real discriminant and must keep using
+    /// `Direct`. The producer therefore reads rustc's own `Variants::Single`
+    /// verdict rather than counting variants.
+    ///
+    /// The canonical layout is deliberately left alone. It is not a rustc model
+    /// (see the note on `EnumDef` — rustc also REORDERS fields, which canonical
+    /// does not), so making it tag-free would not buy parity; it would only
+    /// trade a loud, checkable error for a silent, wider disagreement. Every
+    /// other rustc layout fact rides the descriptor, and so does this one.
+    ///
+    /// This affects the memory IMAGE, not the value model. `EnumDef` still has
+    /// a `canonical_tag_repr()` and the interpreter's enum value is still
+    /// `Aggregate([tag, fields..])`; the tag simply is not stored, and is
+    /// recovered on `Load` from the sole variant. (The verifier-facing
+    /// `request::facts::NativeEnumTagEncoding::Untagged`, which has described
+    /// rustc's strategy since before this variant existed, is the same fact one
+    /// layer out — it additionally forbids a discriminant, because it describes
+    /// rustc's enum rather than trust-ir's byte image.)
+    Untagged,
 }
 
 /// Concrete enum memory layout supplied by the producer.

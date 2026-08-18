@@ -221,9 +221,19 @@ const MAGIC: &[u8; 8] = b"TRUST_IR";
 //   readers reject a v36 header before reaching it. The value records that a
 //   producer has not classified aggregate passing; consumers that require a
 //   concrete ABI policy must fail closed rather than infer one.
+// v37 (untagged enum images, ADDITIVE): `EnumTagEncoding::Untagged` at
+//   enum-layout-descriptor encoding tag 2 — a tag-FREE image, the shape rustc
+//   gives a single-INHABITED-variant `repr(Rust)` enum. The descriptor grammar
+//   could previously only say direct-or-niche, so a producer had to DECLINE a
+//   descriptor for such a def, and a descriptor-less enum falls back to the
+//   canonical tagged-union layout, which budgets a tag. Unlike the v36 tag this
+//   one IS read-gated (`version >= 37`), because it sits inside a record a v36
+//   reader already parses: an ungated arm would let a v36-labelled blob decode
+//   as untagged. Well-formed only for a one-variant enum — nothing in the image
+//   discriminates.
 /// The format version this build serializes. Public so conformance tests and
 /// consumers assert against the canonical constant instead of a stale literal.
-pub const VERSION: u32 = 36;
+pub const VERSION: u32 = 37;
 /// Current TrustIR binary wire-format version emitted by [`serialize_module`].
 pub const FORMAT_VERSION: u32 = VERSION;
 const MIN_READ_VERSION: u32 = 23;
@@ -1533,7 +1543,37 @@ tag_enum!(write_binop, read_binop, BinOp,
     URem => 5, SRem => 6, FAdd => 7, FSub => 8, FMul => 9,
     FDiv => 10, FRem => 11, And => 12, Or => 13, Xor => 14,
     Shl => 15, LShr => 16, AShr => 17, FMin => 18, FMax => 19,
+    BAnd => 20, BOr => 21, BXor => 22,
 );
+
+#[cfg(test)]
+mod bool_connective_tag_tests {
+    //! The wire tags for `BAnd`/`BOr`/`BXor`.
+    //!
+    //! These are NOT covered by `module_roundtrip_fuzz`'s `all_binops` catalog:
+    //! that feeds generated modules which must type-check, and the connectives
+    //! are Bool-only by validation while the generator emits integer operands
+    //! (the same reason FMin/FMax are absent from it). Covered directly here so
+    //! the tags are not simply untested.
+
+    use super::*;
+
+    #[test]
+    fn tags_roundtrip_and_are_appended_not_renumbered() {
+        // Appended after FMax=19, so every pre-existing encoding is untouched.
+        for (op, tag) in [(BinOp::BAnd, 20u8), (BinOp::BOr, 21), (BinOp::BXor, 22)] {
+            let mut buf = Vec::new();
+            write_binop(&mut buf, &op);
+            assert_eq!(buf, vec![tag], "{op} must encode as the appended tag {tag}");
+            let mut reader = Reader::new(buf.as_slice());
+            assert_eq!(read_binop(&mut reader).unwrap(), op, "{op} must roundtrip");
+        }
+        // The pre-existing tags must not have shifted.
+        let mut buf = Vec::new();
+        write_binop(&mut buf, &BinOp::AShr);
+        assert_eq!(buf, vec![17u8], "AShr must still be tag 17");
+    }
+}
 
 tag_enum!(write_unop, read_unop, UnOp,
     Neg => 0, FNeg => 1, Not => 2, CtPop => 3, FAbs => 4, FSqrt => 5,
@@ -2641,6 +2681,7 @@ fn write_proof_annotation(buf: &mut Vec<u8>, _pool: &mut StringPool, ann: &Proof
         ProofAnnotation::NoUndef => write_u8(buf, 22),
         ProofAnnotation::Tainted => write_u8(buf, 35),
         ProofAnnotation::TrustedSink => write_u8(buf, 36),
+        ProofAnnotation::FreshSymbolicHavoc => write_u8(buf, 37),
         ProofAnnotation::Custom(tag) => {
             write_u8(buf, 23);
             write_v32(buf, tag.0);
@@ -2739,6 +2780,7 @@ fn read_proof_annotation(r: &mut Reader<'_>) -> Result<ProofAnnotation, BinaryEr
         22 => Ok(ProofAnnotation::NoUndef),
         35 => Ok(ProofAnnotation::Tainted),
         36 => Ok(ProofAnnotation::TrustedSink),
+        37 => Ok(ProofAnnotation::FreshSymbolicHavoc),
         23 => Ok(ProofAnnotation::Custom(ProofTag::new(r.read_v32()?))),
         24 => Ok(ProofAnnotation::ReadonlyTable),
         25 => Ok(ProofAnnotation::AppendOnlyBuffer),
@@ -3271,6 +3313,10 @@ fn write_enum_def(buf: &mut Vec<u8>, pool: &mut StringPool, ed: &EnumDef) {
                     write_v64(buf, *niche_offset);
                     write_u8(buf, enum_tag_repr_byte(*niche_ty));
                 }
+                // v37. The tag byte is the whole encoding — there is no tag
+                // lane to place, so nothing follows it. The reader side IS
+                // version-gated, so a v36 blob carrying this byte is refused.
+                EnumTagEncoding::Untagged => write_u8(buf, 2),
             }
             write_v64(buf, layout.size);
             write_v64(buf, layout.align);
@@ -3356,6 +3402,11 @@ fn read_enum_def(r: &mut Reader<'_>) -> Result<EnumDef, BinaryError> {
                         niche_offset: r.read_v64()?,
                         niche_ty: enum_tag_repr_from_byte(r.read_u8()?)?,
                     },
+                    // v37. Gated, not unconditional: byte 2 is not a value any
+                    // v36-or-earlier writer could have produced, so a blob
+                    // CLAIMING v36 that carries it is malformed and must be
+                    // refused rather than silently promoted.
+                    2 if r.version >= 37 => EnumTagEncoding::Untagged,
                     tag => return Err(BinaryError::InvalidTag(tag)),
                 };
                 let size = r.read_v64()?;
@@ -4584,6 +4635,10 @@ pub fn deserialize_native_verification_bundle(
             lineage,
         );
         bundle.schema_version = schema_version;
+        // Decoded from bytes — never a live in-process source generation:
+        // `NativeVerificationBundle::new` leaves the private source-generation
+        // marker at its not-live default, so the proof-authority gate stays
+        // fail-closed for this bundle.
         return Ok(bundle);
     }
 
@@ -6520,6 +6575,71 @@ mod tests {
         );
     }
 
+    /// v37 `Untagged` (wire tag 2). The encoding is a bare unit variant, so
+    /// the round trip is the whole of its write side; the read side is
+    /// version-GATED, which the companion test below pins.
+    #[test]
+    fn untagged_enum_layout_descriptor_round_trips_at_current_version() {
+        let mut module = Module::new("enum_v37");
+        let mut untagged = EnumDef::new(
+            EnumId::new(0),
+            "UnOp",
+            vec![EnumVariant {
+                name: "Not".into(),
+                fields: vec![Ty::U64],
+                field_names: vec!["operand".into()],
+            }],
+        );
+        untagged.layout = Some(EnumLayoutDescriptor {
+            encoding: EnumTagEncoding::Untagged,
+            size: 8,
+            align: 8,
+            variant_field_offsets: vec![vec![0]],
+        });
+        module.add_enum(untagged);
+
+        let encoded = serialize_module(&module);
+        assert_eq!(&encoded[8..12], &VERSION.to_le_bytes());
+        assert_eq!(
+            deserialize_module(&encoded).expect("current-version untagged codec"),
+            module
+        );
+    }
+
+    /// The v37 read gate has teeth: byte 2 in the encoding slot is not a value
+    /// any v36-or-earlier writer could have produced, so a blob CLAIMING v36
+    /// that carries it is malformed and must be refused — not silently
+    /// promoted. Patching the header version is a legitimate construction here
+    /// precisely because v37 added no field: the only decode difference
+    /// between the two versions is this tag.
+    #[test]
+    fn a_v36_blob_may_not_carry_the_untagged_encoding() {
+        let mut module = Module::new("enum_v37_gate");
+        let mut untagged = EnumDef::new(
+            EnumId::new(0),
+            "UnOp",
+            vec![EnumVariant {
+                name: "Not".into(),
+                fields: vec![Ty::U64],
+                field_names: vec!["operand".into()],
+            }],
+        );
+        untagged.layout = Some(EnumLayoutDescriptor {
+            encoding: EnumTagEncoding::Untagged,
+            size: 8,
+            align: 8,
+            variant_field_offsets: vec![vec![0]],
+        });
+        module.add_enum(untagged);
+
+        let mut encoded = serialize_module(&module);
+        encoded[8..12].copy_from_slice(&36u32.to_le_bytes());
+        assert_eq!(
+            deserialize_module(&encoded).expect_err("v36 must not decode the v37 encoding tag"),
+            BinaryError::InvalidTag(2)
+        );
+    }
+
     #[test]
     fn v30_enum_record_defaults_v31_fields_without_desynchronizing() {
         let mut pool = StringPool::new();
@@ -7288,6 +7408,7 @@ mod tests {
             },
             ProofAnnotation::Tainted,
             ProofAnnotation::TrustedSink,
+            ProofAnnotation::FreshSymbolicHavoc,
         ];
         let mut block = Block::new(b(0));
         block
@@ -7296,6 +7417,24 @@ mod tests {
         func.blocks.push(block);
         module.add_function(func);
         round_trip(&module);
+    }
+
+    #[test]
+    fn fresh_symbolic_havoc_has_stable_public_wire_tag() {
+        // This is a semantic marker, not an unforgeable capability. Lock both
+        // sides of its public wire representation so consumers cannot silently
+        // reinterpret an old artifact after an enum/tag edit.
+        let mut bytes = Vec::new();
+        let mut pool = StringPool::new();
+        write_proof_annotation(&mut bytes, &mut pool, &ProofAnnotation::FreshSymbolicHavoc);
+        assert_eq!(bytes, [37]);
+
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(
+            read_proof_annotation(&mut reader),
+            Ok(ProofAnnotation::FreshSymbolicHavoc)
+        );
+        assert_eq!(reader.cursor.position() as usize, bytes.len());
     }
 
     // --- All proof evidence variants ---

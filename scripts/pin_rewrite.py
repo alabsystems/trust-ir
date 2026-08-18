@@ -8,8 +8,11 @@ fewer than all of them leaves `main` red, and the failure is invisible to
 partial move shipped three times.
 
 This module is the machine-readable statement of "which files hold the pin".
-It never mutates the repository: `apply` writes candidates into a staging
-directory and `scripts/bump-dep-pin.sh` owns the install/rollback transaction.
+It never mutates the repository: `apply` and `apply-clean-ay` write candidates
+into a staging directory and `scripts/bump-dep-pin.sh` owns the
+install/rollback transaction. The coordinated form matters because the Clean
+and AY leg sets overlap in the Rust guard and target Clean revisions can
+co-own a new AY pin.
 
 Every leg carries an ANCHORED regex plus an exact expected match count, so a
 reformatted manifest fails CLOSED (count mismatch) rather than silently
@@ -171,7 +174,8 @@ EXTERNAL_LEGS: Dict[str, str] = {
     "ay": (
         "../clean/Cargo.toml CO-OWNS the AY pin (7 declarations). If it "
         "disagrees the root lock carries two ay graphs and the guard fails; "
-        "move ../clean first. trust-ir cannot bump ay alone."
+        "an AY-only move requires it already to agree, while a Clean + AY "
+        "move uses bump-dep-pin.sh clean-ay."
     ),
 }
 
@@ -416,6 +420,27 @@ def plan_edits(read: Reader, dep: str, new_sha: str) -> Dict[str, str]:
     return edits
 
 
+def plan_clean_ay_edits(
+    read: Reader, clean_sha: str, ay_sha: str
+) -> Dict[str, str]:
+    """Return one coherent staged tree for a coordinated Clean + AY move.
+
+    The two leg sets overlap in ``dependency_pin_coherence.rs``.  Planning
+    them independently and copying both stage directories would make the last
+    copy silently restore the first dependency's old constant.  Apply the AY
+    rewrite through an overlay containing the already-planned Clean edits so
+    the shared file carries both new revisions.
+    """
+
+    edits = plan_edits(read, "clean", clean_sha)
+
+    def overlay_read(relpath: str) -> str:
+        return edits.get(relpath, read(relpath))
+
+    edits.update(plan_edits(overlay_read, "ay", ay_sha))
+    return edits
+
+
 # --------------------------------------------------------------------------
 # I/O
 # --------------------------------------------------------------------------
@@ -482,6 +507,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="expected current revision; refuse if the tree disagrees",
     )
     apply_parser.add_argument(
+        "--stage-dir", required=True, type=Path, help="directory to write into"
+    )
+
+    pair_parser = sub.add_parser(
+        "apply-clean-ay",
+        help=(
+            "stage a coordinated Clean + AY rewrite into --stage-dir; needed "
+            "because the two leg sets share the coherence guard"
+        ),
+    )
+    pair_parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    pair_parser.add_argument("--clean-to", required=True, help="target Clean revision")
+    pair_parser.add_argument("--ay-to", required=True, help="target AY revision")
+    pair_parser.add_argument(
         "--stage-dir", required=True, type=Path, help="directory to write into"
     )
 
@@ -586,6 +625,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 destination = stage / relpath
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(text, encoding="utf-8")
+                print(relpath)
+            return 0
+
+        if args.command == "apply-clean-ay":
+            for label, revision in (("--clean-to", args.clean_to), ("--ay-to", args.ay_to)):
+                if not SHA_RE.match(revision):
+                    print(
+                        f"{label} must be a full 40-hex commit sha, got {revision!r}",
+                        file=sys.stderr,
+                    )
+                    return 2
+            edits = plan_clean_ay_edits(read, args.clean_to, args.ay_to)
+            stage = args.stage_dir.resolve()
+            for relpath, staged_text in sorted(edits.items()):
+                destination = stage / relpath
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(staged_text, encoding="utf-8")
                 print(relpath)
             return 0
     except PinError as error:

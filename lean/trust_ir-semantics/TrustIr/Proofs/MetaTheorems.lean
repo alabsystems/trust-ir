@@ -368,7 +368,11 @@ theorem binop_progress (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
   -- Case split on op to handle each BinOp variant.
   -- Float ops (FAdd..FRem) are excluded by hOpInt (op.isInteger = true).
   cases op with
-  | Add | Sub | Mul | And | Or | Xor =>
+  -- Every TOTAL integer op: `semIntBinOp` returns `.ok` unconditionally, so the
+  -- witness is immediate. The Bool connectives join here rather than needing
+  -- cases of their own precisely BECAUSE they are total -- the partial ops
+  -- (UDiv/SDiv/shifts) are the ones that need their guards discharged below.
+  | Add | Sub | Mul | And | Or | Xor | BAnd | BOr | BXor =>
     simp [semIntBinOp]; exact Exists.intro _ rfl
   | Shl | LShr | AShr =>
     -- The shift amount is in range (hShift), so the UB guard is not taken.

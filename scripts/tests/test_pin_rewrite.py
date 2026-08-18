@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -164,9 +165,16 @@ class SyntheticTreeTests(unittest.TestCase):
                 'ay = { version = "0.4.0", '
                 'git = "https://github.com/alabsystems/ay.git", '
                 f'rev = "{OTHER}" }}\n'
+                'ay-proof = { version = "0.4.0", '
+                'git = "https://github.com/alabsystems/ay.git", '
+                f'rev = "{OTHER}" }}\n'
             ),
             "crates/trust-ir-ay/src/vc.rs": (
                 f'pub const AY_REV: &str = "{OTHER}";\n'
+            ),
+            "crates/trust-ir-ay/src/bvblast.rs": (
+                'pub const BVBLAST_PROVER: &str = '
+                f'"trust-ir-ay/bvblast@{OTHER}";\n'
             ),
         }
         for relpath, text in files.items():
@@ -293,6 +301,43 @@ class SyntheticTreeTests(unittest.TestCase):
             self.assertIn("does not match the tree", result.stderr)
             self.assertFalse(stage.exists())
 
+    def test_apply_clean_ay_stages_both_shared_guard_constants_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            stage = Path(temporary) / "stage"
+            root.mkdir()
+            self.build_tree(root, guard_rev=OLD)
+            before = {
+                path.relative_to(root): path.read_bytes()
+                for path in sorted(root.rglob("*"))
+                if path.is_file()
+            }
+
+            result = self.run_cli(
+                "apply-clean-ay",
+                "--root",
+                os.fspath(root),
+                "--clean-to",
+                NEW,
+                "--ay-to",
+                NEW,
+                "--stage-dir",
+                os.fspath(stage),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            guard = (stage / PIN.GUARD_TEST).read_text(encoding="utf-8")
+            self.assertIn(f'const CLEAN_REVISION: &str = "{NEW}";', guard)
+            self.assertIn(f'const AY_REVISION: &str = "{NEW}";', guard)
+            self.assertNotIn(OLD, guard)
+            self.assertNotIn(OTHER, guard)
+            after = {
+                path.relative_to(root): path.read_bytes()
+                for path in sorted(root.rglob("*"))
+                if path.is_file()
+            }
+            self.assertEqual(before, after, "coordinated apply must not mutate --root")
+
     def test_abbreviated_and_uppercase_revisions_are_usage_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
@@ -338,7 +383,7 @@ class BumpScriptTests(unittest.TestCase):
     def test_unknown_dependency_is_rejected(self) -> None:
         result = self.run_bump("llvm", "b" * 40)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("dependency must be clean or ay", result.stderr)
+        self.assertIn("dependency must be clean, ay, or clean-ay", result.stderr)
 
     def test_abbreviated_revision_is_rejected(self) -> None:
         result = self.run_bump("clean", "76a7508e")
@@ -361,6 +406,450 @@ class BumpScriptTests(unittest.TestCase):
             'git -C "$CLEAN_SIBLING" rev-parse --is-inside-work-tree', script
         )
         self.assertNotIn('[[ -d "$CLEAN_SIBLING/.git" ]]', script)
+
+    def test_clean_sibling_override_cannot_redirect_cargo_patch(self) -> None:
+        script = BUMP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('CARGO_CLEAN_SIBLING="$ROOT/../clean"', script)
+        self.assertIn(
+            '[[ "$VALIDATED_CLEAN_SIBLING" == "$PATCHED_CLEAN_SIBLING" ]]',
+            script,
+        )
+        self.assertIn("validation and compilation agree", script)
+
+    def test_every_bump_refuses_dirty_path_patched_sibling(self) -> None:
+        script = BUMP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(
+            'git -C "$CLEAN_SIBLING" status --porcelain --untracked-files=all',
+            script,
+        )
+        self.assertIn("Refusing to certify a pin against a different source tree", script)
+        self.assertNotIn(
+            'warn "$CLEAN_SIBLING has uncommitted changes',
+            script,
+        )
+
+    def test_ay_bump_requires_exact_frozen_clean_and_seven_coowned_pins(self) -> None:
+        script = BUMP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(
+            'FROZEN_CLEAN_REV="$(pin current --root "$ROOT" --dep clean)"',
+            script,
+        )
+        self.assertIn(
+            '[[ "$SIBLING_HEAD" != "$FROZEN_CLEAN_REV" ]]',
+            script,
+        )
+        self.assertIn('[[ "$count" -ne 7 ]]', script)
+        self.assertIn("expected exactly 7", script)
+
+    def test_coordinated_mode_requires_a_second_full_revision(self) -> None:
+        missing = self.run_bump("clean-ay", NEW)
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("clean-ay <clean-sha> <ay-sha>", missing.stderr)
+
+        abbreviated = self.run_bump("clean-ay", NEW, OLD[:7])
+        self.assertEqual(abbreviated.returncode, 1)
+        self.assertIn("AY commit sha", abbreviated.stderr)
+
+
+class BumpScriptIntegrationTests(unittest.TestCase):
+    """Exercise external Clean authority checks and transactional rollback."""
+
+    @staticmethod
+    def _write(path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _init_clean(
+        self,
+        workspace: Path,
+        *,
+        ay_rev: str,
+        declaration_count: int = 7,
+        advance_head: bool = False,
+    ) -> tuple[Path, str, str]:
+        clean = workspace / "clean"
+        clean.mkdir()
+        declarations = "".join(
+            f'ay-fixture-{index} = {{ git = "https://github.com/alabsystems/ay.git", rev = "{ay_rev}" }}\n'
+            for index in range(declaration_count)
+        )
+        self._write(clean / "Cargo.toml", "[workspace.dependencies]\n" + declarations)
+        subprocess.run(["git", "init", "-q", os.fspath(clean)], check=True)
+        subprocess.run(
+            ["git", "-C", os.fspath(clean), "config", "user.name", "pin-test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", os.fspath(clean), "config", "user.email", "pin@test.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", os.fspath(clean), "add", "Cargo.toml"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", os.fspath(clean), "commit", "-q", "-m", "base"],
+            check=True,
+        )
+        frozen = subprocess.check_output(
+            ["git", "-C", os.fspath(clean), "rev-parse", "HEAD"], text=True
+        ).strip()
+        if advance_head:
+            self._write(clean / "later.txt", "later clean bytes\n")
+            subprocess.run(
+                ["git", "-C", os.fspath(clean), "add", "later.txt"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", os.fspath(clean), "commit", "-q", "-m", "later"],
+                check=True,
+            )
+        head = subprocess.check_output(
+            ["git", "-C", os.fspath(clean), "rev-parse", "HEAD"], text=True
+        ).strip()
+        return clean, frozen, head
+
+    def _build_trust_ir(self, workspace: Path, *, clean_rev: str, ay_rev: str) -> Path:
+        root = workspace / "trust-ir"
+        (root / "scripts").mkdir(parents=True)
+        shutil.copy2(BUMP_SCRIPT, root / "scripts" / BUMP_SCRIPT.name)
+        shutil.copy2(PIN_REWRITE_PATH, root / "scripts" / PIN_REWRITE_PATH.name)
+        self._write(
+            root / "crates/trust-ir/Cargo.toml",
+            CLEAN_DEP_LINE.format(rev=clean_rev),
+        )
+        self._write(
+            root / "crates/trust-ir-build/Cargo.toml",
+            "".join(CLEAN_DEP_LINE.format(rev=clean_rev) for _ in range(3)),
+        )
+        self._write(
+            root / PIN.GUARD_TEST,
+            f'const CLEAN_REVISION: &str = "{clean_rev}";\n'
+            f'const AY_REVISION: &str = "{ay_rev}";\n',
+        )
+        self._write(
+            root / "frontend/Cargo.lock",
+            'source = "git+https://github.com/alabsystems/clean.git'
+            f'?rev={clean_rev}#{clean_rev}"\n',
+        )
+        self._write(
+            root / "Cargo.lock",
+            'source = "git+https://github.com/alabsystems/ay.git'
+            f'?rev={ay_rev}#{ay_rev}"\n',
+        )
+        ay_line = (
+            'ay = { version = "0.9.0", '
+            'git = "https://github.com/alabsystems/ay.git", '
+            f'rev = "{ay_rev}" }}\n'
+        )
+        self._write(root / "crates/trust-ir-ay/Cargo.toml", ay_line * 2)
+        self._write(
+            root / "crates/trust-ir-ay/src/vc.rs",
+            f'pub const AY_REV: &str = "{ay_rev}";\n',
+        )
+        self._write(
+            root / "crates/trust-ir-ay/src/bvblast.rs",
+            f'pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@{ay_rev}";\n',
+        )
+        return root
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    def _run_bump(
+        self,
+        root: Path,
+        target: str,
+        *,
+        clean_override: Path | None = None,
+        path_prefix: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("TRUST_IR_CLEAN_SIBLING", None)
+        if clean_override is not None:
+            env["TRUST_IR_CLEAN_SIBLING"] = os.fspath(clean_override)
+        if path_prefix is not None:
+            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+        return subprocess.run(
+            [
+                "/bin/bash",
+                os.fspath(root / "scripts/bump-dep-pin.sh"),
+                "ay",
+                target,
+                "--offline",
+                "--no-guard-test",
+            ],
+            cwd=root,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+    def _run_clean_ay_bump(
+        self,
+        root: Path,
+        clean_target: str,
+        ay_target: str,
+        *,
+        path_prefix: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("TRUST_IR_CLEAN_SIBLING", None)
+        if path_prefix is not None:
+            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+        return subprocess.run(
+            [
+                "/bin/bash",
+                os.fspath(root / "scripts/bump-dep-pin.sh"),
+                "clean-ay",
+                clean_target,
+                ay_target,
+                "--offline",
+                "--no-guard-test",
+            ],
+            cwd=root,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+    def _run_clean_bump(
+        self, root: Path, clean_target: str
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("TRUST_IR_CLEAN_SIBLING", None)
+        return subprocess.run(
+            [
+                "/bin/bash",
+                os.fspath(root / "scripts/bump-dep-pin.sh"),
+                "clean",
+                clean_target,
+                "--offline",
+                "--no-guard-test",
+            ],
+            cwd=root,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+    def test_ay_bump_refuses_wrong_clean_head_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, frozen, head = self._init_clean(
+                workspace, ay_rev=OLD, advance_head=True
+            )
+            self.assertNotEqual(frozen, head)
+            root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
+            before = self._snapshot(root)
+
+            result = self._run_bump(root, OLD)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("not frozen Clean", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_clean_only_bump_refuses_target_clean_with_new_ay_without_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, head = self._init_clean(workspace, ay_rev=NEW)
+            self.assertEqual(clean_target, head)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            before = self._snapshot(root)
+
+            result = self._run_clean_bump(root, clean_target)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("expected the exact coordinated AY revision", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+            self.assertNotIn(NEW, (root / PIN.GUARD_TEST).read_text(encoding="utf-8"))
+
+    def test_ay_bump_refuses_wrong_clean_checkout_override_without_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            clean, frozen, _ = self._init_clean(workspace, ay_rev=OLD)
+            alternate_workspace = workspace / "alternate"
+            alternate_workspace.mkdir()
+            alternate, _, _ = self._init_clean(alternate_workspace, ay_rev=OLD)
+            self.assertNotEqual(clean.resolve(), alternate.resolve())
+            root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
+            before = self._snapshot(root)
+
+            result = self._run_bump(root, OLD, clean_override=alternate)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("validation and compilation agree", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_ay_bump_accepts_symlink_to_the_cargo_patched_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            clean, frozen, _ = self._init_clean(workspace, ay_rev=OLD)
+            alias = workspace / "clean-alias"
+            alias.symlink_to(clean, target_is_directory=True)
+            root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
+            before = self._snapshot(root)
+
+            result = self._run_bump(root, OLD, clean_override=alias)
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("all legs coherent", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_ay_bump_refuses_dirty_clean_checkout_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            clean, frozen, _ = self._init_clean(workspace, ay_rev=OLD)
+            self._write(clean / "untracked-proof-input.txt", "not committed\n")
+            root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
+            before = self._snapshot(root)
+
+            result = self._run_bump(root, OLD)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("has uncommitted changes", result.stdout)
+            self.assertIn("untracked-proof-input.txt", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_ay_bump_refuses_wrong_clean_declaration_count(self) -> None:
+        for declaration_count in (0, 6, 8):
+            with self.subTest(declaration_count=declaration_count):
+                with tempfile.TemporaryDirectory() as temporary:
+                    workspace = Path(temporary)
+                    _, frozen, head = self._init_clean(
+                        workspace,
+                        ay_rev=OLD,
+                        declaration_count=declaration_count,
+                    )
+                    self.assertEqual(frozen, head)
+                    root = self._build_trust_ir(
+                        workspace, clean_rev=frozen, ay_rev=OLD
+                    )
+                    before = self._snapshot(root)
+
+                    result = self._run_bump(root, OLD)
+
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(
+                        f"found {declaration_count} ay.git declarations",
+                        result.stdout,
+                    )
+                    self.assertIn("expected exactly 7", result.stdout)
+                    self.assertEqual(self._snapshot(root), before)
+
+    def test_post_install_failure_rolls_back_every_controlled_byte(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, frozen, head = self._init_clean(workspace, ay_rev=NEW)
+            self.assertEqual(frozen, head)
+            root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "printf '\\nforced lock mutation\\n' >> Cargo.lock\n"
+                "exit 23\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o755)
+            before = self._snapshot(root)
+
+            result = self._run_bump(root, NEW, path_prefix=fake_bin)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("root lock refresh failed", result.stdout)
+            self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+            self.assertNotIn(NEW, (root / "Cargo.lock").read_text(encoding="utf-8"))
+
+    def test_coordinated_post_install_failure_restores_both_pin_sets_byte_exactly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, head = self._init_clean(workspace, ay_rev=NEW)
+            self.assertEqual(clean_target, head)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 21\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 22\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf '\\nforced coordinated frontend mutation\\n' >> frontend/Cargo.lock\n"
+                "exit 23\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o755)
+            before = self._snapshot(root)
+
+            result = self._run_clean_ay_bump(
+                root, clean_target, NEW, path_prefix=fake_bin
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("frontend/Cargo.lock refresh failed", result.stdout)
+            self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+            guard = (root / PIN.GUARD_TEST).read_text(encoding="utf-8")
+            self.assertIn(f'const CLEAN_REVISION: &str = "{OLD}";', guard)
+            self.assertIn(f'const AY_REVISION: &str = "{OLD}";', guard)
+
+    def test_coordinated_success_moves_both_pin_sets_and_both_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, head = self._init_clean(workspace, ay_rev=NEW)
+            self.assertEqual(clean_target, head)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o755)
+
+            result = self._run_clean_ay_bump(
+                root, clean_target, NEW, path_prefix=fake_bin
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("DONE — Clean pinned", result.stdout)
+            clean_report = PIN.census(PIN.repo_reader(root), "clean")
+            ay_report = PIN.census(PIN.repo_reader(root), "ay")
+            self.assertTrue(clean_report.coherent, clean_report.render())
+            self.assertTrue(ay_report.coherent, ay_report.render())
+            self.assertEqual(clean_report.current(), clean_target)
+            self.assertEqual(ay_report.current(), NEW)
+            guard = (root / PIN.GUARD_TEST).read_text(encoding="utf-8")
+            self.assertIn(f'const CLEAN_REVISION: &str = "{clean_target}";', guard)
+            self.assertIn(f'const AY_REVISION: &str = "{NEW}";', guard)
 
 
 class RepositoryCoherenceTests(unittest.TestCase):

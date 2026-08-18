@@ -2728,6 +2728,25 @@ impl<'m> Interpreter<'m> {
                 variant_field_offsets.push(fields);
             }
             let byte_view = match &desc.encoding {
+                // v37 `Untagged`. No tag bytes exist, so the tag-placement and
+                // tag/field-overlap checks the other two arms perform are
+                // vacuous here. What is NOT vacuous is that the descriptor must
+                // name exactly one variant to be untagged about: a multi-variant
+                // enum with no tag could not be discriminated at runtime, so
+                // accepting one would let a Load invent a variant. Fail closed.
+                crate::ty::EnumTagEncoding::Untagged => {
+                    if def.variants.len() != 1 {
+                        return Err(type_error(
+                            block,
+                            format!(
+                                "enum {ty} declares the untagged encoding but has {} variants; \
+                                 an untagged layout can only describe a single-variant enum",
+                                def.variants.len()
+                            ),
+                        ));
+                    }
+                    EnumByteView::Untagged { variant: 0 }
+                }
                 crate::ty::EnumTagEncoding::Direct { tag_offset } => {
                     if tag_align > desc.align
                         || !tag_offset.is_multiple_of(tag_align)
@@ -3121,6 +3140,23 @@ impl<'m> Interpreter<'m> {
                 }
                 let mut bytes = vec![0u8; layout.size as usize];
                 match &layout.byte_view {
+                    // The byte image carries NO tag lane. The value model is
+                    // unchanged — the tag is still an operand and was still
+                    // checked against `tag_ty` above — it simply does not
+                    // survive the round trip through memory, because the sole
+                    // variant makes it recoverable without being stored.
+                    EnumByteView::Untagged { variant } => {
+                        if variant_idx != *variant {
+                            return Err(type_error(
+                                block,
+                                format!(
+                                    "Store: enum {} is untagged over variant {variant} but the \
+                                     value names variant {variant_idx}",
+                                    value.ty
+                                ),
+                            ));
+                        }
+                    }
                     EnumByteView::Direct { tag_offset } => {
                         let tag_bytes = self.encode_value(tag_val, state, block)?;
                         let start = *tag_offset as usize;
@@ -3359,6 +3395,13 @@ impl<'m> Interpreter<'m> {
             Ty::Enum(_) => {
                 let layout = self.enum_layout(ty, block)?;
                 let (variant_idx, tag_val) = match &layout.byte_view {
+                    // No tag lane exists to read: the sole variant IS the
+                    // answer, and the tag operand is synthesized from it. This
+                    // is total — unlike the tagged arms there is no byte
+                    // pattern that could name a variant the enum does not have.
+                    EnumByteView::Untagged { variant } => {
+                        (*variant, synthesized_tag_value(&layout, *variant, block)?)
+                    }
                     EnumByteView::Direct { tag_offset } => {
                         let start = *tag_offset as usize;
                         let tag_val = self.decode_value(
@@ -3410,20 +3453,7 @@ impl<'m> Interpreter<'m> {
                         } else {
                             *untagged_variant
                         };
-                        let disc = layout.discriminants[variant_idx];
-                        let (bits, signed) =
-                            int_shape(&layout.tag_ty).expect("enum tag is an integer type");
-                        let tag_mask = int_mask(bits).ok_or_else(|| {
-                            type_error(block, format!("unsupported integer width {bits}"))
-                        })?;
-                        let tag_int = InterpretInt::from_raw(bits, signed, (disc as u128) & tag_mask)
-                            .ok_or_else(|| {
-                                type_error(block, format!("unsupported integer width {bits}"))
-                            })?;
-                        let tag_val = InterpretValue {
-                            ty: layout.tag_ty.clone(),
-                            kind: InterpretValueKind::Int(tag_int),
-                        };
+                        let tag_val = synthesized_tag_value(&layout, variant_idx, block)?;
                         (variant_idx, tag_val)
                     }
                 };
@@ -5399,6 +5429,12 @@ struct EnumLayout {
 
 #[derive(Debug, Clone)]
 enum EnumByteView {
+    /// v37: the memory image is the payload alone — no tag bytes are read or
+    /// written. The variant is a static fact of the type, carried here so
+    /// decode can name it without touching memory.
+    Untagged {
+        variant: usize,
+    },
     Direct {
         tag_offset: u64,
     },
@@ -5428,6 +5464,31 @@ fn tag_int_discriminant(int: InterpretInt) -> i128 {
     } else {
         int.as_unsigned() as i128
     }
+}
+
+/// Rebuild the logical tag operand for `variant_idx` from the layout's own
+/// discriminant table.
+///
+/// The interpreter's enum VALUE is always `Aggregate([tag, fields..])`, but
+/// two encodings store no tag lane in the byte image — niche (for the untagged
+/// variant) and v37 `Untagged` (for every variant, because there is only one).
+/// Those decode paths recover the variant first and then synthesize the tag the
+/// value model expects, rather than reading it.
+fn synthesized_tag_value(
+    layout: &EnumLayout,
+    variant_idx: usize,
+    block: BlockId,
+) -> InterpretResult<InterpretValue> {
+    let disc = layout.discriminants[variant_idx];
+    let (bits, signed) = int_shape(&layout.tag_ty).expect("enum tag is an integer type");
+    let tag_mask = int_mask(bits)
+        .ok_or_else(|| type_error(block, format!("unsupported integer width {bits}")))?;
+    let tag_int = InterpretInt::from_raw(bits, signed, (disc as u128) & tag_mask)
+        .ok_or_else(|| type_error(block, format!("unsupported integer width {bits}")))?;
+    Ok(InterpretValue {
+        ty: layout.tag_ty.clone(),
+        kind: InterpretValueKind::Int(tag_int),
+    })
 }
 
 fn runtime_index(value: &InterpretValue, block: BlockId) -> InterpretResult<usize> {
@@ -5468,6 +5529,15 @@ fn eval_int_binop(
         BinOp::And => lhs.raw & rhs.raw,
         BinOp::Or => lhs.raw | rhs.raw,
         BinOp::Xor => lhs.raw ^ rhs.raw,
+        // Boolean connectives on the 0/1 carrier. These MUST agree with
+        // `semIntBinOp`'s `.BAnd`/`.BOr`/`.BXor` arms in
+        // `lean/trust_ir-semantics/TrustIr/Semantics/Arith.lean` exactly: any
+        // nonzero operand counts as true, and the result is the canonical 0 or 1
+        // (total, no UB guard, no wrap needed). A divergence here would make the
+        // interpreter and the Lean semantics disagree about the same program.
+        BinOp::BAnd => u128::from(lhs.raw != 0 && rhs.raw != 0),
+        BinOp::BOr => u128::from(lhs.raw != 0 || rhs.raw != 0),
+        BinOp::BXor => u128::from((lhs.raw != 0) != (rhs.raw != 0)),
         BinOp::UDiv => {
             if rhs.raw == 0 {
                 return Err(ub(block, "unsigned division by zero"));
@@ -5540,6 +5610,13 @@ fn eval_bool_binop(op: BinOp, lhs: bool, rhs: bool, block: BlockId) -> Interpret
         BinOp::And => Ok(lhs & rhs),
         BinOp::Or => Ok(lhs | rhs),
         BinOp::Xor => Ok(lhs ^ rhs),
+        // The dedicated boolean connectives. WITHOUT these arms the catch-all
+        // below would reject them on precisely the type they exist for: the
+        // validator requires `BAnd`/`BOr`/`BXor` to be Bool-typed, so every
+        // well-typed use would land in the error branch.
+        BinOp::BAnd => Ok(lhs & rhs),
+        BinOp::BOr => Ok(lhs | rhs),
+        BinOp::BXor => Ok(lhs ^ rhs),
         _ => Err(type_error(
             block,
             format!("{op} is not a boolean binary operation"),
@@ -6097,6 +6174,69 @@ fn reject_partial(value: &InterpretValue, block: BlockId, op: &str) -> Interpret
 
 fn err(code: InterpretErrorCode, block: BlockId, message: impl Into<String>) -> InterpretError {
     InterpretError::new(code, message).with_block(block)
+}
+
+#[cfg(test)]
+mod bool_connective_tests {
+    //! The boolean connectives `BAnd`/`BOr`/`BXor`, pinned against the Lean
+    //! semantics they must agree with.
+    //!
+    //! `semIntBinOp` in `lean/trust_ir-semantics/TrustIr/Semantics/Arith.lean`
+    //! defines them as, e.g., `.BAnd => .ok (if (lhs != 0) && (rhs != 0) then 1
+    //! else 0)`. Two evaluators here must match that: `eval_int_binop` on the
+    //! 0/1 Int carrier and `eval_bool_binop` on native bools. A divergence in
+    //! either would mean the interpreter and the semantics disagree about the
+    //! same program, which no test elsewhere would catch.
+
+    use super::*;
+
+    fn int1(raw: u128) -> InterpretInt {
+        InterpretInt {
+            bits: 8,
+            signed: false,
+            raw,
+        }
+    }
+
+    #[test]
+    fn int_carrier_matches_the_lean_semantics() {
+        let block = BlockId(0);
+        for (a, b) in [(0u128, 0u128), (0, 1), (1, 0), (1, 1)] {
+            let and = eval_int_binop(BinOp::BAnd, int1(a), int1(b), block).unwrap();
+            let or = eval_int_binop(BinOp::BOr, int1(a), int1(b), block).unwrap();
+            let xor = eval_int_binop(BinOp::BXor, int1(a), int1(b), block).unwrap();
+            assert_eq!(and.raw, u128::from(a != 0 && b != 0), "BAnd({a},{b})");
+            assert_eq!(or.raw, u128::from(a != 0 || b != 0), "BOr({a},{b})");
+            assert_eq!(xor.raw, u128::from((a != 0) != (b != 0)), "BXor({a},{b})");
+        }
+    }
+
+    /// Totality on operands OUTSIDE {0,1}: the Lean arms test `!= 0`, not `== 1`,
+    /// so any nonzero counts as true and nothing is undefined. This is what lets
+    /// them join `binop_progress`'s total-op case with no proof obligation.
+    #[test]
+    fn nonzero_operands_count_as_true_and_never_error() {
+        let block = BlockId(0);
+        let and = eval_int_binop(BinOp::BAnd, int1(7), int1(200), block).unwrap();
+        assert_eq!(and.raw, 1, "any two nonzero operands are both true");
+        let xor = eval_int_binop(BinOp::BXor, int1(7), int1(200), block).unwrap();
+        assert_eq!(xor.raw, 0, "true xor true is false");
+        let or = eval_int_binop(BinOp::BOr, int1(0), int1(200), block).unwrap();
+        assert_eq!(or.raw, 1);
+    }
+
+    /// The Bool path must accept them. Before this arm existed the catch-all in
+    /// `eval_bool_binop` rejected these on exactly the type the validator
+    /// REQUIRES for them, so every well-typed use would have errored.
+    #[test]
+    fn bool_carrier_accepts_the_connectives() {
+        let block = BlockId(0);
+        for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(eval_bool_binop(BinOp::BAnd, a, b, block).unwrap(), a && b);
+            assert_eq!(eval_bool_binop(BinOp::BOr, a, b, block).unwrap(), a || b);
+            assert_eq!(eval_bool_binop(BinOp::BXor, a, b, block).unwrap(), a ^ b);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -11266,6 +11406,131 @@ mod tests {
                 .enum_layout(&enum_ty, b(0))
                 .is_err(),
             "niche lane alignment must agree across the interpreter and shape API"
+        );
+    }
+
+    /// v37: an `Untagged` descriptor is the byte image WITHOUT a tag lane —
+    /// the shape rustc gives a single-inhabited-variant `repr(Rust)` enum
+    /// (`enum UnOp { Not(Vec<()>) }` IS its 24-byte payload). The tag survives
+    /// in the VALUE and is recovered on decode from the sole variant, so the
+    /// round trip is total even though nothing about it is stored.
+    ///
+    /// The contrast that motivates the encoding is asserted directly: the same
+    /// def WITHOUT a descriptor gets the canonical tagged-union layout, which
+    /// budgets a tag and is therefore strictly larger. That canonical layout is
+    /// not wrong — it is trust-ir's own, deliberately not a rustc model — which
+    /// is exactly why a rustc-derived producer has to say `Untagged` instead of
+    /// declining to describe the def.
+    #[test]
+    fn untagged_descriptor_is_the_payload_alone() {
+        use crate::ty::{EnumDef, EnumLayoutDescriptor, EnumTagEncoding, EnumVariant};
+        use crate::value::EnumId;
+
+        let state = ExecState {
+            values: BTreeMap::new(),
+            memory: MemoryState::default(),
+            globals: BTreeMap::new(),
+            frames: BTreeMap::new(),
+            next_frame_id: 0,
+            steps: 0,
+            remaining_fuel: u64::MAX,
+        };
+        let build = |layout: Option<EnumLayoutDescriptor>| {
+            let mut module = Module::new("untagged");
+            let mut def = EnumDef::new(
+                EnumId::new(0),
+                "UnOp",
+                vec![EnumVariant {
+                    name: "Not".into(),
+                    fields: vec![Ty::U64],
+                    field_names: vec!["operand".into()],
+                }],
+            );
+            def.layout = layout;
+            module.add_enum(def);
+            module
+        };
+        let enum_ty = Ty::Enum(EnumId::new(0));
+        let value = InterpretValue {
+            ty: enum_ty.clone(),
+            kind: InterpretValueKind::Aggregate(vec![
+                InterpretValue::int(Ty::U8, 0).expect("tag"),
+                InterpretValue::int(Ty::U64, 0x0102_0304_0506_0708).expect("payload"),
+            ]),
+        };
+
+        let module = build(Some(EnumLayoutDescriptor {
+            encoding: EnumTagEncoding::Untagged,
+            size: 8,
+            align: 8,
+            variant_field_offsets: vec![vec![0]],
+        }));
+        let shape = module
+            .enum_layout_shape(EnumId::new(0))
+            .expect("untagged descriptor shape");
+        assert_eq!((shape.size_bits, shape.align_bits), (64, 64));
+        let interp = Interpreter::with_module(&module);
+        let bytes = interp
+            .encode_value(&value, &state, b(0))
+            .expect("untagged encode");
+        assert_eq!(
+            bytes.as_slice(),
+            &0x0102_0304_0506_0708u64.to_le_bytes(),
+            "the image is the payload alone — no tag byte anywhere"
+        );
+        assert_eq!(
+            interp
+                .decode_value(&enum_ty, &bytes, &state, b(0))
+                .expect("untagged decode"),
+            value,
+            "the tag is synthesized from the sole variant, not read"
+        );
+
+        // Every 8-byte image decodes: unlike a tagged encoding there is no bit
+        // pattern that could name a variant this enum does not have.
+        for image in [[0u8; 8], [0xff; 8]] {
+            interp
+                .decode_value(&enum_ty, &image, &state, b(0))
+                .expect("an untagged image cannot be mis-tagged");
+        }
+
+        // Same def, no descriptor: the canonical layout budgets a tag, so it is
+        // BIGGER. This is the disagreement that made `Option<UnOp>` fail to
+        // validate before the encoding existed.
+        let canonical = build(None);
+        let canonical_shape = canonical
+            .enum_layout_shape(EnumId::new(0))
+            .expect("canonical shape");
+        assert!(
+            canonical_shape.size_bits > shape.size_bits,
+            "canonical {} must exceed untagged {} — it stores a tag",
+            canonical_shape.size_bits,
+            shape.size_bits
+        );
+
+        // Fail closed on the one claim that has content: nothing in the image
+        // discriminates, so more than one variant is undiscriminable. The
+        // shape API and the interpreter must agree.
+        let mut multi = build(Some(EnumLayoutDescriptor {
+            encoding: EnumTagEncoding::Untagged,
+            size: 8,
+            align: 8,
+            variant_field_offsets: vec![vec![0], vec![]],
+        }));
+        multi.enums[0].variants.push(EnumVariant {
+            name: "Nop".into(),
+            fields: vec![],
+            field_names: Vec::new(),
+        });
+        assert!(multi.enum_layout_shape(EnumId::new(0)).is_err());
+        let multi_interp = Interpreter::with_module(&multi);
+        assert_eq!(
+            multi_interp
+                .enum_layout(&enum_ty, b(0))
+                .err()
+                .expect("a multi-variant untagged descriptor is undiscriminable")
+                .code,
+            InterpretErrorCode::TypeError
         );
     }
 
