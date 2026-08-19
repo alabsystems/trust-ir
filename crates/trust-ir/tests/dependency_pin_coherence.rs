@@ -58,8 +58,8 @@ verification for a "pure pin bump" — CANNOT catch it.
 "#;
 
 const CLEAN_REPOSITORY: &str = "https://github.com/alabsystems/clean.git";
-const CLEAN_REVISION: &str = "bc2923ca9a1d0b7ec060803dc922b5e621309378";
-const CLEAN_VERSION: &str = "1.6.0";
+const CLEAN_REVISION: &str = "ea0c5cee951ed4a6e085057f614bc6c98c7ab679";
+const CLEAN_VERSION: &str = "0.1.0";
 const AY_REPOSITORY: &str = "https://github.com/alabsystems/ay.git";
 const AY_REVISION: &str = "ac00c30a825721e7a6dd82043e43d01af35e7b60";
 const AY_VERSION: &str = "0.10.0";

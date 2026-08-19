@@ -310,6 +310,67 @@ pub enum Formula {
         sb: u32,
     },
 
+    /// Convert an IEEE-754 float to a SIGNED two's-complement integer of
+    /// `width` bits, rounding toward the mode's direction.
+    ///
+    /// TOTAL, with the AArch64/Rust saturating reading — this is deliberately
+    /// NOT SMT-LIB's `fp.to_sbv`, which is UNSPECIFIED for NaN and out-of-range
+    /// inputs: NaN converts to 0, and out-of-range values clamp to the type's
+    /// minimum/maximum. `to_smtlib` therefore emits the GUARDED expansion
+    /// (`ite (fp.isNaN ..) 0 (ite (fp.geq ..) MAX ..)`) around `fp.to_sbv`,
+    /// never the bare unspecified operator. A consumer that cannot honour the
+    /// total reading must refuse the node, not approximate it.
+    FpToSbv {
+        rm: Box<Formula>,
+        value: Box<Formula>,
+        /// Result bitvector width.
+        width: u32,
+        /// The OPERAND's format, carried so the guarded lowering can build its
+        /// range bounds in the right sort (SMT-LIB has no sort inference that
+        /// would recover it from the term).
+        eb: u32,
+        sb: u32,
+    },
+
+    /// Unsigned counterpart of [`Formula::FpToSbv`]: NaN -> 0, negative values
+    /// clamp to 0, overflow clamps to the maximum. Same guarded lowering.
+    FpToUbv {
+        rm: Box<Formula>,
+        value: Box<Formula>,
+        /// Result bitvector width.
+        width: u32,
+        /// The OPERAND's format; see [`Formula::FpToSbv`].
+        eb: u32,
+        sb: u32,
+    },
+
+    /// Convert a SIGNED two's-complement bitvector to an IEEE-754 float
+    /// (`((_ to_fp eb sb) rm <bv>)`) — fully specified by SMT-LIB.
+    FpFromSbv {
+        rm: Box<Formula>,
+        value: Box<Formula>,
+        eb: u32,
+        sb: u32,
+    },
+
+    /// Unsigned counterpart (`((_ to_fp_unsigned eb sb) rm <bv>)`).
+    FpFromUbv {
+        rm: Box<Formula>,
+        value: Box<Formula>,
+        eb: u32,
+        sb: u32,
+    },
+
+    /// Convert between IEEE-754 formats (`((_ to_fp eb sb) rm <fp>)`) — FCVT.
+    /// Fully specified by SMT-LIB: NaN propagates, overflow goes to infinity
+    /// under the rounding mode.
+    FpConvert {
+        rm: Box<Formula>,
+        value: Box<Formula>,
+        eb: u32,
+        sb: u32,
+    },
+
     /// Reinterpret an IEEE-754 float term's bits as a `BitVec(eb+sb)`
     /// (`(fp.to_ieee_bv <fp>)`) — the exact inverse of [`Formula::FpFromBits`].
     /// The inner operand is `Float { eb, sb }`-sorted; the result sort is
@@ -490,6 +551,11 @@ impl Formula {
             | Formula::FpIsPositive(a) => vec![a],
             Formula::FpFromBits { bits, .. } => vec![bits],
             Formula::FpToIeeeBv(a) => vec![a],
+            Formula::FpToSbv { rm, value, .. }
+            | Formula::FpToUbv { rm, value, .. }
+            | Formula::FpFromSbv { rm, value, .. }
+            | Formula::FpFromUbv { rm, value, .. }
+            | Formula::FpConvert { rm, value, .. } => vec![rm, value],
             // Floating point — binary
             Formula::FpRem(a, b)
             | Formula::FpMin(a, b)
@@ -618,6 +684,38 @@ impl Formula {
                 sb,
             },
             Formula::FpToIeeeBv(a) => Formula::FpToIeeeBv(Box::new(f(*a))),
+            Formula::FpToSbv { rm, value, width, eb, sb } => Formula::FpToSbv {
+                rm: Box::new(f(*rm)),
+                value: Box::new(f(*value)),
+                width,
+                eb,
+                sb,
+            },
+            Formula::FpToUbv { rm, value, width, eb, sb } => Formula::FpToUbv {
+                rm: Box::new(f(*rm)),
+                value: Box::new(f(*value)),
+                width,
+                eb,
+                sb,
+            },
+            Formula::FpFromSbv { rm, value, eb, sb } => Formula::FpFromSbv {
+                rm: Box::new(f(*rm)),
+                value: Box::new(f(*value)),
+                eb,
+                sb,
+            },
+            Formula::FpFromUbv { rm, value, eb, sb } => Formula::FpFromUbv {
+                rm: Box::new(f(*rm)),
+                value: Box::new(f(*value)),
+                eb,
+                sb,
+            },
+            Formula::FpConvert { rm, value, eb, sb } => Formula::FpConvert {
+                rm: Box::new(f(*rm)),
+                value: Box::new(f(*value)),
+                eb,
+                sb,
+            },
             // Floating point — binary
             Formula::FpRem(a, b) => Formula::FpRem(Box::new(f(*a)), Box::new(f(*b))),
             Formula::FpMin(a, b) => Formula::FpMin(Box::new(f(*a)), Box::new(f(*b))),
@@ -1301,6 +1399,83 @@ impl Formula {
             // width index is carried. The concrete solver lowering / bijection
             // axioms are applied by the `trust-types` ay bridge downstream.
             Formula::FpToIeeeBv(a) => format!("(fp.to_ieee_bv {})", a.to_smtlib()),
+            // The saturating conversions lower to a COMPLETE guarded
+            // expansion, never the bare SMT operator: `fp.to_sbv`/`fp.to_ubv`
+            // are UNSPECIFIED for NaN and out-of-range inputs, while these
+            // nodes are TOTAL with the AArch64 reading (NaN -> 0, out-of-range
+            // -> clamp). Emitting the bare operator would let a solver choose
+            // arbitrary values exactly where the semantics promise saturation.
+            //
+            // Bounds are exact: powers of two are representable in any format
+            // whose exponent range admits them (f32/f64 do for width <= 64),
+            // and each bound is written as `to_fp` of a wider bitvector
+            // literal in the operand's own format, which the node carries.
+            // Boundary subtlety on the low side: overflow is x <= MIN-1, and
+            // in formats too coarse to represent MIN-1 the bound rounds to
+            // MIN — where the guard may fire on x == MIN exactly, but the
+            // clamp value IS the true conversion there, so the answer is
+            // unchanged.
+            Formula::FpToSbv { rm, value, width, eb, sb } => {
+                let w = *width;
+                let x = value.to_smtlib();
+                let rm = rm.to_smtlib();
+                // 2^(w-1) as an unsigned (w+1)-bit literal, in the operand's format.
+                let pos = format!(
+                    "((_ to_fp_unsigned {eb} {sb}) RNE (_ bv{} {}))",
+                    1u128 << (w - 1),
+                    w + 1
+                );
+                // -(2^(w-1)) - 1 as a signed (w+2)-bit literal.
+                let min_minus_one = (1u128 << (w + 2)) - (1u128 << (w - 1)) - 1;
+                let neg = format!(
+                    "((_ to_fp {eb} {sb}) RNE (_ bv{min_minus_one} {}))",
+                    w + 2
+                );
+                let max_bv = format!("(_ bv{} {w})", (1u128 << (w - 1)) - 1);
+                let min_bv = format!("(_ bv{} {w})", 1u128 << (w - 1));
+                format!(
+                    "(ite (fp.isNaN {x}) (_ bv0 {w}) \
+                     (ite (fp.geq {x} {pos}) {max_bv} \
+                     (ite (fp.leq {x} {neg}) {min_bv} \
+                     ((_ fp.to_sbv {w}) {rm} {x}))))"
+                )
+            }
+            Formula::FpToUbv { rm, value, width, eb, sb } => {
+                let w = *width;
+                let x = value.to_smtlib();
+                let rm = rm.to_smtlib();
+                // 2^w as an unsigned (w+1)-bit literal.
+                let pos = format!(
+                    "((_ to_fp_unsigned {eb} {sb}) RNE (_ bv{} {}))",
+                    1u128 << w,
+                    w + 1
+                );
+                // -1.0 in the operand's format.
+                let neg_one =
+                    format!("(fp.neg ((_ to_fp_unsigned {eb} {sb}) RNE (_ bv1 {})))", w + 1);
+                let max_bv = format!("(_ bv{} {w})", (1u128 << w) - 1);
+                format!(
+                    "(ite (fp.isNaN {x}) (_ bv0 {w}) \
+                     (ite (fp.geq {x} {pos}) {max_bv} \
+                     (ite (fp.leq {x} {neg_one}) (_ bv0 {w}) \
+                     ((_ fp.to_ubv {w}) {rm} {x}))))"
+                )
+            }
+            Formula::FpFromSbv { rm, value, eb, sb } => format!(
+                "((_ to_fp {eb} {sb}) {} {})",
+                rm.to_smtlib(),
+                value.to_smtlib()
+            ),
+            Formula::FpFromUbv { rm, value, eb, sb } => format!(
+                "((_ to_fp_unsigned {eb} {sb}) {} {})",
+                rm.to_smtlib(),
+                value.to_smtlib()
+            ),
+            Formula::FpConvert { rm, value, eb, sb } => format!(
+                "((_ to_fp {eb} {sb}) {} {})",
+                rm.to_smtlib(),
+                value.to_smtlib()
+            ),
 
             // Uninterpreted predicate application (EUF). Lowers to a bare symbol
             // when nullary, or `(name arg1 ..)` otherwise. The symbol's
