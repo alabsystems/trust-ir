@@ -17,11 +17,17 @@ trust-ir = { path = "../trust-ir" }
 # Pinned by `rev` (not `branch`) so the verified toolchain is reproducible: a
 # bare `cargo update` cannot silently retarget the SMT backend. Bump the rev
 # deliberately and re-run the conformance + adapter suites when updating ay.
-# The revision below is the adapter's audited frozen AY baseline for the public
-# dependency chain. It is an exact commit pin, not a moving branch; any bump
-# requires rerunning the conformance and adapter suites because a wrong
-# SAT/UNSAT answer could certify a false proof.
-ay = { version = "0.10.0", git = "https://github.com/alabsystems/ay.git", rev = "ac00c30a825721e7a6dd82043e43d01af35e7b60" }
+# The revision below is the adapter's audited AY pin for the public dependency
+# chain. "Audited", not frozen — it is expected to advance regularly; what is
+# fixed is that it is an exact commit, never a moving branch or tag, and that
+# any bump reruns the conformance and adapter suites, because a wrong SAT/UNSAT
+# answer could certify a false proof.
+#
+# It is NOT trust-ir's to move alone: the selected Clean commit co-owns the AY
+# pin in seven declarations, so this rev must equal Clean's. Bumping AY past
+# Clean is refused by scripts/bump-dep-pin.sh — use the `clean-ay` form once
+# Clean has moved.
+ay = { version = "0.15.0", git = "https://github.com/alabsystems/ay.git", rev = "2df1293ceba3b3c03d93e50ae0efa3720be56a43" }
 
 # The BIT-BLAST proof route (`bvblast`). A DIRECT dependency because the `ay`
 # facade does NOT re-export it: `ay::proof_emission` publishes only the
@@ -38,7 +44,7 @@ ay = { version = "0.10.0", git = "https://github.com/alabsystems/ay.git", rev = 
 # catch; that guard inventories this line too. Adds no new transitive
 # dependency: ay-core / ay-sat / num-* / serde / thiserror are already resolved
 # through `ay`.
-ay-proof = { version = "0.10.0", git = "https://github.com/alabsystems/ay.git", rev = "ac00c30a825721e7a6dd82043e43d01af35e7b60" }
+ay-proof = { version = "0.15.0", git = "https://github.com/alabsystems/ay.git", rev = "2df1293ceba3b3c03d93e50ae0efa3720be56a43" }
 
 # Serializes ay's `SerializableProofBundle` — the offline-replayable UNSAT
 # payload captured by `vc::SmtReplayEvidence`. Already in the graph via ay

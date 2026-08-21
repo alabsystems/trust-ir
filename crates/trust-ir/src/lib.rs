@@ -343,7 +343,7 @@ pub use spec_proof::{HarnessEntry, HarnessManifest, HarnessManifestError, link_p
 pub use ty::{
     ClosureTy, EnumDef, EnumLayoutDescriptor, EnumTagEncoding, EnumTagRepr, EnumVariant,
     FatPtrKind, FieldDef, FuncTy, RecordDef, SetRepr, StructDef, StructRepr, Ty,
-    stable_trait_object_id,
+    stable_trait_object_id, stable_vtable_global_name,
 };
 pub use value::{
     BlockId, ClosureTyId, EnumId, FuncId, FuncTyId, PredId, ProofId, ProofTag, RecordId, ScopeData,

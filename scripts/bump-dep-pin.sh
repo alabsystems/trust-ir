@@ -10,20 +10,36 @@
 #   * The only enforcement is a TEST (dependency_pin_coherence.rs). A bumper who
 #     verifies with `check --workspace` cannot see it — no compile step reads
 #     the guard's frozen constants.
-#   * `--locked` cannot see a Clean move at all. The root [patch] rewrites
-#     clean.git to ../clean PATH deps, and path deps emit no `source =` row, so
-#     the root Cargo.lock is byte-identical across a Clean bump.
+#   * `--locked` could not see a Clean move at all while the root [patch]
+#     rewrote clean.git to ../clean PATH deps: path deps emit no `source =`
+#     row, so the root Cargo.lock was byte-identical across a Clean bump.
+#     (Fixed 2026-08-19 — see STALE PRECONDITIONS below.)
 #   * frontend/Cargo.lock is a SEPARATE workspace (frontend/ is `exclude`d from
 #     the root), so it is invisible to every `--workspace` command.
+#
+# TARGET-COMMIT AUTHORITY AFTER THE 2026-08-19 PATCH DELETION
+# -----------------------------------------------------------
+# The workspace root no longer carries
+# `[patch."https://github.com/alabsystems/clean.git"]`; cargo now compiles
+# clean.git AT THE PINNED REV, and the root Cargo.lock records it. Therefore
+# every external Clean check below reads `Cargo.toml` from the immutable target
+# commit. A sibling checkout is only an optional local object cache: its HEAD,
+# index, and working-tree bytes are deliberately irrelevant.
+#
+# A Clean pin move is also no longer a trust-ir-local transaction: ay and
+# trust-cg reach Clean ONLY through trust-ir-build's declaration, and ty
+# declares it directly, so all four must move together. Verify the result with
+# `ty-mcc-drift-guard --root ~` (in ty), not with this script alone.
 #
 # That combination shipped a partial move three times. The legs are enumerated
 # machine-readably in scripts/pin_rewrite.py; this script drives them as one
 # transaction with an explicit rollback, so a half-applied bump is impossible
 # rather than merely detectable.
 #
-#   scripts/bump-dep-pin.sh clean <40-hex-sha>
-#   scripts/bump-dep-pin.sh ay    <40-hex-sha>
-#   scripts/bump-dep-pin.sh clean-ay <clean-sha> <ay-sha>
+#   scripts/bump-dep-pin.sh clean <40-hex-sha> [--clean-version X.Y.Z]
+#   scripts/bump-dep-pin.sh ay    <40-hex-sha> [--ay-version X.Y.Z]
+#   scripts/bump-dep-pin.sh clean-ay <clean-sha> <ay-sha> \
+#       [--clean-version X.Y.Z] [--ay-version X.Y.Z]
 #
 # Phases: A preconditions (read-only) -> B stage -> C backup -> D install
 #         -> E refresh locks -> F verify. Any failure after D rolls the working
@@ -39,29 +55,40 @@ cd "$ROOT"
 
 PIN_REWRITE="$ROOT/scripts/pin_rewrite.py"
 TARGO_RUNNER="$ROOT/scripts/run-targo.sh"
-CARGO_CLEAN_SIBLING="$ROOT/../clean"
-CLEAN_SIBLING="${TRUST_IR_CLEAN_SIBLING:-$CARGO_CLEAN_SIBLING}"
+CLEAN_OBJECT_REPO="${TRUST_IR_CLEAN_REPO:-${TRUST_IR_CLEAN_SIBLING:-$ROOT/../clean}}"
 
 usage() {
     cat >&2 <<'USAGE'
-usage: scripts/bump-dep-pin.sh <clean|ay> <40-hex-sha> [options]
+usage: scripts/bump-dep-pin.sh <clean|ay> <40-hex-sha> [version] [options]
        scripts/bump-dep-pin.sh clean-ay <clean-sha> <ay-sha> [options]
 
   clean-ay                move both pins in one atomic transaction. This is
                           required when the target Clean co-owns a new AY pin;
                           neither single-dependency order can be coherent.
 
+  --clean-version X.Y.Z   explicitly review and move every Clean package-
+                          version leg. Required when the immutable target
+                          Clean commit changes workspace.package.version.
+  --ay-version X.Y.Z      explicitly review and move every AY package-version
+                          leg. Required when target Clean changes its seven
+                          co-owned AY dependency requirements.
+
   --offline               skip the remote-existence probe (the frontend lock
                           refresh still needs the network for a clean bump)
-  --allow-sibling-ahead   accept a ../clean HEAD that is a DESCENDANT of the
-                          rev instead of requiring an exact match
+  --allow-sibling-ahead   deprecated compatibility no-op; immutable target
+                          commits, never sibling HEADs, are authoritative
   --no-guard-test         skip the Rust guard test; the toolchain-free census
                           still runs and still proves every leg coherent
   --dry-run               stage the edits and diff them; change nothing
 
 env:
-  TRUST_IR_CLEAN_SIBLING  alternate spelling/symlink for ../clean; it must
-                          resolve to the checkout Cargo's [patch] compiles
+  TRUST_IR_CLEAN_REPO     optional local Clean object cache. Its HEAD and
+                          working tree are never inspected. The deprecated
+                          TRUST_IR_CLEAN_SIBLING spelling remains accepted.
+
+Version values are exact canonical package versions, not Cargo ranges: use
+`0.2.0`, not `^0.2` or `>=0.2`. The immutable target Clean Cargo.toml must
+advertise the same values or the transaction fails before staging.
 USAGE
     exit 2
 }
@@ -69,10 +96,14 @@ USAGE
 DEP=""
 REV=""
 AY_REV=""
+CLEAN_VERSION=""
+AY_VERSION=""
 OFFLINE=0
 ALLOW_SIBLING_AHEAD=0
 RUN_GUARD_TEST=1
 DRY_RUN=0
+AUTHORITY_CLEAN_VERSION=""
+AUTHORITY_AY_VERSION=""
 
 [[ $# -ge 2 ]] || usage
 DEP="$1"
@@ -86,6 +117,16 @@ else
 fi
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --clean-version)
+            [[ $# -ge 2 ]] || { printf '%s\n' 'missing value for --clean-version' >&2; usage; }
+            CLEAN_VERSION="$2"
+            shift
+            ;;
+        --ay-version)
+            [[ $# -ge 2 ]] || { printf '%s\n' 'missing value for --ay-version' >&2; usage; }
+            AY_VERSION="$2"
+            shift
+            ;;
         --offline) OFFLINE=1 ;;
         --allow-sibling-ahead) ALLOW_SIBLING_AHEAD=1 ;;
         --no-guard-test) RUN_GUARD_TEST=0 ;;
@@ -95,6 +136,25 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+if [[ "$DEP" == "clean" && -n "$AY_VERSION" ]]; then
+    printf '%s\n' 'FAIL: --ay-version is only valid for ay or clean-ay.' >&2
+    exit 1
+fi
+if [[ "$DEP" == "ay" && -n "$CLEAN_VERSION" ]]; then
+    printf '%s\n' 'FAIL: --clean-version is only valid for clean or clean-ay.' >&2
+    exit 1
+fi
+
+SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+if [[ -n "$CLEAN_VERSION" && ! "$CLEAN_VERSION" =~ $SEMVER_RE ]]; then
+    printf 'FAIL: %q is not an exact canonical Clean semantic version (expected X.Y.Z).\n' "$CLEAN_VERSION" >&2
+    exit 1
+fi
+if [[ -n "$AY_VERSION" && ! "$AY_VERSION" =~ $SEMVER_RE ]]; then
+    printf 'FAIL: %q is not an exact canonical AY semantic version (expected X.Y.Z).\n' "$AY_VERSION" >&2
+    exit 1
+fi
 
 case "$DEP" in
     clean) REMOTE="https://github.com/alabsystems/clean.git" ;;
@@ -121,51 +181,98 @@ die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 pin() { python3 -B "$PIN_REWRITE" "$@"; }
 
-validate_sibling_ay_pin() {
-    local target="$1"
-    [[ -f "$CLEAN_SIBLING/Cargo.toml" ]] \
-        || die "no $CLEAN_SIBLING/Cargo.toml — cannot confirm that Clean's
-      co-owned AY pin agrees. The root lock resolves AY through Clean too."
+review_version_move() {
+    local label="$1"
+    local current="$2"
+    local target="$3"
+    local provided="$4"
+    local option="$5"
+
+    if [[ -z "$provided" ]]; then
+        if [[ "$current" != "$target" ]]; then
+            die "target authority changes $label package version from $current to $target.
+      Confirm this separate transaction leg explicitly with $option $target.
+      No file has been staged or modified."
+        fi
+        return
+    fi
+    if [[ "$provided" != "$target" ]]; then
+        die "$option $provided disagrees with immutable target authority $target for $label.
+      The reviewed value must match the target commit exactly; no file has
+      been staged or modified."
+    fi
+}
+
+clean_manifest_at() {
+    local clean_rev="$1"
+    if [[ "$(git -C "$CLEAN_OBJECT_REPO" rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] \
+        && git -C "$CLEAN_OBJECT_REPO" cat-file -e "${clean_rev}^{commit}" 2>/dev/null; then
+        git -C "$CLEAN_OBJECT_REPO" show "${clean_rev}:Cargo.toml" \
+            || die "Clean commit $clean_rev has no readable Cargo.toml"
+        return
+    fi
+
+    if [[ $OFFLINE -eq 1 ]]; then
+        die "offline Clean authority check cannot find commit $clean_rev in
+      $CLEAN_OBJECT_REPO. Fetch that immutable commit into the local object
+      cache, or omit --offline so the script can fetch it into a temporary repo."
+    fi
+
+    local authority="$TMP/clean-authority"
+    if [[ ! -d "$authority/.git" ]]; then
+        git init -q "$authority" || die "cannot create Clean authority repository"
+    fi
+    GIT_TERMINAL_PROMPT=0 git -C "$authority" fetch --depth=1 -q \
+        "https://github.com/alabsystems/clean.git" "$clean_rev" \
+        || die "Clean remote does not serve authority commit $clean_rev"
+    git -C "$authority" show "FETCH_HEAD:Cargo.toml" \
+        || die "Clean commit $clean_rev has no readable Cargo.toml"
+}
+
+validate_clean_commit_ay_pin() {
+    local clean_rev="$1"
+    local target="$2"
+    local manifest
+    manifest="$(clean_manifest_at "$clean_rev")" \
+        || die "cannot read Clean authority commit $clean_rev"
 
     # Match the URL and rev independently of their order on the line. Fail
     # closed on cardinality: six declarations at the right SHA still means an
     # external transaction leg disappeared.
     local declarations count revisions
-    declarations="$(grep 'alabsystems/ay\.git' "$CLEAN_SIBLING/Cargo.toml" \
+    declarations="$(printf '%s\n' "$manifest" | grep 'alabsystems/ay\.git' \
         | grep -o 'rev = "[0-9a-f]\{40\}"' | grep -o '[0-9a-f]\{40\}')"
     count="$(printf '%s\n' "$declarations" \
         | awk 'NF { count += 1 } END { print count + 0 }')"
     revisions="$(printf '%s\n' "$declarations" | awk 'NF' | sort -u)"
     if [[ "$count" -ne 7 ]]; then
-        die "found $count ay.git declarations in $CLEAN_SIBLING/Cargo.toml; expected exactly 7.
+        die "found $count ay.git declarations in Clean $clean_rev:Cargo.toml; expected exactly 7.
       A missing or additional declaration means the external leg shape changed,
       not that the sibling agrees. Check the file and update the
       pattern in this script and in
       crates/trust-ir/tests/dependency_pin_coherence.rs together."
     fi
     if [[ "$revisions" != "$target" ]]; then
-        die "$CLEAN_SIBLING/Cargo.toml co-owns the AY pin and holds:
+        die "Clean $clean_rev:Cargo.toml co-owns the AY pin and holds:
 $(printf '        %s\n' $revisions)
       expected the exact coordinated AY revision $target. A mismatch would
       put two AY graphs in Cargo.lock, so the transaction is refused."
     fi
-}
 
-# Cargo.toml hard-codes every Clean [patch] path under ../clean.  An override
-# may name that checkout through a symlink, but it cannot redirect Cargo.  If
-# validation inspected one checkout while metadata compiled another, a Clean
-# bump could be blessed without ever building the advertised revision.
-if [[ -n "${TRUST_IR_CLEAN_SIBLING+x}" ]]; then
-    VALIDATED_CLEAN_SIBLING="$(cd "$CLEAN_SIBLING" 2>/dev/null && pwd -P)" \
-        || die "TRUST_IR_CLEAN_SIBLING is not an accessible directory: $CLEAN_SIBLING"
-    PATCHED_CLEAN_SIBLING="$(cd "$CARGO_CLEAN_SIBLING" 2>/dev/null && pwd -P)" \
-        || die "Cargo's [patch] checkout is not accessible: $CARGO_CLEAN_SIBLING"
-    [[ "$VALIDATED_CLEAN_SIBLING" == "$PATCHED_CLEAN_SIBLING" ]] \
-        || die "TRUST_IR_CLEAN_SIBLING resolves to $VALIDATED_CLEAN_SIBLING,
-      but Cargo's [patch] table compiles $PATCHED_CLEAN_SIBLING.
-      Arrange TrustIR and Clean as sibling checkouts (or point the override
-      through a symlink to ../clean) so validation and compilation agree."
-fi
+    # The same immutable manifest is the semver authority for BOTH halves of
+    # the coordinated move. Parse TOML rather than grepping version strings:
+    # comments and unrelated dependencies must never satisfy an authority leg.
+    local manifest_file="$TMP/clean-authority-${clean_rev}.toml"
+    local authority
+    printf '%s\n' "$manifest" >"$manifest_file" \
+        || die "cannot materialize Clean authority manifest for validation"
+    authority="$(pin clean-authority --manifest "$manifest_file" --ay-revision "$target")" \
+        || die "Clean $clean_rev package-version authority is invalid"
+    AUTHORITY_CLEAN_VERSION="$(printf '%s\n' "$authority" | sed -n 's/^clean=//p')"
+    AUTHORITY_AY_VERSION="$(printf '%s\n' "$authority" | sed -n 's/^ay=//p')"
+    [[ -n "$AUTHORITY_CLEAN_VERSION" && -n "$AUTHORITY_AY_VERSION" ]] \
+        || die "Clean $clean_rev authority did not yield one Clean and one AY package version"
+}
 
 TMP="$(mktemp -d)"
 STAGE="$TMP/stage"
@@ -229,6 +336,9 @@ say "PHASE A — preconditions for $DEP -> $REV"
 
 REPAIR=0
 ALREADY_COHERENT=0
+CURRENT_CLEAN_VERSION=""
+CURRENT_AY_VERSION=""
+CURRENT_VERSION=""
 if [[ "$DEP" == "clean-ay" ]]; then
     CLEAN_CENSUS_OUT="$(pin census --root "$ROOT" --dep clean 2>&1)"
     CLEAN_CENSUS_CODE=$?
@@ -243,6 +353,11 @@ if [[ "$DEP" == "clean-ay" ]]; then
       inventory assertions in crates/trust-ir/tests/dependency_pin_coherence.rs
       together, then re-run."
     fi
+
+    CURRENT_CLEAN_VERSION="$(pin version-current --root "$ROOT" --dep clean 2>/dev/null)" \
+        || CURRENT_CLEAN_VERSION="<split>"
+    CURRENT_AY_VERSION="$(pin version-current --root "$ROOT" --dep ay 2>/dev/null)" \
+        || CURRENT_AY_VERSION="<split>"
 
     if [[ $CLEAN_CENSUS_CODE -ne 0 || $AY_CENSUS_CODE -ne 0 ]]; then
         REPAIR=1
@@ -275,6 +390,9 @@ else
       together, then re-run."
     fi
 
+    CURRENT_VERSION="$(pin version-current --root "$ROOT" --dep "$DEP" 2>/dev/null)" \
+        || CURRENT_VERSION="<split>"
+
     if [[ $CENSUS_CODE -ne 0 ]]; then
         # The pin is SPLIT across revisions — i.e. someone already hand-edited a
         # subset of the legs. That is the recurring failure itself, so it is a
@@ -296,11 +414,15 @@ else
 fi
 
 if [[ "$DEP" == "clean-ay" ]]; then
-    CONTROLLED_LEGS="$(printf '%s\n%s\n' \
+    CONTROLLED_LEGS="$(printf '%s\n%s\n%s\n%s\n' \
         "$(pin legs --root "$ROOT" --dep clean)" \
-        "$(pin legs --root "$ROOT" --dep ay)" | sort -u)"
+        "$(pin legs --root "$ROOT" --dep ay)" \
+        "$(pin version-legs --root "$ROOT" --dep clean)" \
+        "$(pin version-legs --root "$ROOT" --dep ay)" | sort -u)"
 else
-    CONTROLLED_LEGS="$(pin legs --root "$ROOT" --dep "$DEP")"
+    CONTROLLED_LEGS="$(printf '%s\n%s\n' \
+        "$(pin legs --root "$ROOT" --dep "$DEP")" \
+        "$(pin version-legs --root "$ROOT" --dep "$DEP")" | sort -u)"
 fi
 DIRTY="$(git -C "$ROOT" status --porcelain -- $CONTROLLED_LEGS 2>/dev/null)"
 if [[ -n "$DIRTY" ]]; then
@@ -310,94 +432,85 @@ $DIRTY
       restores these edits rather than discarding them."
 fi
 
-# A.2 — the dependency-specific preconditions. These are the actual
-# bug-catchers: the root [patch] and the sibling Clean checkout's co-ownership of the AY pin both
-# live outside this repository's leg table.
-# A linked `git worktree` has a `.git` FILE pointing at the shared object
-# store, not a `.git` directory. Ask Git whether this is a work tree rather
-# than rejecting the exact checkout shape used for isolated pin gates. This is
-# required for every transaction kind: the root [patch] compiles this checkout
-# while refreshing the lock even when the only pin being moved is AY.
-[[ "$(git -C "$CLEAN_SIBLING" rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] \
-    || die "no Clean sibling checkout at $CLEAN_SIBLING
-      The root [patch] resolves clean.git to that path; without it the
-      workspace cannot resolve at all. Set TRUST_IR_CLEAN_SIBLING."
-
-SIBLING_DIRTY="$(git -C "$CLEAN_SIBLING" status --porcelain --untracked-files=all)"
-if [[ -n "$SIBLING_DIRTY" ]]; then
-    die "$CLEAN_SIBLING has uncommitted changes:
-$(printf '        %s\n' "$SIBLING_DIRTY")
-      The root [patch] compiles those working-tree bytes, not an advertised
-      commit. Refusing to certify a pin against a different source tree; use a
-      clean isolated sibling checkout for the bump."
-fi
-
+# A.2 — dependency-specific authority checks. Clean co-owns the AY pin, but
+# the authority is the immutable Clean commit selected by the transaction (or
+# the currently frozen Clean commit for an AY-only move). Never inspect an
+# ambient sibling HEAD or working tree: neither is compiled after the path
+# patch was removed, and making it authoritative recreates the SCC pin cycle.
 if [[ "$DEP" == "clean" || "$DEP" == "clean-ay" ]]; then
-    git -C "$CLEAN_SIBLING" rev-parse --verify --quiet "${REV}^{commit}" >/dev/null \
-        || die "$CLEAN_SIBLING does not contain $REV.
-      The root [patch] is a PATH dep: cargo compiles the sibling's WORKING
-      TREE, not the pinned revision, so a pin the sibling lacks is a pin
-      nothing builds. Fetch and check it out first (this script will never
-      mutate a sibling repository):
-          git -C $CLEAN_SIBLING fetch origin
-          git -C $CLEAN_SIBLING checkout $REV"
-
-    SIBLING_HEAD="$(git -C "$CLEAN_SIBLING" rev-parse HEAD)"
-    if [[ "$SIBLING_HEAD" != "$REV" ]]; then
-        if [[ $ALLOW_SIBLING_AHEAD -eq 1 ]] \
-            && git -C "$CLEAN_SIBLING" merge-base --is-ancestor "$REV" HEAD; then
-            warn "--allow-sibling-ahead: $CLEAN_SIBLING is at $SIBLING_HEAD,
-      a DESCENDANT of the pin $REV. The workspace therefore compiles code
-      NEWER than what downstream git consumers will resolve."
-        else
-            die "$CLEAN_SIBLING is at $SIBLING_HEAD, not $REV.
-      Because the [patch] is a PATH dep, the workspace would compile the
-      sibling's working tree while the manifests advertise a different
-      revision. Align them first:
-          git -C $CLEAN_SIBLING checkout $REV
-      (or pass --allow-sibling-ahead if the sibling is deliberately ahead)"
-        fi
-    fi
-
     if [[ "$DEP" == "clean-ay" ]]; then
         # The target Clean already co-owns the target AY pin. Validate that
         # external leg before installing either half of the coordinated move.
-        validate_sibling_ay_pin "$AY_REV"
+        validate_clean_commit_ay_pin "$REV" "$AY_REV"
     else
         # A Clean-only transaction is sound only when the target Clean retains
-        # TrustIR's current AY authority. If the sibling already co-owns a new
+        # TrustIR's current AY authority. If the target commit co-owns a new
         # AY revision, refreshing Cargo.lock here would resolve a split graph
         # before the single-dependency census has any chance to notice it.
         FROZEN_AY_REV="$(pin current --root "$ROOT" --dep ay)" \
             || die "cannot determine the frozen AY revision before the Clean bump"
-        validate_sibling_ay_pin "$FROZEN_AY_REV"
+        validate_clean_commit_ay_pin "$REV" "$FROZEN_AY_REV"
     fi
 
 else
-    # An AY-only move must still compile the exact Clean revision advertised by
-    # TrustIR. Otherwise `cargo metadata` validates an ambient sibling HEAD and
-    # the resulting lock can be blessed without ever building the frozen Clean
-    # authority recorded in the manifests.
+    # An AY-only move must agree with the exact frozen Clean commit advertised
+    # by TrustIR. This reads commit content, not an ambient checkout.
     FROZEN_CLEAN_REV="$(pin current --root "$ROOT" --dep clean)" \
         || die "cannot determine the frozen Clean revision before the AY bump"
-    git -C "$CLEAN_SIBLING" rev-parse --verify --quiet "${FROZEN_CLEAN_REV}^{commit}" >/dev/null \
-        || die "$CLEAN_SIBLING does not contain frozen Clean revision $FROZEN_CLEAN_REV"
-    SIBLING_HEAD="$(git -C "$CLEAN_SIBLING" rev-parse HEAD)"
-    if [[ "$SIBLING_HEAD" != "$FROZEN_CLEAN_REV" ]]; then
-        if [[ $ALLOW_SIBLING_AHEAD -eq 1 ]] \
-            && git -C "$CLEAN_SIBLING" merge-base --is-ancestor "$FROZEN_CLEAN_REV" HEAD; then
-            warn "--allow-sibling-ahead: $CLEAN_SIBLING is at $SIBLING_HEAD,
-      a DESCENDANT of frozen Clean $FROZEN_CLEAN_REV. The workspace therefore
-      compiles Clean code newer than what TrustIR advertises."
-        else
-            die "$CLEAN_SIBLING is at $SIBLING_HEAD, not frozen Clean $FROZEN_CLEAN_REV.
-      Align the path-patched checkout before moving AY, or explicitly pass
-      --allow-sibling-ahead for a non-public preparation run."
-        fi
-    fi
+    # AY leg 6: the frozen Clean commit's Cargo.toml pins AY too.
+    validate_clean_commit_ay_pin "$FROZEN_CLEAN_REV" "$REV"
+fi
 
-    # AY leg 6: the sibling Clean checkout's Cargo.toml pins AY too.
-    validate_sibling_ay_pin "$REV"
+# A.2.1 — package versions are explicit, reviewed transaction legs. The
+# immutable Clean manifest supplies both expected values. An omitted option is
+# accepted only when that value is unchanged; a real semver move must be named
+# on the command line so a revision bump cannot silently broaden dependency
+# resolution.
+if [[ "$DEP" == "clean-ay" ]]; then
+    review_version_move Clean "$CURRENT_CLEAN_VERSION" \
+        "$AUTHORITY_CLEAN_VERSION" "$CLEAN_VERSION" --clean-version
+    review_version_move AY "$CURRENT_AY_VERSION" \
+        "$AUTHORITY_AY_VERSION" "$AY_VERSION" --ay-version
+    if [[ "$CURRENT_CLEAN_VERSION" != "$AUTHORITY_CLEAN_VERSION" || \
+          "$CURRENT_AY_VERSION" != "$AUTHORITY_AY_VERSION" ]]; then
+        ALREADY_COHERENT=0
+        printf 'moving Clean package version: %s -> %s\n' \
+            "$CURRENT_CLEAN_VERSION" "$AUTHORITY_CLEAN_VERSION"
+        printf 'moving AY package version:    %s -> %s\n' \
+            "$CURRENT_AY_VERSION" "$AUTHORITY_AY_VERSION"
+    fi
+elif [[ "$DEP" == "clean" ]]; then
+    FROZEN_AY_VERSION="$(pin version-current --root "$ROOT" --dep ay)" \
+        || die "cannot determine the frozen AY package version before the Clean bump"
+    if [[ "$AUTHORITY_AY_VERSION" != "$FROZEN_AY_VERSION" ]]; then
+        die "target Clean changes its co-owned AY package version from $FROZEN_AY_VERSION to $AUTHORITY_AY_VERSION.
+      Use clean-ay with both revisions and both reviewed version options."
+    fi
+    review_version_move Clean "$CURRENT_VERSION" \
+        "$AUTHORITY_CLEAN_VERSION" "$CLEAN_VERSION" --clean-version
+    if [[ "$CURRENT_VERSION" != "$AUTHORITY_CLEAN_VERSION" ]]; then
+        ALREADY_COHERENT=0
+        printf 'moving Clean package version: %s -> %s\n' \
+            "$CURRENT_VERSION" "$AUTHORITY_CLEAN_VERSION"
+    fi
+else
+    FROZEN_CLEAN_VERSION="$(pin version-current --root "$ROOT" --dep clean)" \
+        || die "cannot determine the frozen Clean package version before the AY bump"
+    if [[ "$AUTHORITY_CLEAN_VERSION" != "$FROZEN_CLEAN_VERSION" ]]; then
+        die "frozen Clean authority advertises package version $AUTHORITY_CLEAN_VERSION but TrustIR holds $FROZEN_CLEAN_VERSION.
+      Repair the Clean authority before moving AY."
+    fi
+    review_version_move AY "$CURRENT_VERSION" \
+        "$AUTHORITY_AY_VERSION" "$AY_VERSION" --ay-version
+    if [[ "$CURRENT_VERSION" != "$AUTHORITY_AY_VERSION" ]]; then
+        ALREADY_COHERENT=0
+        printf 'moving AY package version: %s -> %s\n' \
+            "$CURRENT_VERSION" "$AUTHORITY_AY_VERSION"
+    fi
+fi
+
+if [[ $ALLOW_SIBLING_AHEAD -eq 1 ]]; then
+    warn "--allow-sibling-ahead is deprecated and ignored; immutable Clean commit content is authoritative"
 fi
 
 # A.3 — the revision must exist on the remote, or downstream git consumers
@@ -431,7 +544,7 @@ fi
 
 # The deferred no-op return (see PHASE A). Reached only after EVERY
 # precondition above has passed, so "nothing to do" now means the in-repo legs
-# AND the external ones (sibling checkout, sibling AY co-ownership, remote
+# AND the external ones (Clean commit AY co-ownership, remote
 # reachability) were all confirmed — not merely that the in-repo legs agree
 # with each other.
 if [[ $ALREADY_COHERENT -eq 1 ]]; then
@@ -447,11 +560,26 @@ fi
 # --- PHASE B: stage the rewrites (still nothing installed) -------------------
 say "PHASE B — staging rewrites under $STAGE"
 if [[ "$DEP" == "clean-ay" ]]; then
+    VERSION_ARGS=()
+    if [[ -n "$CLEAN_VERSION" ]]; then
+        VERSION_ARGS+=(--clean-version-to "$CLEAN_VERSION")
+    fi
+    if [[ -n "$AY_VERSION" ]]; then
+        VERSION_ARGS+=(--ay-version-to "$AY_VERSION")
+    fi
     STAGED="$(pin apply-clean-ay --root "$ROOT" --clean-to "$REV" \
-        --ay-to "$AY_REV" --stage-dir "$STAGE")" \
+        --ay-to "$AY_REV" ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"} \
+        --stage-dir "$STAGE")" \
         || die "coordinated staging failed; the working tree was not touched"
 else
-    STAGED="$(pin apply --root "$ROOT" --dep "$DEP" --to "$REV" --stage-dir "$STAGE")" \
+    VERSION_ARGS=()
+    if [[ "$DEP" == "clean" && -n "$CLEAN_VERSION" ]]; then
+        VERSION_ARGS+=(--version-to "$CLEAN_VERSION")
+    elif [[ "$DEP" == "ay" && -n "$AY_VERSION" ]]; then
+        VERSION_ARGS+=(--version-to "$AY_VERSION")
+    fi
+    STAGED="$(pin apply --root "$ROOT" --dep "$DEP" --to "$REV" \
+        ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"} --stage-dir "$STAGE")" \
         || die "staging failed; the working tree was not touched"
 fi
 printf '%s\n' "$STAGED"
@@ -492,9 +620,8 @@ while IFS= read -r relative; do
 done <<<"$STAGED"
 
 # --- PHASE E: refresh the lockfiles ------------------------------------------
-# The root lock is refreshed for BOTH dependencies. For a Clean move it is
-# normally byte-identical (the [patch] absorbs the revision) — refresh anyway,
-# because the sibling's own dependency graph is recorded there.
+# The root lock is refreshed for BOTH dependencies. Since the path patch was
+# removed it records the selected Clean revision and Clean's dependency graph.
 say "PHASE E — refreshing lockfiles"
 cargo metadata --format-version 1 --all-features \
     --manifest-path "$ROOT/Cargo.toml" >/dev/null \
@@ -527,7 +654,13 @@ fi
 
 if [[ $REPAIR -eq 0 ]]; then
     if [[ "$DEP" == "clean-ay" ]]; then
-        for OLD_REV in "$CURRENT_CLEAN" "$CURRENT_AY"; do
+        for OLD_NEW_REV in "$CURRENT_CLEAN $REV" "$CURRENT_AY $AY_REV"; do
+            read -r OLD_REV NEW_REV <<<"$OLD_NEW_REV"
+            # A coordinated transaction can move only one authority (for
+            # example, a new Clean commit that retains the exact AY pin).
+            # In that case the unchanged revision is still authoritative, so
+            # every controlled occurrence is expected rather than stale.
+            [[ "$OLD_REV" == "$NEW_REV" ]] && continue
             STALE="$(git -C "$ROOT" grep -l -F -e "$OLD_REV" -- . ':!*.lock' 2>/dev/null)"
             if [[ -n "$STALE" ]]; then
                 warn "the previous revision $OLD_REV still appears in:

@@ -65,9 +65,48 @@ impl core::fmt::Display for FatPtrKind {
 ///
 /// The hash is 32-bit FNV-1a over the UTF-8 bytes, fixed here as part of the
 /// convention (platform/version-stable; deliberately NOT `std::hash`).
-/// Collisions across *distinct* def paths are the frontend's hazard to
-/// tripwire (keep a def-path → id map per module and fail closed on any
-/// collision).
+///
+/// # TWO collision directions — a frontend must close BOTH
+///
+/// This paragraph used to name only direction (1). That was not merely
+/// incomplete: it read as the whole obligation, a frontend implemented exactly
+/// what it said, and direction (2) shipped as a live fail-open (below). The two
+/// directions are:
+///
+/// * **(1) two distinct KEYS collapse to one id.** The hash is 32 bits, so
+///   distinct def-path strings can land on the same `trait_id`. This is the
+///   frontend's hazard to tripwire: keep a per-module `id → key` map and fail
+///   closed when an id arrives bearing a key other than the one already
+///   recorded for it.
+/// * **(2) two distinct ENTITIES render to one key.** The renderer that
+///   produces `principal_def_path` may itself be non-injective — two genuinely
+///   different trait objects spelled as the same string. **The map in (1) is
+///   structurally blind to this**, and no strengthening of it helps: both
+///   entities present the *same* key, so the map sees agreement and APPROVES
+///   the merge. Nothing collided at the hash; the distinguishing information
+///   was already gone before the hash was taken.
+///
+/// **The obligation direction (2) imposes is that the key's renderer be
+/// INJECTIVE OVER THE ENTITY.** That is a property of what the key OMITS, not
+/// of the hash, and it is the CALLER's to discharge — this mint receives a
+/// string and cannot audit what it was rendered from. It is the same
+/// requirement [`stable_vtable_global_name`] states for its own components: a
+/// caller passes a closed-grammar key it can show is injective, or fails closed
+/// rather than improvising a spelling.
+///
+/// **The fail-open this records is measured, not hypothetical.** The Trust
+/// frontend implemented the (1) tripwire faithfully and shipped (2) open: its
+/// principal renderer was GENERICS-ERASED, so `dyn Convert<u32>` and
+/// `dyn Convert<u64>` rendered to one def path and minted one `trait_id`. Since
+/// `trait_id` **is** the trait object's type identity in
+/// `FatPtrKind::TraitObject`, the consumer's type comparison then returned TRUE
+/// for two genuinely different types — a path to a false agreement between two
+/// producers of what is supposed to be the same module. The (1) map approved it
+/// at every step: one key, no collision. Closed in `trust` vtable slice 17
+/// (`8b9626a7de`) by rendering the WHOLE existential predicate list (principal
+/// path + non-lifetime arguments + associated-type bindings + auto traits)
+/// instead of a bare principal def path — i.e. by repairing the RENDERER, which
+/// is the only place direction (2) can be repaired.
 pub fn stable_trait_object_id(principal_def_path: &str) -> u32 {
     const FNV_OFFSET: u32 = 0x811c_9dc5;
     const FNV_PRIME: u32 = 0x0100_0193;
@@ -77,6 +116,75 @@ pub fn stable_trait_object_id(principal_def_path: &str) -> u32 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+/// The canonical VTABLE-GLOBAL name mint (vtable slice 3) — the module-global
+/// identity of "the vtable attached by the coercion `Source as dyn Principal`".
+///
+/// Like [`stable_trait_object_id`], this is a CONTENT-derived shared convention:
+/// two producers of the same module (a frontend/oracle differential pair) that
+/// model the same trait-object unsize must reference the SAME initializer-less
+/// external `Global`, so that "two coercions of one `(principal, source)` pair
+/// yield `Load`-equal metadata" — TRUE of every real execution — is stated
+/// structurally on both sides, and never coincidentally.
+///
+/// Unlike the 32-bit `trait_id` (a fixed-width format FIELD), a global NAME is
+/// an unbounded string, so this mint embeds both components VERBATIM instead of
+/// hashing them: name equality then IS key equality, and the collision tripwire
+/// a hashed mint would force on every frontend (per-module map, fail-closed on
+/// two pairs sharing one hash) is unnecessary by construction. Injectivity is
+/// enforced HERE, fail-closed: the separator `$` must not occur in
+/// `source_type_key` (splitting the payload at its LAST `$` then recovers the
+/// pair uniquely, whatever bytes the principal path contains), and empty
+/// components are refused — a mint that cannot state its key mints nothing,
+/// never a sentinel. Callers must pass the principal's UNTRIMMED def path (the
+/// `stable_trait_object_id` spelling discipline) and a CLOSED-grammar canonical
+/// source-type key; a source type outside the caller's canonical grammar must
+/// fail closed at the caller rather than improvise a spelling.
+///
+/// # The same TWO collision directions — and only ONE of them is closed here
+///
+/// See [`stable_trait_object_id`] for the statement of both. Applied to this
+/// mint:
+///
+/// * **(1) two distinct KEYS collapse to one NAME — closed HERE, by
+///   construction.** The components are embedded verbatim and the `$` /
+///   emptiness guards make the payload uniquely splittable, so name equality IS
+///   key equality. This is what the "Injectivity is enforced HERE" sentence
+///   above means, and it is the *only* direction those guards address.
+/// * **(2) two distinct ENTITIES render to one component string — NOT closed
+///   here, and NOT closeable here.** This function receives two strings and has
+///   no access to the principal trait or the source type they claim to denote,
+///   so it cannot tell a faithful rendering from a lossy one. Verbatim
+///   embedding preserves whatever injectivity the caller supplied and
+///   manufactures none.
+///
+/// **Direction (2) is a caller obligation on BOTH components, and it is a
+/// property of what each renderer OMITS.** `principal_def_path` must be
+/// injective over the trait object — the [`stable_trait_object_id`] requirement,
+/// unchanged — and `source_type_key` must be injective over the SOURCE TYPE.
+/// "Closed grammar" is necessary and **not** sufficient: a closed grammar can
+/// still be lossy, and a lossy one merges two distinct coercions onto one vtable
+/// global while every guard here reports success.
+///
+/// Measured instance, the direct twin of slice 17's: `trust`'s source-type
+/// renderer spelled nominal types through a generics-ERASED def path, so
+/// `Vec<i32>` and `Vec<u64>` produced one `source_type_key` and therefore one
+/// vtable global. Closed in `trust` vtable slice 18 by rendering a def path PLUS
+/// recursively rendered generic arguments, with the grammar's unambiguity
+/// CHECKED per component rather than assumed. A caller that cannot show its
+/// renderer injective must fail closed rather than mint.
+pub fn stable_vtable_global_name(
+    principal_def_path: &str,
+    source_type_key: &str,
+) -> Option<String> {
+    if principal_def_path.is_empty() || source_type_key.is_empty() || source_type_key.contains('$')
+    {
+        return None;
+    }
+    Some(format!(
+        "__trust_vtable__{principal_def_path}${source_type_key}__"
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -651,7 +759,8 @@ pub struct FuncTy {
 ///   order/padding is the backend's choice.
 /// - `C` — C-compatible layout (`#[repr(C)]`): fields in declaration order.
 /// - `Transparent` — `#[repr(transparent)]`: a wrapper whose ABI is exactly its
-///   single non-zero-size field.
+///   sole non-1-ZST field, if any. A zero-sized field whose alignment is greater
+///   than one is non-trivial for this rule just like a non-zero-sized field.
 /// - `Packed(align)` — `#[repr(packed(N))]`: field alignment clamped to `N`
 ///   (a power of two; `Packed(1)` is fully packed).
 ///
@@ -665,7 +774,8 @@ pub enum StructRepr {
     Rust,
     /// C-compatible layout (`#[repr(C)]`).
     C,
-    /// Single-field transparent wrapper (`#[repr(transparent)]`).
+    /// Transparent wrapper with at most one non-1-ZST field
+    /// (`#[repr(transparent)]`).
     Transparent,
     /// Packed layout with the given power-of-two alignment clamp.
     Packed(u32),
@@ -2010,6 +2120,50 @@ mod tests {
         assert_ne!(
             stable_trait_object_id("core::fmt::Debug"),
             stable_trait_object_id("core::fmt::Display"),
+        );
+    }
+
+    /// vtable slice 3: the vtable-global name mint is a pinned convention —
+    /// both sides of a differential derive it independently and the names must
+    /// be equal iff the `(principal, source)` pairs are. The literal shape is
+    /// FROZEN; a change here re-keys every minted vtable identity.
+    #[test]
+    fn stable_vtable_global_name_is_pinned_and_injective() {
+        assert_eq!(
+            stable_vtable_global_name("core::fmt::Debug", "i32").as_deref(),
+            Some("__trust_vtable__core::fmt::Debug$i32__"),
+        );
+        // Same pair -> same name; either component differing -> different name.
+        assert_eq!(
+            stable_vtable_global_name("core::fmt::Debug", "i32"),
+            stable_vtable_global_name("core::fmt::Debug", "i32"),
+        );
+        assert_ne!(
+            stable_vtable_global_name("core::fmt::Debug", "i32"),
+            stable_vtable_global_name("core::fmt::Debug", "u32"),
+        );
+        assert_ne!(
+            stable_vtable_global_name("core::fmt::Debug", "i32"),
+            stable_vtable_global_name("core::fmt::Display", "i32"),
+        );
+        // Injectivity across the component boundary: a principal that ends in
+        // what a source key starts with must not merge with the re-split pair.
+        // (`$` never occurs in a canonical source key, so the LAST `$` in the
+        // payload is the one this mint wrote.)
+        assert_ne!(
+            stable_vtable_global_name("a::b", "c(d)"),
+            stable_vtable_global_name("a", "b$c(d)"), // refused outright below
+        );
+        // Fail-closed refusals: empty components, and a `$` in the source key
+        // (which would make the payload ambiguous to re-split).
+        assert_eq!(stable_vtable_global_name("", "i32"), None);
+        assert_eq!(stable_vtable_global_name("core::fmt::Debug", ""), None);
+        assert_eq!(stable_vtable_global_name("core::fmt::Debug", "a$b"), None);
+        // A `$` in the PRINCIPAL is tolerated: the source key carries none, so
+        // splitting at the last `$` still recovers the pair uniquely.
+        assert_eq!(
+            stable_vtable_global_name("weird$path", "i32").as_deref(),
+            Some("__trust_vtable__weird$path$i32__"),
         );
     }
 }

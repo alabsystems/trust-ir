@@ -38,19 +38,16 @@
 #                             FIRE and name it). The Failed rows in that
 #                             fixture are also why the gate is a flag, not a
 #                             default rejection.
-#   7. dependency-pin-coherence — the Clean/AY pin is a SIX-leg atomic move
+#   7. dependency-pin-coherence — the Clean/AY pin is an atomic move
 #                             (both manifests, the AY_REV provenance constant,
 #                             the guard's own frozen constants,
-#                             frontend/Cargo.lock, the root Cargo.lock, and the
-#                             ../clean sibling checkout). This TEST is the only
-#                             thing that catches a partial move: `--locked`
-#                             cannot, because the root [patch] makes clean.git
-#                             a PATH dep and path deps emit no `source =` row,
-#                             so a Clean bump leaves the root lock byte-
-#                             identical; and frontend/ is workspace-`exclude`d,
-#                             so no --workspace command reads its lock. That is
-#                             how a partial move shipped red three times. Move
-#                             a pin with scripts/bump-dep-pin.sh, never by hand.
+#                             frontend/Cargo.lock, and the root Cargo.lock).
+#                             The root lock now records both git authorities;
+#                             the excluded frontend lock and source provenance
+#                             constants still need this dedicated guard. The
+#                             bumper separately checks the selected immutable
+#                             Clean commit's seven co-owned AY declarations.
+#                             Move a pin with scripts/bump-dep-pin.sh, never by hand.
 #                             Gate 0 runs the toolchain-free half of the same
 #                             invariant (scripts/pin_rewrite.py census).
 #   8. wire-format-goldens  — the conformance byte-goldens, i.e. the cross-repo

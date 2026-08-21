@@ -39,6 +39,13 @@ Reader = Callable[[str], str]
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SEMVER_RE = re.compile(
+    r"^(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 CLEAN_URL = r"https://github\.com/alabsystems/clean\.git"
 AY_URL = r"https://github\.com/alabsystems/ay\.git"
@@ -65,6 +72,16 @@ class Leg:
     # source rows spell the revision twice (``?rev=SHA#SHA``); scanning the
     # whole line catches a split between the two halves.
     line_contains: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class VersionLeg:
+    """One reviewed package-version selector that moves with a revision."""
+
+    relpath: str
+    pattern: str
+    note: str
+    expected: int
 
 
 GUARD_TEST = "crates/trust-ir/tests/dependency_pin_coherence.rs"
@@ -103,12 +120,12 @@ CLEAN_LEGS: Tuple[Leg, ...] = (
         relpath="Cargo.lock",
         pattern=rf"(?P<sha>[0-9a-f]{{40}})",
         note=(
-            "root lock -- normally ZERO clean rows, because the root [patch] "
-            "rewrites clean.git to ../clean path deps and path deps emit no "
-            "`source =` line. Any row that DOES appear must match."
+            "root lock -- since the root [patch] was deleted (2026-08-19) this "
+            "records the revision on every clean.git package, so `--locked` is "
+            "now a real second check. ZERO rows here means the patch is back."
         ),
         rewritable=False,
-        minimum=0,
+        minimum=1,
         line_contains="github.com/alabsystems/clean.git",
     ),
 )
@@ -161,21 +178,78 @@ AY_LEGS: Tuple[Leg, ...] = (
 
 LEGS: Dict[str, Tuple[Leg, ...]] = {"clean": CLEAN_LEGS, "ay": AY_LEGS}
 
-REMOTES: Dict[str, str] = {"clean": CLEAN_REMOTE, "ay": AY_REMOTE}
-
-# Legs that live outside this repository and therefore cannot be rewritten or
-# audited by `census`.  bump-dep-pin.sh checks them as preconditions.
-EXTERNAL_LEGS: Dict[str, str] = {
+# Package versions are independent transaction legs. Cargo interprets an exact
+# dependency string such as ``0.1.0`` as the compatible requirement ``^0.1.0``;
+# consequently a target commit that publishes ``0.2.0`` cannot be selected by
+# changing only ``rev``. Keep these patterns separate from the revision table
+# so both named captures remain exact-count anchored.
+VERSION_LEGS: Dict[str, Tuple[VersionLeg, ...]] = {
     "clean": (
-        "../clean working tree MUST be checked out AT the rev -- the root "
-        "[patch] is a PATH dep, so cargo compiles the sibling's working tree, "
-        "not the pinned revision."
+        VersionLeg(
+            relpath="crates/trust-ir/Cargo.toml",
+            pattern=(
+                rf'(?m)^(?=[^#\n]*git = "{CLEAN_URL}")[^#\n]*?'
+                r'version = "(?P<version>[^"]+)"'
+            ),
+            note="clean-kernel dependency requirement",
+            expected=1,
+        ),
+        VersionLeg(
+            relpath="crates/trust-ir-build/Cargo.toml",
+            pattern=(
+                rf'(?m)^(?=[^#\n]*git = "{CLEAN_URL}")[^#\n]*?'
+                r'version = "(?P<version>[^"]+)"'
+            ),
+            note="clean-kernel + clean-mathverse + clean-olean requirements",
+            expected=3,
+        ),
+        VersionLeg(
+            relpath=GUARD_TEST,
+            pattern=r'(?m)^const CLEAN_VERSION: &str = "(?P<version>[^"]+)";$',
+            note="the guard test's frozen Clean package version",
+            expected=1,
+        ),
     ),
     "ay": (
-        "../clean/Cargo.toml CO-OWNS the AY pin (7 declarations). If it "
-        "disagrees the root lock carries two ay graphs and the guard fails; "
-        "an AY-only move requires it already to agree, while a Clean + AY "
-        "move uses bump-dep-pin.sh clean-ay."
+        VersionLeg(
+            relpath="crates/trust-ir-ay/Cargo.toml",
+            pattern=(
+                rf'(?m)^(?=[^#\n]*git = "{AY_URL}")[^#\n]*?'
+                r'version = "(?P<version>[^"]+)"'
+            ),
+            note="ay + ay-proof dependency requirements",
+            expected=2,
+        ),
+        VersionLeg(
+            relpath=GUARD_TEST,
+            pattern=r'(?m)^const AY_VERSION: &str = "(?P<version>[^"]+)";$',
+            note="the guard test's frozen AY package version",
+            expected=1,
+        ),
+    ),
+}
+
+REMOTES: Dict[str, str] = {"clean": CLEAN_REMOTE, "ay": AY_REMOTE}
+
+# Cross-repository legs cannot be rewritten or audited by `census`.
+# bump-dep-pin.sh checks their immutable target-commit content as a
+# precondition; ambient sibling checkout state is never authoritative.
+EXTERNAL_LEGS: Dict[str, str] = {
+    "clean": (
+        "RETIRED 2026-08-19: there is no ../clean working-tree leg any more. "
+        "The root [patch] was deleted, so cargo compiles clean.git AT THE "
+        "PINNED REV. Do NOT check ../clean out at the pin and do NOT follow "
+        "its HEAD -- Clean pins trust-ir back through clean-reflect, so "
+        "chasing HEAD reopens the pin cycle that deletion cut. The rev must "
+        "instead move in ty, ay and trust-cg in the same transaction (ay and "
+        "trust-cg reach Clean only through trust-ir-build's declaration); "
+        "verify with `ty-mcc-drift-guard --root ~`."
+    ),
+    "ay": (
+        "The selected Clean COMMIT's Cargo.toml CO-OWNS the AY pin (7 "
+        "declarations). If it disagrees the root lock carries two ay graphs "
+        "and the guard fails; an AY-only move checks the frozen Clean commit, "
+        "while a Clean + AY move checks the target Clean commit."
     ),
 }
 
@@ -229,6 +303,30 @@ def substitute(text: str, leg: Leg, new_sha: str) -> Tuple[str, int]:
     return "".join(pieces), count
 
 
+def find_versions(text: str, leg: VersionLeg) -> List[str]:
+    """Every package-version selector this leg declares, in file order."""
+
+    return [match.group("version") for match in re.finditer(leg.pattern, text)]
+
+
+def substitute_version(
+    text: str, leg: VersionLeg, new_version: str
+) -> Tuple[str, int]:
+    """Rewrite this leg's version captures; return (text, match count)."""
+
+    pieces: List[str] = []
+    cursor = 0
+    count = 0
+    for match in re.finditer(leg.pattern, text):
+        start, end = match.span("version")
+        pieces.append(text[cursor:start])
+        pieces.append(new_version)
+        cursor = end
+        count += 1
+    pieces.append(text[cursor:])
+    return "".join(pieces), count
+
+
 def check_count(leg: Leg, count: int) -> Optional[str]:
     """Return a violation message if this leg's match count is wrong."""
 
@@ -242,6 +340,18 @@ def check_count(leg: Leg, count: int) -> Optional[str]:
         return (
             f"expected at least {leg.minimum} pinned revision(s), found {count} "
             "-- the pin vanished from this leg"
+        )
+    return None
+
+
+def check_version_count(leg: VersionLeg, count: int) -> Optional[str]:
+    """Return a violation when a reviewed version leg changed shape."""
+
+    if count != leg.expected:
+        return (
+            f"expected exactly {leg.expected} package version selector(s), "
+            f"found {count} -- the declaration shape drifted; update "
+            "scripts/pin_rewrite.py and the guard test together"
         )
     return None
 
@@ -293,6 +403,46 @@ class Census:
         return "\n".join(rows)
 
 
+@dataclass(frozen=True)
+class VersionCensus:
+    dep: str
+    legs: Tuple[LegReport, ...]
+
+    @property
+    def distinct(self) -> Tuple[str, ...]:
+        seen: List[str] = []
+        for leg in self.legs:
+            for version in leg.shas:
+                if version not in seen:
+                    seen.append(version)
+        return tuple(seen)
+
+    @property
+    def coherent(self) -> bool:
+        if any(leg.violation for leg in self.legs):
+            return False
+        return len(self.distinct) == 1 and bool(self.distinct)
+
+    def current(self) -> str:
+        if not self.coherent:
+            raise PinError(
+                f"{self.dep} package version is not a singleton: {self.distinct}"
+            )
+        return self.distinct[0]
+
+    def render(self) -> str:
+        width = max(len(leg.relpath) for leg in self.legs)
+        rows = [f"{self.dep} package-version legs:"]
+        for leg in self.legs:
+            versions = ", ".join(sorted(set(leg.shas))) or "<none>"
+            rows.append(
+                f"  {leg.relpath.ljust(width)}  n={leg.count:<3} {versions}"
+            )
+            if leg.violation is not None:
+                rows.append(f"  {' ' * width}  !! {leg.violation}")
+        return "\n".join(rows)
+
+
 def census(read: Reader, dep: str) -> Census:
     reports: List[LegReport] = []
     for leg in LEGS[dep]:
@@ -309,6 +459,21 @@ def census(read: Reader, dep: str) -> Census:
     return Census(dep=dep, legs=tuple(reports))
 
 
+def version_census(read: Reader, dep: str) -> VersionCensus:
+    reports: List[LegReport] = []
+    for leg in VERSION_LEGS[dep]:
+        versions = find_versions(read(leg.relpath), leg)
+        reports.append(
+            LegReport(
+                relpath=leg.relpath,
+                count=len(versions),
+                shas=tuple(versions),
+                violation=check_version_count(leg, len(versions)),
+            )
+        )
+    return VersionCensus(dep=dep, legs=tuple(reports))
+
+
 #: Build inputs a pin can actually take effect from. Deliberately narrow —
 #: docs, ledgers and design notes quote revisions in prose and must not trip
 #: the complement check, but anything cargo reads must.
@@ -321,11 +486,12 @@ def undeclared_pin_sites(root: Path, dep: str) -> List[Tuple[str, int, str]]:
     The leg table is a WHITELIST, and a whitelist alone cannot notice a pin
     added somewhere it does not list. Every channel inherits that blind spot:
     the census iterates ``LEGS``, the Rust guard ``include_str!``s a fixed file
-    set, the bump script verifies with this same census, and ``--locked``
-    cannot see it either because the root ``[patch]`` collapses every clean.git
-    revision to one path dep. A stray ``rev = "..."`` in some other manifest is
-    therefore a real, silently-stale seventh leg — and the bump script would
-    still print "across every leg" over it.
+    set, and the bump script verifies with this same census. (``--locked`` was
+    blind here too until the root ``[patch]`` was deleted on 2026-08-19 —
+    while it stood, it collapsed every clean.git revision to one path dep and
+    the lock recorded no revision at all.) A stray ``rev = "..."`` in some
+    other manifest is therefore a real, silently-stale extra leg — and the
+    bump script would still print "across every leg" over it.
 
     This is the complement: assert that the only places a pin appears are the
     places we declared. Returns ``(relpath, lineno, line)`` for each offender.
@@ -368,38 +534,139 @@ def undeclared_pin_sites(root: Path, dep: str) -> List[Tuple[str, int, str]]:
 
 
 
-def declared_versions(root: Path, dep: str) -> List[Tuple[str, int, str]]:
-    """Every `version = "X"` paired with this dependency's git URL, by file.
+def clean_authority_versions(manifest: str, ay_revision: str) -> Tuple[str, str]:
+    """Return (Clean, AY) versions certified by an immutable Clean manifest.
 
-    The rev and the package VERSION are separate legs that move together: a
-    rev bump can carry a semver bump (clean 1.2.0 -> 1.3.0 across
-    76a7508e -> 88f9c2c3), and the lockfile then resolves a version the
-    manifests do not declare. `bump-dep-pin.sh` rewrites revs only -- correctly,
-    since a version change is shape drift that must be reviewed -- so without
-    this check the census reports COHERENT while the guard test fails on the
-    version. Returns (relpath, lineno, version).
+    Clean's root manifest is the coordinated transaction authority: its
+    ``workspace.package.version`` is the version every Clean member publishes,
+    and exactly seven ``workspace.dependencies`` entries co-own both AY's
+    revision and package version. Narrow TOML-section parsing avoids accepting
+    commented or similarly-spelled rows, while cardinality remains fail-closed.
     """
 
-    url_plain = (CLEAN_URL if dep == "clean" else AY_URL).replace("\\", "")
-    version_re = re.compile(r'version = "([^"]+)"')
-    found: List[Tuple[str, int, str]] = []
-    for leg in LEGS[dep]:
-        if not leg.rewritable or leg.relpath.endswith(".rs"):
+    if not SHA_RE.fullmatch(ay_revision):
+        raise PinError(f"not a 40-hex AY commit sha: {ay_revision!r}")
+    # TrustIR's supported bootstrap Python is 3.9, before stdlib ``tomllib``.
+    # Parse only the two deliberately narrow TOML surfaces we authorize. A
+    # multiline/aliased/reformatted declaration fails closed and requires a
+    # review of this parser, just like a changed pin-leg regex.
+    section = ""
+    workspace_versions: List[str] = []
+    ay_entries: List[Tuple[str, str, str]] = []
+
+    def without_comment(line: str) -> str:
+        quoted = False
+        escaped = False
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+            elif character == "\\" and quoted:
+                escaped = True
+            elif character == '"':
+                quoted = not quoted
+            elif character == "#" and not quoted:
+                return line[:index]
+        return line
+
+    def field(name: str, line: str) -> Optional[re.Match[str]]:
+        return re.search(rf'(?:^|[,{{])\s*{name}\s*=\s*"([^"]+)"', line)
+    for raw_line in manifest.splitlines():
+        line = without_comment(raw_line).strip()
+        if not line:
             continue
-        try:
-            text = (root / leg.relpath).read_text(encoding="utf-8")
-        except OSError:
+        section_match = re.fullmatch(r"\[([^]]+)\]", line)
+        if section_match:
+            section = section_match.group(1).strip()
             continue
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if url_plain not in line or line.lstrip().startswith("#"):
+        if section == "workspace.package":
+            version_match = re.fullmatch(r'version\s*=\s*"([^"]+)"', line)
+            if version_match:
+                workspace_versions.append(version_match.group(1))
+        elif section == "workspace.dependencies":
+            git_match = field("git", line)
+            if git_match is None or git_match.group(1) != AY_REMOTE:
                 continue
-            m = version_re.search(line)
-            if m:
-                found.append((leg.relpath, lineno, m.group(1)))
-    return found
+            rev_match = field("rev", line)
+            version_match = field("version", line)
+            if rev_match is None or version_match is None:
+                raise PinError(
+                    "target Clean AY dependency declaration must carry one-line "
+                    f"git/version/rev authority: {raw_line.strip()}"
+                )
+            ay_entries.append(
+                (
+                    line.split("=", 1)[0].strip(),
+                    rev_match.group(1),
+                    version_match.group(1),
+                )
+            )
+
+    if len(workspace_versions) != 1:
+        raise PinError(
+            "target Clean Cargo.toml must contain exactly one direct "
+            "workspace.package.version declaration; found "
+            f"{len(workspace_versions)}"
+        )
+    clean_version = workspace_versions[0]
+    if not SEMVER_RE.fullmatch(clean_version):
+        raise PinError(
+            "target Clean workspace.package.version is not a canonical semantic "
+            f"version: {clean_version!r}"
+        )
+    if len(ay_entries) != 7:
+        raise PinError(
+            f"found {len(ay_entries)} ay.git declarations in target Clean "
+            "Cargo.toml; expected exactly 7"
+        )
+
+    revisions = {revision for _, revision, _ in ay_entries}
+    if revisions != {ay_revision}:
+        rendered = ", ".join(sorted(repr(value) for value in revisions))
+        raise PinError(
+            "target Clean Cargo.toml does not co-own the exact coordinated AY "
+            f"revision {ay_revision}; found {rendered}"
+        )
+
+    ay_versions = {version for _, _, version in ay_entries}
+    if len(ay_versions) != 1:
+        rendered = ", ".join(sorted(repr(value) for value in ay_versions))
+        raise PinError(
+            "target Clean Cargo.toml has split AY package versions across its "
+            f"seven declarations: {rendered}"
+        )
+    ay_version = next(iter(ay_versions))
+    if not SEMVER_RE.fullmatch(ay_version):
+        raise PinError(
+            "target Clean AY package version is not a canonical semantic "
+            f"version: {ay_version!r}"
+        )
+    return clean_version, ay_version
 
 
-def plan_edits(read: Reader, dep: str, new_sha: str) -> Dict[str, str]:
+def plan_version_edits(
+    read: Reader, dep: str, new_version: str
+) -> Dict[str, str]:
+    """Return exact-count-anchored package-version rewrites for ``dep``."""
+
+    if not SEMVER_RE.fullmatch(new_version):
+        raise PinError(f"not a canonical semantic version: {new_version!r}")
+    edits: Dict[str, str] = {}
+    for leg in VERSION_LEGS[dep]:
+        text = read(leg.relpath)
+        rewritten, count = substitute_version(text, leg, new_version)
+        violation = check_version_count(leg, count)
+        if violation is not None:
+            raise PinError(f"{leg.relpath}: {violation}")
+        edits[leg.relpath] = rewritten
+    return edits
+
+
+def plan_edits(
+    read: Reader,
+    dep: str,
+    new_sha: str,
+    new_version: Optional[str] = None,
+) -> Dict[str, str]:
     """Return {relpath: rewritten text} for every rewritable leg.
 
     Raises PinError if any leg's match count disagrees with its declaration.
@@ -417,11 +684,20 @@ def plan_edits(read: Reader, dep: str, new_sha: str) -> Dict[str, str]:
         if violation is not None:
             raise PinError(f"{leg.relpath}: {violation}")
         edits[leg.relpath] = rewritten
+    if new_version is not None:
+        def overlay_read(relpath: str) -> str:
+            return edits.get(relpath, read(relpath))
+
+        edits.update(plan_version_edits(overlay_read, dep, new_version))
     return edits
 
 
 def plan_clean_ay_edits(
-    read: Reader, clean_sha: str, ay_sha: str
+    read: Reader,
+    clean_sha: str,
+    ay_sha: str,
+    clean_version: Optional[str] = None,
+    ay_version: Optional[str] = None,
 ) -> Dict[str, str]:
     """Return one coherent staged tree for a coordinated Clean + AY move.
 
@@ -432,12 +708,12 @@ def plan_clean_ay_edits(
     the shared file carries both new revisions.
     """
 
-    edits = plan_edits(read, "clean", clean_sha)
+    edits = plan_edits(read, "clean", clean_sha, clean_version)
 
     def overlay_read(relpath: str) -> str:
         return edits.get(relpath, read(relpath))
 
-    edits.update(plan_edits(overlay_read, "ay", ay_sha))
+    edits.update(plan_edits(overlay_read, "ay", ay_sha, ay_version))
     return edits
 
 
@@ -485,6 +761,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     _add_common(current_parser)
 
+    version_current_parser = sub.add_parser(
+        "version-current",
+        help="print the single current package version; exit 1 if split",
+    )
+    _add_common(version_current_parser)
+
     legs_parser = sub.add_parser(
         "legs", help="print this dependency's leg paths, one per line"
     )
@@ -495,11 +777,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="omit the lockfiles, which cargo refreshes rather than this script",
     )
 
+    version_legs_parser = sub.add_parser(
+        "version-legs", help="print package-version leg paths, one per line"
+    )
+    _add_common(version_legs_parser)
+
+    authority_parser = sub.add_parser(
+        "clean-authority",
+        help="validate an immutable Clean Cargo.toml and print Clean/AY versions",
+    )
+    authority_parser.add_argument("--manifest", required=True, type=Path)
+    authority_parser.add_argument("--ay-revision", required=True)
+
     apply_parser = sub.add_parser(
         "apply", help="stage rewritten legs into --stage-dir (never touches --root)"
     )
     _add_common(apply_parser)
     apply_parser.add_argument("--to", required=True, help="target 40-hex revision")
+    apply_parser.add_argument(
+        "--version-to",
+        default=None,
+        help="reviewed target package version (exact canonical semver)",
+    )
     apply_parser.add_argument(
         "--from",
         dest="from_rev",
@@ -521,15 +820,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pair_parser.add_argument("--clean-to", required=True, help="target Clean revision")
     pair_parser.add_argument("--ay-to", required=True, help="target AY revision")
     pair_parser.add_argument(
+        "--clean-version-to",
+        default=None,
+        help="reviewed target Clean package version",
+    )
+    pair_parser.add_argument(
+        "--ay-version-to",
+        default=None,
+        help="reviewed target AY package version",
+    )
+    pair_parser.add_argument(
         "--stage-dir", required=True, type=Path, help="directory to write into"
     )
 
     args = parser.parse_args(argv)
-    root = args.root.resolve()
-    read = repo_reader(root)
+    root = args.root.resolve() if hasattr(args, "root") else None
+    read = repo_reader(root) if root is not None else None
 
     try:
         if args.command == "census":
+            assert read is not None
             report = census(read, args.dep)
             print(report.render())
             if not report.coherent:
@@ -566,26 +876,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            versions = declared_versions(Path(args.root), args.dep)
-            distinct_versions = {v for _, _, v in versions}
-            if len(distinct_versions) > 1:
+            versions = version_census(read, args.dep)
+            print()
+            print(versions.render())
+            if not versions.coherent:
                 print(
                     f"\nSPLIT PACKAGE VERSION: {args.dep} is declared at "
-                    f"{len(distinct_versions)} different versions "
-                    f"({', '.join(sorted(distinct_versions))}):",
+                    f"{len(versions.distinct)} different versions "
+                    f"({', '.join(sorted(versions.distinct)) or '<none>'}).",
                     file=sys.stderr,
                 )
-                for relpath, lineno, v in versions:
-                    print(f"    {relpath}:{lineno}: version = \"{v}\"", file=sys.stderr)
                 print(
-                    "\nThe revision and the package version are separate legs. A rev bump "
-                    "can carry a semver bump;\nbump-dep-pin.sh moves revs only, so the "
-                    "version must be moved deliberately (and the guard test's\n"
-                    "CLEAN_VERSION / AY_VERSION with it).",
+                    "\nThe revision and package version are separate atomic legs. "
+                    "Repair them with bump-dep-pin.sh and its explicit "
+                    "--clean-version/--ay-version confirmation.",
                     file=sys.stderr,
                 )
                 return 1
-            print(f"\nCOHERENT: every {args.dep} leg pins {report.current()}")
+            print(
+                f"\nCOHERENT: every {args.dep} leg pins {report.current()} "
+                f"at package version {versions.current()}"
+            )
             return 0
 
         if args.command == "legs":
@@ -595,7 +906,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(leg.relpath)
             return 0
 
+        if args.command == "version-legs":
+            for leg in VERSION_LEGS[args.dep]:
+                print(leg.relpath)
+            return 0
+
+        if args.command == "clean-authority":
+            try:
+                manifest = args.manifest.read_text(encoding="utf-8")
+            except OSError as error:
+                raise PinError(
+                    f"cannot read target Clean manifest {args.manifest}: {error}"
+                ) from error
+            clean_version, ay_version = clean_authority_versions(
+                manifest, args.ay_revision
+            )
+            print(f"clean={clean_version}")
+            print(f"ay={ay_version}")
+            return 0
+
         if args.command == "current":
+            assert read is not None
             report = census(read, args.dep)
             if not report.coherent:
                 print(report.render(), file=sys.stderr)
@@ -603,7 +934,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(report.current())
             return 0
 
+        if args.command == "version-current":
+            assert read is not None
+            report = version_census(read, args.dep)
+            if not report.coherent:
+                print(report.render(), file=sys.stderr)
+                return 1
+            print(report.current())
+            return 0
+
         if args.command == "apply":
+            assert read is not None
             if not SHA_RE.match(args.to):
                 print(
                     f"--to must be a full 40-hex commit sha, got {args.to!r}",
@@ -619,7 +960,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         file=sys.stderr,
                     )
                     return 1
-            edits = plan_edits(read, args.dep, args.to)
+            if args.version_to is not None and not SEMVER_RE.fullmatch(args.version_to):
+                print(
+                    "--version-to must be an exact canonical semantic version, "
+                    f"got {args.version_to!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            edits = plan_edits(read, args.dep, args.to, args.version_to)
             stage = args.stage_dir.resolve()
             for relpath, text in sorted(edits.items()):
                 destination = stage / relpath
@@ -629,6 +977,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
 
         if args.command == "apply-clean-ay":
+            assert read is not None
             for label, revision in (("--clean-to", args.clean_to), ("--ay-to", args.ay_to)):
                 if not SHA_RE.match(revision):
                     print(
@@ -636,7 +985,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         file=sys.stderr,
                     )
                     return 2
-            edits = plan_clean_ay_edits(read, args.clean_to, args.ay_to)
+            for label, version in (
+                ("--clean-version-to", args.clean_version_to),
+                ("--ay-version-to", args.ay_version_to),
+            ):
+                if version is not None and not SEMVER_RE.fullmatch(version):
+                    print(
+                        f"{label} must be an exact canonical semantic version, "
+                        f"got {version!r}",
+                        file=sys.stderr,
+                    )
+                    return 2
+            edits = plan_clean_ay_edits(
+                read,
+                args.clean_to,
+                args.ay_to,
+                args.clean_version_to,
+                args.ay_version_to,
+            )
             stage = args.stage_dir.resolve()
             for relpath, staged_text in sorted(edits.items()):
                 destination = stage / relpath

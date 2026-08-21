@@ -413,10 +413,42 @@ impl<'m> Interpreter<'m> {
             .unwrap_or(crate::shape::DEFAULT_POINTER_BITS)
     }
 
+    /// The interpreter's executable byte model is the canonical 64-bit,
+    /// little-endian TrustIR layout. A target-free module selects that model;
+    /// an explicit target must match it exactly. In particular, a triple plus
+    /// pointer width does not carry enough information to guess i686/AVR scalar
+    /// ABI alignment, so those modules are transportable but not executable by
+    /// this reference interpreter.
+    fn require_reference_execution_layout(&self, block: BlockId) -> InterpretResult<()> {
+        let Some(module) = self.module else {
+            return Ok(());
+        };
+        let Some(target) = &module.target_info else {
+            return Ok(());
+        };
+        let pointer_bits = self.pointer_bits();
+        if pointer_bits == crate::shape::DEFAULT_POINTER_BITS
+            && target.endianness == crate::Endianness::Little
+            && module.target_has_canonical_scalar_layout()
+        {
+            Ok(())
+        } else {
+            Err(err(
+                InterpretErrorCode::UnsupportedMemory,
+                block,
+                format!(
+                    "reference execution requires a canonical 64-bit little-endian target layout; got {:?} with {pointer_bits}-bit pointers and {}-endian byte order",
+                    target.triple, target.endianness
+                ),
+            ))
+        }
+    }
+
     /// The executable memory model represents addresses as 64-bit lanes.
     /// Refuse a fat-pointer operation on any explicitly narrower/wider target
     /// instead of silently applying the 16-byte 64-bit layout to it.
     fn require_fat_pointer_layout(&self, block: BlockId) -> InterpretResult<()> {
+        self.require_reference_execution_layout(block)?;
         let pointer_bits = self.pointer_bits();
         let little_endian = self
             .module
@@ -506,6 +538,7 @@ impl<'m> Interpreter<'m> {
         function: &Function,
         args: impl IntoIterator<Item = InterpretValue>,
     ) -> InterpretResult<InterpretOutcome> {
+        self.require_reference_execution_layout(function.entry)?;
         let mut state = ExecState {
             values: BTreeMap::new(),
             memory: MemoryState::with_budget(self.options.mem_budget),
@@ -1252,10 +1285,22 @@ impl<'m> Interpreter<'m> {
             // the lexical region and has no runtime value.
             Inst::Borrow { ptr } | Inst::BorrowMut { ptr } => {
                 let pointee = state.value(block, *ptr)?.clone();
-                let ptr = expect_pointer(&pointee, block, "Borrow")?;
-                let result = InterpretValue {
-                    ty: Ty::Ptr,
-                    kind: InterpretValueKind::Ptr(ptr),
+                // A Borrow over a FAT pointer value is the same pure
+                // pass-through as over a thin one: a reborrow of a fat pointer
+                // (`&*p` for `p: &str` / `&[T]` / `&dyn Tr`) is the identity
+                // on the (data, metadata) pair. The value is passed through
+                // VERBATIM — same ty, both lanes untouched. Neither lane is
+                // read or re-validated here: a `FatPtr` value is validated at
+                // every construction site (`eval_ptr_from_parts` /
+                // `decode_value`), and this arm constructs nothing.
+                let result = if matches!(pointee.kind, InterpretValueKind::FatPtr { .. }) {
+                    pointee
+                } else {
+                    let ptr = expect_pointer(&pointee, block, "Borrow")?;
+                    InterpretValue {
+                        ty: Ty::Ptr,
+                        kind: InterpretValueKind::Ptr(ptr),
+                    }
                 };
                 bind_results(state, block, node, [result])?;
                 Ok(Step::Continue)
@@ -2532,10 +2577,62 @@ impl<'m> Interpreter<'m> {
         }
     }
 
-    /// C-style layout (field offsets, total size, alignment) of a `Ty::Struct`,
-    /// computed from the module's `StructDef`. Fields are laid out in
-    /// declaration order; each is aligned to its natural alignment; the struct
-    /// size is rounded up to the struct alignment (max field alignment, min 1).
+    /// Byte layout (field offsets, total size, alignment) of a `Ty::Struct`.
+    ///
+    /// # A producer-declared layout is NORMATIVE — the same rule `enum_layout` follows
+    ///
+    /// `StructDef::size`, `StructDef::align` and `FieldDef::offset` ARE the struct
+    /// analogue of [`crate::ty::EnumLayoutDescriptor`]: a producer that knows the
+    /// concrete layout fills all three from its own authority (for the rustc
+    /// front-ends, `layout_of` — which REORDERS `repr(Rust)` fields), and
+    /// `Module::ty_layout_shape` in `shape` has always consumed exactly those three
+    /// fields. When they are present this function uses them VERBATIM, after the
+    /// structural re-validation below, instead of synthesizing a layout.
+    ///
+    /// Before this existed, this function ignored `FieldDef::offset` entirely and
+    /// recomputed a declaration-order C layout, so a module could be executed against
+    /// a byte image its own producer contradicts. That is not hypothetical: for
+    /// `struct Mixed { a: u8, b: u64, c: u8 }` rustc lays out `b@0 a@8 c@9` (size 16)
+    /// and the producer emits `gep inbounds i8, ptr %0, 9` for `&s.c`, while the
+    /// synthesized layout placed `c` at 16 and `b` at [8,16) — so byte 9 named a
+    /// byte inside a DIFFERENT field. Crate-wide in clean-kernel a large minority of
+    /// struct defs carrying rustc offsets disagreed with the synthesized rule. The
+    /// disagreement was held off the verdict ledger only by coverage gates, never by
+    /// a layout invariant; deriving both sides from ONE source removes it at the
+    /// root rather than keeping it unobservable.
+    ///
+    /// # Absent, complete, and in between
+    ///
+    /// * `size`/`align` absent and no field offset declared — nothing was claimed.
+    ///   Synthesize the canonical declaration-order C layout (below), byte-for-byte
+    ///   as before. Producers that legitimately cannot know a layout (generic /
+    ///   pre-monomorphization / verifier-lane defs) live here and are unaffected.
+    /// * `size`/`align` present — the layout is DECLARED and is used. A field whose
+    ///   own `offset` is absent is admitted only when it occupies NO BYTES, which is
+    ///   the one case where the missing number is information-free: a zero-sized
+    ///   field addresses nothing, so any in-range placement is the same placement,
+    ///   and it is placed at 0. (This is exactly the state a producer creates when
+    ///   it drops a rustc offset that equals the struct size — rustc's legal
+    ///   placement for a zero-sized field. MEASURED on clean-kernel: 275 of 1,299
+    ///   struct defs are in that state, so treating it as an incoherent descriptor
+    ///   would refuse a fifth of the crate for a number that names no byte.) A
+    ///   field with no declared offset that DOES occupy bytes is unplaceable and
+    ///   fails closed.
+    /// * Anything else — a `size` without an `align` (or the reverse), or field
+    ///   offsets with no declared struct size — is a contradiction no producer in
+    ///   this tree emits. It fails closed rather than being silently completed.
+    ///
+    /// # Re-validation
+    ///
+    /// Modules may be interpreted without validation, so — exactly as `enum_layout`
+    /// does for its descriptor — every structural fact is re-checked here before any
+    /// byte slice is formed: a positive power-of-two alignment, a size that is a
+    /// multiple of it, each field in bounds, each field aligned for its own type
+    /// (clamped by `StructRepr::Packed`, which is precisely a declaration that field
+    /// alignment is clamped), no field over-aligned for the struct, and no two
+    /// fields overlapping. A declared layout that fails any of them is an error, not
+    /// a fallback: falling back would hide the producer's contradiction behind a
+    /// synthesized number, which is the defect this path exists to remove.
     ///
     /// This is the single source of layout truth shared by `byte_size`,
     /// `byte_align`, `encode_value`, and `decode_value`, so the heap round-trip
@@ -2549,7 +2646,174 @@ impl<'m> Interpreter<'m> {
         let def = module
             .struct_def(sid)
             .ok_or_else(|| type_error(block, format!("struct id {} not found in module", sid.0)))?;
-        self.aggregate_layout(def.fields.iter().map(|field| &field.ty), block, "struct")
+        match (def.size, def.align) {
+            (Some(size), Some(align)) => self.declared_struct_layout(ty, def, size, align, block),
+            (None, None) => {
+                if let Some(index) = def.fields.iter().position(|field| field.offset.is_some()) {
+                    return Err(type_error(
+                        block,
+                        format!(
+                            "struct {ty} declares a byte offset for field {index} but no struct size or alignment"
+                        ),
+                    ));
+                }
+                self.aggregate_layout(def.fields.iter().map(|field| &field.ty), block, "struct")
+            }
+            (Some(_), None) | (None, Some(_)) => Err(type_error(
+                block,
+                format!("struct {ty} declares a size without an alignment, or the reverse"),
+            )),
+        }
+    }
+
+    /// The producer-declared branch of [`Self::struct_layout`]: re-validate the
+    /// declared `size`/`align`/`FieldDef::offset` triple and hand it back verbatim.
+    ///
+    /// Split out only so the layout rules stay readable; it has no other caller and
+    /// must not acquire one that skips the presence dispatch above.
+    fn declared_struct_layout(
+        &self,
+        ty: &Ty,
+        def: &crate::ty::StructDef,
+        size: u64,
+        align: u64,
+        block: BlockId,
+    ) -> InterpretResult<StructLayout> {
+        self.require_reference_execution_layout(block)?;
+        if align == 0 || !align.is_power_of_two() || !size.is_multiple_of(align) {
+            return Err(type_error(
+                block,
+                format!("struct {ty} declares an incoherent size {size} / alignment {align}"),
+            ));
+        }
+        // `repr(packed(N))` IS a declaration that every field's alignment is clamped
+        // to N, so the natural-alignment checks below must be taken against the
+        // clamped value or a correct packed layout would be rejected as misaligned.
+        //
+        // Trust (wave-SG): AND THE CLAMP ITSELF IS RE-VALIDATED, for the same reason
+        // every other fact here is — "modules may be interpreted without validation".
+        // `StructRepr::Packed(N)`'s doc says `N` is "a power of two", and
+        // `validate_module` refuses one that is not (`PackedReprInvalidAlign`), but a
+        // module reaches this function through `binary::deserialize_module` (whose
+        // repr tag 3 reads a bare `read_v32`) and through the text parser, and neither
+        // runs the validator. An unchecked clamp is not a harmless oddity: it is the
+        // MODULUS every field-alignment check below is taken against. `Packed(3)`
+        // makes a `u64`'s effective alignment `min(8, 3) = 3` and so ADMITS that
+        // `u64` at byte 3 — a misaligned scalar access on the pinned target, accepted
+        // by the one component that executes bytes. `Packed(0)` is worse in a quieter
+        // way: `min(_, 0) = 0` makes `is_multiple_of(0)` accept offset 0 and nothing
+        // else, and makes `field_align > align` unfalsifiable, so the over-alignment
+        // check silently stops existing. Refuse the descriptor instead; a `Packed(N)`
+        // this tree emits always comes from `rustc`'s `repr().pack`, which is a
+        // power of two by construction, so this refuses nothing real.
+        let clamp = match def.repr {
+            crate::ty::StructRepr::Packed(packed) => {
+                if packed == 0 || !packed.is_power_of_two() {
+                    return Err(type_error(
+                        block,
+                        format!(
+                            "struct {ty} declares repr(packed({packed})): the alignment clamp must be a non-zero power of two"
+                        ),
+                    ));
+                }
+                u64::from(packed)
+            }
+            _ => u64::MAX,
+        };
+        if align > clamp {
+            return Err(type_error(
+                block,
+                format!(
+                    "struct {ty} declares alignment {align} above its repr(packed({clamp})) clamp"
+                ),
+            ));
+        }
+        let mut field_offsets: Vec<(u64, Ty)> = Vec::with_capacity(def.fields.len());
+        let mut field_sizes: Vec<u64> = Vec::with_capacity(def.fields.len());
+        let mut transparent_carrier = None;
+        let mut transparent_nontrivial = 0usize;
+        for (index, field) in def.fields.iter().enumerate() {
+            let field_size = self.byte_size(&field.ty, block)?;
+            let field_align = self.byte_align(&field.ty, block)?.max(1).min(clamp);
+            let offset = match field.offset {
+                Some(offset) => {
+                    if !offset.is_multiple_of(field_align)
+                        || field_align > align
+                        || offset.checked_add(field_size).is_none_or(|end| end > size)
+                    {
+                        return Err(type_error(
+                            block,
+                            format!(
+                                "struct {ty} field {index} at declared offset {offset} ({field_size} bytes, align {field_align}) is out of bounds, misaligned, or over-aligned for declared size {size} / align {align}"
+                            ),
+                        ));
+                    }
+                    offset
+                }
+                // Information-free ONLY at zero size — see the doc comment.
+                None => {
+                    if field_size != 0 {
+                        return Err(type_error(
+                            block,
+                            format!(
+                                "struct {ty} field {index} occupies {field_size} bytes but the declared layout gives it no offset"
+                            ),
+                        ));
+                    }
+                    0
+                }
+            };
+            if def.repr == crate::ty::StructRepr::Transparent
+                && (field_size != 0 || field_align != 1)
+            {
+                transparent_nontrivial += 1;
+                transparent_carrier = Some((field_size, field_align, offset));
+            }
+            field_offsets.push((offset, field.ty.clone()));
+            field_sizes.push(field_size);
+        }
+        for left in 0..field_offsets.len() {
+            for right in left + 1..field_offsets.len() {
+                if byte_ranges_overlap(
+                    field_offsets[left].0,
+                    field_sizes[left],
+                    field_offsets[right].0,
+                    field_sizes[right],
+                ) {
+                    return Err(type_error(
+                        block,
+                        format!(
+                            "struct {ty} declared layout has overlapping fields {left} and {right}"
+                        ),
+                    ));
+                }
+            }
+        }
+        if def.repr == crate::ty::StructRepr::Transparent {
+            // `repr(transparent)` inherits the exact layout of its sole
+            // non-1-ZST field, if any. Size-zero but over-aligned fields are
+            // non-trivial here; counting only bytes would silently admit two
+            // competing ABI carriers. With no carrier, the wrapper is a 1-ZST.
+            let (carrier_size, carrier_align, carrier_offset) =
+                transparent_carrier.unwrap_or((0, 1, 0));
+            if transparent_nontrivial > 1
+                || size != carrier_size
+                || align != carrier_align
+                || carrier_offset != 0
+            {
+                return Err(type_error(
+                    block,
+                    format!(
+                        "struct {ty} declares repr(transparent) but its size {size}, alignment {align}, field count, or representation-bearing field offset does not match its sole non-1-ZST field"
+                    ),
+                ));
+            }
+        }
+        Ok(StructLayout {
+            size,
+            align,
+            field_offsets,
+        })
     }
 
     /// C-style layout (field offsets, total size, alignment) of a `Ty::Tuple`,
@@ -8343,6 +8607,34 @@ mod tests {
     }
 
     #[test]
+    fn scalar_only_execution_also_rejects_a_non_reference_target() {
+        let mut module = Module::new("scalar-32-bit-rejected");
+        module.target_info = Some(crate::TargetInfo {
+            triple: "i686-unknown-linux-gnu".into(),
+            pointer_size: 4,
+            endianness: crate::Endianness::Little,
+            abi: None,
+            struct_passing: Default::default(),
+        });
+        let sig = module.add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut function = Function::new(FuncId::new(0), "scalar32", sig, b(0));
+        let mut block = Block::new(b(0));
+        block.body.push(void(Inst::Return { values: vec![] }));
+        function.blocks.push(block);
+        module.functions.push(function);
+
+        let error = Interpreter::with_module(&module)
+            .execute_func(FuncId::new(0), [])
+            .expect_err("the reference interpreter must not guess a 32-bit ABI");
+        assert_eq!(error.code, InterpretErrorCode::UnsupportedMemory);
+        assert!(error.message.contains("64-bit little-endian"), "{error:?}");
+    }
+
+    #[test]
     fn fat_pointer_from_parts_rejects_malformed_metadata_shape() {
         use crate::FatPtrKind;
 
@@ -8386,6 +8678,114 @@ mod tests {
             error.message.contains("metadata does not inhabit"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn borrow_of_fat_pointer_value_is_a_verbatim_pass_through() {
+        use crate::FatPtrKind;
+
+        // A fat reborrow round-trips: assemble a fat `&str` value over a real
+        // one-byte allocation, `Borrow` it (the `_0 = &(*_1)` mir_built
+        // reborrow shape), `BorrowMut` the result (the `&mut` spelling of the
+        // same pass-through), and prove the value survived VERBATIM — the
+        // returned value still carries the fat ty and both lanes: the data
+        // lane still loads the stored byte and the metadata lane is still the
+        // length. Before this arm the interpreter refused with
+        // "Borrow: expected pointer value, got fatptr<str>".
+        let fat_ty = Ty::FatPtr(FatPtrKind::Str);
+        let mut module = Module::new("borrow-of-fat");
+        let sig = module.add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![fat_ty.clone(), fat_ty.clone(), Ty::U8, Ty::U64],
+            is_vararg: false,
+        });
+        let mut function = Function::new(FuncId::new(0), "reborrow", sig, b(0));
+        let mut block = Block::new(b(0));
+        block.body.push(result(
+            Inst::Alloca {
+                ty: Ty::U8,
+                count: None,
+                align: None,
+            },
+            v(0),
+        ));
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::U8,
+                value: Constant::Int(42),
+            },
+            v(1),
+        ));
+        block.body.push(void(Inst::Store {
+            ty: Ty::U8,
+            ptr: v(0),
+            value: v(1),
+            volatile: false,
+            align: None,
+        }));
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::U64,
+                value: Constant::Int(1),
+            },
+            v(2),
+        ));
+        block.body.push(result(
+            Inst::PtrFromParts {
+                ptr_ty: fat_ty.clone(),
+                metadata_ty: Ty::U64,
+                data: v(0),
+                metadata: v(2),
+            },
+            v(3),
+        ));
+        block.body.push(result(Inst::Borrow { ptr: v(3) }, v(4)));
+        block.body.push(result(Inst::BorrowMut { ptr: v(4) }, v(5)));
+        // Observe both lanes THROUGH the doubly-reborrowed value.
+        block.body.push(result(
+            Inst::PtrData {
+                ptr_ty: fat_ty.clone(),
+                ptr: v(5),
+            },
+            v(6),
+        ));
+        block.body.push(result(
+            Inst::Load {
+                ty: Ty::U8,
+                ptr: v(6),
+                volatile: false,
+                align: None,
+            },
+            v(7),
+        ));
+        block.body.push(result(
+            Inst::PtrMetadata {
+                ptr_ty: fat_ty.clone(),
+                metadata_ty: Ty::U64,
+                ptr: v(5),
+            },
+            v(8),
+        ));
+        block.body.push(void(Inst::Return {
+            values: vec![v(3), v(5), v(7), v(8)],
+        }));
+        function.blocks.push(block);
+        module.functions.push(function);
+
+        let out = Interpreter::with_module(&module)
+            .execute_func(FuncId::new(0), [])
+            .expect("a fat reborrow executes as a pure pass-through");
+        // The reborrowed value IS the assembled fat value, verbatim.
+        assert_eq!(out.returns[0], out.returns[1]);
+        assert_eq!(out.returns[1].ty, fat_ty);
+        assert!(matches!(
+            out.returns[1].kind,
+            InterpretValueKind::FatPtr { .. }
+        ));
+        // Data lane: loading through it still reads the stored byte.
+        assert_eq!(out.returns[2].as_int().unwrap().as_unsigned(), 42);
+        // Metadata lane: still the length.
+        assert_eq!(out.returns[3].as_int().unwrap().as_unsigned(), 1);
     }
 
     #[test]
@@ -10442,6 +10842,799 @@ mod tests {
         assert_eq!(layout.field_offsets[0].0, 0);
         assert_eq!(layout.field_offsets[1].0, 8);
         assert_eq!(layout.field_offsets[2].0, 16);
+    }
+
+    // ===================================================================
+    // The DECLARED struct layout (`StructDef::size`/`align` +
+    // `FieldDef::offset`) — the struct analogue of `EnumLayoutDescriptor`.
+    // ===================================================================
+
+    /// `field(name, ty, offset)` — a `FieldDef` without the ceremony.
+    fn fdef(name: &str, ty: Ty, offset: Option<u64>) -> crate::ty::FieldDef {
+        crate::ty::FieldDef {
+            name: name.into(),
+            ty,
+            offset,
+        }
+    }
+
+    /// A `StructDef` with an explicitly declared (or explicitly absent) layout.
+    fn sdef_with_layout(
+        id: u32,
+        name: &str,
+        fields: Vec<crate::ty::FieldDef>,
+        size: Option<u64>,
+        align: Option<u64>,
+        repr: crate::ty::StructRepr,
+    ) -> crate::ty::StructDef {
+        crate::ty::StructDef {
+            id: crate::value::StructId::new(id),
+            name: name.into(),
+            fields,
+            size,
+            align,
+            repr,
+        }
+    }
+
+    /// THE WITNESS, as source. `struct Mixed { a: u8, b: u64, c: u8 }` is laid
+    /// out by rustc as `b@0 a@8 c@9`, size 16 — it REORDERS by decreasing
+    /// alignment. The declaration-order rule says `a@0 b@8 c@16`, size 24, so
+    /// the producer's `gep inbounds i8, ptr %0, 9` for `&s.c` used to name a
+    /// byte inside `b`. The declared layout is normative and must win.
+    #[test]
+    fn struct_layout_uses_the_declared_offsets_not_declaration_order() {
+        let mut module = Module::new("declared-layout");
+        module.add_struct(sdef_with_layout(
+            0,
+            "Mixed",
+            vec![
+                fdef("a", Ty::U8, Some(8)),
+                fdef("b", Ty::U64, Some(0)),
+                fdef("c", Ty::U8, Some(9)),
+            ],
+            Some(16),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        // Byte-identical field types, no declared layout: the canonical rule.
+        module.add_struct(sdef_with_layout(
+            1,
+            "MixedUndeclared",
+            vec![
+                fdef("a", Ty::U8, None),
+                fdef("b", Ty::U64, None),
+                fdef("c", Ty::U8, None),
+            ],
+            None,
+            None,
+            crate::ty::StructRepr::Rust,
+        ));
+
+        let interp = Interpreter::with_module(&module);
+        let declared = interp
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            .expect("declared layout");
+        assert_eq!(declared.size, 16, "the declared size is rustc's");
+        assert_eq!(declared.align, 8);
+        assert_eq!(
+            declared
+                .field_offsets
+                .iter()
+                .map(|(offset, _)| *offset)
+                .collect::<Vec<_>>(),
+            vec![8, 0, 9],
+            "rustc's reordered offsets, verbatim"
+        );
+
+        // The control: without a declared layout NOTHING changes, and it is a
+        // DIFFERENT answer — so the assertion above cannot be passing by
+        // accident of the two rules agreeing.
+        let canonical = interp
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(1)), b(0))
+            .expect("canonical layout");
+        assert_eq!(canonical.size, 24);
+        assert_eq!(
+            canonical
+                .field_offsets
+                .iter()
+                .map(|(offset, _)| *offset)
+                .collect::<Vec<_>>(),
+            vec![0, 8, 16],
+        );
+    }
+
+    /// The witness EXECUTED, not argued: store `0xAB` through a byte GEP at the
+    /// producer's own displacement for `&s.c` (9) and read `c` back out of the
+    /// whole-struct `Load`. Under the declaration-order rule byte 9 is interior
+    /// to `b`, so `c` would read 0 and `b` would be corrupted.
+    #[test]
+    fn declared_struct_layout_round_trips_a_value_at_the_declared_offsets() {
+        let mut module = Module::new("declared-layout-exec");
+        module.add_struct(sdef_with_layout(
+            0,
+            "Mixed",
+            vec![
+                fdef("a", Ty::U8, Some(8)),
+                fdef("b", Ty::U64, Some(0)),
+                fdef("c", Ty::U8, Some(9)),
+            ],
+            Some(16),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        let struct_ty = Ty::Struct(crate::value::StructId::new(0));
+        module.add_func_type(FuncTy {
+            params: Vec::new(),
+            returns: vec![Ty::U8, Ty::U64],
+            is_vararg: false,
+        });
+
+        let mut function = Function::new(
+            FuncId::new(0),
+            "declared_offsets",
+            crate::FuncTyId::new(0),
+            b(0),
+        );
+        let mut block = Block::new(b(0));
+        // %0 = heap_alloc Mixed
+        block.body.push(result(
+            Inst::HeapAlloc {
+                ty: struct_ty.clone(),
+                count: None,
+                align: None,
+                origin: crate::inst::AllocOrigin::RustHeap,
+            },
+            v(0),
+        ));
+        // Initialize the WHOLE 16-byte image first (padding included, so the
+        // whole-struct Load below never reads an uninitialized byte): two
+        // zeroing u64 stores at +0 and +8.
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::I64,
+                value: Constant::Int(0),
+            },
+            v(1),
+        ));
+        block.body.push(result(
+            Inst::GEP {
+                pointee_ty: Ty::I8,
+                base: v(0),
+                indices: vec![v(1)],
+                inbounds: true,
+            },
+            v(2),
+        ));
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::U64,
+                value: Constant::Int(0),
+            },
+            v(3),
+        ));
+        block.body.push(void(Inst::Store {
+            ty: Ty::U64,
+            ptr: v(2),
+            value: v(3),
+            volatile: false,
+            align: None,
+        }));
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::I64,
+                value: Constant::Int(8),
+            },
+            v(4),
+        ));
+        block.body.push(result(
+            Inst::GEP {
+                pointee_ty: Ty::I8,
+                base: v(0),
+                indices: vec![v(4)],
+                inbounds: true,
+            },
+            v(5),
+        ));
+        block.body.push(void(Inst::Store {
+            ty: Ty::U64,
+            ptr: v(5),
+            value: v(3),
+            volatile: false,
+            align: None,
+        }));
+        // c @9 = 0xAB — the producer's displacement for `&s.c`.
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::I64,
+                value: Constant::Int(9),
+            },
+            v(7),
+        ));
+        block.body.push(result(
+            Inst::GEP {
+                pointee_ty: Ty::I8,
+                base: v(0),
+                indices: vec![v(7)],
+                inbounds: true,
+            },
+            v(8),
+        ));
+        block.body.push(result(
+            Inst::Const {
+                ty: Ty::U8,
+                value: Constant::Int(0xAB),
+            },
+            v(9),
+        ));
+        block.body.push(void(Inst::Store {
+            ty: Ty::U8,
+            ptr: v(8),
+            value: v(9),
+            volatile: false,
+            align: None,
+        }));
+        // %10 = load Mixed %0 ; return (c, b)
+        block.body.push(result(
+            Inst::Load {
+                ty: struct_ty.clone(),
+                ptr: v(0),
+                volatile: false,
+                align: None,
+            },
+            v(10),
+        ));
+        block.body.push(result(
+            Inst::ExtractField {
+                ty: Ty::U8,
+                aggregate: v(10),
+                field: 2,
+            },
+            v(11),
+        ));
+        block.body.push(result(
+            Inst::ExtractField {
+                ty: Ty::U64,
+                aggregate: v(10),
+                field: 1,
+            },
+            v(12),
+        ));
+        block.body.push(void(Inst::Return {
+            values: vec![v(11), v(12)],
+        }));
+        function.blocks.push(block);
+        module.add_function(function);
+
+        let outcome = Interpreter::with_module(&module)
+            .execute_func(FuncId::new(0), [])
+            .expect("declared-layout round trip executes");
+        assert_eq!(
+            int_signed(&outcome.returns[0]) & 0xFF,
+            0xAB,
+            "the byte written at the producer's displacement 9 IS field c"
+        );
+        assert_eq!(
+            int_signed(&outcome.returns[1]),
+            0,
+            "field b at [0,8) is untouched by that write"
+        );
+    }
+
+    /// A field the producer left with NO offset is admitted when — and only
+    /// when — it occupies no bytes. That is the shape rustc's legal
+    /// zero-sized-field placement (`offset == size`) makes producers emit:
+    /// `Arc<T> { ptr, PhantomData, Allocator }` declares size 8 with one real
+    /// offset. MEASURED: 275 of 1,299 clean-kernel struct defs are in this
+    /// state, so it is the common case, not an edge.
+    #[test]
+    fn declared_struct_layout_admits_an_offsetless_zero_sized_field() {
+        let mut module = Module::new("declared-zst");
+        module.add_struct(sdef_with_layout(
+            0,
+            "ArcLike",
+            vec![
+                fdef("ptr", Ty::Ptr, Some(0)),
+                fdef("phantom", Ty::Unit, None),
+            ],
+            Some(8),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        let layout = Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            .expect("zero-sized field needs no declared offset");
+        assert_eq!(layout.size, 8);
+        assert_eq!(layout.field_offsets[0].0, 0);
+        assert_eq!(
+            layout.field_offsets[1].0, 0,
+            "a zero-byte field addresses no byte; its placement is information-free"
+        );
+    }
+
+    /// …and the discrimination control: a field that DOES occupy bytes cannot
+    /// be placed by guessing. Without this the rule above would be "ignore
+    /// missing offsets", which is the silent-divergence direction.
+    #[test]
+    fn declared_struct_layout_refuses_an_offsetless_sized_field() {
+        let mut module = Module::new("declared-missing-offset");
+        module.add_struct(sdef_with_layout(
+            0,
+            "Half",
+            vec![fdef("a", Ty::U64, Some(0)), fdef("b", Ty::U64, None)],
+            Some(16),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        let err = match Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+        {
+            Ok(layout) => panic!(
+                "a sized field with no declared offset is unplaceable, got size {}",
+                layout.size
+            ),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("no offset"), "unexpected error: {err}");
+    }
+
+    /// Every structural fact is re-checked before a byte slice is formed —
+    /// modules are interpretable without validation, exactly as for the enum
+    /// descriptor.
+    #[test]
+    fn declared_struct_layout_refuses_incoherent_declarations() {
+        let cases: Vec<(&str, crate::ty::StructDef, &str)> = vec![
+            (
+                "out of bounds",
+                sdef_with_layout(
+                    0,
+                    "OOB",
+                    vec![fdef("a", Ty::U64, Some(16))],
+                    Some(16),
+                    Some(8),
+                    crate::ty::StructRepr::Rust,
+                ),
+                "out of bounds",
+            ),
+            (
+                "overlap",
+                sdef_with_layout(
+                    0,
+                    "Overlap",
+                    vec![fdef("a", Ty::U64, Some(0)), fdef("b", Ty::U64, Some(0))],
+                    Some(16),
+                    Some(8),
+                    crate::ty::StructRepr::Rust,
+                ),
+                "overlapping fields",
+            ),
+            (
+                "misaligned",
+                sdef_with_layout(
+                    0,
+                    "Misaligned",
+                    vec![fdef("a", Ty::U64, Some(4))],
+                    Some(16),
+                    Some(8),
+                    crate::ty::StructRepr::Rust,
+                ),
+                "misaligned",
+            ),
+            (
+                "over-aligned field",
+                sdef_with_layout(
+                    0,
+                    "OverAligned",
+                    vec![fdef("a", Ty::U64, Some(0))],
+                    Some(8),
+                    Some(1),
+                    crate::ty::StructRepr::Rust,
+                ),
+                "over-aligned",
+            ),
+            (
+                "align is not a power of two",
+                sdef_with_layout(
+                    0,
+                    "BadAlign",
+                    vec![fdef("a", Ty::U8, Some(0))],
+                    Some(6),
+                    Some(3),
+                    crate::ty::StructRepr::Rust,
+                ),
+                "incoherent size",
+            ),
+            (
+                "size is not a multiple of align",
+                sdef_with_layout(
+                    0,
+                    "BadSize",
+                    vec![fdef("a", Ty::U8, Some(0))],
+                    Some(9),
+                    Some(8),
+                    crate::ty::StructRepr::Rust,
+                ),
+                "incoherent size",
+            ),
+            (
+                "size without align",
+                sdef_with_layout(
+                    0,
+                    "HalfDeclared",
+                    vec![fdef("a", Ty::U8, Some(0))],
+                    Some(8),
+                    None,
+                    crate::ty::StructRepr::Rust,
+                ),
+                "without an alignment",
+            ),
+            (
+                "field offsets with no declared size",
+                sdef_with_layout(
+                    0,
+                    "OffsetsOnly",
+                    vec![fdef("a", Ty::U8, Some(0))],
+                    None,
+                    None,
+                    crate::ty::StructRepr::Rust,
+                ),
+                "no struct size",
+            ),
+        ];
+        for (label, def, needle) in cases {
+            let mut module = Module::new("declared-incoherent");
+            module.add_struct(def);
+            let err = match Interpreter::with_module(&module)
+                .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            {
+                Ok(layout) => panic!(
+                    "{label}: expected a refusal, got size {} align {}",
+                    layout.size, layout.align
+                ),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                err.contains(needle),
+                "{label}: refusal did not name '{needle}': {err}"
+            );
+        }
+    }
+
+    /// `repr(packed(N))` IS a declaration that field alignment is clamped, so a
+    /// packed layout's "misaligned" offsets are correct and must be admitted.
+    /// Without this control the misalignment refusal above would be indistinct
+    /// from a gate that refuses every non-natural offset.
+    #[test]
+    fn declared_struct_layout_admits_packed_offsets() {
+        let mut module = Module::new("declared-packed");
+        module.add_struct(sdef_with_layout(
+            0,
+            "Packed",
+            vec![fdef("a", Ty::U8, Some(0)), fdef("b", Ty::U64, Some(1))],
+            Some(9),
+            Some(1),
+            crate::ty::StructRepr::Packed(1),
+        ));
+        let layout = Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            .expect("a repr(packed) layout is not misaligned");
+        assert_eq!(layout.size, 9);
+        assert_eq!(layout.align, 1);
+        assert_eq!(layout.field_offsets[1].0, 1);
+    }
+
+    #[test]
+    fn declared_struct_layout_enforces_the_exact_transparent_carrier() {
+        let rejected = [
+            sdef_with_layout(
+                0,
+                "ShiftedCarrier",
+                vec![fdef("value", Ty::U64, Some(8))],
+                Some(16),
+                Some(8),
+                crate::ty::StructRepr::Transparent,
+            ),
+            sdef_with_layout(
+                0,
+                "TwoCarriers",
+                vec![
+                    fdef("left", Ty::U32, Some(0)),
+                    fdef("right", Ty::U32, Some(4)),
+                ],
+                Some(8),
+                Some(4),
+                crate::ty::StructRepr::Transparent,
+            ),
+        ];
+        for def in rejected {
+            let mut module = Module::new("bad-transparent");
+            module.add_struct(def);
+            let err = match Interpreter::with_module(&module)
+                .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            {
+                Ok(_) => panic!("an incoherent transparent descriptor must fail closed"),
+                Err(err) => err,
+            };
+            assert!(err.to_string().contains("repr(transparent)"), "{err}");
+        }
+
+        let mut module = Module::new("overaligned-transparent-zst");
+        module.add_struct(sdef_with_layout(
+            0,
+            "Marker",
+            vec![],
+            Some(0),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        module.add_struct(sdef_with_layout(
+            1,
+            "Wrapper",
+            vec![
+                fdef(
+                    "marker",
+                    Ty::Struct(crate::value::StructId::new(0)),
+                    Some(0),
+                ),
+                fdef("unit", Ty::Unit, None),
+            ],
+            Some(0),
+            Some(8),
+            crate::ty::StructRepr::Transparent,
+        ));
+        let layout = Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(1)), b(0))
+            .expect("an over-aligned ZST can be the sole transparent carrier");
+        assert_eq!(layout.size, 0);
+        assert_eq!(layout.align, 8);
+    }
+
+    /// Trust (wave-SG): **THE CLAMP IS THE MODULUS, so it is re-validated too.**
+    ///
+    /// The control above proves a `packed(1)` layout is admitted. That control is
+    /// exactly what makes an UNVALIDATED clamp dangerous rather than merely odd:
+    /// every field-alignment check in `declared_struct_layout` is taken modulo
+    /// `min(natural, N)`, so a non-power-of-two `N` does not fail — it silently
+    /// redefines what "aligned" means.
+    ///
+    /// `Packed(3)` is the case the class is named for: a `u64`'s effective
+    /// alignment becomes `min(8, 3) = 3`, and the descriptor that places it at byte
+    /// **3** is accepted by the one component in this tree that executes bytes.
+    /// `Packed(0)` fails quieter and wider — `min(_, 0) = 0` makes
+    /// `is_multiple_of(0)` true only at offset 0, and makes `field_align > align`
+    /// unfalsifiable, so the over-alignment check stops existing altogether.
+    ///
+    /// `validate_module` refuses these (`PackedReprInvalidAlign`), but a module
+    /// reaches the interpreter through `binary::deserialize_module` and through the
+    /// text parser, and neither runs it — which is the same reason this whole path
+    /// re-validates ("modules may be interpreted without validation").
+    ///
+    /// ACCEPT CONTROLS on every valid clamp, so a rule that refused all packing
+    /// would fail here rather than pass the refusals.
+    #[test]
+    fn declared_struct_layout_refuses_a_packed_clamp_that_is_not_a_power_of_two() {
+        for bad in [0u32, 3, 6, 7, 100] {
+            let mut module = Module::new("declared-packed-bad");
+            module.add_struct(sdef_with_layout(
+                0,
+                "BadPacked",
+                vec![fdef("a", Ty::U8, Some(0)), fdef("b", Ty::U64, Some(3))],
+                Some(11),
+                Some(1),
+                crate::ty::StructRepr::Packed(bad),
+            ));
+            let err = match Interpreter::with_module(&module)
+                .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            {
+                Ok(layout) => panic!(
+                    "packed({bad}): expected a refusal, got size {} align {} with field 1 at {}",
+                    layout.size, layout.align, layout.field_offsets[1].0
+                ),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                err.contains("must be a non-zero power of two"),
+                "packed({bad}): refusal did not name the clamp: {err}"
+            );
+        }
+        // ACCEPT CONTROLS: every VALID clamp still lays out, including the one that
+        // makes byte 3 legal. The refusal above is about the clamp, not about packing.
+        for good in [1u32, 2, 4, 8] {
+            let mut module = Module::new("declared-packed-good");
+            module.add_struct(sdef_with_layout(
+                0,
+                "GoodPacked",
+                vec![fdef("a", Ty::U8, Some(0)), fdef("b", Ty::U8, Some(1))],
+                Some(2),
+                Some(1),
+                crate::ty::StructRepr::Packed(good),
+            ));
+            Interpreter::with_module(&module)
+                .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+                .unwrap_or_else(|e| panic!("packed({good}) must lay out: {e}"));
+        }
+    }
+
+    /// Trust (wave-SG): the DISCRIMINATING half of the test above — the EXACT
+    /// descriptor an unvalidated clamp admitted, derived rather than guessed.
+    ///
+    /// Two checks stand between a `u64` and byte 3, and the exploit has to clear
+    /// BOTH: `offset.is_multiple_of(field_align)` and `field_align > align`. Under
+    /// `packed(3)` the `u64`'s effective alignment is `min(8, 3) = 3`, so byte 3 is
+    /// "aligned" — and the second check then only needs the struct's own declared
+    /// `align` to be at least 3. At `align: 1` the descriptor is refused as
+    /// over-aligned, which is why a naive probe reports a PASS that proves nothing;
+    /// at `align: 4` — a perfectly ordinary power of two — nothing refuses it.
+    ///
+    /// MUTATION-PROVED against exactly this: with the clamp validation deleted, the
+    /// interpreter accepts it and places field 1 at byte 3.
+    #[test]
+    fn a_packed_three_descriptor_admits_a_u64_at_byte_three_without_the_clamp_check() {
+        let exploit = || {
+            let mut module = Module::new("packed-three");
+            module.add_struct(sdef_with_layout(
+                0,
+                "PackedThree",
+                vec![fdef("a", Ty::U8, Some(0)), fdef("b", Ty::U64, Some(3))],
+                Some(12),
+                Some(4),
+                crate::ty::StructRepr::Packed(3),
+            ));
+            module
+        };
+        let module = exploit();
+        let err = match Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+        {
+            Ok(layout) => panic!(
+                "packed(3) must be refused before it can call byte 3 aligned; got field 1 at {}",
+                layout.field_offsets[1].0
+            ),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("packed(3)"), "{err}");
+
+        // DISCRIMINATION 1: the refusal is about the CLAMP, not about byte 3. The
+        // same placement under the valid clamp `packed(1)` is legal Rust and lays out.
+        let mut ok = Module::new("packed-one");
+        ok.add_struct(sdef_with_layout(
+            0,
+            "PackedOne",
+            vec![fdef("a", Ty::U8, Some(0)), fdef("b", Ty::U64, Some(3))],
+            Some(11),
+            Some(1),
+            crate::ty::StructRepr::Packed(1),
+        ));
+        let layout = Interpreter::with_module(&ok)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            .expect("packed(1) admits byte 3");
+        assert_eq!(layout.field_offsets[1].0, 3);
+
+        // DISCRIMINATION 2: `packed(0)` is the quieter half. `min(_, 0) = 0` makes
+        // `is_multiple_of(0)` true at offset 0 and makes `field_align > align`
+        // unfalsifiable, so a single over-aligned field sails through with the
+        // over-alignment check silently disabled. A struct declaring align 1 while
+        // storing a `u64` is exactly what that check exists to refuse.
+        let mut zero = Module::new("packed-zero");
+        zero.add_struct(sdef_with_layout(
+            0,
+            "PackedZero",
+            vec![fdef("b", Ty::U64, Some(0))],
+            Some(8),
+            Some(1),
+            crate::ty::StructRepr::Packed(0),
+        ));
+        let err = match Interpreter::with_module(&zero)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+        {
+            Ok(layout) => panic!(
+                "packed(0) must be refused; got align {} with field 0 at {}",
+                layout.align, layout.field_offsets[0].0
+            ),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("packed(0)"), "{err}");
+    }
+
+    /// `repr(packed(N))` clamps the aggregate's alignment as well as its fields.
+    /// The old reader checked only the field-side clamp, so a descriptor could
+    /// claim `packed(1)` while retaining alignment 8 and be handed to consumers as
+    /// though rustc had emitted it.
+    #[test]
+    fn declared_struct_layout_refuses_alignment_above_the_packed_clamp() {
+        let mut module = Module::new("packed-aggregate-align");
+        module.add_struct(sdef_with_layout(
+            0,
+            "PackedButOveraligned",
+            vec![fdef("value", Ty::U64, Some(0))],
+            Some(8),
+            Some(8),
+            crate::ty::StructRepr::Packed(1),
+        ));
+        let err = match Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+        {
+            Ok(_) => panic!("packed(1) cannot declare aggregate alignment 8"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("above its repr(packed(1)) clamp"), "{err}");
+
+        let mut control = Module::new("packed-aggregate-align-control");
+        control.add_struct(sdef_with_layout(
+            0,
+            "PackedOne",
+            vec![fdef("value", Ty::U64, Some(0))],
+            Some(8),
+            Some(1),
+            crate::ty::StructRepr::Packed(1),
+        ));
+        Interpreter::with_module(&control)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(0)), b(0))
+            .expect("the same packed layout at aggregate alignment 1 is coherent");
+    }
+
+    /// The declared size composes: a nested struct contributes ITS declared
+    /// size to the outer bounds check, not a re-synthesized one. `Inner`
+    /// declares 16 bytes while the declaration-order rule would say 9.
+    #[test]
+    fn declared_struct_layout_composes_through_a_nested_struct() {
+        let mut module = Module::new("declared-nested");
+        module.add_struct(sdef_with_layout(
+            0,
+            "Inner",
+            vec![fdef("a", Ty::U8, Some(8)), fdef("b", Ty::U64, Some(0))],
+            Some(16),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        module.add_struct(sdef_with_layout(
+            1,
+            "Outer",
+            vec![
+                fdef("inner", Ty::Struct(crate::value::StructId::new(0)), Some(0)),
+                fdef("tail", Ty::U64, Some(16)),
+            ],
+            Some(24),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        let layout = Interpreter::with_module(&module)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(1)), b(0))
+            .expect("nested declared layout");
+        assert_eq!(layout.size, 24);
+        assert_eq!(layout.field_offsets[1].0, 16);
+
+        // The negative half: if the nested struct's declared 16 bytes were
+        // ignored and its 9-byte declaration-order size used instead, a `tail`
+        // at 8 would look fine. It must not.
+        let mut bad = Module::new("declared-nested-bad");
+        bad.add_struct(sdef_with_layout(
+            0,
+            "Inner",
+            vec![fdef("a", Ty::U8, Some(8)), fdef("b", Ty::U64, Some(0))],
+            Some(16),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        bad.add_struct(sdef_with_layout(
+            1,
+            "Outer",
+            vec![
+                fdef("inner", Ty::Struct(crate::value::StructId::new(0)), Some(0)),
+                fdef("tail", Ty::U64, Some(8)),
+            ],
+            Some(24),
+            Some(8),
+            crate::ty::StructRepr::Rust,
+        ));
+        if let Ok(layout) = Interpreter::with_module(&bad)
+            .struct_layout(&Ty::Struct(crate::value::StructId::new(1)), b(0))
+        {
+            panic!(
+                "the nested struct's DECLARED 16 bytes must bound the outer field, got size {}",
+                layout.size
+            );
+        }
     }
 
     // Aggregates-in-memory: a `Ty::Tuple` has a finite C-style layout (each

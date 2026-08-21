@@ -108,6 +108,67 @@ fn transparent_with_zero_sized_struct_companion_ok() {
 }
 
 #[test]
+fn transparent_counts_an_overaligned_zst_as_nontrivial() {
+    let mut m = Module::new("repr");
+    m.add_struct(StructDef {
+        id: StructId::new(0),
+        name: "OveralignedMarker".into(),
+        fields: vec![],
+        size: Some(0),
+        align: Some(8),
+        repr: StructRepr::Rust,
+    });
+    m.add_struct(StructDef {
+        id: StructId::new(1),
+        name: "BadTransparent".into(),
+        fields: vec![
+            field("value", Ty::I64),
+            field("marker", Ty::Struct(StructId::new(0))),
+        ],
+        size: Some(8),
+        align: Some(8),
+        repr: StructRepr::Transparent,
+    });
+
+    assert!(has(&m, |e| matches!(
+        e,
+        ValidationError::TransparentReprFieldCount {
+            actual_non_zst: 2,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn transparent_accepts_one_overaligned_zst_as_its_sole_nontrivial_field() {
+    let mut m = Module::new("repr");
+    m.add_struct(StructDef {
+        id: StructId::new(0),
+        name: "OveralignedMarker".into(),
+        fields: vec![],
+        size: Some(0),
+        align: Some(8),
+        repr: StructRepr::Rust,
+    });
+    m.add_struct(StructDef {
+        id: StructId::new(1),
+        name: "TransparentMarker".into(),
+        fields: vec![
+            field("marker", Ty::Struct(StructId::new(0))),
+            field("unit", Ty::Unit),
+        ],
+        size: Some(0),
+        align: Some(8),
+        repr: StructRepr::Transparent,
+    });
+
+    assert!(!has(&m, |e| matches!(
+        e,
+        ValidationError::TransparentReprFieldCount { .. }
+    )));
+}
+
+#[test]
 fn transparent_with_unsized_struct_companion_still_rejected() {
     // THE FAIL-CLOSED TWIN, and the reason the widening is safe. `size: None` is what both
     // producers record when rustc's layout query declines — a generic/param-bearing type, an
@@ -305,6 +366,66 @@ fn field_at(name: &str, ty: Ty, offset: u64) -> FieldDef {
         ty,
         offset: Some(offset),
     }
+}
+
+#[test]
+fn target_pinned_layout_declines_an_unrepresented_scalar_abi() {
+    // i686's Rust/LLVM layout aligns f64 to 4 bytes, unlike TrustIR's
+    // canonical 8-byte scalar table. This descriptor is valid i686 layout;
+    // the validator must neither call it misaligned nor silently certify it
+    // from the wrong table. Until TargetInfo carries a data-layout identity,
+    // the only sound answer is an explicit unsupported-layout refusal.
+    let mut m = module_with_layout(
+        vec![field_at("tag", Ty::U8, 0), field_at("value", Ty::F64, 4)],
+        Some(12),
+        Some(4),
+        false,
+    );
+    m.target_info = Some(TargetInfo {
+        triple: "i686-unknown-linux-gnu".into(),
+        pointer_size: 4,
+        endianness: Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    let errors = validate_module(&m);
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        ValidationError::TargetScalarLayoutUnavailable { struct_id: 0, triple }
+            if triple == "i686-unknown-linux-gnu"
+    )));
+    assert!(!errors.iter().any(|error| matches!(
+        error,
+        ValidationError::StructLayoutInconsistent {
+            reason: "field offset is not a multiple of the field's effective alignment",
+            ..
+        }
+    )));
+}
+
+#[test]
+fn target_pinned_layout_declines_a_forged_canonical_triple_width() {
+    // The architecture spelling is not enough: an x86_64 data layout cannot
+    // have 32-bit pointers. Accepting this pair as canonical would let the
+    // claimed width manufacture pointer size/alignment evidence.
+    let mut m = module_with_layout(
+        vec![field_at("tag", Ty::U8, 0), field_at("value", Ty::Ptr, 4)],
+        Some(8),
+        Some(4),
+        false,
+    );
+    m.target_info = Some(TargetInfo {
+        triple: "x86_64-unknown-linux-gnu".into(),
+        pointer_size: 4,
+        endianness: Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    assert!(validate_module(&m).iter().any(|error| matches!(
+        error,
+        ValidationError::TargetScalarLayoutUnavailable { struct_id: 0, triple }
+            if triple == "x86_64-unknown-linux-gnu"
+    )));
 }
 
 #[test]
@@ -835,4 +956,199 @@ fn cross_conv_indirect_call_without_target_info_rejected() {
         e,
         ValidationError::TargetInfoRequired { .. }
     )));
+}
+
+// ===========================================================================
+// Trust (wave-SG): THE FIELD-OFFSET ALIGNMENT RULE.
+//
+// The three checks above police `align`, `size % align` and `offset <= size` —
+// none of which notices a `u64` declared at byte 3. `interpret::struct_layout`
+// re-validates exactly that now the declared layout is NORMATIVE, so an offset
+// this validator passed and the interpreter refuses is a module `validate_module`
+// called well-formed and the executor cannot run.
+//
+// Each REFUSAL is paired with an ACCEPT CONTROL on a byte-identical module
+// differing only in the offset (or only in the repr), without which a rule that
+// rejected every struct would pass every refusal here.
+// ===========================================================================
+
+/// `module_with_layout` with an explicit `StructRepr`, so the packed clamp can be
+/// exercised in both directions.
+fn module_with_repr(
+    fields: Vec<FieldDef>,
+    size: Option<u64>,
+    align: Option<u64>,
+    repr: StructRepr,
+) -> Module {
+    let mut m = Module::new("layout");
+    m.add_struct(StructDef {
+        id: StructId::new(0),
+        name: "S".into(),
+        fields,
+        size,
+        align,
+        repr,
+    });
+    m.target_info = Some(pinned_target());
+    m
+}
+
+fn misaligned(e: &ValidationError) -> bool {
+    matches!(
+        e,
+        ValidationError::StructLayoutInconsistent {
+            struct_id: 0,
+            reason: "field offset is not a multiple of the field's effective alignment"
+        }
+    )
+}
+
+/// **THE GATE.** `#[repr(C)] struct { a: u8, b: u64 }` with `b` declared at byte 3.
+/// Every pre-existing rule is satisfied — align 8 is a power of two, size 16 is a
+/// multiple of it, offset 3 is inside the struct — and the module validated.
+#[test]
+fn target_pinned_unaligned_scalar_field_offset_rejected() {
+    let m = module_with_layout(
+        vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 3)],
+        Some(16),
+        Some(8),
+        true,
+    );
+    assert!(
+        has(&m, misaligned),
+        "a u64 at byte 3 must be refused: {:?}",
+        validate_module(&m)
+    );
+    // ACCEPT CONTROL: the byte-identical module with `b` at its natural offset.
+    let ok = module_with_layout(
+        vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 8)],
+        Some(16),
+        Some(8),
+        true,
+    );
+    assert!(!has(&ok, misaligned), "{:?}", validate_module(&ok));
+}
+
+/// The clamp is a MODEL of `#[repr(packed(N))]`, in BOTH directions — which is what
+/// makes the rule a model rather than a blanket natural-alignment demand.
+#[test]
+fn packed_clamp_admits_what_it_should_and_refuses_what_it_should_not() {
+    let fields = || vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 3)];
+    let packed1 = module_with_repr(fields(), Some(11), Some(1), StructRepr::Packed(1));
+    assert!(
+        !has(&packed1, misaligned),
+        "packed(1) makes byte 3 legal Rust: {:?}",
+        validate_module(&packed1)
+    );
+    let packed4 = module_with_repr(fields(), Some(12), Some(4), StructRepr::Packed(4));
+    assert!(
+        has(&packed4, misaligned),
+        "packed(4) must still refuse byte 3: {:?}",
+        validate_module(&packed4)
+    );
+    let packed4_ok = module_with_repr(
+        vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 4)],
+        Some(12),
+        Some(4),
+        StructRepr::Packed(4),
+    );
+    assert!(
+        !has(&packed4_ok, misaligned),
+        "{:?}",
+        validate_module(&packed4_ok)
+    );
+}
+
+#[test]
+fn packed_clamp_also_bounds_the_declared_struct_alignment() {
+    let bad = module_with_repr(
+        vec![field_at("value", Ty::U64, 0)],
+        Some(8),
+        Some(8),
+        StructRepr::Packed(1),
+    );
+    let over_clamp = |e: &ValidationError| {
+        matches!(
+            e,
+            ValidationError::StructLayoutInconsistent {
+                struct_id: 0,
+                reason: "struct alignment exceeds the repr(packed) clamp"
+            }
+        )
+    };
+    assert!(
+        has(&bad, over_clamp),
+        "packed(1) cannot retain aggregate alignment 8: {:?}",
+        validate_module(&bad)
+    );
+
+    let control = module_with_repr(
+        vec![field_at("value", Ty::U64, 0)],
+        Some(8),
+        Some(1),
+        StructRepr::Packed(1),
+    );
+    assert!(
+        !has(&control, over_clamp),
+        "{:?}",
+        validate_module(&control)
+    );
+}
+
+/// A `Packed(N)` whose `N` is not a power of two is ALREADY refused by
+/// `PackedReprInvalidAlign`. The alignment rule must not compound it with a derived
+/// error computed from a clamp it cannot trust — one malformed repr, one error.
+/// (It is also why the clamp is validated rather than divided by: `Packed(0)` would
+/// otherwise be a modulo by zero.)
+#[test]
+fn an_invalid_packed_clamp_produces_one_error_not_a_cascade() {
+    for bad in [0u32, 3, 6] {
+        let m = module_with_repr(
+            vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 3)],
+            Some(11),
+            Some(1),
+            StructRepr::Packed(bad),
+        );
+        assert!(
+            has(&m, |e| matches!(
+                e,
+                ValidationError::PackedReprInvalidAlign { struct_id: 0, .. }
+            )),
+            "packed({bad}) must be refused as a repr: {:?}",
+            validate_module(&m)
+        );
+        assert!(
+            !has(&m, misaligned),
+            "packed({bad}) must not ALSO produce a derived alignment error: {:?}",
+            validate_module(&m)
+        );
+    }
+}
+
+/// The rule fires only on an EXPLICITLY-declared offset. `None` is the honest
+/// absent-fill a producer records when its layout query declines, and flagging it
+/// would reject every generic struct in the corpus.
+#[test]
+fn an_absent_offset_is_never_flagged_as_misaligned() {
+    let m = module_with_layout(
+        vec![field("a", Ty::U8), field("b", Ty::U64)],
+        Some(16),
+        Some(8),
+        true,
+    );
+    assert!(!has(&m, misaligned), "{:?}", validate_module(&m));
+}
+
+/// Same gating as every other rule in this pass: target-independent IR may carry
+/// partial or placeholder layouts, so the rule is silent without a pinned target.
+#[test]
+fn misaligned_offset_not_flagged_without_target() {
+    let mut m = module_with_layout(
+        vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 3)],
+        Some(16),
+        Some(8),
+        false,
+    );
+    m.target_info = None;
+    assert!(!has(&m, misaligned), "{:?}", validate_module(&m));
 }

@@ -684,14 +684,26 @@ impl Formula {
                 sb,
             },
             Formula::FpToIeeeBv(a) => Formula::FpToIeeeBv(Box::new(f(*a))),
-            Formula::FpToSbv { rm, value, width, eb, sb } => Formula::FpToSbv {
+            Formula::FpToSbv {
+                rm,
+                value,
+                width,
+                eb,
+                sb,
+            } => Formula::FpToSbv {
                 rm: Box::new(f(*rm)),
                 value: Box::new(f(*value)),
                 width,
                 eb,
                 sb,
             },
-            Formula::FpToUbv { rm, value, width, eb, sb } => Formula::FpToUbv {
+            Formula::FpToUbv {
+                rm,
+                value,
+                width,
+                eb,
+                sb,
+            } => Formula::FpToUbv {
                 rm: Box::new(f(*rm)),
                 value: Box::new(f(*value)),
                 width,
@@ -1415,7 +1427,13 @@ impl Formula {
             // MIN — where the guard may fire on x == MIN exactly, but the
             // clamp value IS the true conversion there, so the answer is
             // unchanged.
-            Formula::FpToSbv { rm, value, width, eb, sb } => {
+            Formula::FpToSbv {
+                rm,
+                value,
+                width,
+                eb,
+                sb,
+            } => {
                 let w = *width;
                 let x = value.to_smtlib();
                 let rm = rm.to_smtlib();
@@ -1427,10 +1445,7 @@ impl Formula {
                 );
                 // -(2^(w-1)) - 1 as a signed (w+2)-bit literal.
                 let min_minus_one = (1u128 << (w + 2)) - (1u128 << (w - 1)) - 1;
-                let neg = format!(
-                    "((_ to_fp {eb} {sb}) RNE (_ bv{min_minus_one} {}))",
-                    w + 2
-                );
+                let neg = format!("((_ to_fp {eb} {sb}) RNE (_ bv{min_minus_one} {}))", w + 2);
                 let max_bv = format!("(_ bv{} {w})", (1u128 << (w - 1)) - 1);
                 let min_bv = format!("(_ bv{} {w})", 1u128 << (w - 1));
                 format!(
@@ -1440,7 +1455,13 @@ impl Formula {
                      ((_ fp.to_sbv {w}) {rm} {x}))))"
                 )
             }
-            Formula::FpToUbv { rm, value, width, eb, sb } => {
+            Formula::FpToUbv {
+                rm,
+                value,
+                width,
+                eb,
+                sb,
+            } => {
                 let w = *width;
                 let x = value.to_smtlib();
                 let rm = rm.to_smtlib();
@@ -1451,8 +1472,10 @@ impl Formula {
                     w + 1
                 );
                 // -1.0 in the operand's format.
-                let neg_one =
-                    format!("(fp.neg ((_ to_fp_unsigned {eb} {sb}) RNE (_ bv1 {})))", w + 1);
+                let neg_one = format!(
+                    "(fp.neg ((_ to_fp_unsigned {eb} {sb}) RNE (_ bv1 {})))",
+                    w + 1
+                );
                 let max_bv = format!("(_ bv{} {w})", (1u128 << w) - 1);
                 format!(
                     "(ite (fp.isNaN {x}) (_ bv0 {w}) \

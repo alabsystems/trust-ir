@@ -38,7 +38,7 @@ members = [
 exclude = ["frontend"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.8.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/alabsystems/trust-ir"
@@ -51,9 +51,38 @@ trust-ir-contract = { path = "crates/trust-ir-contract" }
 rayon = "1.8"
 clap = { version = "4.5", features = ["derive"] }
 
-# Public source snapshots resolve the exact, ledger-mapped Clean Git
-# revisions declared in member manifests. No sibling checkout or path patch
-# is part of this workspace's public build contract.
+# The clean-* crates are declared as GIT dependencies (pinned rev) inside the
+# member manifests so that trust-ir / trust-ir-build stay consumable as plain
+# cargo git dependencies (a `../../../clean/...` path dep escapes the git
+# checkout and breaks every git consumer).
+#
+# THERE IS DELIBERATELY NO `[patch."https://github.com/alabsystems/clean.git"]`
+# HERE. Until 2026-08-19 this workspace redirected that URL to the sibling
+# `../clean` working tree. Cargo ignores `[patch]` in any manifest that is not
+# the workspace root being built, so the redirect NEVER affected a consumer of
+# trust-ir — it was a local-development affordance only. Its cost, however, was
+# global:
+#
+#   * `cargo metadata` recorded these crates as PATH packages, so the root
+#     Cargo.lock stopped recording the Clean revision at all (a Clean move
+#     produced a byte-identical lock — see dependency_pin_coherence.rs, which
+#     had to exist precisely because `--locked` could not catch it), and the
+#     lock became a property of whatever `../clean` happened to be checked out
+#     at rather than of this commit.
+#   * `ty-mcc-drift-guard` proves a path-patched exact declaration by requiring
+#     `HEAD(../clean) == the declared rev`. That turned "Clean moved" into
+#     "trust-ir MUST commit a new declared rev", while Clean itself pins
+#     trust-ir (clean-reflect is a non-optional consumer). The two forcing
+#     edges formed an unsatisfiable hash cycle: the Clean commit everyone pins
+#     had to name the trust-ir commit that named it. Deleting this patch cuts
+#     the only removable edge of that cycle and costs nothing a consumer can
+#     observe.
+#
+# ty performed the identical migration on 2026-08-02 (see AUDITED_CLEAN_REV in
+# ty's crates/tla-petri/src/mcc_ay_pin.rs). To develop trust-ir against a live
+# local Clean tree, use an UNCOMMITTED override — `[patch]` in a gitignored
+# `.cargo/config.toml`, or `paths = ["../clean"]` — so the affordance stays in
+# the developer's environment instead of in the committed dependency graph.
 
 # AY's strict Bool/BV authority has a production wall-clock envelope around
 # proof construction and independent replay.  Building the solver stack at

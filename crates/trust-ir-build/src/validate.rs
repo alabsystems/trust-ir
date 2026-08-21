@@ -876,8 +876,11 @@ pub enum ValidationError {
         file: u32,
         file_count: usize,
     },
-    /// A `#[repr(transparent)]` struct does not have exactly one non-zero-size
-    /// field (`actual_non_zst` counts the non-ZST fields).
+    /// A `#[repr(transparent)]` struct has more than one non-trivial field.
+    ///
+    /// The historical field name is retained for API compatibility, but the
+    /// count is of non-1-ZST fields: a zero-sized field with alignment greater
+    /// than one is non-trivial under rustc's transparent-repr rule.
     TransparentReprFieldCount {
         struct_id: u32,
         actual_non_zst: usize,
@@ -915,6 +918,13 @@ pub enum ValidationError {
     },
     /// `Module::target_info.triple` is empty.
     TargetTripleEmpty,
+    /// A declared field layout needs scalar ABI alignment for a target outside
+    /// TrustIR's canonical layout set. A triple and pointer width are not a
+    /// complete data-layout description, so validation refuses to guess.
+    TargetScalarLayoutUnavailable {
+        struct_id: u32,
+        triple: String,
+    },
     /// A `ProofAnnotation::BranchWeights` is attached to a node that is not a
     /// `CondBr`/`Switch` terminator, or whose weight count does not match the
     /// terminator's out-edge count (`CondBr` => 2; `Switch` => cases + 1).
@@ -1862,7 +1872,7 @@ impl core::fmt::Display for ValidationError {
                 actual_non_zst,
             } => write!(
                 f,
-                "struct #{struct_id}: repr(transparent) requires exactly one non-zero-size field, found {actual_non_zst}"
+                "struct #{struct_id}: repr(transparent) permits at most one non-1-ZST field, found {actual_non_zst}"
             ),
             ValidationError::PackedReprInvalidAlign { struct_id, align } => write!(
                 f,
@@ -1886,6 +1896,10 @@ impl core::fmt::Display for ValidationError {
             ValidationError::TargetTripleEmpty => {
                 write!(f, "target_info.triple must not be empty")
             }
+            ValidationError::TargetScalarLayoutUnavailable { struct_id, triple } => write!(
+                f,
+                "struct #{struct_id}: target {triple:?} has no authoritative scalar-alignment layout in TrustIR"
+            ),
             ValidationError::BranchWeightsMismatch { reason } => {
                 write!(f, "branch_weights annotation is ill-placed: {reason}")
             }
@@ -2452,7 +2466,7 @@ fn validate_source_provenance(func: &Function, module: Option<&Module>) -> Vec<V
     }
 
     let entry = func.blocks.iter().find(|block| block.id == func.entry);
-    let dominators = compute_dominators(func);
+    let dominators = compute_dominator_tree(func);
     let mut loop_hir_ids = BTreeSet::new();
     let mut loop_headers = BTreeSet::new();
 
@@ -2502,8 +2516,7 @@ fn validate_source_provenance(func: &Function, module: Option<&Module>) -> Vec<V
                     .any(|successor| successor == source_loop.header.index())
                     && (latch.id == source_loop.header
                         || dominators
-                            .get(&latch.id.index())
-                            .is_some_and(|strict| strict.contains(&source_loop.header.index())))
+                            .strictly_dominates(source_loop.header.index(), latch.id.index()))
             })
         });
         if !has_backedge {
@@ -2694,8 +2707,8 @@ fn validate_debug_metadata(func: &Function) -> Vec<ValidationError> {
 /// 3. Intra-block ordering and dominance (`UseBeforeDefInBlock`): a value used
 ///    by a node must be either a block parameter, defined earlier in the same
 ///    block, or defined by a node/param of a strictly dominating block. This is
-///    a real ordering+dominance check, computed from the CFG (iterative
-///    dataflow dominator set), not the previous "defined somewhere" stub.
+///    a real ordering+dominance check, computed from the CFG's immediate-
+///    dominator tree, not the previous "defined somewhere" stub.
 fn validate_ssa(func: &Function) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     // value -> (defining block, position). Position 0 is the block's params;
@@ -2744,17 +2757,18 @@ fn validate_ssa(func: &Function) -> Vec<ValidationError> {
         }
     }
 
-    // Intra-block ordering + dominance. Compute the dominator set for every
-    // reachable block, then verify each use is dominated by its definition.
-    let dominators = compute_dominators(func);
+    // Intra-block ordering + dominance. Compute the immediate-dominator tree
+    // for reachable blocks, then verify each use is dominated by its
+    // definition with a constant number of O(log N) tree-interval lookups.
+    let dominators = compute_dominator_tree(func);
     for block in &func.blocks {
         let use_block = block.id.index();
-        // A block not present in `dominators` is unreachable from entry; its
-        // uses are already reported as `UnreachableBlock` by the control-flow
-        // pass, so skip ordering analysis there to avoid noisy duplicates.
-        let Some(use_doms) = dominators.get(&use_block) else {
+        // A block not reachable from entry is already reported as
+        // `UnreachableBlock` by the control-flow pass, so skip ordering
+        // analysis there to avoid noisy duplicates.
+        if !dominators.is_reachable(use_block) {
             continue;
-        };
+        }
         for (use_pos, node) in block.body.iter().enumerate() {
             for used in collect_uses(&node.inst) {
                 let Some(&(def_block, def_pos)) = def_site.get(&used.index()) else {
@@ -2769,7 +2783,7 @@ fn validate_ssa(func: &Function) -> Vec<ValidationError> {
                 } else {
                     // Different block: the defining block must strictly
                     // dominate the using block.
-                    use_doms.contains(&def_block)
+                    dominators.strictly_dominates(def_block, use_block)
                 };
                 if !dominated {
                     errors.push(ValidationError::UseBeforeDefInBlock {
@@ -2784,75 +2798,108 @@ fn validate_ssa(func: &Function) -> Vec<ValidationError> {
     errors
 }
 
-/// Compute the dominator set of every block reachable from `func.entry`.
+/// Dominance over blocks reachable from a function's entry.
 ///
-/// Returns a map `block_id -> set of strict dominators of that block` (the
-/// block itself is excluded from its own set so a same-block check is handled
-/// separately by position). Unreachable blocks are absent from the map.
+/// The Euler intervals reduce `strictly_dominates(a, b)` to a constant number
+/// of O(log N) `BTreeMap` lookups.
+/// Keeping reachability separate is deliberate: if an internal invariant ever
+/// leaves a reachable block unstamped, cross-block SSA uses fail closed rather
+/// than being mistaken for unreachable and skipped.
+#[derive(Debug, Default)]
+struct DominatorTree {
+    reachable: BTreeSet<u32>,
+    preorder: BTreeMap<u32, usize>,
+    postorder: BTreeMap<u32, usize>,
+}
+
+impl DominatorTree {
+    fn is_reachable(&self, block: u32) -> bool {
+        self.reachable.contains(&block)
+    }
+
+    fn strictly_dominates(&self, dominator: u32, block: u32) -> bool {
+        if dominator == block {
+            return false;
+        }
+        let (Some(&dom_in), Some(&dom_out)) = (
+            self.preorder.get(&dominator),
+            self.postorder.get(&dominator),
+        ) else {
+            return false;
+        };
+        let (Some(&block_in), Some(&block_out)) =
+            (self.preorder.get(&block), self.postorder.get(&block))
+        else {
+            return false;
+        };
+        dom_in < block_in && block_out < dom_out
+    }
+}
+
+/// Compute the immediate-dominator tree of blocks reachable from `func.entry`.
 ///
-/// Uses the classic iterative forward dataflow formulation: `dom(b)` is the
-/// intersection of `dom(p) ∪ {p}` over predecessors `p`, fixed-pointed to
-/// convergence. The block list is small (function-local), so this is cheap.
-fn compute_dominators(func: &Function) -> BTreeMap<u32, BTreeSet<u32>> {
+/// This is Cooper/Harvey/Kennedy over reverse postorder. The previous classic
+/// dense-set dataflow initialized every non-entry block with the full reachable
+/// set and intersected those sets to a fixpoint. On a chain of N blocks that
+/// retained O(N²) set entries and could take O(N) rounds, making ordinary
+/// call-heavy functions O(N³) to validate in the adverse layout. Immediate
+/// dominators retain O(N + E) state and converge near-linearly on structured
+/// control flow.
+///
+/// Both graph walks are iterative: validator input depth must never become the
+/// process stack depth.
+fn compute_dominator_tree(func: &Function) -> DominatorTree {
     let entry = func.entry.index();
     let block_ids: BTreeSet<u32> = func.blocks.iter().map(|b| b.id.index()).collect();
     if !block_ids.contains(&entry) {
-        return BTreeMap::new();
+        return DominatorTree::default();
     }
 
-    // Successor map (same construction as validate_control_flow).
+    // Successor map. Only the final terminator contributes CFG edges, matching
+    // `Block::terminator` and the previous dominance implementation. Structural
+    // validation reports a terminator found in any earlier position.
     let mut successors: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     for block in &func.blocks {
-        let mut succs = Vec::new();
-        if let Some(term) = block.terminator() {
-            match &term.inst {
-                Inst::Br { target, .. } => succs.push(target.index()),
-                Inst::CondBr {
-                    then_target,
-                    else_target,
-                    ..
-                } => {
-                    succs.push(then_target.index());
-                    succs.push(else_target.index());
-                }
-                Inst::Switch { default, cases, .. } => {
-                    succs.push(default.index());
-                    for case in cases {
-                        succs.push(case.target.index());
-                    }
-                }
-                Inst::Invoke {
-                    normal_dest,
-                    unwind_dest,
-                    ..
-                } => {
-                    succs.push(normal_dest.index());
-                    succs.push(unwind_dest.index());
-                }
-                _ => {}
-            }
-        }
+        let succs = block
+            .terminator()
+            .map_or_else(Vec::new, |term| terminator_successors(&term.inst));
         successors.insert(block.id.index(), succs);
     }
 
-    // Reachable set via BFS from entry.
-    let mut reachable = BTreeSet::new();
-    let mut queue = VecDeque::new();
-    queue.push_back(entry);
-    reachable.insert(entry);
-    while let Some(bid) = queue.pop_front() {
-        if let Some(succs) = successors.get(&bid) {
-            for &s in succs {
-                if block_ids.contains(&s) && reachable.insert(s) {
-                    queue.push_back(s);
+    // Iterative DFS postorder, then reverse it to obtain RPO. Mark a block when
+    // it is pushed so duplicate/sibling edges cannot schedule duplicate frames.
+    let mut reachable = BTreeSet::from([entry]);
+    let mut postorder = Vec::new();
+    let mut dfs = vec![(entry, 0usize)];
+    while let Some((block, next_successor)) = dfs.last_mut() {
+        let successor = successors
+            .get(block)
+            .and_then(|succs| succs.get(*next_successor))
+            .copied();
+        match successor {
+            Some(successor) => {
+                *next_successor += 1;
+                if block_ids.contains(&successor) && reachable.insert(successor) {
+                    dfs.push((successor, 0));
                 }
+            }
+            None => {
+                postorder.push(*block);
+                dfs.pop();
             }
         }
     }
+    postorder.reverse();
+    let rpo = postorder;
+    let rpo_number: BTreeMap<u32, usize> = rpo
+        .iter()
+        .enumerate()
+        .map(|(index, &block)| (block, index))
+        .collect();
 
     // Predecessor map restricted to reachable blocks.
     let mut preds: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    for &b in &reachable {
+    for &b in &rpo {
         preds.entry(b).or_default();
     }
     for (&b, succs) in &successors {
@@ -2866,54 +2913,104 @@ fn compute_dominators(func: &Function) -> BTreeMap<u32, BTreeSet<u32>> {
         }
     }
 
-    // dom(entry) = {entry}; dom(b) = {b} ∪ everything initially, refined by
-    // intersection over predecessors. We track the full dominator set
-    // (including the block itself) during the fixpoint, then strip self at the
-    // end to produce the strict-dominator result.
-    let mut dom: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for &b in &reachable {
-        if b == entry {
-            let mut s = BTreeSet::new();
-            s.insert(entry);
-            dom.insert(b, s);
-        } else {
-            dom.insert(b, reachable.clone());
-        }
-    }
-
+    // Cooper/Harvey/Kennedy immediate-dominator fixpoint. Entry dominates
+    // itself; every other block starts unknown and is intersected only with
+    // predecessors whose idom is already known.
+    let mut idom = BTreeMap::from([(entry, entry)]);
     let mut changed = true;
     while changed {
         changed = false;
-        for &b in &reachable {
-            if b == entry {
+        for &block in &rpo {
+            if block == entry {
                 continue;
             }
-            let b_preds = &preds[&b];
-            let mut new_set: Option<BTreeSet<u32>> = None;
-            for &p in b_preds {
-                let pd = &dom[&p];
-                new_set = Some(match new_set {
-                    None => pd.clone(),
-                    Some(acc) => acc.intersection(pd).copied().collect(),
-                });
+            let mut new_idom = None;
+            for &pred in &preds[&block] {
+                if !idom.contains_key(&pred) {
+                    continue;
+                }
+                new_idom = match new_idom {
+                    None => Some(pred),
+                    Some(current) => intersect_idom(pred, current, &idom, &rpo_number),
+                };
+                if new_idom.is_none() {
+                    break;
+                }
             }
-            let mut new_set = new_set.unwrap_or_default();
-            new_set.insert(b);
-            if new_set != dom[&b] {
-                dom.insert(b, new_set);
+            if let Some(new_idom) = new_idom
+                && idom.get(&block) != Some(&new_idom)
+            {
+                idom.insert(block, new_idom);
                 changed = true;
             }
         }
     }
 
-    // Strip self to produce strict dominators.
-    let mut strict: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for (&b, set) in &dom {
-        let mut s = set.clone();
-        s.remove(&b);
-        strict.insert(b, s);
+    // Build the tree and stamp an iterative Euler tour. A tree ancestor's
+    // interval strictly contains every descendant interval.
+    let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (&block, &parent) in &idom {
+        if block != parent {
+            children.entry(parent).or_default().push(block);
+        }
     }
-    strict
+    for child_list in children.values_mut() {
+        child_list.sort_by_key(|child| rpo_number.get(child).copied().unwrap_or(usize::MAX));
+    }
+
+    let mut preorder = BTreeMap::new();
+    let mut postorder = BTreeMap::new();
+    let mut timer = 0usize;
+    preorder.insert(entry, timer);
+    timer += 1;
+    let mut tour = vec![(entry, 0usize)];
+    while let Some((block, next_child)) = tour.last_mut() {
+        let child = children
+            .get(block)
+            .and_then(|child_list| child_list.get(*next_child))
+            .copied();
+        match child {
+            Some(child) => {
+                *next_child += 1;
+                if let std::collections::btree_map::Entry::Vacant(entry) = preorder.entry(child) {
+                    entry.insert(timer);
+                    timer += 1;
+                    tour.push((child, 0));
+                }
+            }
+            None => {
+                postorder.insert(*block, timer);
+                timer += 1;
+                tour.pop();
+            }
+        }
+    }
+
+    DominatorTree {
+        reachable,
+        preorder,
+        postorder,
+    }
+}
+
+/// Nearest common dominator of two blocks whose immediate dominators are
+/// already known. RPO indices strictly decrease while walking toward entry.
+fn intersect_idom(
+    mut left: u32,
+    mut right: u32,
+    idom: &BTreeMap<u32, u32>,
+    rpo_number: &BTreeMap<u32, usize>,
+) -> Option<u32> {
+    while left != right {
+        let left_number = *rpo_number.get(&left)?;
+        let right_number = *rpo_number.get(&right)?;
+        if left_number > right_number {
+            left = *idom.get(&left)?;
+        } else {
+            right = *idom.get(&right)?;
+        }
+    }
+    Some(left)
 }
 
 /// Collect all ValueIds used by an instruction.
@@ -6133,6 +6230,20 @@ fn ty_is_zero_sized_in(module: &trust_ir::Module, ty: &trust_ir::Ty) -> bool {
     }
 }
 
+/// Whether `ty` has the exact size-zero, alignment-one layout that rustc calls a
+/// 1-ZST for `repr(transparent)`.
+///
+/// Size alone is deliberately insufficient: `#[repr(align(8))] struct Marker;`
+/// is a ZST, but it is a non-trivial transparent field because the wrapper must
+/// inherit its alignment. `ty_layout_shape` also makes unresolved layout count
+/// as non-trivial, which is the fail-closed answer when two fields could both
+/// become the representation-bearing field.
+fn ty_is_one_zst_in(module: &trust_ir::Module, ty: &trust_ir::Ty) -> bool {
+    module
+        .ty_layout_shape(ty)
+        .is_ok_and(|layout| layout.size_bits == 0 && layout.align_bits == Some(8))
+}
+
 /// Conservative zero-size-type test: the unit type, the empty tuple, and a zero-length array are
 /// zero-sized. Anything else — INCLUDING a nested struct that may itself be a ZST — is treated as
 /// non-zero-size, because the spelling alone cannot prove it.
@@ -6226,6 +6337,71 @@ fn validate_target_pinned_struct_layouts(module: &Module) -> Vec<ValidationError
                     // One report per struct is enough to flag the inconsistency.
                     break;
                 }
+            }
+        }
+        // Trust (wave-SG): THE FIELD-OFFSET ALIGNMENT RULE, which this pass never had.
+        // The three checks above police `align`, `size % align` and `offset <= size` —
+        // none of which notices a `u64` declared at byte 3. `interpret::struct_layout`
+        // has re-validated exactly that since the declared layout became NORMATIVE, so
+        // an offset this validator passes and the interpreter refuses is a module the
+        // validator called well-formed and the executor cannot run. Same rule, same
+        // clamp, stated here so `validate_module` and the interpreter agree on what a
+        // coherent struct descriptor IS.
+        //
+        // Runs on its own loop because it is independent of `size`: a struct may
+        // declare offsets and no size. `repr(packed(N))` clamps every field's
+        // alignment to `min(natural, N)`; a `Packed(N)` whose `N` is not a power of two
+        // is reported separately as `PackedReprInvalidAlign`, and here it DISABLES the
+        // rule rather than being divided by, so one malformed repr produces one error
+        // and not a cascade of derived ones.
+        let clamp = match sd.repr {
+            trust_ir::StructRepr::Packed(n) if n != 0 && n.is_power_of_two() => Some(u64::from(n)),
+            trust_ir::StructRepr::Packed(_) => continue,
+            _ => None,
+        };
+        if let (Some(clamp), Some(align)) = (clamp, sd.align)
+            && align > clamp
+        {
+            errors.push(ValidationError::StructLayoutInconsistent {
+                struct_id: sid,
+                reason: "struct alignment exceeds the repr(packed) clamp",
+            });
+            // The field rule below remains meaningful, but one structural error
+            // per struct is the existing reporting contract.
+            continue;
+        }
+        for field in &sd.fields {
+            let Some(offset) = field.offset else { continue };
+            let natural = match module.ty_layout_shape(&field.ty) {
+                Ok(layout) => {
+                    let Some(bits) = layout.align_bits else {
+                        continue;
+                    };
+                    if bits == 0 || !bits.is_multiple_of(8) {
+                        continue;
+                    }
+                    bits / 8
+                }
+                Err(trust_ir::LayoutError::TargetScalarLayoutUnavailable { triple }) => {
+                    errors.push(ValidationError::TargetScalarLayoutUnavailable {
+                        struct_id: sid,
+                        triple,
+                    });
+                    // An unknown target ABI is not evidence that the offset is
+                    // aligned. Refuse this declared layout instead of applying
+                    // TrustIR's reference-target table to a different target.
+                    break;
+                }
+                Err(_) => continue,
+            };
+            let effective = clamp.map_or(natural, |c| natural.min(c));
+            if effective != 0 && offset % effective != 0 {
+                errors.push(ValidationError::StructLayoutInconsistent {
+                    struct_id: sid,
+                    reason: "field offset is not a multiple of the field's effective alignment",
+                });
+                // One report per struct, matching the rule above.
+                break;
             }
         }
     }
@@ -8142,21 +8318,22 @@ fn validate_module_filtered(
     for sd in &module.structs {
         match sd.repr {
             trust_ir::StructRepr::Transparent => {
-                // Trust (#171 Part A): module-aware, so a zero-sized STRUCT field
-                // (`PhantomData<T>` and friends) counts as the ZST it is.
+                // rustc's rule is "at most one non-1-ZST field", not merely
+                // "at most one field whose size is non-zero". In particular, an
+                // over-aligned ZST carries the wrapper's ABI and therefore counts
+                // as the one non-trivial field. The layout query is module-aware,
+                // so ordinary `PhantomData<T>`-like structs still count as 1-ZSTs.
                 let non_zst = sd
                     .fields
                     .iter()
-                    .filter(|f| !ty_is_zero_sized_in(module, &f.ty))
+                    .filter(|f| !ty_is_one_zst_in(module, &f.ty))
                     .count();
-                // Trust (#171 residue): AT MOST one, not EXACTLY one. The Rust reference says a
-                // `repr(transparent)` type "must have at most one non-zero-sized field" — zero is
-                // legal, and the type is then itself a ZST. `ManuallyDrop<T>` / `MaybeDangling<T>`
-                // over a zero-sized `T` are exactly that, and the producer emits them at
-                // `size=0 align=1 repr=transparent`. Rejecting them called correct Rust malformed.
+                // AT MOST one, not EXACTLY one. Zero is legal, and the type is
+                // then itself a 1-ZST. `ManuallyDrop<T>` / `MaybeDangling<T>`
+                // over a 1-ZST `T` are examples emitted as size=0, align=1.
                 //
-                // The `> 1` case stays an error: two non-ZST fields have no single field to take
-                // the layout and ABI of, which is what `transparent` means.
+                // The `> 1` case stays an error: two non-trivial fields have no
+                // single field to take the layout and ABI of.
                 if non_zst > 1 {
                     errors.push(ValidationError::TransparentReprFieldCount {
                         struct_id: sd.id.index(),
@@ -14356,6 +14533,241 @@ mod tests {
         func
     }
 
+    /// Build a CFG-only function from block-index successor lists. These
+    /// fixtures call the private dominance analysis directly, so the synthetic
+    /// switch selector does not need an SSA definition.
+    fn cfg_function(successors: &[Vec<u32>]) -> Function {
+        assert!(!successors.is_empty());
+        let mut func = Function::new(
+            FuncId::new(0),
+            "dominance_fixture",
+            FuncTyId::new(0),
+            BlockId::new(0),
+        );
+        for (block_index, targets) in successors.iter().enumerate() {
+            let terminator = match targets.as_slice() {
+                [] => Inst::Return { values: vec![] },
+                [target] => Inst::Br {
+                    target: BlockId::new(*target),
+                    args: vec![],
+                },
+                [default, cases @ ..] => Inst::Switch {
+                    value: ValueId::new(u32::MAX),
+                    default: BlockId::new(*default),
+                    default_args: vec![],
+                    cases: cases
+                        .iter()
+                        .enumerate()
+                        .map(|(case_index, target)| SwitchCase {
+                            value: Constant::Int(case_index as i128),
+                            target: BlockId::new(*target),
+                            args: vec![],
+                        })
+                        .collect(),
+                    exhaustive_enum_unreachable: false,
+                },
+            };
+            let mut block = Block::new(BlockId::new(block_index as u32));
+            block.body.push(InstrNode::new(terminator));
+            func.blocks.push(block);
+        }
+        func
+    }
+
+    /// The removed dense-set algorithm, retained only as a small-graph test
+    /// oracle. It is intentionally never used by production validation.
+    fn reference_strict_dominators(func: &Function) -> BTreeMap<u32, BTreeSet<u32>> {
+        let entry = func.entry.index();
+        let block_ids: BTreeSet<u32> = func.blocks.iter().map(|b| b.id.index()).collect();
+        if !block_ids.contains(&entry) {
+            return BTreeMap::new();
+        }
+
+        let successors: BTreeMap<u32, Vec<u32>> = func
+            .blocks
+            .iter()
+            .map(|block| {
+                (
+                    block.id.index(),
+                    block
+                        .terminator()
+                        .map_or_else(Vec::new, |term| terminator_successors(&term.inst)),
+                )
+            })
+            .collect();
+        let mut reachable = BTreeSet::from([entry]);
+        let mut queue = VecDeque::from([entry]);
+        while let Some(block) = queue.pop_front() {
+            for &successor in &successors[&block] {
+                if block_ids.contains(&successor) && reachable.insert(successor) {
+                    queue.push_back(successor);
+                }
+            }
+        }
+
+        let mut predecessors: BTreeMap<u32, Vec<u32>> = reachable
+            .iter()
+            .copied()
+            .map(|block| (block, Vec::new()))
+            .collect();
+        for (&block, targets) in &successors {
+            if !reachable.contains(&block) {
+                continue;
+            }
+            for &target in targets {
+                if let Some(target_predecessors) = predecessors.get_mut(&target) {
+                    target_predecessors.push(block);
+                }
+            }
+        }
+
+        let mut dominators = BTreeMap::new();
+        for &block in &reachable {
+            dominators.insert(
+                block,
+                if block == entry {
+                    BTreeSet::from([entry])
+                } else {
+                    reachable.clone()
+                },
+            );
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &block in &reachable {
+                if block == entry {
+                    continue;
+                }
+                let mut intersection: Option<BTreeSet<u32>> = None;
+                for predecessor in &predecessors[&block] {
+                    intersection = Some(match intersection {
+                        None => dominators[predecessor].clone(),
+                        Some(current) => current
+                            .intersection(&dominators[predecessor])
+                            .copied()
+                            .collect(),
+                    });
+                }
+                let mut next = intersection.unwrap_or_default();
+                next.insert(block);
+                if next != dominators[&block] {
+                    dominators.insert(block, next);
+                    changed = true;
+                }
+            }
+        }
+        for (&block, set) in &mut dominators {
+            set.remove(&block);
+        }
+        dominators
+    }
+
+    #[test]
+    fn idom_tree_matches_dense_reference_for_every_three_block_cfg() {
+        const BLOCKS: usize = 3;
+        // Every bit in the 3x3 adjacency matrix independently selects an edge:
+        // 512 CFGs cover straight lines, diamonds, cycles, self-loops,
+        // irreducible two-entry loops, and unreachable components.
+        for edge_mask in 0u16..(1u16 << (BLOCKS * BLOCKS)) {
+            let mut successors = vec![Vec::new(); BLOCKS];
+            for (from, targets) in successors.iter_mut().enumerate() {
+                for to in 0..BLOCKS {
+                    let bit = from * BLOCKS + to;
+                    if edge_mask & (1 << bit) != 0 {
+                        targets.push(to as u32);
+                    }
+                }
+            }
+            let func = cfg_function(&successors);
+            let expected = reference_strict_dominators(&func);
+            let actual = compute_dominator_tree(&func);
+            for block in 0..BLOCKS as u32 {
+                assert_eq!(
+                    actual.is_reachable(block),
+                    expected.contains_key(&block),
+                    "reachability mismatch for mask {edge_mask:#011b}, bb{block}",
+                );
+                for dominator in 0..BLOCKS as u32 {
+                    assert_eq!(
+                        actual.strictly_dominates(dominator, block),
+                        expected
+                            .get(&block)
+                            .is_some_and(|set| set.contains(&dominator)),
+                        "dominance mismatch for mask {edge_mask:#011b}: bb{dominator} -> bb{block}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn idom_tree_rejects_sibling_dominance_and_excludes_unreachable_blocks() {
+        //       bb0
+        //      /   \
+        //    bb1   bb2       bb4 -> bb4 (unreachable)
+        //      \   /
+        //       bb3
+        let func = cfg_function(&[vec![1, 2], vec![3], vec![3], vec![], vec![4]]);
+        let dominance = compute_dominator_tree(&func);
+        for block in 1..=3 {
+            assert!(dominance.strictly_dominates(0, block));
+        }
+        assert!(!dominance.strictly_dominates(1, 2));
+        assert!(!dominance.strictly_dominates(2, 1));
+        assert!(!dominance.strictly_dominates(1, 3));
+        assert!(!dominance.strictly_dominates(2, 3));
+        assert!(!dominance.is_reachable(4));
+        assert!(!dominance.strictly_dominates(0, 4));
+    }
+
+    #[test]
+    fn ssa_validation_handles_a_20k_block_chain_without_dense_sets_or_recursion() {
+        const BLOCKS: u32 = 20_000;
+        let mut func = Function::new(
+            FuncId::new(0),
+            "deep_ssa_chain",
+            FuncTyId::new(0),
+            BlockId::new(0),
+        );
+        for block_index in 0..BLOCKS {
+            let mut block = Block::new(BlockId::new(block_index));
+            if block_index == 0 {
+                block.body.push(
+                    InstrNode::new(Inst::Const {
+                        ty: Ty::I64,
+                        value: Constant::Int(7),
+                    })
+                    .with_result(ValueId::new(0)),
+                );
+            }
+            if block_index + 1 == BLOCKS {
+                block.body.push(
+                    InstrNode::new(Inst::Copy {
+                        ty: Ty::I64,
+                        operand: ValueId::new(0),
+                    })
+                    .with_result(ValueId::new(1)),
+                );
+                block
+                    .body
+                    .push(InstrNode::new(Inst::Return { values: vec![] }));
+            } else {
+                block.body.push(InstrNode::new(Inst::Br {
+                    target: BlockId::new(block_index + 1),
+                    args: vec![],
+                }));
+            }
+            func.blocks.push(block);
+        }
+
+        let errors = validate_ssa(&func);
+        assert!(
+            errors.is_empty(),
+            "the entry definition must dominate the deep-chain use: {errors:?}",
+        );
+    }
+
     fn valid_source_provenance_module() -> Module {
         use trust_ir::proof::ProofDigest;
         use trust_ir::{
@@ -14378,10 +14790,15 @@ mod tests {
         let mut header = Block::new(BlockId::new(1));
         header.params.push((ValueId::new(1), Ty::U64));
         header.body.push(InstrNode::new(Inst::Br {
+            target: BlockId::new(2),
+            args: vec![],
+        }));
+        let mut latch = Block::new(BlockId::new(2));
+        latch.body.push(InstrNode::new(Inst::Br {
             target: BlockId::new(1),
             args: vec![ValueId::new(1)],
         }));
-        function.blocks.extend([entry, header]);
+        function.blocks.extend([entry, header, latch]);
         module.add_function(function);
 
         let semantic = module
@@ -14419,6 +14836,21 @@ mod tests {
         module.functions[function].source_provenance = Some(trust_ir::SourceProvenance::new(
             old.compiler_source_digest,
             old.semantic_body_digest,
+            old.loops,
+        ));
+    }
+
+    fn reseal_test_semantic_digest(module: &mut Module, function: usize) {
+        let old = module.functions[function]
+            .source_provenance
+            .take()
+            .expect("test carrier");
+        let semantic = module
+            .source_provenance_semantic_digest(module.functions[function].id)
+            .expect("unique fixture function");
+        module.functions[function].source_provenance = Some(trust_ir::SourceProvenance::new(
+            old.compiler_source_digest,
+            semantic,
             old.loops,
         ));
     }
@@ -14524,6 +14956,27 @@ mod tests {
         reseal_test_binding_digest(&mut bad_header, 0);
         assert!(has_source_provenance_error(
             &bad_header,
+            "not a reachable natural-loop header"
+        ));
+
+        // Add a second entry into the header/latch cycle. Although bb2 still
+        // branches to bb1, bb1 no longer dominates bb2, so the edge is not a
+        // natural-loop backedge and cannot authenticate the carrier.
+        let mut non_dominated_latch = baseline.clone();
+        non_dominated_latch.functions[0].blocks[0].body[0] = InstrNode::new(Inst::Switch {
+            value: ValueId::new(0),
+            default: BlockId::new(1),
+            default_args: vec![ValueId::new(0)],
+            cases: vec![SwitchCase {
+                value: Constant::Int(0),
+                target: BlockId::new(2),
+                args: vec![],
+            }],
+            exhaustive_enum_unreachable: false,
+        });
+        reseal_test_semantic_digest(&mut non_dominated_latch, 0);
+        assert!(has_source_provenance_error(
+            &non_dominated_latch,
             "not a reachable natural-loop header"
         ));
 

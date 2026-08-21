@@ -65,14 +65,21 @@ rayon = { workspace = true }
 # closure needed for NNVerify.farkas_scale / farkas_combine_2 /
 # farkas_combine_2_le_bound; the full experimental `math-overlays` surface is
 # deliberately excluded. GIT dependency
-# (pinned rev) so trust-ir-build is consumable as a cargo git dependency;
+# (pinned rev) so trust-ir-build is consumable as a cargo git dependency. The
+# workspace root deliberately does NOT patch clean.git onto `../clean` any more
+# (see the note there), so this rev is what cargo resolves here and what every
+# consumer of trust-ir-build — ay and trust-cg both reach Clean only through
+# this declaration — sees.
+# These three revisions carry the constellation-coordinated Clean pin — see the
+# long note on `clean-kernel` in crates/trust-ir/Cargo.toml. They are NOT frozen
+# (that wording described a baseline eleven rev-moves ago); what is frozen is the
+# requirement that they move ATOMICALLY. Update them together with trust-ir's
+# declaration and frontend/Cargo.lock via scripts/bump-dep-pin.sh;
+# dependency_pin_coherence.rs enforces that atomic move.
 # Public snapshots resolve this exact dependency through the attested Clean
 # release mapping. Combined workspaces may redirect the public URL with their
 # own checked-out Clean subrepo `[patch]` table.
-# These three revisions are the deliberately frozen, audited consumability
-# baseline and cycle cut. Update them together with trust-ir's declaration and
-# frontend/Cargo.lock; dependency_pin_coherence.rs enforces that atomic move.
-clean-kernel = { version = "0.1.0", git = "https://github.com/alabsystems/clean.git", rev = "ea0c5cee951ed4a6e085057f614bc6c98c7ab679", features = ["farkas-constructive"] }
+clean-kernel = { version = "0.4.0", git = "https://github.com/alabsystems/clean.git", rev = "74c5f9975c9cf1c18c0face23ade01dd4342e267", features = ["farkas-constructive"] }
 # OPTIONAL (default-OFF, only via the `slackcertz-anchor` feature): the
 # `.olean` load pipeline used to materialize the literal Mathlib-dependent
 # `Crownproof.SlackCertZ` environment inside the trusted kernel. `optional =
@@ -81,13 +88,13 @@ clean-kernel = { version = "0.1.0", git = "https://github.com/alabsystems/clean.
 # Clean's published manifests use exact Git dependencies for their AY crates,
 # so this default-off anchor is consumable directly from clean.git as well as
 # from workspaces that redirect Clean through a local [patch].
-clean-mathverse = { version = "0.1.0", git = "https://github.com/alabsystems/clean.git", rev = "ea0c5cee951ed4a6e085057f614bc6c98c7ab679", optional = true }
+clean-mathverse = { version = "0.4.0", git = "https://github.com/alabsystems/clean.git", rev = "74c5f9975c9cf1c18c0face23ade01dd4342e267", optional = true }
 # OPTIONAL (default-OFF, only via `slackcertz-anchor`): the `.olean` search-path
 # resolver (`default_search_paths`) used to locate the Lean 4 stdlib dir before
 # loading the SlackCertZ closure. Already a transitive dep of `clean-mathverse`,
 # so this adds NOTHING to the default build (it is `optional = true` and only
 # activated by the feature).
-clean-olean = { version = "0.1.0", git = "https://github.com/alabsystems/clean.git", rev = "ea0c5cee951ed4a6e085057f614bc6c98c7ab679", optional = true }
+clean-olean = { version = "0.4.0", git = "https://github.com/alabsystems/clean.git", rev = "74c5f9975c9cf1c18c0face23ade01dd4342e267", optional = true }
 # The give-back ELABORATOR — used by the TRUSTED relevance check in
 # `validate_certified_evidence`: for a GiveBackRefinement obligation that carries
 # its function, the validator RE-RUNS `elaborate_give_back` + `give_back_recheck_directive`

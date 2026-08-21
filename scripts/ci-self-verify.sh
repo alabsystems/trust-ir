@@ -3,7 +3,7 @@
 #
 # Policy: the core TrustIr format has no required external dependency. The
 # default builder graph consumes the Clean kernel through exact, uniform
-# clean.git revisions (path-patched to the sibling checkout here), while the
+# clean.git revisions, while the
 # non-default `trust-ir-ay` adapter consumes an exact AY revision. This gate
 # therefore does not forbid git dependencies outright; it forbids FLOATING
 # ones (branch=/tag= without rev=), which would make the verified toolchain
@@ -300,7 +300,7 @@ run "$TARGO_RUNNER" check --locked --workspace --all-targets --all-features \
 run "$TARGO_RUNNER" clippy --locked --workspace --all-targets --all-features \
     -j "$TARGO_JOBS" -- -D warnings
 
-# Default graph (uses the sibling Clean patch; excludes the AY adapter).
+# Default graph (resolves the exact Clean git revision; excludes the AY adapter).
 run "$TARGO_RUNNER" test --locked -j "$TARGO_JOBS"
 run "$TARGO_RUNNER" test --locked --all-features -j "$TARGO_JOBS"
 run "$TARGO_RUNNER" test --locked -p trust-ir-conformance \

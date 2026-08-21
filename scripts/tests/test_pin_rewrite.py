@@ -61,6 +61,13 @@ class LegTableTests(unittest.TestCase):
                     with self.subTest(dep=dep, leg=candidate.relpath):
                         self.assertIsNotNone(candidate.expected)
 
+    def test_every_package_version_leg_declares_an_exact_count(self) -> None:
+        for dep, legs in PIN.VERSION_LEGS.items():
+            for candidate in legs:
+                with self.subTest(dep=dep, leg=candidate.relpath):
+                    self.assertGreater(candidate.expected, 0)
+                    self.assertIn("(?P<version>", candidate.pattern)
+
     def test_the_guard_test_is_a_leg_of_both_dependencies(self) -> None:
         for dep in ("clean", "ay"):
             paths = [candidate.relpath for candidate in PIN.LEGS[dep]]
@@ -142,6 +149,25 @@ class SubstituteTests(unittest.TestCase):
         with self.assertRaises(PIN.PinError):
             PIN.plan_edits(lambda relpath: "", "clean", OLD[:7])
 
+    def test_version_rewrite_rejects_a_missing_guard_leg(self) -> None:
+        manifest = CLEAN_DEP_LINE.format(rev=OLD)
+
+        def read(relpath: str) -> str:
+            if relpath == "crates/trust-ir/Cargo.toml":
+                return manifest
+            if relpath == "crates/trust-ir-build/Cargo.toml":
+                return manifest * 3
+            if relpath == PIN.GUARD_TEST:
+                return f'const CLEAN_REVISION: &str = "{OLD}";\n'
+            raise AssertionError(relpath)
+
+        with self.assertRaisesRegex(PIN.PinError, "expected exactly 1"):
+            PIN.plan_version_edits(read, "clean", "2.0.0")
+
+    def test_version_rewrite_rejects_noncanonical_requirement(self) -> None:
+        with self.assertRaisesRegex(PIN.PinError, "canonical semantic version"):
+            PIN.plan_version_edits(lambda _: "", "clean", "^2.0")
+
 
 class SyntheticTreeTests(unittest.TestCase):
     """Drive the CLI over a synthetic repository, coherent and half-bumped."""
@@ -154,13 +180,20 @@ class SyntheticTreeTests(unittest.TestCase):
             ),
             PIN.GUARD_TEST: (
                 f'const CLEAN_REVISION: &str = "{guard_rev}";\n'
+                'const CLEAN_VERSION: &str = "1.2.0";\n'
                 f'const AY_REVISION: &str = "{OTHER}";\n'
+                'const AY_VERSION: &str = "0.4.0";\n'
             ),
             "frontend/Cargo.lock": (
                 'source = "git+https://github.com/alabsystems/clean.git'
                 f'?rev={OLD}#{OLD}"\n'
             ),
-            "Cargo.lock": "# no clean rows: the root [patch] absorbs them\n",
+            "Cargo.lock": (
+                'source = "git+https://github.com/alabsystems/clean.git'
+                f'?rev={OLD}#{OLD}"\n'
+                'source = "git+https://github.com/alabsystems/ay.git'
+                f'?rev={OTHER}#{OTHER}"\n'
+            ),
             "crates/trust-ir-ay/Cargo.toml": (
                 'ay = { version = "0.4.0", '
                 'git = "https://github.com/alabsystems/ay.git", '
@@ -400,42 +433,33 @@ class BumpScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("unknown option", result.stderr)
 
-    def test_clean_sibling_check_accepts_linked_worktrees(self) -> None:
+    def test_clean_authority_reads_the_immutable_target_commit(self) -> None:
         script = BUMP_SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
-            'git -C "$CLEAN_SIBLING" rev-parse --is-inside-work-tree', script
+            'git -C "$CLEAN_OBJECT_REPO" show "${clean_rev}:Cargo.toml"', script
         )
-        self.assertNotIn('[[ -d "$CLEAN_SIBLING/.git" ]]', script)
+        self.assertIn("immutable Clean commit content is authoritative", script)
 
-    def test_clean_sibling_override_cannot_redirect_cargo_patch(self) -> None:
+    def test_clean_object_cache_never_controls_compiled_source(self) -> None:
         script = BUMP_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('CARGO_CLEAN_SIBLING="$ROOT/../clean"', script)
-        self.assertIn(
-            '[[ "$VALIDATED_CLEAN_SIBLING" == "$PATCHED_CLEAN_SIBLING" ]]',
-            script,
-        )
-        self.assertIn("validation and compilation agree", script)
+        self.assertIn("TRUST_IR_CLEAN_REPO", script)
+        self.assertNotIn("VALIDATED_CLEAN_SIBLING", script)
+        self.assertNotIn("PATCHED_CLEAN_SIBLING", script)
 
-    def test_every_bump_refuses_dirty_path_patched_sibling(self) -> None:
+    def test_every_bump_ignores_ambient_clean_worktree_state(self) -> None:
         script = BUMP_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn(
-            'git -C "$CLEAN_SIBLING" status --porcelain --untracked-files=all',
-            script,
-        )
-        self.assertIn("Refusing to certify a pin against a different source tree", script)
-        self.assertNotIn(
-            'warn "$CLEAN_SIBLING has uncommitted changes',
-            script,
-        )
+        self.assertNotIn("SIBLING_DIRTY", script)
+        self.assertNotIn("SIBLING_HEAD", script)
+        self.assertNotIn('status --porcelain --untracked-files=all', script)
 
-    def test_ay_bump_requires_exact_frozen_clean_and_seven_coowned_pins(self) -> None:
+    def test_ay_bump_requires_frozen_clean_commit_and_seven_coowned_pins(self) -> None:
         script = BUMP_SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
             'FROZEN_CLEAN_REV="$(pin current --root "$ROOT" --dep clean)"',
             script,
         )
         self.assertIn(
-            '[[ "$SIBLING_HEAD" != "$FROZEN_CLEAN_REV" ]]',
+            'validate_clean_commit_ay_pin "$FROZEN_CLEAN_REV" "$REV"',
             script,
         )
         self.assertIn('[[ "$count" -ne 7 ]]', script)
@@ -464,16 +488,28 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         workspace: Path,
         *,
         ay_rev: str,
+        clean_version: str = "1.2.0",
+        ay_version: str = "0.9.0",
         declaration_count: int = 7,
         advance_head: bool = False,
     ) -> tuple[Path, str, str]:
         clean = workspace / "clean"
         clean.mkdir()
         declarations = "".join(
-            f'ay-fixture-{index} = {{ git = "https://github.com/alabsystems/ay.git", rev = "{ay_rev}" }}\n'
+            f'ay-fixture-{index} = {{ version = "{ay_version}", '
+            'git = "https://github.com/alabsystems/ay.git", '
+            f'rev = "{ay_rev}" }}\n'
             for index in range(declaration_count)
         )
-        self._write(clean / "Cargo.toml", "[workspace.dependencies]\n" + declarations)
+        self._write(
+            clean / "Cargo.toml",
+            "[workspace]\n"
+            "members = []\n"
+            "[workspace.package]\n"
+            f'version = "{clean_version}"\n'
+            "[workspace.dependencies]\n"
+            + declarations,
+        )
         subprocess.run(["git", "init", "-q", os.fspath(clean)], check=True)
         subprocess.run(
             ["git", "-C", os.fspath(clean), "config", "user.name", "pin-test"],
@@ -507,23 +543,38 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         ).strip()
         return clean, frozen, head
 
-    def _build_trust_ir(self, workspace: Path, *, clean_rev: str, ay_rev: str) -> Path:
+    def _build_trust_ir(
+        self,
+        workspace: Path,
+        *,
+        clean_rev: str,
+        ay_rev: str,
+        clean_version: str = "1.2.0",
+        ay_version: str = "0.9.0",
+    ) -> Path:
         root = workspace / "trust-ir"
         (root / "scripts").mkdir(parents=True)
         shutil.copy2(BUMP_SCRIPT, root / "scripts" / BUMP_SCRIPT.name)
         shutil.copy2(PIN_REWRITE_PATH, root / "scripts" / PIN_REWRITE_PATH.name)
         self._write(
             root / "crates/trust-ir/Cargo.toml",
-            CLEAN_DEP_LINE.format(rev=clean_rev),
+            CLEAN_DEP_LINE.replace("1.2.0", clean_version).format(rev=clean_rev),
         )
         self._write(
             root / "crates/trust-ir-build/Cargo.toml",
-            "".join(CLEAN_DEP_LINE.format(rev=clean_rev) for _ in range(3)),
+            "".join(
+                CLEAN_DEP_LINE.replace("1.2.0", clean_version).format(
+                    rev=clean_rev
+                )
+                for _ in range(3)
+            ),
         )
         self._write(
             root / PIN.GUARD_TEST,
             f'const CLEAN_REVISION: &str = "{clean_rev}";\n'
-            f'const AY_REVISION: &str = "{ay_rev}";\n',
+            f'const CLEAN_VERSION: &str = "{clean_version}";\n'
+            f'const AY_REVISION: &str = "{ay_rev}";\n'
+            f'const AY_VERSION: &str = "{ay_version}";\n',
         )
         self._write(
             root / "frontend/Cargo.lock",
@@ -532,11 +583,13 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         )
         self._write(
             root / "Cargo.lock",
+            'source = "git+https://github.com/alabsystems/clean.git'
+            f'?rev={clean_rev}#{clean_rev}"\n'
             'source = "git+https://github.com/alabsystems/ay.git'
             f'?rev={ay_rev}#{ay_rev}"\n',
         )
         ay_line = (
-            'ay = { version = "0.9.0", '
+            f'ay = {{ version = "{ay_version}", '
             'git = "https://github.com/alabsystems/ay.git", '
             f'rev = "{ay_rev}" }}\n'
         )
@@ -597,21 +650,31 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         ay_target: str,
         *,
         path_prefix: Path | None = None,
+        clean_version: str | None = None,
+        ay_version: str | None = None,
+        dry_run: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("TRUST_IR_CLEAN_SIBLING", None)
         if path_prefix is not None:
             env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+        command = [
+            "/bin/bash",
+            os.fspath(root / "scripts/bump-dep-pin.sh"),
+            "clean-ay",
+            clean_target,
+            ay_target,
+            "--offline",
+            "--no-guard-test",
+        ]
+        if clean_version is not None:
+            command.extend(["--clean-version", clean_version])
+        if ay_version is not None:
+            command.extend(["--ay-version", ay_version])
+        if dry_run:
+            command.append("--dry-run")
         return subprocess.run(
-            [
-                "/bin/bash",
-                os.fspath(root / "scripts/bump-dep-pin.sh"),
-                "clean-ay",
-                clean_target,
-                ay_target,
-                "--offline",
-                "--no-guard-test",
-            ],
+            command,
             cwd=root,
             env=env,
             check=False,
@@ -642,7 +705,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             stderr=subprocess.STDOUT,
         )
 
-    def test_ay_bump_refuses_wrong_clean_head_without_mutation(self) -> None:
+    def test_ay_bump_uses_frozen_commit_even_when_clean_head_is_ahead(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             _, frozen, head = self._init_clean(
@@ -654,8 +717,8 @@ class BumpScriptIntegrationTests(unittest.TestCase):
 
             result = self._run_bump(root, OLD)
 
-            self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn("not frozen Clean", result.stdout)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("all legs coherent", result.stdout)
             self.assertEqual(self._snapshot(root), before)
 
     def test_clean_only_bump_refuses_target_clean_with_new_ay_without_mutation(
@@ -675,7 +738,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             self.assertEqual(self._snapshot(root), before)
             self.assertNotIn(NEW, (root / PIN.GUARD_TEST).read_text(encoding="utf-8"))
 
-    def test_ay_bump_refuses_wrong_clean_checkout_override_without_mutation(
+    def test_offline_ay_bump_refuses_object_cache_missing_frozen_commit(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -683,7 +746,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             clean, frozen, _ = self._init_clean(workspace, ay_rev=OLD)
             alternate_workspace = workspace / "alternate"
             alternate_workspace.mkdir()
-            alternate, _, _ = self._init_clean(alternate_workspace, ay_rev=OLD)
+            alternate, _, _ = self._init_clean(alternate_workspace, ay_rev=NEW)
             self.assertNotEqual(clean.resolve(), alternate.resolve())
             root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
             before = self._snapshot(root)
@@ -691,7 +754,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             result = self._run_bump(root, OLD, clean_override=alternate)
 
             self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn("validation and compilation agree", result.stdout)
+            self.assertIn("offline Clean authority check cannot find commit", result.stdout)
             self.assertEqual(self._snapshot(root), before)
 
     def test_ay_bump_accepts_symlink_to_the_cargo_patched_checkout(self) -> None:
@@ -709,7 +772,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             self.assertIn("all legs coherent", result.stdout)
             self.assertEqual(self._snapshot(root), before)
 
-    def test_ay_bump_refuses_dirty_clean_checkout_without_mutation(self) -> None:
+    def test_ay_bump_ignores_dirty_clean_worktree_and_reads_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             clean, frozen, _ = self._init_clean(workspace, ay_rev=OLD)
@@ -719,9 +782,8 @@ class BumpScriptIntegrationTests(unittest.TestCase):
 
             result = self._run_bump(root, OLD)
 
-            self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn("has uncommitted changes", result.stdout)
-            self.assertIn("untracked-proof-input.txt", result.stdout)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("all legs coherent", result.stdout)
             self.assertEqual(self._snapshot(root), before)
 
     def test_ay_bump_refuses_wrong_clean_declaration_count(self) -> None:
@@ -749,6 +811,121 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                     )
                     self.assertIn("expected exactly 7", result.stdout)
                     self.assertEqual(self._snapshot(root), before)
+
+    def test_coordinated_semver_move_requires_both_explicit_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(
+                workspace,
+                ay_rev=NEW,
+                clean_version="0.2.0",
+                ay_version="0.13.0",
+            )
+            root = self._build_trust_ir(
+                workspace,
+                clean_rev=OLD,
+                ay_rev=OLD,
+                clean_version="0.1.0",
+                ay_version="0.12.0",
+            )
+            before = self._snapshot(root)
+
+            missing_clean = self._run_clean_ay_bump(
+                root, clean_target, NEW, dry_run=True
+            )
+            self.assertNotEqual(missing_clean.returncode, 0, missing_clean.stdout)
+            self.assertIn("--clean-version 0.2.0", missing_clean.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+            missing_ay = self._run_clean_ay_bump(
+                root,
+                clean_target,
+                NEW,
+                clean_version="0.2.0",
+                dry_run=True,
+            )
+            self.assertNotEqual(missing_ay.returncode, 0, missing_ay.stdout)
+            self.assertIn("--ay-version 0.13.0", missing_ay.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_coordinated_semver_move_refuses_wrong_or_malformed_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(
+                workspace,
+                ay_rev=NEW,
+                clean_version="0.2.0",
+                ay_version="0.13.0",
+            )
+            root = self._build_trust_ir(
+                workspace,
+                clean_rev=OLD,
+                ay_rev=OLD,
+                clean_version="0.1.0",
+                ay_version="0.12.0",
+            )
+            before = self._snapshot(root)
+
+            wrong = self._run_clean_ay_bump(
+                root,
+                clean_target,
+                NEW,
+                clean_version="0.2.0",
+                ay_version="0.14.0",
+                dry_run=True,
+            )
+            self.assertNotEqual(wrong.returncode, 0, wrong.stdout)
+            self.assertIn("disagrees with immutable target authority 0.13.0", wrong.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+            malformed = self._run_clean_ay_bump(
+                root,
+                clean_target,
+                NEW,
+                clean_version="^0.2.0",
+                ay_version="0.13.0",
+                dry_run=True,
+            )
+            self.assertNotEqual(malformed.returncode, 0, malformed.stdout)
+            self.assertIn("not an exact canonical Clean semantic version", malformed.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_coordinated_0_1_to_0_2_and_0_12_to_0_13_dry_run_is_atomic(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(
+                workspace,
+                ay_rev=NEW,
+                clean_version="0.2.0",
+                ay_version="0.13.0",
+            )
+            root = self._build_trust_ir(
+                workspace,
+                clean_rev=OLD,
+                ay_rev=OLD,
+                clean_version="0.1.0",
+                ay_version="0.12.0",
+            )
+            before = self._snapshot(root)
+
+            result = self._run_clean_ay_bump(
+                root,
+                clean_target,
+                NEW,
+                clean_version="0.2.0",
+                ay_version="0.13.0",
+                dry_run=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("DRY RUN — nothing installed", result.stdout)
+            self.assertIn('const CLEAN_VERSION: &str = "0.2.0";', result.stdout)
+            self.assertIn('const AY_VERSION: &str = "0.13.0";', result.stdout)
+            self.assertIn('version = "0.2.0"', result.stdout)
+            self.assertIn('version = "0.13.0"', result.stdout)
+            self.assertEqual(self._snapshot(root), before)
 
     def test_post_install_failure_rolls_back_every_controlled_byte(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -781,9 +958,20 @@ class BumpScriptIntegrationTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
-            _, clean_target, head = self._init_clean(workspace, ay_rev=NEW)
+            _, clean_target, head = self._init_clean(
+                workspace,
+                ay_rev=NEW,
+                clean_version="0.2.0",
+                ay_version="0.13.0",
+            )
             self.assertEqual(clean_target, head)
-            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            root = self._build_trust_ir(
+                workspace,
+                clean_rev=OLD,
+                ay_rev=OLD,
+                clean_version="0.1.0",
+                ay_version="0.12.0",
+            )
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             fake_cargo = fake_bin / "cargo"
@@ -802,7 +990,12 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             before = self._snapshot(root)
 
             result = self._run_clean_ay_bump(
-                root, clean_target, NEW, path_prefix=fake_bin
+                root,
+                clean_target,
+                NEW,
+                path_prefix=fake_bin,
+                clean_version="0.2.0",
+                ay_version="0.13.0",
             )
 
             self.assertNotEqual(result.returncode, 0, result.stdout)
@@ -812,6 +1005,8 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             guard = (root / PIN.GUARD_TEST).read_text(encoding="utf-8")
             self.assertIn(f'const CLEAN_REVISION: &str = "{OLD}";', guard)
             self.assertIn(f'const AY_REVISION: &str = "{OLD}";', guard)
+            self.assertIn('const CLEAN_VERSION: &str = "0.1.0";', guard)
+            self.assertIn('const AY_VERSION: &str = "0.12.0";', guard)
 
     def test_coordinated_success_moves_both_pin_sets_and_both_locks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -825,7 +1020,9 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_cargo.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = metadata ]; then\n"
-                f"  sed 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
+                f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
+                f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
+                "Cargo.lock > Cargo.lock.next || exit 31\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 32\n"
                 "else\n"
                 f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
@@ -850,6 +1047,71 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             guard = (root / PIN.GUARD_TEST).read_text(encoding="utf-8")
             self.assertIn(f'const CLEAN_REVISION: &str = "{clean_target}";', guard)
             self.assertIn(f'const AY_REVISION: &str = "{NEW}";', guard)
+
+    def test_coordinated_stale_warning_skips_only_unchanged_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=OLD)
+            root = self._build_trust_ir(
+                workspace, clean_rev=OTHER, ay_rev=OLD
+            )
+            subprocess.run(["git", "init", "-q", os.fspath(root)], check=True)
+            subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed 's/{OTHER}/{clean_target}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                f"  sed 's/{OTHER}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o755)
+
+            unchanged = self._run_clean_ay_bump(
+                root, clean_target, OLD, path_prefix=fake_bin
+            )
+
+            self.assertEqual(unchanged.returncode, 0, unchanged.stdout)
+            self.assertNotIn(f"the previous revision {OLD}", unchanged.stdout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
+            root = self._build_trust_ir(
+                workspace, clean_rev=OTHER, ay_rev=OLD
+            )
+            self._write(root / "notes/stale-ay.txt", f"retired AY {OLD}\n")
+            subprocess.run(["git", "init", "-q", os.fspath(root)], check=True)
+            subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed -e 's/{OTHER}/{clean_target}/g' -e 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                f"  sed 's/{OTHER}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o755)
+
+            stale = self._run_clean_ay_bump(
+                root, clean_target, NEW, path_prefix=fake_bin
+            )
+
+            self.assertEqual(stale.returncode, 0, stale.stdout)
+            self.assertIn(f"the previous revision {OLD}", stale.stdout)
+            self.assertIn("notes/stale-ay.txt", stale.stdout)
 
 
 class RepositoryCoherenceTests(unittest.TestCase):
