@@ -15,7 +15,7 @@ use trust_ir::inst::{BinOp, ICmpOp};
 use trust_ir::proof::{
     ObligationKind, ProofAnnotation, ProofFormula, ProofObligation, ProofStatus,
 };
-use trust_ir::ty::Ty;
+use trust_ir::ty::{FatPtrKind, Ty};
 use trust_ir::value::{FuncId, ProofId, ValueId};
 use trust_ir_ay::{
     AYError, VcObligationOutcome, VcSource, VcVerdict, ay_symbol, generate_function_vc,
@@ -947,4 +947,72 @@ fn ambiguous_condbr_at_a_site_is_unsupported_not_guessed() {
         vc.obligations[0].1,
         VcObligationOutcome::Unsupported { .. }
     ));
+}
+
+/// A fat borrow in the ay lane is typed at the FAT type (the shared
+/// `trust_ir::bridge::borrow_result_ty` rule), so the GEP index width gate —
+/// the encoder's ONE consumer of recorded value types — REFUSES the module
+/// instead of flowing the fat value through the 64-bit thin-pointer model
+/// under a false `ptr`. The fat value enters via `Copy`, the one door a fat
+/// value has into this lane today: a fat PARAM refuses earlier at `declare`
+/// (no fat sort), and `generate_function_vc` takes any `Module` without
+/// requiring the validator, so this route is live.
+///
+/// MUTATION — revert the `Inst::Borrow` arm's bind to a literal `Ty::Ptr`.
+/// NOT NEUTRALISED: the borrow then records 64-bit `ptr`, the index gate
+/// passes, `verify_function` answers Ok, and `unwrap_err` panics.
+#[test]
+fn a_fat_borrow_fails_closed_at_the_gep_index_gate() {
+    let fat = Ty::FatPtr(FatPtrKind::Str);
+    let mut mb = ModuleBuilder::new("fat_borrow");
+    let ft = mb.add_func_type(vec![Ty::Ptr], vec![]);
+    let mut fb = mb.function("fat_borrow", ft);
+    let entry = fb.create_block();
+    let p = fb.add_block_param(entry, Ty::Ptr);
+    fb.switch_to_block(entry);
+    let fat_val = fb.copy(fat.clone(), p);
+    let b = fb.borrow(fat_val);
+    let _g = fb.gep(Ty::I64, p, vec![b]);
+    fb.ret(vec![]);
+    fb.build();
+    let module = mb.build();
+
+    let err = verify_function(&module, module.functions[0].id).unwrap_err();
+    assert!(
+        matches!(&err, AYError::UnsupportedType(Ty::FatPtr(_))),
+        "expected fail-closed on the fat borrow's recorded type, got {err:?}"
+    );
+}
+
+/// A borrow of a borrow collapses to the chain root IN WALK ORDER: the
+/// straight-line walk records the inner borrow's resolved fat type before
+/// the outer borrow reads it, so the outer `BorrowMut` is fat too and the
+/// index gate refuses the module.
+///
+/// MUTATION — make either arm bind `Ty::Ptr` again, or read the operand's
+/// DECLARED spelling instead of its recorded type. NOT NEUTRALISED: the
+/// outer borrow then records `ptr`, the gate passes, and `unwrap_err`
+/// panics.
+#[test]
+fn a_fat_borrow_chain_collapses_in_walk_order() {
+    let fat = Ty::FatPtr(FatPtrKind::Str);
+    let mut mb = ModuleBuilder::new("fat_borrow_chain");
+    let ft = mb.add_func_type(vec![Ty::Ptr], vec![]);
+    let mut fb = mb.function("fat_borrow_chain", ft);
+    let entry = fb.create_block();
+    let p = fb.add_block_param(entry, Ty::Ptr);
+    fb.switch_to_block(entry);
+    let fat_val = fb.copy(fat.clone(), p);
+    let b1 = fb.borrow(fat_val);
+    let b2 = fb.borrow_mut(b1);
+    let _g = fb.gep(Ty::I64, p, vec![b2]);
+    fb.ret(vec![]);
+    fb.build();
+    let module = mb.build();
+
+    let err = verify_function(&module, module.functions[0].id).unwrap_err();
+    assert!(
+        matches!(&err, AYError::UnsupportedType(Ty::FatPtr(_))),
+        "expected the chained fat borrow to fail closed, got {err:?}"
+    );
 }

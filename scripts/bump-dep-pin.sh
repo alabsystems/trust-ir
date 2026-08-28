@@ -7,9 +7,11 @@
 # of the legs leaves `main` red, and the failure is structurally invisible to
 # the natural verification for a "pure pin bump":
 #
-#   * The only enforcement is a TEST (dependency_pin_coherence.rs). A bumper who
-#     verifies with `check --workspace` cannot see it — no compile step reads
-#     the guard's frozen constants.
+#   * Historically the only enforcement was a TEST
+#     (dependency_pin_coherence.rs), which `check --workspace` cannot execute.
+#     The bumper now mandates an exact Python mirror before treating a missing
+#     compile-capable Targo as an honest skip; the Rust test remains the
+#     independent compiled check.
 #   * `--locked` could not see a Clean move at all while the root [patch]
 #     rewrote clean.git to ../clean PATH deps: path deps emit no `source =`
 #     row, so the root Cargo.lock was byte-identical across a Clean bump.
@@ -26,10 +28,14 @@
 # commit. A sibling checkout is only an optional local object cache: its HEAD,
 # index, and working-tree bytes are deliberately irrelevant.
 #
-# A Clean pin move is also no longer a trust-ir-local transaction: ay and
-# trust-cg reach Clean ONLY through trust-ir-build's declaration, and ty
-# declares it directly, so all four must move together. Verify the result with
-# `ty-mcc-drift-guard --root ~` (in ty), not with this script alone.
+# This script owns only TrustIR's side of the cross-repository transaction.
+# The repositories form a hash-addressed SCC, so requiring every repository to
+# name every successor commit simultaneously is impossible. Publication uses
+# the ratified predecessor-epoch cut: backedges deliberately retain immutable
+# predecessor identities while the successor cohort advances, and the final
+# epoch receipt records the exact edge set. Do not replace that receipt with a
+# raw five-workspace SHA-equality check or chase sibling HEADs; either action
+# would recreate the hash cycle this patch deletion cut.
 #
 # That combination shipped a partial move three times. The legs are enumerated
 # machine-readably in scripts/pin_rewrite.py; this script drives them as one
@@ -77,8 +83,8 @@ usage: scripts/bump-dep-pin.sh <clean|ay> <40-hex-sha> [version] [options]
                           refresh still needs the network for a clean bump)
   --allow-sibling-ahead   deprecated compatibility no-op; immutable target
                           commits, never sibling HEADs, are authoritative
-  --no-guard-test         skip the Rust guard test; the toolchain-free census
-                          still runs and still proves every leg coherent
+  --no-guard-test         skip the Rust guard test; the exact toolchain-free
+                          mirror still runs and proves every invariant
   --dry-run               stage the edits and diff them; change nothing
 
 env:
@@ -548,6 +554,8 @@ fi
 # reachability) were all confirmed — not merely that the in-repo legs agree
 # with each other.
 if [[ $ALREADY_COHERENT -eq 1 ]]; then
+    pin static-guard --root "$ROOT" \
+        || die "the exact static dependency-pin guard rejected the no-op tree"
     if [[ "$DEP" == "clean-ay" ]]; then
         printf '\nalready at Clean %s + AY %s; all legs coherent and every precondition verified — nothing to do.\n' "$REV" "$AY_REV"
     else
@@ -641,7 +649,9 @@ fi
 say "PHASE F — verification"
 
 # Tier 1 (MANDATORY, no Rust toolchain required): every leg agrees on the new
-# revision, and the old one survives nowhere in tracked sources.
+# revision, then an exact Python mirror replays every runtime assertion in the
+# compiled dependency_pin_coherence guard (manifest selectors, provenance,
+# versions/cardinality, root patch exclusion, and both lockfiles).
 if [[ "$DEP" == "clean-ay" ]]; then
     pin census --root "$ROOT" --dep clean \
         || die "post-bump Clean census is still incoherent — see the table above"
@@ -651,6 +661,8 @@ else
     pin census --root "$ROOT" --dep "$DEP" \
         || die "post-bump census is still incoherent — see the table above"
 fi
+pin static-guard --root "$ROOT" \
+    || die "the exact static dependency-pin guard FAILED after the bump"
 
 if [[ $REPAIR -eq 0 ]]; then
     if [[ "$DEP" == "clean-ay" ]]; then
@@ -690,8 +702,8 @@ if [[ $RUN_GUARD_TEST -eq 1 ]]; then
         printf '%s\n' "$GUARD_OUT" | tail -5
         printf 'VERIFY: guard test PASSED\n'
     elif grep -q 'Trust targo was not found' <<<"$GUARD_OUT"; then
-        printf 'VERIFY: SKIPPED (targo unavailable) — tier 1 already proved every\n'
-        printf '        leg coherent. Run scripts/ci_gates.sh gate 7 before pushing.\n'
+        printf 'VERIFY: compiled guard SKIPPED (targo unavailable) — the exact\n'
+        printf '        static mirror passed. Run the compiled gate before pushing.\n'
     else
         printf '%s\n' "$GUARD_OUT" >&2
         die "the coherence guard test FAILED after the bump"

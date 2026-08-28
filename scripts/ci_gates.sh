@@ -48,8 +48,9 @@
 #                             bumper separately checks the selected immutable
 #                             Clean commit's seven co-owned AY declarations.
 #                             Move a pin with scripts/bump-dep-pin.sh, never by hand.
-#                             Gate 0 runs the toolchain-free half of the same
-#                             invariant (scripts/pin_rewrite.py census).
+#                             Gate 0 runs the exact toolchain-free mirror of
+#                             the same runtime assertions after its leg census
+#                             (scripts/pin_rewrite.py static-guard).
 #   8. wire-format-goldens  — the conformance byte-goldens, i.e. the cross-repo
 #                             contract tRust/TrustCg/ty/ay pin against.
 #                             `coverage` fires when a new Ty/Inst/
@@ -191,12 +192,10 @@ lineage_green() {
         -j "$TARGO_JOBS" json_manifest_sidecar_accepted -- --exact
 }
 
-# Gate 0 (pin half): the toolchain-free census of every Clean and AY pin leg.
-# Gate 7 runs the authoritative Rust guard, but that needs Targo; this needs
-# only python3, so on a machine without the trust toolchain it is the ONLY
-# thing standing between a hand-edited manifest and a red main. It also names
-# the disagreeing file, which the lock-mismatch error from `clippy --locked`
-# does not.
+# Gate 0: the toolchain-free census of every Clean and AY pin leg followed by
+# the exact static mirror of Gate 7's runtime assertions. Gate 7 remains the
+# independent compiled parity check. Gate 0 also names the disagreeing file,
+# which the lock-mismatch error from `clippy --locked` does not.
 pin_census() {
     local dep
     local status=0
@@ -207,12 +206,17 @@ pin_census() {
     if [[ $status -ne 0 ]]; then
         printf 'Repair with: scripts/bump-dep-pin.sh <clean|ay> <40-hex-sha>\n' >&2
     fi
-    return $status
+    if ! python3 -B "$ROOT/scripts/pin_rewrite.py" static-guard --root "$ROOT"; then
+        status=1
+    fi
+    return "$status"
 }
 
 # --- Gate 0: repository policy and gate-tool regressions --------------------
 gate zero-ignored-rust \
     python3 -B "$ROOT/scripts/check_no_ignored_rust.py" --root "$ROOT"
+gate trust-default-authority \
+    python3 -B "$ROOT/scripts/check_trust_default_authority.py" --root "$ROOT"
 gate dependency-pin-census pin_census
 gate internal-gate-tests \
     python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'

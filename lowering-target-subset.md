@@ -242,7 +242,11 @@ Clean's `crates/clean-compiler/src/emit_trust_ir.rs`). A producer can run
 the versioned checker dep-light: depend on `trust-ir-conformance` with
 `default-features = false` — the library target carries
 `subset::module_subset_violations` with no feature requirements — or use
-the stricter core bridge gate `Module::check_conformance_subset`.
+the in-process core bridge gate `Module::check_conformance_subset`, which
+enforces the same per-construct verdicts on the function-emission surface
+(the conformance checker additionally walks the interned type tables,
+signatures, and globals; `tests/bridge_subset_agreement.rs` pins the two
+verdict-identical).
 
 Ratified with the 2026-07-04 promotion audit:
 

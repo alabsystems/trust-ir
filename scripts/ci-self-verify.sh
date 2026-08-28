@@ -289,6 +289,7 @@ check_git_deps_are_rev_pinned
 check_publish_dependency_mappings_fail_closed
 check_no_ignored_rust_tests_or_docs
 check_lean_proof_placeholders
+run python3 -B "$ROOT/scripts/pin_rewrite.py" static-guard --root "$ROOT"
 run python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'
 
 # Internal formatting, linting, and compilation all go through the Trust-owned

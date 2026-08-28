@@ -59,10 +59,11 @@ CLEAN legs:
      never the sibling's working tree. Do NOT "align" ../clean by
      checking it out at the pin, and do NOT chase ../clean's HEAD with a
      new pin: Clean pins trust-ir back (clean-reflect), so following its
-     HEAD reopens the pin cycle this deletion cut. The rev moves only
-     when a Clean change is actually needed here, and it must move in
-     ty, ay and trust-cg in the same transaction — ay and trust-cg reach
-     Clean only through trust-ir-build's declaration.
+     HEAD reopens the pin cycle this deletion cut. Cross-repo publication
+     instead uses the ratified predecessor-epoch cut: backedges may retain
+     immutable predecessor identities while successor repositories advance.
+     The final epoch receipt, not raw five-workspace SHA equality, attests
+     the exact cohort.
 
 AY legs:
   1. crates/trust-ir-ay/Cargo.toml            ay + ay-proof          (2 revs)
@@ -75,10 +76,10 @@ AY legs:
      disagrees, Cargo.lock carries two ay graphs and this guard fails.
 
 VERIFY: scripts/run-targo.sh test -p trust-ir --test dependency_pin_coherence
-        (standing gate 7 in scripts/ci_gates.sh; the toolchain-free half is
-         scripts/pin_rewrite.py census --dep clean|ay)
-WHY IT KEEPS SLIPPING: this is a TEST. `check --workspace` — the natural
-verification for a "pure pin bump" — CANNOT catch it.
+        (standing gate 7 in scripts/ci_gates.sh; its exact toolchain-free
+         mirror is scripts/pin_rewrite.py static-guard)
+The compiled test is independent parity for the mandatory static mirror;
+`check --workspace` alone still executes neither one.
 ============================================================
 "#;
 
@@ -86,13 +87,14 @@ const CLEAN_REPOSITORY: &str = "https://github.com/alabsystems/clean.git";
 // Leg 3. This constant had been left at 71449eaa across two Clean moves, so
 // the clean half of this gate had been red (and therefore uninformative) the
 // whole time. It is now the revision legs 1, 2, 4 and 5 actually carry, which
-// is also the revision ty, ay and trust-cg resolve — the condition
-// `ty-mcc-drift-guard` enforces across the five sibling workspaces.
-const CLEAN_REVISION: &str = "74c5f9975c9cf1c18c0face23ade01dd4342e267";
-const CLEAN_VERSION: &str = "0.4.0";
+// is TrustIR's exact local Clean authority. The cross-repository graph is an
+// SCC: predecessor backedges intentionally need not resolve this same commit.
+// The final epoch receipt attests those predecessor/successor identities.
+const CLEAN_REVISION: &str = "d241981ffb3c788b0c5f7d15a1b91ddc526f7fbf";
+const CLEAN_VERSION: &str = "0.5.0";
 const AY_REPOSITORY: &str = "https://github.com/alabsystems/ay.git";
-const AY_REVISION: &str = "2df1293ceba3b3c03d93e50ae0efa3720be56a43";
-const AY_VERSION: &str = "0.15.0";
+const AY_REVISION: &str = "cda2dbe83f8b9eea68cffd4b3b3681f764d4645f";
+const AY_VERSION: &str = "0.17.0";
 
 const TRUST_IR_MANIFEST: &str = include_str!("../Cargo.toml");
 const TRUST_IR_AY_MANIFEST: &str = include_str!("../../trust-ir-ay/Cargo.toml");

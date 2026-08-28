@@ -2,10 +2,11 @@
 """Declarative leg table for the Clean / AY dependency pins, plus a rewriter.
 
 A pin move is an ATOMIC transaction across every leg listed below.  Moving
-fewer than all of them leaves `main` red, and the failure is invisible to
-`cargo check` because the only enforcement is a TEST
-(`crates/trust-ir/tests/dependency_pin_coherence.rs`).  That is exactly how a
-partial move shipped three times.
+fewer than all of them leaves `main` red, and `cargo check` does not execute
+the compiled guard (`crates/trust-ir/tests/dependency_pin_coherence.rs`). That
+is exactly how a partial move shipped three times. The `static-guard` command
+now mirrors every runtime assertion in that Rust test without requiring a
+compiler, while the Rust test remains an independent parity check.
 
 This module is the machine-readable statement of "which files hold the pin".
 It never mutates the repository: `apply` and `apply-clean-ay` write candidates
@@ -240,10 +241,11 @@ EXTERNAL_LEGS: Dict[str, str] = {
         "The root [patch] was deleted, so cargo compiles clean.git AT THE "
         "PINNED REV. Do NOT check ../clean out at the pin and do NOT follow "
         "its HEAD -- Clean pins trust-ir back through clean-reflect, so "
-        "chasing HEAD reopens the pin cycle that deletion cut. The rev must "
-        "instead move in ty, ay and trust-cg in the same transaction (ay and "
-        "trust-cg reach Clean only through trust-ir-build's declaration); "
-        "verify with `ty-mcc-drift-guard --root ~`."
+        "chasing HEAD reopens the pin cycle that deletion cut. Cross-repo "
+        "publication uses the ratified predecessor-epoch cut: backedges may "
+        "intentionally retain predecessor identities while successors "
+        "advance. Verify that exact cohort with its final epoch receipt, not "
+        "with a raw five-workspace SHA-equality requirement."
     ),
     "ay": (
         "The selected Clean COMMIT's Cargo.toml CO-OWNS the AY pin (7 "
@@ -472,6 +474,325 @@ def version_census(read: Reader, dep: str) -> VersionCensus:
             )
         )
     return VersionCensus(dep=dep, legs=tuple(reports))
+
+
+@dataclass(frozen=True)
+class StaticGuardReport:
+    """Toolchain-free mirror of ``dependency_pin_coherence.rs``."""
+
+    violations: Tuple[str, ...]
+
+    @property
+    def coherent(self) -> bool:
+        return not self.violations
+
+    def render(self) -> str:
+        if self.coherent:
+            return (
+                "STATIC GUARD: PASS -- exact Clean/AY manifest, provenance, "
+                "root-patch, and lockfile coherence checks passed"
+            )
+        rows = [
+            "STATIC GUARD: FAIL -- dependency_pin_coherence mirror found "
+            f"{len(self.violations)} violation(s):"
+        ]
+        rows.extend(f"  - {violation}" for violation in self.violations)
+        return "\n".join(rows)
+
+
+def static_guard(read: Reader) -> StaticGuardReport:
+    """Mirror every runtime assertion in ``dependency_pin_coherence.rs``.
+
+    This is deliberately independent of Rust compilation so a missing Trust
+    stage2 cannot turn the bumper's best-effort compiled guard into a silent
+    authority gap. The Rust test remains the canonical compiled check and runs
+    whenever Targo is available; this mirror is mandatory on every bump.
+    """
+
+    violations: List[str] = []
+
+    # The leg and package-version censuses are part of the fallback contract,
+    # even though the bumper also prints them separately. Keeping them here
+    # makes the standalone `static-guard` command complete and fail-closed.
+    for dep in sorted(LEGS):
+        revision_report = census(read, dep)
+        if not revision_report.coherent:
+            violations.append(
+                f"{dep} revision legs are not one exact authority: "
+                f"{revision_report.distinct or ('<none>',)}"
+            )
+        version_report = version_census(read, dep)
+        if not version_report.coherent:
+            violations.append(
+                f"{dep} package-version legs are not one exact version: "
+                f"{version_report.distinct or ('<none>',)}"
+            )
+
+    guard = read(GUARD_TEST)
+    constants: Dict[str, str] = {}
+    for name in (
+        "CLEAN_REPOSITORY",
+        "CLEAN_REVISION",
+        "CLEAN_VERSION",
+        "AY_REPOSITORY",
+        "AY_REVISION",
+        "AY_VERSION",
+    ):
+        values = re.findall(
+            rf'(?m)^const {re.escape(name)}: &str = "([^"]+)";$', guard
+        )
+        if len(values) != 1:
+            violations.append(
+                f"{GUARD_TEST} must define exactly one canonical {name}; "
+                f"found {len(values)}"
+            )
+        else:
+            constants[name] = values[0]
+
+    # Without all six constants no dependent comparison has a trustworthy
+    # authority. Report the shape failures above and stop rather than deriving
+    # follow-on diagnostics from guessed defaults.
+    if len(constants) != 6:
+        return StaticGuardReport(tuple(violations))
+
+    clean_repository = constants["CLEAN_REPOSITORY"]
+    clean_revision = constants["CLEAN_REVISION"]
+    clean_version = constants["CLEAN_VERSION"]
+    ay_repository = constants["AY_REPOSITORY"]
+    ay_revision = constants["AY_REVISION"]
+    ay_version = constants["AY_VERSION"]
+
+    if clean_repository != CLEAN_REMOTE:
+        violations.append(
+            f"CLEAN_REPOSITORY is not the canonical authority {CLEAN_REMOTE}: "
+            f"{clean_repository!r}"
+        )
+    if ay_repository != AY_REMOTE:
+        violations.append(
+            f"AY_REPOSITORY is not the canonical authority {AY_REMOTE}: "
+            f"{ay_repository!r}"
+        )
+    if not SHA_RE.fullmatch(clean_revision):
+        violations.append(f"CLEAN_REVISION is not a full 40-hex SHA: {clean_revision!r}")
+    if not SHA_RE.fullmatch(ay_revision):
+        violations.append(f"AY_REVISION is not a full 40-hex SHA: {ay_revision!r}")
+    if not SEMVER_RE.fullmatch(clean_version):
+        violations.append(
+            f"CLEAN_VERSION is not an exact canonical semantic version: {clean_version!r}"
+        )
+    if not SEMVER_RE.fullmatch(ay_version):
+        violations.append(
+            f"AY_VERSION is not an exact canonical semantic version: {ay_version!r}"
+        )
+
+    exact_clean_git = f'git = "{clean_repository}"'
+    exact_clean_rev = f'rev = "{clean_revision}"'
+    exact_clean_version = f'version = "{clean_version}"'
+    for manifest_name, expected_count in (
+        ("crates/trust-ir/Cargo.toml", 1),
+        ("crates/trust-ir-build/Cargo.toml", 3),
+    ):
+        dependency_lines = [
+            line.strip()
+            for line in read(manifest_name).splitlines()
+            if not line.strip().startswith("#")
+            and line.strip().startswith("clean-")
+            and " = {" in line.strip()
+        ]
+        if len(dependency_lines) != expected_count:
+            violations.append(
+                f"{manifest_name} Clean dependency inventory: expected "
+                f"{expected_count}, found {len(dependency_lines)}"
+            )
+        for line in dependency_lines:
+            if exact_clean_version not in line:
+                violations.append(
+                    f"{manifest_name} Clean dependency has the wrong version: {line}"
+                )
+            if exact_clean_git not in line:
+                violations.append(
+                    f"{manifest_name} Clean dependency has the wrong repository: {line}"
+                )
+            if exact_clean_rev not in line:
+                violations.append(
+                    f"{manifest_name} Clean dependency has the wrong revision: {line}"
+                )
+            if "branch =" in line or "tag =" in line:
+                violations.append(
+                    f"{manifest_name} Clean dependency has a floating selector: {line}"
+                )
+
+    exact_clean_source = (
+        f'source = "git+{clean_repository}?rev={clean_revision}#{clean_revision}"'
+    )
+    clean_git_source = f"git+{clean_repository}"
+    frontend_lock = read("frontend/Cargo.lock")
+    frontend_clean_packages = [
+        package
+        for package in frontend_lock.split("[[package]]")
+        if any(
+            line.strip().startswith('name = "clean-')
+            for line in package.splitlines()
+        )
+    ]
+    if len(frontend_clean_packages) != 1:
+        violations.append(
+            "frontend/Cargo.lock Clean package inventory: expected 1, "
+            f"found {len(frontend_clean_packages)}"
+        )
+    else:
+        package_lines = {line.strip() for line in frontend_clean_packages[0].splitlines()}
+        if f'version = "{clean_version}"' not in package_lines:
+            violations.append(
+                "frontend/Cargo.lock Clean package does not use the exact "
+                f"version {clean_version}"
+            )
+        if exact_clean_source not in package_lines:
+            violations.append(
+                "frontend/Cargo.lock Clean package does not use the exact "
+                f"source {exact_clean_source}"
+            )
+    frontend_clean_source_rows = [
+        line.strip()
+        for line in frontend_lock.splitlines()
+        if clean_git_source in line.strip()
+    ]
+    if frontend_clean_source_rows != [exact_clean_source]:
+        violations.append(
+            "frontend/Cargo.lock contains a floating, duplicated, or split "
+            f"Clean source: {frontend_clean_source_rows!r}"
+        )
+
+    root_manifest = read("Cargo.toml")
+    root_clean_patches = [
+        line.strip()
+        for line in root_manifest.splitlines()
+        if not line.strip().startswith("#")
+        and line.strip().startswith("[patch")
+        and "clean.git" in line.strip()
+    ]
+    if root_clean_patches:
+        violations.append(
+            "Cargo.toml re-introduces a Clean path patch: "
+            f"{root_clean_patches!r}"
+        )
+
+    root_lock = read("Cargo.lock")
+    root_clean_source_rows = [
+        line.strip()
+        for line in root_lock.splitlines()
+        if clean_git_source in line.strip()
+    ]
+    if not root_clean_source_rows:
+        violations.append("Cargo.lock records no clean.git source")
+    elif any(line != exact_clean_source for line in root_clean_source_rows):
+        violations.append(
+            "Cargo.lock contains a stale or split Clean source: "
+            f"{root_clean_source_rows!r}"
+        )
+
+    ay_manifest_lines = [
+        line.strip()
+        for line in read("crates/trust-ir-ay/Cargo.toml").splitlines()
+        if not line.strip().startswith("#")
+        and (
+            line.strip().startswith("ay = {")
+            or line.strip().startswith("ay-proof = {")
+        )
+    ]
+    if len(ay_manifest_lines) != 2:
+        violations.append(
+            "crates/trust-ir-ay/Cargo.toml AY dependency inventory: "
+            f"expected 2, found {len(ay_manifest_lines)}"
+        )
+    exact_ay_git = f'git = "{ay_repository}"'
+    exact_ay_rev = f'rev = "{ay_revision}"'
+    exact_ay_version = f'version = "{ay_version}"'
+    for line in ay_manifest_lines:
+        if not (
+            exact_ay_git in line
+            and exact_ay_rev in line
+            and exact_ay_version in line
+            and "branch =" not in line
+            and "tag =" not in line
+        ):
+            violations.append(
+                "crates/trust-ir-ay/Cargo.toml has a non-exact AY authority: "
+                f"{line}"
+            )
+
+    exact_ay_provenance = f'pub const AY_REV: &str = "{ay_revision}";'
+    if not any(
+        line.strip() == exact_ay_provenance
+        for line in read("crates/trust-ir-ay/src/vc.rs").splitlines()
+    ):
+        violations.append("crates/trust-ir-ay/src/vc.rs AY_REV is stale or missing")
+    exact_bvblast_prover = (
+        'pub const BVBLAST_PROVER: &str = '
+        f'"trust-ir-ay/bvblast@{ay_revision}";'
+    )
+    if not any(
+        line.strip() == exact_bvblast_prover
+        for line in read("crates/trust-ir-ay/src/bvblast.rs").splitlines()
+    ):
+        violations.append(
+            "crates/trust-ir-ay/src/bvblast.rs BVBLAST_PROVER is stale or missing"
+        )
+
+    ay_selector = f"git+{ay_repository}?rev={ay_revision}"
+    ay_git_selector = f"git+{ay_repository}?rev="
+    root_ay_selector_rows = [
+        line.strip()
+        for line in root_lock.splitlines()
+        if ay_git_selector in line.strip()
+    ]
+    if not root_ay_selector_rows:
+        violations.append("Cargo.lock records no ay.git source")
+    elif any(ay_selector not in line for line in root_ay_selector_rows):
+        violations.append(
+            "Cargo.lock contains a stale or split AY selector: "
+            f"{root_ay_selector_rows!r}"
+        )
+
+    exact_ay_source = f'source = "{ay_selector}#{ay_revision}"'
+    root_ay_source_rows = [
+        line for line in root_ay_selector_rows if line.startswith("source = ")
+    ]
+    if not root_ay_source_rows or any(
+        line != exact_ay_source for line in root_ay_source_rows
+    ):
+        violations.append(
+            "Cargo.lock does not resolve every AY package to the exact source: "
+            f"{root_ay_source_rows!r}"
+        )
+
+    root_ay_packages = [
+        package
+        for package in root_lock.split("[[package]]")
+        if any(
+            line.strip() == exact_ay_source for line in package.splitlines()
+        )
+    ]
+    if len(root_ay_packages) != len(root_ay_source_rows):
+        violations.append(
+            "Cargo.lock AY package/source cardinality mismatch: "
+            f"{len(root_ay_packages)} package(s), "
+            f"{len(root_ay_source_rows)} source row(s)"
+        )
+    exact_ay_package_version = f'version = "{ay_version}"'
+    if any(
+        not any(
+            line.strip() == exact_ay_package_version
+            for line in package.splitlines()
+        )
+        for package in root_ay_packages
+    ):
+        violations.append(
+            "Cargo.lock resolves an AY package outside the exact version "
+            f"{ay_version}"
+        )
+
+    return StaticGuardReport(tuple(violations))
 
 
 #: Build inputs a pin can actually take effect from. Deliberately narrow —
@@ -767,6 +1088,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     _add_common(version_current_parser)
 
+    static_guard_parser = sub.add_parser(
+        "static-guard",
+        help=(
+            "run the exact toolchain-free mirror of "
+            "dependency_pin_coherence.rs"
+        ),
+    )
+    static_guard_parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+        help="repository root (defaults to this script's parent repository)",
+    )
+
     legs_parser = sub.add_parser(
         "legs", help="print this dependency's leg paths, one per line"
     )
@@ -942,6 +1277,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 return 1
             print(report.current())
             return 0
+
+        if args.command == "static-guard":
+            assert read is not None
+            report = static_guard(read)
+            print(report.render(), file=sys.stderr if not report.coherent else sys.stdout)
+            return 0 if report.coherent else 1
 
         if args.command == "apply":
             assert read is not None

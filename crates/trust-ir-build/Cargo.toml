@@ -79,7 +79,7 @@ rayon = { workspace = true }
 # Public snapshots resolve this exact dependency through the attested Clean
 # release mapping. Combined workspaces may redirect the public URL with their
 # own checked-out Clean subrepo `[patch]` table.
-clean-kernel = { version = "0.4.0", git = "https://github.com/alabsystems/clean.git", rev = "74c5f9975c9cf1c18c0face23ade01dd4342e267", features = ["farkas-constructive"] }
+clean-kernel = { version = "0.5.0", git = "https://github.com/alabsystems/clean.git", rev = "d241981ffb3c788b0c5f7d15a1b91ddc526f7fbf", features = ["farkas-constructive"] }
 # OPTIONAL (default-OFF, only via the `slackcertz-anchor` feature): the
 # `.olean` load pipeline used to materialize the literal Mathlib-dependent
 # `Crownproof.SlackCertZ` environment inside the trusted kernel. `optional =
@@ -88,13 +88,13 @@ clean-kernel = { version = "0.4.0", git = "https://github.com/alabsystems/clean.
 # Clean's published manifests use exact Git dependencies for their AY crates,
 # so this default-off anchor is consumable directly from clean.git as well as
 # from workspaces that redirect Clean through a local [patch].
-clean-mathverse = { version = "0.4.0", git = "https://github.com/alabsystems/clean.git", rev = "74c5f9975c9cf1c18c0face23ade01dd4342e267", optional = true }
+clean-mathverse = { version = "0.5.0", git = "https://github.com/alabsystems/clean.git", rev = "d241981ffb3c788b0c5f7d15a1b91ddc526f7fbf", optional = true }
 # OPTIONAL (default-OFF, only via `slackcertz-anchor`): the `.olean` search-path
 # resolver (`default_search_paths`) used to locate the Lean 4 stdlib dir before
 # loading the SlackCertZ closure. Already a transitive dep of `clean-mathverse`,
 # so this adds NOTHING to the default build (it is `optional = true` and only
 # activated by the feature).
-clean-olean = { version = "0.4.0", git = "https://github.com/alabsystems/clean.git", rev = "74c5f9975c9cf1c18c0face23ade01dd4342e267", optional = true }
+clean-olean = { version = "0.5.0", git = "https://github.com/alabsystems/clean.git", rev = "d241981ffb3c788b0c5f7d15a1b91ddc526f7fbf", optional = true }
 # The give-back ELABORATOR — used by the TRUSTED relevance check in
 # `validate_certified_evidence`: for a GiveBackRefinement obligation that carries
 # its function, the validator RE-RUNS `elaborate_give_back` + `give_back_recheck_directive`

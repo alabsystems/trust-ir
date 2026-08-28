@@ -84,6 +84,13 @@ class LegTableTests(unittest.TestCase):
         paths = [candidate.relpath for candidate in PIN.LEGS["clean"]]
         self.assertIn("frontend/Cargo.lock", paths)
 
+    def test_clean_external_note_describes_the_predecessor_epoch_cut(self) -> None:
+        note = PIN.EXTERNAL_LEGS["clean"]
+        self.assertIn("predecessor-epoch cut", note)
+        self.assertIn("final epoch receipt", note)
+        self.assertNotIn("same transaction", note)
+        self.assertNotIn("ty-mcc-drift-guard", note)
+
 
 class SubstituteTests(unittest.TestCase):
     def test_manifest_rewrite_reports_the_expected_count(self) -> None:
@@ -167,6 +174,124 @@ class SubstituteTests(unittest.TestCase):
     def test_version_rewrite_rejects_noncanonical_requirement(self) -> None:
         with self.assertRaisesRegex(PIN.PinError, "canonical semantic version"):
             PIN.plan_version_edits(lambda _: "", "clean", "^2.0")
+
+
+class StaticGuardMirrorTests(unittest.TestCase):
+    """The Python fallback must reject every authority class the Rust guard does."""
+
+    @staticmethod
+    def _reader(overrides: dict[str, str] | None = None) -> "PIN.Reader":
+        base = PIN.repo_reader(ROOT)
+        replacements = overrides or {}
+
+        def read(relpath: str) -> str:
+            return replacements.get(relpath, base(relpath))
+
+        return read
+
+    def assert_rejected(
+        self, relpath: str, tampered: str, expected_diagnostic: str
+    ) -> None:
+        report = PIN.static_guard(self._reader({relpath: tampered}))
+        self.assertFalse(report.coherent, report.render())
+        self.assertIn(expected_diagnostic, report.render())
+
+    def test_live_repository_passes_the_exact_static_mirror(self) -> None:
+        report = PIN.static_guard(self._reader())
+        self.assertTrue(report.coherent, report.render())
+
+    def test_root_clean_patch_is_rejected(self) -> None:
+        manifest = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        manifest += (
+            '\n[patch."https://github.com/alabsystems/clean.git"]\n'
+            'clean-kernel = { path = "../clean/crates/clean-kernel" }\n'
+        )
+        self.assert_rejected("Cargo.toml", manifest, "re-introduces a Clean path patch")
+
+    def test_clean_manifest_inventory_and_version_are_exact(self) -> None:
+        relpath = "crates/trust-ir/Cargo.toml"
+        manifest = (ROOT / relpath).read_text(encoding="utf-8")
+        clean_revision = PIN.census(self._reader(), "clean").current()
+        clean_version = PIN.version_census(self._reader(), "clean").current()
+        manifest += (
+            f'\nclean-extra = {{ version = "{clean_version}", '
+            f'git = "{PIN.CLEAN_REMOTE}", rev = "{clean_revision}" }}\n'
+        )
+        self.assert_rejected(relpath, manifest, "Clean dependency inventory")
+
+    def test_frontend_clean_package_cardinality_is_exact(self) -> None:
+        relpath = "frontend/Cargo.lock"
+        lock = (ROOT / relpath).read_text(encoding="utf-8")
+        clean_revision = PIN.census(self._reader(), "clean").current()
+        clean_version = PIN.version_census(self._reader(), "clean").current()
+        lock += (
+            "\n[[package]]\n"
+            'name = "clean-extra"\n'
+            f'version = "{clean_version}"\n'
+            f'source = "git+{PIN.CLEAN_REMOTE}?rev={clean_revision}'
+            f'#{clean_revision}"\n'
+        )
+        self.assert_rejected(relpath, lock, "Clean package inventory")
+
+    def test_frontend_clean_package_version_is_exact(self) -> None:
+        relpath = "frontend/Cargo.lock"
+        lock = (ROOT / relpath).read_text(encoding="utf-8")
+        clean_version = PIN.version_census(self._reader(), "clean").current()
+        lock = lock.replace(
+            f'version = "{clean_version}"', 'version = "999.0.0"', 1
+        )
+        self.assert_rejected(relpath, lock, "does not use the exact version")
+
+    def test_root_clean_source_must_be_exact(self) -> None:
+        relpath = "Cargo.lock"
+        lock = (ROOT / relpath).read_text(encoding="utf-8")
+        clean_revision = PIN.census(self._reader(), "clean").current()
+        lock = lock.replace(f"#{clean_revision}", f"#{OTHER}", 1)
+        self.assert_rejected(relpath, lock, "stale or split Clean source")
+
+    def test_ay_manifest_floating_selector_is_rejected(self) -> None:
+        relpath = "crates/trust-ir-ay/Cargo.toml"
+        manifest = (ROOT / relpath).read_text(encoding="utf-8")
+        ay_revision = PIN.census(self._reader(), "ay").current()
+        manifest = manifest.replace(
+            f'rev = "{ay_revision}"',
+            f'rev = "{ay_revision}", branch = "main"',
+            1,
+        )
+        self.assert_rejected(relpath, manifest, "non-exact AY authority")
+
+    def test_ay_provenance_constant_is_exact(self) -> None:
+        relpath = "crates/trust-ir-ay/src/vc.rs"
+        source = (ROOT / relpath).read_text(encoding="utf-8")
+        ay_revision = PIN.census(self._reader(), "ay").current()
+        source = source.replace(ay_revision, OTHER, 1)
+        self.assert_rejected(relpath, source, "AY_REV is stale or missing")
+
+    def test_ay_lock_package_source_cardinality_is_exact(self) -> None:
+        relpath = "Cargo.lock"
+        lock = (ROOT / relpath).read_text(encoding="utf-8")
+        ay_revision = PIN.census(self._reader(), "ay").current()
+        exact_source = (
+            f'source = "git+{PIN.AY_REMOTE}?rev={ay_revision}'
+            f'#{ay_revision}"'
+        )
+        lock = lock.replace(
+            exact_source,
+            f"{exact_source}\n{exact_source}",
+            1,
+        )
+        self.assert_rejected(relpath, lock, "package/source cardinality mismatch")
+
+    def test_every_ay_lock_package_has_the_exact_version(self) -> None:
+        relpath = "Cargo.lock"
+        lock = (ROOT / relpath).read_text(encoding="utf-8")
+        ay_version = PIN.version_census(self._reader(), "ay").current()
+        lock = lock.replace(
+            f'name = "ay"\nversion = "{ay_version}"',
+            'name = "ay"\nversion = "999.0.0"',
+            1,
+        )
+        self.assert_rejected(relpath, lock, "outside the exact version")
 
 
 class SyntheticTreeTests(unittest.TestCase):
@@ -440,6 +565,25 @@ class BumpScriptTests(unittest.TestCase):
         )
         self.assertIn("immutable Clean commit content is authoritative", script)
 
+    def test_cross_repo_guidance_does_not_require_impossible_sha_equality(self) -> None:
+        bump = BUMP_SCRIPT.read_text(encoding="utf-8")
+        guard = (ROOT / PIN.GUARD_TEST).read_text(encoding="utf-8")
+        for source in (bump, guard):
+            self.assertIn("predecessor-epoch cut", source)
+            self.assertIn("epoch receipt", source)
+        self.assertNotIn("all four must move together", bump)
+        normalized_guard = " ".join(guard.split())
+        self.assertNotIn(
+            "must move in ty, ay and trust-cg in the same transaction",
+            normalized_guard,
+        )
+
+    def test_bumper_mandates_static_guard_before_compiled_fallback(self) -> None:
+        script = BUMP_SCRIPT.read_text(encoding="utf-8")
+        self.assertGreaterEqual(script.count('pin static-guard --root "$ROOT"'), 2)
+        self.assertIn("compiled guard SKIPPED (targo unavailable)", script)
+        self.assertIn("static mirror passed. Run the compiled gate", script)
+
     def test_clean_object_cache_never_controls_compiled_source(self) -> None:
         script = BUMP_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("TRUST_IR_CLEAN_REPO", script)
@@ -556,6 +700,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         (root / "scripts").mkdir(parents=True)
         shutil.copy2(BUMP_SCRIPT, root / "scripts" / BUMP_SCRIPT.name)
         shutil.copy2(PIN_REWRITE_PATH, root / "scripts" / PIN_REWRITE_PATH.name)
+        self._write(root / "Cargo.toml", "[workspace]\nmembers = []\n")
         self._write(
             root / "crates/trust-ir/Cargo.toml",
             CLEAN_DEP_LINE.replace("1.2.0", clean_version).format(rev=clean_rev),
@@ -571,20 +716,38 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         )
         self._write(
             root / PIN.GUARD_TEST,
+            f'const CLEAN_REPOSITORY: &str = "{PIN.CLEAN_REMOTE}";\n'
             f'const CLEAN_REVISION: &str = "{clean_rev}";\n'
             f'const CLEAN_VERSION: &str = "{clean_version}";\n'
+            f'const AY_REPOSITORY: &str = "{PIN.AY_REMOTE}";\n'
             f'const AY_REVISION: &str = "{ay_rev}";\n'
             f'const AY_VERSION: &str = "{ay_version}";\n',
         )
         self._write(
             root / "frontend/Cargo.lock",
+            "version = 4\n\n"
+            "[[package]]\n"
+            'name = "clean-kernel"\n'
+            f'version = "{clean_version}"\n'
             'source = "git+https://github.com/alabsystems/clean.git'
             f'?rev={clean_rev}#{clean_rev}"\n',
         )
         self._write(
             root / "Cargo.lock",
+            "version = 4\n\n"
+            "[[package]]\n"
+            'name = "clean-kernel"\n'
+            f'version = "{clean_version}"\n'
             'source = "git+https://github.com/alabsystems/clean.git'
-            f'?rev={clean_rev}#{clean_rev}"\n'
+            f'?rev={clean_rev}#{clean_rev}"\n\n'
+            "[[package]]\n"
+            'name = "ay"\n'
+            f'version = "{ay_version}"\n'
+            'source = "git+https://github.com/alabsystems/ay.git'
+            f'?rev={ay_rev}#{ay_rev}"\n\n'
+            "[[package]]\n"
+            'name = "ay-proof"\n'
+            f'version = "{ay_version}"\n'
             'source = "git+https://github.com/alabsystems/ay.git'
             f'?rev={ay_rev}#{ay_rev}"\n',
         )
@@ -1038,6 +1201,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("DONE — Clean pinned", result.stdout)
+            self.assertIn("STATIC GUARD: PASS", result.stdout)
             clean_report = PIN.census(PIN.repo_reader(root), "clean")
             ay_report = PIN.census(PIN.repo_reader(root), "ay")
             self.assertTrue(clean_report.coherent, clean_report.render())
@@ -1047,6 +1211,46 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             guard = (root / PIN.GUARD_TEST).read_text(encoding="utf-8")
             self.assertIn(f'const CLEAN_REVISION: &str = "{clean_target}";', guard)
             self.assertIn(f'const AY_REVISION: &str = "{NEW}";', guard)
+
+    def test_static_guard_failure_rolls_back_before_compiled_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            self._write(
+                root / "Cargo.toml",
+                "[workspace]\nmembers = []\n"
+                f'\n[patch."{PIN.CLEAN_REMOTE}"]\n'
+                'clean-kernel = { path = "../clean/crates/clean-kernel" }\n',
+            )
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
+                f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
+                "Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o755)
+            before = self._snapshot(root)
+
+            result = self._run_clean_ay_bump(
+                root, clean_target, NEW, path_prefix=fake_bin
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("re-introduces a Clean path patch", result.stdout)
+            self.assertIn("exact static dependency-pin guard FAILED", result.stdout)
+            self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
 
     def test_coordinated_stale_warning_skips_only_unchanged_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1124,6 +1328,10 @@ class RepositoryCoherenceTests(unittest.TestCase):
                 report = PIN.census(read, dep)
                 self.assertTrue(report.coherent, report.render())
 
+    def test_this_repository_passes_the_exact_static_guard(self) -> None:
+        report = PIN.static_guard(PIN.repo_reader(ROOT))
+        self.assertTrue(report.coherent, report.render())
+
     def test_the_leg_table_matches_the_rust_guard_inventory(self) -> None:
         # scripts/pin_rewrite.py and dependency_pin_coherence.rs duplicate the
         # same inventory. Drift between them is what makes a bump fail with a
@@ -1159,6 +1367,7 @@ class RepositoryCoherenceTests(unittest.TestCase):
     def test_ci_gates_runs_both_halves_of_the_pin_guard(self) -> None:
         gates = (ROOT / "scripts" / "ci_gates.sh").read_text(encoding="utf-8")
         self.assertIn("gate dependency-pin-census pin_census", gates)
+        self.assertIn("pin_rewrite.py\" static-guard", gates)
         self.assertIn("gate dependency-pin-coherence", gates)
         self.assertIn("--test dependency_pin_coherence", gates)
 

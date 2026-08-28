@@ -252,7 +252,7 @@ fn allow(list: &[&str], name: &str) -> bool {
 /// True for the scalar types a `Transmute` may reinterpret between in v1
 /// (the Lean `semCast` scalar partial). `F16` is deliberately absent (it is
 /// outside the type subset altogether).
-fn is_transmute_scalar(ty: &Ty) -> bool {
+pub fn is_transmute_scalar(ty: &Ty) -> bool {
     matches!(
         ty,
         Ty::I8
@@ -273,7 +273,7 @@ fn is_transmute_scalar(ty: &Ty) -> bool {
 }
 
 /// Variant name of a `Ty` (compile-breaks when a variant is added).
-fn ty_name(ty: &Ty) -> &'static str {
+pub fn ty_name(ty: &Ty) -> &'static str {
     match ty {
         Ty::I8 => "I8",
         // v25 B1 scalars (NOT in the lowering-target subset yet: trust-cg has
@@ -359,7 +359,7 @@ fn check_ty(ty: &Ty, at: &str, pointer_bits: u32, little_endian: bool, out: &mut
 }
 
 /// Variant name of an `Inst` (compile-breaks when a variant is added).
-fn inst_name(inst: &Inst) -> &'static str {
+pub fn inst_name(inst: &Inst) -> &'static str {
     match inst {
         Inst::BinOp { .. } => "BinOp",
         Inst::SeqMapAddK { .. } => "SeqMapAddK",
@@ -421,7 +421,7 @@ fn inst_name(inst: &Inst) -> &'static str {
     }
 }
 
-fn castop_name(op: CastOp) -> &'static str {
+pub fn castop_name(op: CastOp) -> &'static str {
     match op {
         CastOp::Trunc => "Trunc",
         CastOp::ZExt => "ZExt",

@@ -3182,6 +3182,25 @@ fn validate_types(func: &Function, context: ValidationContext<'_>) -> Vec<Valida
         }
     }
 
+    // Phase 2 — borrows. `Borrow` is the only instruction whose result type
+    // depends on an operand, and `Function::entry` makes block ORDER free, so
+    // the loop above may have walked a borrow before the block defining its
+    // operand. This OVERWRITES the provisional `Ty::Ptr` phase 1 wrote.
+    //
+    // Overwrite, never fill: an absent `val_ty` entry SKIPS every check in the
+    // pass below (they all guard with `if let Some(actual) = val_ty.get(..)`),
+    // so a borrow left absent would be silently exempt from type checking —
+    // audit #8's fail-open. Two statements, so the immutable borrow `known`
+    // holds over `val_ty` ends before the loop mutates it.
+    //
+    // No `check_vector_type_well_formed` on the resolved types: a resolved
+    // borrow type is `Ty::Ptr` or a `Ty::FatPtr`, and neither is a vector.
+    let resolved_borrows =
+        trust_ir::bridge::borrow_result_types(func, &|value| val_ty.get(&value.index()).cloned());
+    for (value, ty) in resolved_borrows {
+        val_ty.insert(value.index(), ty);
+    }
+
     for block in &func.blocks {
         let block_id = block.id.index();
         for node in &block.body {
@@ -4173,8 +4192,22 @@ fn infer_result_type(inst: &Inst) -> Option<Ty> {
         Inst::Undef { ty } => Some(ty.clone()),
         Inst::Copy { ty, .. } => Some(ty.clone()),
         Inst::Select { ty, .. } => Some(ty.clone()),
-        Inst::Borrow { .. } => Some(Ty::Ptr),
-        Inst::BorrowMut { .. } => Some(Ty::Ptr),
+        // A borrow's result type depends on its OPERAND, which this
+        // per-instruction interface cannot see. It answers the thin default,
+        // which `trust_ir::bridge::borrow_result_types` then OVERWRITES at
+        // every site that owns the whole function. This arm holds no
+        // independent statement of the rule; it defers to `borrow_result_ty`.
+        //
+        // Deliberately NOT `None`: an ABSENT entry in a `val_ty` map is EXEMPT
+        // from every check that consults it (`check_cast_operand_and_width`
+        // and friends all guard with `if let Some(actual) = ...`), which is the
+        // fail-open condition audit #8 was filed to eliminate. Answering the
+        // thin default means a site that forgets the phase-2 call degrades to
+        // TODAY's behaviour — a false RED at the first fat consumer — never to
+        // an unchecked value.
+        Inst::Borrow { .. } | Inst::BorrowMut { .. } => {
+            Some(trust_ir::bridge::borrow_result_ty(None))
+        }
         Inst::IsUnique { .. } => Some(Ty::Bool),
         // Invoke, like Call, yields the callee's return type — which depends on
         // the callee signature, so it is exempt from this single-type interface.
@@ -4780,6 +4813,17 @@ fn build_function_value_types(func: &Function) -> BTreeMap<u32, Ty> {
             }
         }
     }
+
+    // Phase 2 — borrows, whose result type depends on an operand the loop
+    // above may not have reached yet (block order is free). OVERWRITES the
+    // provisional `Ty::Ptr`; never fills an absent slot, which would exempt
+    // the value from `check_block_arg_types` rather than check it.
+    let resolved_borrows =
+        trust_ir::bridge::borrow_result_types(func, &|value| val_ty.get(&value.index()).cloned());
+    for (value, ty) in resolved_borrows {
+        val_ty.insert(value.index(), ty);
+    }
+
     val_ty
 }
 
@@ -5423,11 +5467,15 @@ fn validate_closure_purity(module: &Module) -> Vec<ValidationError> {
     errors
 }
 
-/// Look up an SSA value's type from block params and instruction results.
+/// Look up an SSA value's DECLARED type from block params and instruction
+/// results, taking the first definition that answers.
 ///
 /// Returns `None` when the type cannot be inferred (e.g., a `Call` whose
 /// callee signature isn't resolved in this pass's scope).
-fn value_type(func: &Function, vid: ValueId) -> Option<Ty> {
+///
+/// This is not the whole answer for a borrow result — see [`value_type`],
+/// which is what callers want.
+fn declared_value_type(func: &Function, vid: ValueId) -> Option<Ty> {
     let needle = vid.index();
     for block in &func.blocks {
         for (param_id, ty) in &block.params {
@@ -5444,6 +5492,85 @@ fn value_type(func: &Function, vid: ValueId) -> Option<Ty> {
         }
     }
     None
+}
+
+/// The operand of the borrow that defines `vid`, when a borrow is what defines
+/// it.
+///
+/// Mirrors [`declared_value_type`]'s scan order exactly — block params before
+/// that block's body, and a definition this interface cannot type (a `Call`)
+/// does not stop the scan — so the two agree on which definition wins in a
+/// malformed module that defines an id twice.
+fn borrow_operand_of(func: &Function, vid: ValueId) -> Option<ValueId> {
+    let needle = vid.index();
+    for block in &func.blocks {
+        for (param_id, _) in &block.params {
+            if param_id.index() == needle {
+                return None;
+            }
+        }
+        for node in &block.body {
+            if node.results.iter().any(|r| r.index() == needle) {
+                match &node.inst {
+                    Inst::Borrow { ptr } | Inst::BorrowMut { ptr } => return Some(*ptr),
+                    _ if infer_result_type(&node.inst).is_none() => {}
+                    _ => return None,
+                }
+            }
+        }
+    }
+    None
+}
+
+fn borrow_instruction_count(func: &Function) -> usize {
+    func.blocks
+        .iter()
+        .flat_map(|block| block.body.iter())
+        .filter(|node| matches!(node.inst, Inst::Borrow { .. } | Inst::BorrowMut { .. }))
+        .count()
+}
+
+/// Look up an SSA value's type, resolving a borrow through to its operand.
+///
+/// `Borrow` is the only instruction whose result type depends on an operand, so
+/// the declaration alone cannot answer for one: this walks the borrow chain to
+/// its root and applies the shared rule
+/// ([`trust_ir::bridge::borrow_result_ty`]). Everything else is the
+/// declaration.
+///
+/// Deliberately NOT `build_function_value_types(func).get(&vid.index())`: that
+/// map is built last-write-wins, which would silently change which definition
+/// answers for a duplicated id, and it would allocate a whole-function map on
+/// every call — this is called once per `BindSlot`.
+///
+/// The walk is bounded by the borrow count, so a malformed borrow cycle
+/// TERMINATES at `Ty::Ptr` instead of looping. This function only ever
+/// UPGRADES a `Ty::Ptr` answer to a fat one: every path that used to answer
+/// `Some(Ty::Ptr)` for a borrow still answers `Some`, so no site loses a check.
+fn value_type(func: &Function, vid: ValueId) -> Option<Ty> {
+    let Some(first) = borrow_operand_of(func, vid) else {
+        // Not a borrow result — the declaration answers directly, at exactly
+        // the cost this function had before borrows needed resolving.
+        return declared_value_type(func, vid);
+    };
+
+    // Only a borrow pays for the chain walk and its cycle bound.
+    let mut cursor = first;
+    let mut budget = borrow_instruction_count(func);
+    while let Some(operand) = borrow_operand_of(func, cursor) {
+        if budget == 0 {
+            // A borrow cycle has no root to type from. Answer the conservative
+            // thin spelling; the cycle itself is an SSA/dominance defect that
+            // the passes owning that question report.
+            return Some(Ty::Ptr);
+        }
+        budget -= 1;
+        cursor = operand;
+    }
+
+    Some(trust_ir::bridge::borrow_result_ty(
+        declared_value_type(func, cursor).as_ref(),
+    ))
 }
 
 /// Check one control-flow edge against its target block parameter count.
@@ -5486,6 +5613,17 @@ fn build_module_value_types(func: &Function, module: &Module) -> BTreeMap<u32, T
                 val_ty.insert(vid.index(), ty.clone());
             }
         }
+    }
+
+    // Phase 2 — borrows, whose result type depends on an operand the loop
+    // above may not have reached yet (block order is free). OVERWRITES the
+    // provisional `Ty::Ptr`; never fills an absent slot, which would exempt
+    // the value from the return/call/consumption checks that read this map
+    // rather than check it (audit #8).
+    let resolved_borrows =
+        trust_ir::bridge::borrow_result_types(func, &|value| val_ty.get(&value.index()).cloned());
+    for (value, ty) in resolved_borrows {
+        val_ty.insert(value.index(), ty);
     }
 
     val_ty
@@ -26152,6 +26290,362 @@ mod certified_evidence_tests {
                     obligations: vec![1],
                 }
             )
+        );
+    }
+}
+
+/// Fat-borrow result typing, exercised through the PRODUCTION entry point.
+///
+/// Every test here calls `validate_module` — the exact function
+/// `trust-mc-driver`'s native lane calls — rather than a hand-built double, so
+/// a guard cannot pass on a path the shipped compiler never takes.
+///
+/// `Borrow` is the only instruction whose result type depends on an OPERAND.
+/// `interpret.rs` has passed a fat borrow through VERBATIM since submodule
+/// commit 5129223; `infer_result_type` never learned the static half, so a fat
+/// borrow was typed `ptr` and every fat consumer downstream reported a bogus
+/// mismatch. That is the `bb10: cast bitcast operand type ptr does not match
+/// declared source type fatptr<slice ty.0>` in
+/// `tests/ui/trust/dyn_coercion_bundle_stays_well_typed.rs`.
+///
+/// Every operand below is FAT, deliberately. Under the OVERWRITE structure a
+/// THIN borrow answers `Ty::Ptr` whether or not the phase-2 resolve ran, so a
+/// thin-operand test is BLIND to a deleted resolve call and guards nothing.
+/// The per-site pattern is therefore: declare a THIN type over a FAT borrow and
+/// require the error. Delete that site's resolve call and the borrow types as
+/// `Ty::Ptr`, which MATCHES the thin declaration, so the error vanishes and the
+/// test reddens.
+///
+/// NOT CLAIMED: no test here catches reverting `infer_result_type`'s
+/// `Inst::Borrow { .. } | Inst::BorrowMut { .. } => Some(borrow_result_ty(None))`
+/// arm to a literal `Some(Ty::Ptr)`. That revert is a genuine NO-OP —
+/// `borrow_result_ty(None)` IS `Ty::Ptr` — so no observation can separate them.
+/// The arm's value is that it no longer STATES the rule independently, which is
+/// what let the two spellings drift apart in the first place.
+#[cfg(test)]
+mod fat_borrow_result_type_tests {
+    use super::*;
+    use trust_ir::Block;
+    use trust_ir::inst::{BindingFrameDef, BindingSlot};
+    use trust_ir::node::InstrNode;
+    use trust_ir::value::{BindingFrameId, BlockId, PredId};
+
+    fn fat_str() -> Ty {
+        Ty::FatPtr(trust_ir::FatPtrKind::Str)
+    }
+
+    /// A module whose function takes a fat `&str` as `%0` and borrows it into
+    /// `%1`. The caller appends the CONSUMER of `%1`.
+    fn fat_borrow_prefix(name: &str, returns: Vec<Ty>) -> (Module, Function, Block) {
+        let mut module = Module::new(name);
+        let ft = module.add_func_type(FuncTy {
+            params: vec![fat_str()],
+            returns,
+            is_vararg: false,
+        });
+        let func = Function::new(FuncId::new(0), "f", ft, BlockId::new(0));
+        let mut block = Block::new(BlockId::new(0));
+        block.params.push((ValueId::new(0), fat_str()));
+        block.body.push(
+            InstrNode::new(Inst::Borrow {
+                ptr: ValueId::new(0),
+            })
+            .with_result(ValueId::new(1)),
+        );
+        (module, func, block)
+    }
+
+    fn has_cast_operand_mismatch(errors: &[ValidationError]) -> bool {
+        errors
+            .iter()
+            .any(|error| matches!(error, ValidationError::CastOperandTypeMismatch { .. }))
+    }
+
+    /// THE FIXTURE SHAPE, reproduced structurally: `PtrFromParts` mints a fat
+    /// slice pointer, `Borrow` reborrows it, and a `Bitcast` declares the FAT
+    /// type as its source. This module is WELL TYPED and must validate clean.
+    ///
+    /// MUTATION — delete the phase-2 `borrow_result_types` call in
+    /// `validate_types`. `%3` then carries phase 1's `Ty::Ptr`, which does not
+    /// equal the declared fat `src_ty`, and `check_cast_operand_and_width`
+    /// fires — the exact error the fixture's `forbid-output` tripwire catches.
+    ///
+    /// NOT NEUTRALISED: `validate_types` builds its OWN local `val_ty`, and
+    /// `CastOperandTypeMismatch` has exactly one push site, inside
+    /// `check_cast_operand_and_width`, which only `validate_types` calls. No
+    /// other pass can supply or suppress this error.
+    #[test]
+    fn a_fat_borrow_feeding_a_fat_bitcast_type_checks() {
+        let mut module = Module::new("fat_borrow_bitcast");
+        let elem = module.add_type(Ty::U8);
+        let fat = Ty::FatPtr(trust_ir::FatPtrKind::Slice(elem));
+        let ft = module.add_func_type(FuncTy {
+            params: vec![Ty::Ptr, Ty::U64],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut func = Function::new(FuncId::new(0), "bb10_shape", ft, BlockId::new(0));
+        let mut block = Block::new(BlockId::new(0));
+        block.params.push((ValueId::new(0), Ty::Ptr));
+        block.params.push((ValueId::new(1), Ty::U64));
+        block.body.push(
+            InstrNode::new(Inst::PtrFromParts {
+                ptr_ty: fat.clone(),
+                metadata_ty: Ty::U64,
+                data: ValueId::new(0),
+                metadata: ValueId::new(1),
+            })
+            .with_result(ValueId::new(2)),
+        );
+        block.body.push(
+            InstrNode::new(Inst::Borrow {
+                ptr: ValueId::new(2),
+            })
+            .with_result(ValueId::new(3)),
+        );
+        block.body.push(
+            InstrNode::new(Inst::Cast {
+                op: CastOp::Bitcast,
+                src_ty: fat.clone(),
+                dst_ty: fat,
+                operand: ValueId::new(3),
+            })
+            .with_result(ValueId::new(4)),
+        );
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        func.blocks.push(block);
+        module.add_function(func);
+
+        let errors = validate_module(&module);
+        assert!(
+            !has_cast_operand_mismatch(&errors),
+            "a fat borrow feeding a fat bitcast is well typed; got {errors:?}"
+        );
+    }
+
+    /// PER-SITE PLANTED VIOLATION for `validate_types`. A cast that declares
+    /// the THIN `src_ty` over a FAT borrow is now REJECTED.
+    ///
+    /// MUTATION — delete the phase-2 `borrow_result_types` call in
+    /// `validate_types`. `%1` types as `Ty::Ptr`, which EQUALS the declared
+    /// `src_ty`, so no error is reported and this test reddens.
+    ///
+    /// NOT NEUTRALISED: same single-push-site argument as above. This is the
+    /// planted violation that is RED on the pre-fix compiler, so it is a guard
+    /// that has been seen to fail rather than one merely asserted to work.
+    #[test]
+    fn a_thin_declared_cast_over_a_fat_borrow_is_rejected() {
+        let (mut module, mut func, mut block) = fat_borrow_prefix("thin_cast_over_fat", vec![]);
+        block.body.push(
+            InstrNode::new(Inst::Cast {
+                op: CastOp::PtrToInt,
+                src_ty: Ty::Ptr,
+                dst_ty: Ty::I64,
+                operand: ValueId::new(1),
+            })
+            .with_result(ValueId::new(2)),
+        );
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        func.blocks.push(block);
+        module.add_function(func);
+
+        let errors = validate_module(&module);
+        assert!(
+            has_cast_operand_mismatch(&errors),
+            "a `ptr`-declared cast over a FAT borrow must be rejected; got {errors:?}"
+        );
+    }
+
+    /// PER-SITE PLANTED VIOLATION for `build_function_value_types`, the map
+    /// behind branch-argument type checking.
+    ///
+    /// MUTATION — delete the phase-2 `borrow_result_types` call in
+    /// `build_function_value_types`. `%1` types as `Ty::Ptr`, which EQUALS the
+    /// target block's declared parameter type, so `check_block_arg_types`
+    /// reports nothing and this test reddens.
+    ///
+    /// NOT NEUTRALISED: `BranchArgTypeMismatch` has exactly one push site, in
+    /// `check_block_arg_types`, whose `val_ty` argument comes only from
+    /// `build_function_value_types` at its single caller
+    /// (`validate_block_param_arity`). `validate_types`' own map is a separate
+    /// local and cannot supply this error.
+    #[test]
+    fn a_fat_borrow_into_a_thin_branch_arg_is_rejected() {
+        let (mut module, mut func, mut block) = fat_borrow_prefix("thin_branch_arg", vec![]);
+        block.body.push(InstrNode::new(Inst::Br {
+            target: BlockId::new(1),
+            args: vec![ValueId::new(1)],
+        }));
+        func.blocks.push(block);
+
+        let mut bb1 = Block::new(BlockId::new(1));
+        bb1.params.push((ValueId::new(2), Ty::Ptr));
+        bb1.body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        func.blocks.push(bb1);
+        module.add_function(func);
+
+        let errors = validate_module(&module);
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BranchArgTypeMismatch { expected, .. } if expected == "ptr"
+            )),
+            "a FAT borrow passed to a `ptr` block parameter must be rejected; got {errors:?}"
+        );
+    }
+
+    /// PER-SITE PLANTED VIOLATION for `build_module_value_types`, the map
+    /// behind return-type checking.
+    ///
+    /// The signature says `ptr` and the returned value is a FAT borrow.
+    ///
+    /// MUTATION — delete the phase-2 `borrow_result_types` call in
+    /// `build_module_value_types`. `%1` types as `Ty::Ptr`, which EQUALS the
+    /// declared return type, so no `ReturnTypeMismatch` is reported and this
+    /// test reddens.
+    ///
+    /// NOT NEUTRALISED: the return check reads only the `val_ty` built by
+    /// `build_module_value_types` at the cross-function loop in
+    /// `validate_module_filtered`. The signature is `ptr` rather than an
+    /// obviously-wrong `i64` PRECISELY so the pre-fix answer matches and the
+    /// test is SENSITIVE to the mutation — an `i64` signature would report a
+    /// mismatch either way and guard nothing.
+    #[test]
+    fn a_fat_borrow_returned_where_the_signature_says_ptr_is_rejected() {
+        let (mut module, mut func, mut block) =
+            fat_borrow_prefix("thin_return_over_fat", vec![Ty::Ptr]);
+        block.body.push(InstrNode::new(Inst::Return {
+            values: vec![ValueId::new(1)],
+        }));
+        func.blocks.push(block);
+        module.add_function(func);
+
+        let errors = validate_module(&module);
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::ReturnTypeMismatch { expected, .. } if expected == "ptr"
+            )),
+            "a FAT borrow returned from a `-> ptr` function must be rejected; got {errors:?}"
+        );
+    }
+
+    /// PER-SITE PLANTED VIOLATION for `value_type`, the single-value lookup
+    /// behind binding-frame slot checking.
+    ///
+    /// MUTATION — revert `value_type` to its old body (now
+    /// `declared_value_type`), dropping the borrow-chain walk. `%1` types as
+    /// `Ty::Ptr`, which EQUALS the slot's declared type, so no
+    /// `BindingBindTypeMismatch` is reported and this test reddens.
+    ///
+    /// NOT NEUTRALISED: the `BindSlot` value check has exactly one push site,
+    /// and it reads `value_type` — not `build_function_value_types` and not
+    /// `validate_types`' local map. Deleting any OTHER site's resolve call
+    /// leaves this test green, which is what makes it a per-site guard.
+    #[test]
+    fn a_fat_borrow_bound_into_a_thin_frame_slot_is_rejected() {
+        let (mut module, mut func, mut block) = fat_borrow_prefix("thin_slot_over_fat", vec![]);
+        block.body.push(
+            InstrNode::new(Inst::OpenFrame {
+                def: BindingFrameDef::new(
+                    BindingFrameId::new(0),
+                    "frame",
+                    vec![BindingSlot::new("p", Ty::Ptr)],
+                ),
+            })
+            .with_result(ValueId::new(2)),
+        );
+        block.body.push(
+            InstrNode::new(Inst::BindSlot {
+                frame: ValueId::new(2),
+                slot: 0,
+                value: ValueId::new(1),
+            })
+            .with_result(ValueId::new(3)),
+        );
+        block.body.push(InstrNode::new(Inst::CloseFrame {
+            frame: ValueId::new(3),
+        }));
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        func.blocks.push(block);
+        module.add_function(func);
+
+        let errors = validate_module(&module);
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BindingBindTypeMismatch { slot: 0, expected, .. }
+                    if expected == "ptr"
+            )),
+            "a FAT borrow bound into a `ptr` slot must be rejected; got {errors:?}"
+        );
+    }
+
+    /// RESIDUE PIN, and it pins the residue as fail-CLOSED.
+    ///
+    /// `Ty::Refine(base, pred)` over a fat pointer is NOT fat to
+    /// `borrow_result_ty`, because `Ty::is_fat_pointer` is
+    /// `matches!(self, Ty::FatPtr(_))` and does not peel a refinement. So a
+    /// refined fat borrow answers `Ty::Ptr` and produces a FALSE RED at its
+    /// first fat consumer — a refusal, never a false green. Refusal strips
+    /// proof authority; it never grants it.
+    ///
+    /// MUTATION — peel the refinement in `borrow_result_ty` (answer the base
+    /// type when the base is fat). The cast then type-checks and this test
+    /// reddens.
+    ///
+    /// NOT NEUTRALISED: nothing else decides this cast's verdict. The point of
+    /// the guard is that peeling is a REAL EXTENSION: whoever makes it must
+    /// come here, delete this test, and own the derivation that the peeled type
+    /// is the one the interpreter actually passes through — rather than
+    /// discovering the change silently made a refused module accepted.
+    #[test]
+    fn a_refined_fat_borrow_still_fails_closed_at_a_fat_consumer() {
+        let mut module = Module::new("refined_fat_borrow");
+        let fat = fat_str();
+        let base = module.add_type(fat.clone());
+        let refined = Ty::Refine(base, PredId::new(0));
+        let ft = module.add_func_type(FuncTy {
+            params: vec![refined.clone()],
+            returns: vec![],
+            is_vararg: false,
+        });
+        let mut func = Function::new(FuncId::new(0), "refined", ft, BlockId::new(0));
+        let mut block = Block::new(BlockId::new(0));
+        block.params.push((ValueId::new(0), refined));
+        block.body.push(
+            InstrNode::new(Inst::Borrow {
+                ptr: ValueId::new(0),
+            })
+            .with_result(ValueId::new(1)),
+        );
+        block.body.push(
+            InstrNode::new(Inst::Cast {
+                op: CastOp::Bitcast,
+                src_ty: fat.clone(),
+                dst_ty: fat,
+                operand: ValueId::new(1),
+            })
+            .with_result(ValueId::new(2)),
+        );
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        func.blocks.push(block);
+        module.add_function(func);
+
+        let errors = validate_module(&module);
+        assert!(
+            has_cast_operand_mismatch(&errors),
+            "a REFINED fat borrow is not seen as fat, so it must still be refused \
+             at a fat consumer rather than silently accepted; got {errors:?}"
         );
     }
 }

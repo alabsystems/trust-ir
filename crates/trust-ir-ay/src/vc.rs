@@ -161,7 +161,7 @@ pub struct SmtReplayEvidence {
 }
 
 /// The exact ay revision this adapter is pinned to (see `Cargo.toml`).
-pub const AY_REV: &str = "2df1293ceba3b3c03d93e50ae0efa3720be56a43";
+pub const AY_REV: &str = "cda2dbe83f8b9eea68cffd4b3b3681f764d4645f";
 
 /// Re-check a captured proof bundle OFFLINE — no solver run, no network, no
 /// producer cooperation.
@@ -1184,13 +1184,28 @@ impl<'m> VcBuilder<'m> {
             }
             Inst::Borrow { ptr } => {
                 let t = self.term(*ptr)?;
+                // The borrow result rule is stated ONCE, in
+                // `trust_ir::bridge::borrow_result_ty`: the operand's type when
+                // that type is FAT, `Ty::Ptr` otherwise. No second phase is
+                // needed here, unlike the six whole-function sites wired by
+                // the bridge: this walk is straight-line over the single block
+                // and `bind` records term and type together, so the operand's
+                // recorded type is already resolved when the borrow is encoded
+                // and a borrow-of-borrow chain collapses in walk order. A fat
+                // result type then fails closed at every width-consuming
+                // reader (`ay_sort` has no fat sort), instead of flowing a fat
+                // value through the 64-bit thin-pointer model under a false
+                // `ptr`.
+                let result_ty = trust_ir::bridge::borrow_result_ty(self.value_ty(*ptr));
                 let (borrowed, _) = self.borrow.encode_borrow(&mut self.solver, t);
-                self.bind(Self::result0(node)?, borrowed, Ty::Ptr);
+                self.bind(Self::result0(node)?, borrowed, result_ty);
             }
             Inst::BorrowMut { ptr } => {
                 let t = self.term(*ptr)?;
+                // Same shared rule as `Borrow` above; no local restatement.
+                let result_ty = trust_ir::bridge::borrow_result_ty(self.value_ty(*ptr));
                 let (borrowed, _) = self.borrow.encode_borrow_mut(&mut self.solver, t);
-                self.bind(Self::result0(node)?, borrowed, Ty::Ptr);
+                self.bind(Self::result0(node)?, borrowed, result_ty);
             }
             Inst::EndBorrow { borrow_ptr } => {
                 let t = self.term(*borrow_ptr)?;
