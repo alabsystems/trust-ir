@@ -8005,7 +8005,21 @@ fn validate_module_filtered(
                 for (field_index, (field_ty, offset)) in
                     variant.fields.iter().zip(offsets).enumerate()
                 {
-                    let known_layout = module.ty_layout_shape(field_ty).ok();
+                    // KEEP the LayoutError rather than `.ok()`-ing it away. The
+                    // two failures below are different defects with different
+                    // owners -- a field that genuinely overflows the variant is
+                    // a LAYOUT bug, while a field whose layout will not resolve
+                    // is a SPELLING bug in whoever produced the type -- and the
+                    // message has to say which. Measured 2026-08-27: reporting
+                    // both as "entirely within size 32 / offset 16" sent a
+                    // reader hunting an offset bug that did not exist, when the
+                    // arithmetic (16 + 16 = 32) fit perfectly and the real
+                    // cause was `ty_layout_shape` having no rule for a
+                    // non-empty tuple. The reason was in hand at this line and
+                    // thrown away.
+                    let layout_result = module.ty_layout_shape(field_ty);
+                    let layout_err = layout_result.as_ref().err().map(|e| e.to_string());
+                    let known_layout = layout_result.ok();
                     let known_size = known_layout.as_ref().and_then(|shape| shape.size_bytes());
                     let outside = match known_size {
                         Some(field_size) => offset
@@ -8017,18 +8031,34 @@ fn validate_module_filtered(
                         None => !ty_is_zero_sized(field_ty) || *offset > layout.size,
                     };
                     if outside {
-                        push_layout_error(
-                            format!(
-                                "variant {variant_index} field {field_index} entirely within size {}",
-                                layout.size
+                        match known_size {
+                            Some(field_size) => push_layout_error(
+                                format!(
+                                    "variant {variant_index} field {field_index} entirely within size {}",
+                                    layout.size
+                                ),
+                                format!("offset {offset}, field size {field_size}"),
                             ),
-                            match known_size {
-                                Some(field_size) => {
-                                    format!("offset {offset}, field size {field_size}")
-                                }
-                                None => format!("offset {offset}"),
-                            },
-                        );
+                            // Say what actually went wrong: the bound could not
+                            // be COMPUTED. Naming the type and the underlying
+                            // LayoutError points at the producer that signed an
+                            // unresolvable spelling.
+                            None => push_layout_error(
+                                format!(
+                                    "variant {variant_index} field {field_index} to have a \
+                                     resolvable layout (needed to bound it within size {})",
+                                    layout.size
+                                ),
+                                match &layout_err {
+                                    Some(why) => format!(
+                                        "offset {offset}, layout UNRESOLVABLE for type {field_ty}: {why}"
+                                    ),
+                                    None => format!(
+                                        "offset {offset}, no size for type {field_ty}"
+                                    ),
+                                },
+                            ),
+                        }
                     }
                     if let Some(field_align) = known_layout
                         .and_then(|shape| shape.align_bits)

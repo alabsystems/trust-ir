@@ -563,6 +563,10 @@ impl Linker {
                 FatPtrKind::TraitObject { trait_id } => FatPtrKind::TraitObject {
                     trait_id: *trait_id,
                 },
+                // Id-less, exactly like `Str`: it carries no pointee `TyId`
+                // (deliberately — the tail type is not what the kind is about),
+                // so there is nothing for the arena remap to rewrite.
+                FatPtrKind::ContainerLen => FatPtrKind::ContainerLen,
             }),
             Ty::Struct(id) => Ty::Struct(self.struct_id(ctx, *id)?),
             Ty::Array(elem, len) => Ty::Array(self.ty_id(ctx, *elem)?, *len),
