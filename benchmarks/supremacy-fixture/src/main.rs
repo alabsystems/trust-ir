@@ -17,8 +17,11 @@ struct Args {
     #[arg(short, long, default_value_t = 10000)]
     states: usize,
 
-    /// Output path for the generated .trust_ir module.
-    #[arg(short, long, default_value = "supremacy.trust_ir")]
+    /// Output path for the generated binary (`.tmbc`) module.
+    // The fixture writes BINARY bytes (`serialize_module`), and the CLI maps the
+    // `.trust_ir` extension to the TEXT format — so the default must be `.tmbc`
+    // or a default-named output is a binary blob wearing a text extension.
+    #[arg(short, long, default_value = "supremacy.tmbc")]
     output: PathBuf,
 }
 

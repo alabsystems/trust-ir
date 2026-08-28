@@ -5,11 +5,11 @@ the correctness of a Trust-produced artifact rests on, and — equally important
 what it does **not**. Other repo documents link here instead of restating
 folklore.
 
-The active program driving boundary closures is **Program CK1**
-(`designs/2026-07-07-program-ck1-confluent-kernel.md`, with an internal
-program ledger). Closure claims land as reviewed edits to *this*
-document, adversarially checked against the mechanization; boundaries are
-restated or deleted here, never silently dropped elsewhere.
+The active program driving boundary closures is **Program CK1** (an internal
+confluent-kernel design document, with an internal program ledger). Closure
+claims land as reviewed edits to *this* document, adversarially checked against
+the mechanization; boundaries are restated or deleted here, never silently
+dropped elsewhere.
 
 ## Trusted base
 
@@ -63,7 +63,7 @@ residual assumption, stated here so it is tracked, not hidden:
    **gate-DAG ⇔ `SmtExpr`**: that `blast(ir_expr)` / `blast(machine_expr)`
    compute the rule's actual source/machine semantics. Closing it is t-silicon
    route (b) (route ay's own audited bit-blaster through the same cert), scoped
-   in `designs/2026-07-01-t-silicon-one-tcb-scoping.md`.
+   on the internal t-silicon one-TCB design.
    *Composed-claim scope note:* `verify_source_to_silicon` requires a P3 miter
    cert for every ALU node in `f`'s body (unrecognized nodes fail closed), but
    the two trivially-lowered node kinds — `Const{i8}` → immediate
@@ -87,9 +87,15 @@ residual assumption, stated here so it is tracked, not hidden:
   `bxor`, boundary 7). Composing the two on one artifact (the transitive
   source → machine claim under the single `ck0` kernel) is the t-silicon
   milestone-2 target. B remains **honestly known-not-closed** *in general*:
-  `TransformCorrectness.lean` inlining-correctness is still prose, and the
-  fragment excludes memory, loops, recursion, and lowering rules past the i8
-  tier — each an open rung that would otherwise force a `Trusted(...)` gap.
+  `TransformCorrectness.lean` proves inlining correctness only in its
+  *frame-discipline* form (`theorem inlining_preserving`: a `Call` is
+  equivalent to executing the callee body on a fresh frame — mechanized and
+  `sorry`-free); the stronger *splice* form, which rewrites the caller's CFG to
+  run the callee's blocks in the caller's SSA id space, is still prose, because
+  it needs a value-id/block-id renaming function plus a `stepInst`-equivariance
+  lemma the model does not have. The fragment also excludes memory, loops,
+  recursion, and lowering rules past the i8 tier — each an open rung that would
+  otherwise force a `Trusted(...)` gap.
 
 ### Lineage closure
 
@@ -124,10 +130,15 @@ and every interning/dedup step, is confirmed insertion-ordered / `BTreeMap` /
 `Vec`-order — the per-item checklist (file:line verdicts),
 `Module::stable_digest`, the cross-process determinism test, and the DDC
 procedure live on the internal build-determinism roadmap. The one open hazard is
-cross-repo: canonical ay SMT proof transcripts (`ProofEvidence::SmtProof` bytes
-are hashed as-is; dormant today because ay exports no proof payloads). Until it
-closes, the guarantee does not yet cover future non-empty `SmtProof` evidence
-digests.
+cross-repo and **live, not dormant**: canonical ay SMT proof transcripts.
+`ProofEvidence::SmtProof` bytes are hashed as-is, and `trust-ir-ay`'s bv-blast
+path mints non-empty `SmtProof` payloads *today* — `bvblast.rs` exports a
+bounded bit-blast proof through `ay_proof::export_bv_blast_proof_expr_bounded`
+and serializes it into the certificate's evidence bytes (the crate pins
+`ay-proof`, see `crates/trust-ir-ay/Cargo.toml`). Because those bytes come out
+of another repository, their byte-for-byte reproducibility is ay's property,
+not this repo's. Until that closes, the determinism guarantee does **not**
+cover `SmtProof` evidence digests on the bv-blast path.
 
 ## Frontend emission handshake
 

@@ -1,6 +1,6 @@
 # Scope and limitations
 
-TrustIr 0.3 is a preview of a shared proof-carrying compiler IR. Representing a
+TrustIr's 0.x line is a preview of a shared proof-carrying compiler IR. Representing a
 program or proof claim is not the same as proving it, and each guarantee is
 limited to the checker and semantic fragment that establishes it.
 

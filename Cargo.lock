@@ -1468,7 +1468,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "raft-fixture"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "trust-ir",
@@ -1759,7 +1759,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "supremacy-fixture"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "trust-ir",
@@ -1986,7 +1986,7 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "trust-ir"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bincode 1.3.3",
  "clean-kernel",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-ay"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "ay",
  "ay-proof",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-build"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clean-kernel",
  "clean-mathverse",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "rmp-serde",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-conformance"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "rmp-serde",
  "serde_json",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-contract"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "rustc-hash",
  "serde",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-diff"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "serde_json",
  "trust-ir",
@@ -2063,14 +2063,14 @@ dependencies = [
 
 [[package]]
 name = "trust-ir-fmt"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "trust-ir",
 ]
 
 [[package]]
 name = "trust-ir-giveback"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "trust-ir",
 ]

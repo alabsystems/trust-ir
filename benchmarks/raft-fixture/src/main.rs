@@ -13,8 +13,11 @@ use trust_ir_build::AYBatchBuilder;
 
 #[derive(Parser)]
 struct Args {
-    /// Output path for the generated .trust_ir module.
-    #[arg(short, long, default_value = "raft.trust_ir")]
+    /// Output path for the generated binary (`.tmbc`) module.
+    // The fixture writes BINARY bytes (`serialize_module`), and the CLI maps the
+    // `.trust_ir` extension to the TEXT format — so the default must be `.tmbc`
+    // or a default-named output is a binary blob wearing a text extension.
+    #[arg(short, long, default_value = "raft.tmbc")]
     output: PathBuf,
 }
 

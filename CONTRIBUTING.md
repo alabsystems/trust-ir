@@ -6,7 +6,7 @@ exposes it.
 
 ## Build and test
 
-Use a current stable Rust toolchain. TrustIr 0.2 does not yet promise a minimum
+Use a current stable Rust toolchain. TrustIr's 0.x line does not yet promise a minimum
 supported Rust version.
 
 Start with the narrowest crate or test that covers the change:

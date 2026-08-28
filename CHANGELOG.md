@@ -4,9 +4,130 @@ Notable TrustIr changes are tracked here for Trust integration and release
 review.
 
 Entries are grouped under `Unreleased` until a release is cut. The most recent
-release is `0.3.0`.
+tagged release is `0.8.0`; the workspace manifest is now `0.10.0`.
 
-## Unreleased
+**Note on 0.9.0 and 0.10.0.** The workspace passed through both, and the
+module binary writer moved to v38 (`FatPtrKind::ContainerLen`), but **no
+`v0.9.0` or `v0.10.0` tag was pushed** — the same pattern as 0.7.0 below.
+Those windows are not yet written up here; do not cite a tag for them.
+
+**Note on 0.7.0.** The workspace version passed through 0.7.0 (release commit
+`chore(release): 0.6.0 -> 0.7.0`, 2026-08-20), but **no `v0.7.0` tag was ever
+pushed** — the next cut went straight to 0.8.0 the same day. The 0.7.0 section
+below records that window; do not cite a `v0.7.0` tag. The tags that exist are
+`v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, and `v0.8.0` (plus the
+`v0.2.0-windows` variant).
+
+## 0.8.0 — 2026-08-21
+
+Cut by `chore(release): 0.7.0 -> 0.8.0` (workspace 0.7.0 → 0.8.0; the public
+tag is `v0.8.0`).
+
+### Fixed (2026-08-19 – 2026-08-21)
+
+- Declared struct layout evidence is validated at **every** consumer, not only
+  where it was minted.
+- `repr(packed(N))` IS the modulus, so the validator now checks it — together
+  with the field-offset alignment rule the validator had been missing (wave-SG,
+  the interpreter half of the same class).
+- `repr(transparent)` carrier parity is enforced.
+- Target scalar ABIs the layout model does not represent are **declined**
+  rather than approximated, and canonical targets are bound to pointer width.
+- `validate` no longer materializes dense dominator sets.
+- Dependency semver moves are transacted, not edited leg by leg.
+- Four publication-boundary guard defects, each of which fired on this repo's
+  own tree: the T1 check asserted a Clean `[patch]` this repo deliberately
+  deleted, read the manifest as bytes and tripped over its own documentation,
+  anchored its Clean note to prose that is rewritten weekly, and counted copies
+  of a URL it already had a constant for.
+
+### Changed (2026-08-19 – 2026-08-21)
+
+- The Clean and AY authorities advanced to the release frontier: clean
+  `84c9ae5e` (v0.4.0) and ay `09951c0e` (v0.15.0).
+- The Clean pin is documented as **coordinated, not frozen** — the previous
+  wording blocked its own bump.
+- The module binary writer stays at v37; readers accept v23–v25 and v29–v37
+  (v26–v28 remain rejected).
+
+## 0.7.0 — 2026-08-20 (no tag)
+
+Cut by `chore(release): 0.6.0 -> 0.7.0` (workspace 0.6.0 → 0.7.0). **No
+`v0.7.0` tag was pushed**; the 0.8.0 cut superseded it the same day.
+
+### Added (2026-08-18 – 2026-08-19)
+
+- A declared struct layout is **normative** to the interpreter — the struct
+  half of the ADT-offset class.
+- `Borrow` / `BorrowMut` over a fat-pointer value is a verbatim pass-through.
+- `stable_vtable_global_name`, the shared vtable-identity mint (vtable slice 3).
+
+### Changed (2026-08-19)
+
+- The local-path `[patch]` redirecting `clean.git` to `../clean` was **deleted**,
+  breaking the clean pin cycle: cargo now compiles Clean at the pinned rev and
+  the root `Cargo.lock` records that rev again.
+- The workspace was reformatted with the canonical stage2 `trustfmt`.
+- The identity mints are documented as naming BOTH collision directions, not
+  only the hashed one.
+- Clean and AY pins advanced atomically to clean `cbe8695a` and ay `9ff68fe0`
+  (v0.12.0). The writer stays at v37.
+
+## 0.6.0 — 2026-08-18
+
+Cut by `chore(release): 0.5.0 -> 0.6.0` (workspace 0.5.0 → 0.6.0; the public
+tag is `v0.6.0`).
+
+### Added (2026-08-18)
+
+- Five FP conversion nodes for the `FCVT*` semantics — **total**, with the
+  saturating reading, so no conversion is a partial operation in the contract.
+
+### Changed (2026-08-18)
+
+- Followed Clean's owner-side 0.x demotion: the Clean-backed legs moved from
+  `1.6.0` / `bfb5d33b` to `0.1.0` / `71449eaa`. The AY legs stayed at ay v0.10.0
+  (`0c053832`). The writer stays at v37.
+
+## 0.5.0 — 2026-08-17
+
+Cut by `chore(release): 0.4.0 -> 0.5.0` (workspace 0.4.0 → 0.5.0; the public
+tag is `v0.5.0`).
+
+### Added (2026-08-13 – 2026-08-17)
+
+- **Binary v37 — `EnumTagEncoding::Untagged`, the tag-free enum image.** This is
+  the format bump behind 0.5.0 (writer v36 → v37). The new arm is read-gated
+  (`version >= 37`) because it sits inside a record a v36 reader already parses:
+  an ungated arm would let a v36-labelled blob decode as untagged.
+  `MIN_READ_VERSION` stays 23.
+- The boolean connectives `BAnd` / `BOr` / `BXor` on `BinOp`.
+- `ProofAnnotation::FreshSymbolicHavoc` — an inert marker for an `Inst::Undef`
+  whose consumer semantics are a fresh, unconstrained value. It proves no
+  proposition, authenticates no producer, and grants no authority to import
+  constraints; it is public and survives binary serialization.
+- `scripts/bump-dep-pin.sh`, the atomic Clean/AY bump transaction: a partial
+  six-leg pin move becomes mechanically impossible rather than merely
+  detectable.
+
+### Fixed (2026-08-13)
+
+- The #205 defect is pinned by its own test, both halves.
+
+### Changed (2026-08-12 – 2026-08-17)
+
+- The symbolic proof authority is bounded by the checker envelope, and the wide
+  symbolic bundle now proves — recorded as measured truth rather than an
+  expectation.
+- The binary-format document states that decoded source authority is inert.
+- The dependency authorities moved to the released revs through the new atomic
+  transaction: clean v1.6.0 (`bfb5d33b`) and ay v0.10.0 (`0c053832`), with the
+  frozen `CLEAN_VERSION` guard following the manifests to 1.6.0.
+
+## 0.4.0 — 2026-08-12
+
+Cut by `chore(release): 0.3.0 -> 0.4.0` (workspace 0.3.0 → 0.4.0; the public
+tag is `v0.4.0`). The writer stays at v36 for this release.
 
 ### Changed (2026-08-11)
 
@@ -16,6 +137,19 @@ release is `0.3.0`.
 - Regenerated the live conformance corpus at the already-ratified v36 schema
   and added a ratchet requiring every current `.tmbc` golden and both normative
   format documents to track `binary::FORMAT_VERSION` exactly.
+
+### Changed (2026-08-12)
+
+- The authorities moved again inside the release window and settled, at the
+  cut, on the mapped release pins: clean `fcc257e2` (v1.5.0) and ay `1f8238bb`
+  (v0.9.0).
+- The normative-document marker check is dev-tree-only.
+
+### Fixed (2026-08-11 – 2026-08-12)
+
+- Format-v36 conformance parity gaps closed.
+- Bit-vector proof resources are bounded.
+- A lockfile dedup for the stray `ay` stanzas left by the A10 re-pin sweep.
 
 ## 0.3.0 — 2026-08-11
 

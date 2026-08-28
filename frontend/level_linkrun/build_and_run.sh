@@ -8,7 +8,8 @@
 #     -> link (closure object[s] + runtime.o + Rust driver) + real-method oracle
 #     -> run, structurally compare every result to the real Rust method.
 #
-# Requires: the stage1 toolchain, the trust-ir main-repo CLI (v25), and a
+# Requires: the stage1 toolchain, the trust-ir main-repo CLI (writes binary
+# format v37; readers accept v23-v25 and v29-v37), and a
 # trust-cg built from the jump-table-fix branch (commit e4455fb).
 set -u
 # Tool locations — override via env. Defaults: the trust / trust-cg checkouts

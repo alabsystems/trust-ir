@@ -126,7 +126,7 @@ pub const TY_ALLOWLIST_V1: &[&str] = &[
     "Struct", "Tuple", "U128", "U16", "U32", "U64", "U8", "Unit", "Vector",
 ];
 
-/// `Ty` variants a v2 frontend may emit (32 of 37). v2 promotes `FatPtr`
+/// `Ty` variants a v2 frontend may emit (32 of 38). v2 promotes `FatPtr`
 /// after the Rust and Lean interpreters acquired matching two-lane values,
 /// pointer-trio semantics, and 16-byte Store/Load semantics. The promotion is
 /// restricted structurally to the executable model's pinned 64-bit
@@ -194,12 +194,14 @@ pub const DIALECT_OP_ALLOWLIST_V1: &[&str] = &[
 
 pub const DIALECT_OP_ALLOWLIST_V2: &[&str] = DIALECT_OP_ALLOWLIST_V1;
 
-/// `ProofAnnotation` variants a conforming frontend may emit (36 of 37 on
-/// the default surface).
+/// `ProofAnnotation` variants a conforming frontend may emit (36 of 39).
 ///
 /// Excluded:
 /// * `Custom` — producer-defined tag; its meaning is not pinned by this
 ///   contract, so it cannot be part of a *pinned* subset.
+/// * `FreshSymbolicHavoc` — the inert `Inst::Undef` marker. NOT feature-gated
+///   and wire-encodable (binary tag `0x25`), but never ratified into the
+///   subset, so it is reported as out-of-subset.
 ///
 /// The feature-gated `Goal` (`clean-expr`) is outside the v1 scope by
 /// construction (off the default zero-dep surface); the checker fails closed
@@ -482,6 +484,10 @@ fn proof_name(p: &ProofAnnotation) -> Option<&'static str> {
         ParallelMap => Some("ParallelMap"),
         BoundedLoop(_) => Some("BoundedLoop"),
         DivergenceClass(_) => Some("DivergenceClass"),
+        // Recognized but NOT allowlisted: reported by name as out-of-subset
+        // rather than falling to the catch-all's "unrecognized/feature-gated"
+        // message, which would misdescribe an ungated, wire-encodable variant.
+        FreshSymbolicHavoc => Some("FreshSymbolicHavoc"),
         Custom(_) => Some("Custom"),
         ProofRef(_) => Some("ProofRef"),
         ValueRange { .. } => Some("ValueRange"),
@@ -821,14 +827,14 @@ mod tests {
     #[test]
     fn allowlist_sizes_match_the_spec_doc_counts() {
         assert_eq!(INST_ALLOWLIST_V1.len(), 54, "Inst: 54 of 57");
-        assert_eq!(TY_ALLOWLIST_V1.len(), 31, "Ty: 31 of 33");
+        assert_eq!(TY_ALLOWLIST_V1.len(), 31, "Ty: 31 of 38");
         assert_eq!(CASTOP_ALLOWLIST_V1.len(), 14, "CastOp: 14 of 17");
         assert_eq!(DIALECT_OP_ALLOWLIST_V1.len(), 6, "dialect ops: 6");
-        assert_eq!(PROOF_ALLOWLIST_V1.len(), 36, "ProofAnnotation: 36 of 37");
+        assert_eq!(PROOF_ALLOWLIST_V1.len(), 36, "ProofAnnotation: 36 of 39");
         assert_eq!(INST_ALLOWLIST_V2.len(), 54, "Inst v2: 54 of 57");
-        assert_eq!(TY_ALLOWLIST_V2.len(), 32, "Ty v2: 32 of 37");
+        assert_eq!(TY_ALLOWLIST_V2.len(), 32, "Ty v2: 32 of 38");
         assert_eq!(CASTOP_ALLOWLIST_V2.len(), 14, "CastOp v2: 14 of 17");
         assert_eq!(DIALECT_OP_ALLOWLIST_V2.len(), 6, "dialect ops v2: 6");
-        assert_eq!(PROOF_ALLOWLIST_V2.len(), 36, "ProofAnnotation v2: 36 of 37");
+        assert_eq!(PROOF_ALLOWLIST_V2.len(), 36, "ProofAnnotation v2: 36 of 39");
     }
 }

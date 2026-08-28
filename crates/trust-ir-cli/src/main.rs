@@ -63,7 +63,9 @@ pub(crate) const EXIT_IO: u8 = 2;
 
 #[derive(Parser)]
 #[command(name = "trust-ir")]
-#[command(about = "Inspector for TrustIr modules (validate/dump/convert/show-gpu-eligibility)")]
+#[command(
+    about = "Inspector for TrustIr modules (validate/dump/convert/run/show-gpu-eligibility/spec-link)"
+)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]

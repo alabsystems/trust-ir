@@ -39,7 +39,7 @@ proof annotations remain claims — the subset pins which annotation
 claims with `ProofRef` per fast-1; see the trust boundary note in
 `TRUST.md`).
 
-## Types — `Ty` (32 of 37 allowed)
+## Types — `Ty` (32 of 38 allowed)
 
 Allowed:
 
@@ -52,11 +52,12 @@ Excluded:
 
 | Ty | Why (depth ledger) |
 |----|--------------------|
-| `F16` | Type-level only in Lean; `Value.float` is binary64, so binary16 width/rounding is unmodelled (policy-gated on the per-width rounding residue in `decisions-panic-and-ub.md`). Any `F16` use is F16-width arithmetic/memory, so the type is excluded outright. |
+| `F16` | Type-level only in Lean; `Value.float` is binary64, so binary16 width/rounding is unmodelled (policy-gated on the per-width rounding residue recorded on the internal panic-and-UB decisions roadmap). Any `F16` use is F16-width arithmetic/memory, so the type is excluded outright. |
 | `Isize` | Pointer-width scalar adoption is still outside the proven lowering path (trust-cg / B1 depth-ledger adoption pending). |
 | `Usize` | Same pointer-width scalar adoption boundary as `Isize`; fat-pointer length lanes use the explicit target-canonical `U64` spelling on the admitted 64-bit path. |
 | `Char` | The Unicode-scalar validity and downstream lowering contract remain outside the proven path. |
 | `Error` | Producer-internal fail-closed placeholder; never wire-legal. |
+| `Refine` | `Refine(TyId, PredId)` is representation-preserving, but the *predicate* is proof surface the Lean model does not interpret, so admitting it would put an unmodelled obligation on the proven path. Wire-legal and round-trips; the checker fails closed on it. |
 
 `FatPtr` is admitted in v2 only on the executable model's pinned **64-bit
 little-endian** target. Rust and Lean both implement a distinct `(data, metadata)` value, the
@@ -153,7 +154,7 @@ Excluded:
 | `vector.fma` | Carried without a trust-ir lowering by **ratified** fast-4 policy (single-rounding contract; a scalar fallback would be a semantics change, so there is nothing in-repo to refine). Its correctness rests on the backend's target lowering, which is outside this repo's proof surface. |
 | every other dialect (`clean.*`, `gpu.*`, `avx512.*`, `ane.*`, `verif.*`, …) | No proven lowerings; dialect ops round-trip opaquely by design. `clean.*` (Clean's managed-runtime ops) was audited for admission on 2026-07-04 and **refused** — zero depth-ledger backing; see "Producer notes". |
 
-## Proof annotations — `ProofAnnotation` (36 of 37 allowed)
+## Proof annotations — `ProofAnnotation` (36 of 39 allowed)
 
 Allowed:
 
@@ -170,6 +171,7 @@ Excluded:
 | Annotation | Why |
 |------------|-----|
 | `Custom` | A producer-defined `ProofTag` whose meaning is not pinned by any spec — it cannot be part of a *pinned* contract. Consumers needing protocol tags (e.g. the ay CHC batch fixtures) ride outside the proven-path subset by definition. |
+| `FreshSymbolicHavoc` | The deliberately inert `Inst::Undef` marker. It is NOT feature-gated and IS wire-encodable (binary tag `0x25`), but it was never ratified into the subset, so the checker fails closed on it. |
 
 The feature-gated `Goal` (`clean-expr`) is outside v1 scope by construction
 (off the default zero-dep surface); the checker fails closed on any

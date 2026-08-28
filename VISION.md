@@ -134,6 +134,11 @@ pub struct Module {
     pub proof_obligations: Vec<ProofObligation>,     // verification requirements
     pub proof_certificates: Vec<ProofCertificate>,   // discharged evidence
     pub target_info: Option<TargetInfo>,             // None = target-independent
+    pub files: Vec<String>,                          // v9 debug-info source-file table
+    pub obligation_diagnostics: Vec<ObligationDiagnostic>, // v11 verifier diagnostics
+    pub spec_modules: Vec<SpecModule>,               // v13 spec <-> source objects
+    pub universes: Vec<Universe>,                    // v30 interned finite universes
+    pub predicates: Vec<Pred>,                       // v30 interned refinement predicates
 }
 ```
 
@@ -141,7 +146,10 @@ Proof obligations carry an optional owning-function scope
 (`function: Option<FuncId>`); proof annotations (and an optional `ProofRef`
 backref) live on functions and instructions. The aspirational state-machine /
 information-flow / per-edge-proof structure above is **not** represented here
-yet — see the status banner at the top of this document.
+yet — `spec_modules` carries lowered state-machine models as spec-to-source
+cross-reference objects for the `spec-link` pass, not as in-IR `systems` /
+`actions` / `temporal` fields. See the status banner at the top of this
+document.
 
 ## What TrustIr Aspires To Contain (future)
 

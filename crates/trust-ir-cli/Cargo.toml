@@ -10,7 +10,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Command-line inspector for TrustIr modules (validate/dump/convert/show-gpu-eligibility)"
+description = "Command-line inspector for TrustIr modules (validate/dump/convert/run/show-gpu-eligibility/spec-link)"
 
 [[bin]]
 name = "trust-ir"

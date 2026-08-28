@@ -3,7 +3,7 @@
 ## Coverage
 
 Security maintenance is best-effort for the latest public TrustIr source
-snapshot and, once formal releases exist, the newest active 0.x release.
+snapshot and the newest active 0.x release.
 Historical snapshots, private combined-workspace layouts, internal reports,
 and third-party forks are not maintained release artifacts.
 
