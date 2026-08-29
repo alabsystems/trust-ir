@@ -5,11 +5,15 @@ the correctness of a Trust-produced artifact rests on, and — equally important
 what it does **not**. Other repo documents link here instead of restating
 folklore.
 
-The active program driving boundary closures is **Program CK1** (an internal
-confluent-kernel design document, with an internal program ledger). Closure
-claims land as reviewed edits to *this* document, adversarially checked against
-the mechanization; boundaries are restated or deleted here, never silently
-dropped elsewhere.
+Boundary closures were driven by **Program CK1** (an internal confluent-kernel
+design document, with an internal program ledger). That ledger
+(`docs/PROGRAM-CK1.md`, internal) is **dormant — its last row is
+dated 2026-07-11** — so CK1 should not be cited as the currently active program;
+its gates remain wired in code and CI. The live, itemized tracker is
+the internal roadmap ledger (`docs/roadmap/README.md`). The rule this document sets
+is unchanged either way: closure claims land as reviewed edits to *this*
+document, adversarially checked against the mechanization; boundaries are
+restated or deleted here, never silently dropped elsewhere.
 
 ## Trusted base
 

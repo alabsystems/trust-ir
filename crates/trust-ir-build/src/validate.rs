@@ -8053,9 +8053,7 @@ fn validate_module_filtered(
                                     Some(why) => format!(
                                         "offset {offset}, layout UNRESOLVABLE for type {field_ty}: {why}"
                                     ),
-                                    None => format!(
-                                        "offset {offset}, no size for type {field_ty}"
-                                    ),
+                                    None => format!("offset {offset}, no size for type {field_ty}"),
                                 },
                             ),
                         }

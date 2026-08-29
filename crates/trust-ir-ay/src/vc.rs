@@ -161,7 +161,7 @@ pub struct SmtReplayEvidence {
 }
 
 /// The exact ay revision this adapter is pinned to (see `Cargo.toml`).
-pub const AY_REV: &str = "cda2dbe83f8b9eea68cffd4b3b3681f764d4645f";
+pub const AY_REV: &str = "5d586a5c2035e94c3f6ad00028e21ae5529cd2f3";
 
 /// Re-check a captured proof bundle OFFLINE — no solver run, no network, no
 /// producer cooperation.

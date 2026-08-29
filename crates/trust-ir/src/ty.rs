@@ -39,7 +39,9 @@ impl core::fmt::Display for SetRepr {
 pub enum FatPtrKind {
     Slice(TyId),
     Str,
-    TraitObject { trait_id: u32 },
+    TraitObject {
+        trait_id: u32,
+    },
     /// A pointer whose pointee merely CONTAINS a DST in tail position, rather
     /// than being one: `*const ArcInner<str>` inside `Arc<str>`. rustc lays it
     /// out fat with `usize` metadata, exactly like `Slice`/`Str`.

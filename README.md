@@ -304,7 +304,7 @@ that remain limited to particular fragments:
 
 Extensions drive CLI auto-detection; an explicit `--format` overrides module
 auto-detection where the command exposes it. The module binary writer emits
-v37. Readers accept v23–v25 and v29–v38; v26–v28 are rejected because those
+v38. Readers accept v23–v25 and v29–v38; v26–v28 are rejected because those
 version numbers were used by byte-incompatible development lines. Proof-lineage
 `.tmpl` sidecars use their own v2 format.
 

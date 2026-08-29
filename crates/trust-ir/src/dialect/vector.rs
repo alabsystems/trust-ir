@@ -372,15 +372,14 @@ pub fn decode_pack_lanes(inst: &DialectInst) -> Result<PackLanesSpec, String> {
     // Packs admit the FP shapes too — see `supported_pack_lane_vector_shape`.
     // The decode gate MUST match the construction gate, or a pack that
     // `pack_lanes_repeated` accepts becomes undecodable downstream.
-    let (elem_ty, lanes) =
-        supported_pack_lane_vector_shape(&vector_ty).ok_or_else(|| {
-            format!(
-                "{} supports only <16 x i8>, <8 x i16>, <4 x i32>, <2 x i64>, <8 x i8>, \
+    let (elem_ty, lanes) = supported_pack_lane_vector_shape(&vector_ty).ok_or_else(|| {
+        format!(
+            "{} supports only <16 x i8>, <8 x i16>, <4 x i32>, <2 x i64>, <8 x i8>, \
                  <4 x f32>, and <2 x f64> lane vectors, got {:?}",
-                inst.qualified_name(),
-                vector_ty
-            )
-        })?;
+            inst.qualified_name(),
+            vector_ty
+        )
+    })?;
     if inst.operands.len() != lanes as usize {
         return Err(format!(
             "{} expects {lanes} lane operand(s), got {}",

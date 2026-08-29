@@ -254,9 +254,13 @@ impl Ty {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PointerMetadataShape {
-    SliceLen { elem: TyId },
+    SliceLen {
+        elem: TyId,
+    },
     StrLen,
-    VTable { trait_id: u32 },
+    VTable {
+        trait_id: u32,
+    },
     /// `usize` length metadata whose data pointer addresses a CONTAINER whose
     /// tail is the DST, not the DST content. See [`FatPtrKind::ContainerLen`].
     ContainerLen,

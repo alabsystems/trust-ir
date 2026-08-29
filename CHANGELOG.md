@@ -4,12 +4,12 @@ Notable TrustIr changes are tracked here for Trust integration and release
 review.
 
 Entries are grouped under `Unreleased` until a release is cut. The most recent
-tagged release is `0.8.0`; the workspace manifest is now `0.10.0`.
+tagged release is `0.8.0`; the workspace manifest is now `0.11.0`.
 
-**Note on 0.9.0 and 0.10.0.** The workspace passed through both, and the
-module binary writer moved to v38 (`FatPtrKind::ContainerLen`), but **no
-`v0.9.0` or `v0.10.0` tag was pushed** — the same pattern as 0.7.0 below.
-Those windows are not yet written up here; do not cite a tag for them.
+**Note on 0.9.0, 0.10.0 and 0.11.0.** The workspace passed through all three,
+and the module binary writer moved to v38 (`FatPtrKind::ContainerLen`), but **no
+`v0.9.0`, `v0.10.0` or `v0.11.0` tag was pushed** — the same pattern as 0.7.0
+below. Those windows are not yet written up here; do not cite a tag for them.
 
 **Note on 0.7.0.** The workspace version passed through 0.7.0 (release commit
 `chore(release): 0.6.0 -> 0.7.0`, 2026-08-20), but **no `v0.7.0` tag was ever
