@@ -14,6 +14,7 @@
 //! ```
 
 use std::io::{Cursor, Read as IoRead};
+use std::rc::Rc;
 
 use crate::constant::Constant;
 use crate::inst::{
@@ -45,8 +46,12 @@ use crate::{
 use std::collections::BTreeMap;
 
 struct StringPool {
-    strings: Vec<String>,
-    map: BTreeMap<String, u32>,
+    // The ordered wire table and the lookup index share one allocation for
+    // each unique string. Module serialization is also the stable-digest
+    // path, so retaining two owned `String` copies here used to add a second
+    // whole-string-table memory component to every digest/serialization.
+    strings: Vec<Rc<str>>,
+    map: BTreeMap<Rc<str>, u32>,
 }
 
 impl StringPool {
@@ -57,21 +62,23 @@ impl StringPool {
         }
     }
 
-    fn intern(&mut self, s: String) -> u32 {
-        if let Some(&id) = self.map.get(&s) {
+    fn intern(&mut self, s: &str) -> u32 {
+        if let Some(&id) = self.map.get(s) {
             return id;
         }
         let id = len_u32(self.strings.len());
-        self.map.insert(s.clone(), id);
-        self.strings.push(s);
+        let owned = Rc::<str>::from(s);
+        self.map.insert(Rc::clone(&owned), id);
+        self.strings.push(owned);
         id
     }
 
-    fn get(&self, id: u32) -> Result<String, BinaryError> {
+    #[cfg(test)]
+    fn into_reader_strings(self) -> Vec<String> {
         self.strings
-            .get(id as usize)
-            .cloned()
-            .ok_or(BinaryError::BadStringId(id))
+            .into_iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect()
     }
 }
 
@@ -420,7 +427,7 @@ fn write_raw_str(buf: &mut Vec<u8>, s: &str) {
 }
 
 fn write_str(buf: &mut Vec<u8>, pool: &mut StringPool, s: &str) {
-    write_v32(buf, pool.intern(s.to_string()));
+    write_v32(buf, pool.intern(s));
 }
 
 fn write_bytes(buf: &mut Vec<u8>, data: &[u8]) {
@@ -450,62 +457,62 @@ fn write_opt_str(buf: &mut Vec<u8>, pool: &mut StringPool, v: Option<&str>) {
 
 fn collect_strings(module: &Module) -> StringPool {
     let mut pool = StringPool::new();
-    pool.intern(module.name.clone());
+    pool.intern(&module.name);
 
     if let Some(ti) = &module.target_info {
-        pool.intern(ti.triple.clone());
+        pool.intern(&ti.triple);
         // Stable ABI identifier (VERSION >= 20).
         if let Some(abi) = &ti.abi {
-            pool.intern(abi.clone());
+            pool.intern(abi);
         }
     }
 
     // Debug-info source-file table paths (VERSION >= 9).
     for path in &module.files {
-        pool.intern(path.clone());
+        pool.intern(path);
     }
 
     // Obligation-diagnostic strings (VERSION >= 11).
     for d in &module.obligation_diagnostics {
-        pool.intern(d.message.clone());
+        pool.intern(&d.message);
         if let Some(detail) = &d.detail {
-            pool.intern(detail.clone());
+            pool.intern(detail);
         }
     }
 
     for sd in &module.structs {
-        pool.intern(sd.name.clone());
+        pool.intern(&sd.name);
         for fd in &sd.fields {
-            pool.intern(fd.name.clone());
+            pool.intern(&fd.name);
         }
     }
 
     for ed in &module.enums {
-        pool.intern(ed.name.clone());
+        pool.intern(&ed.name);
         for v in &ed.variants {
-            pool.intern(v.name.clone());
+            pool.intern(&v.name);
             for name in &v.field_names {
-                pool.intern(name.clone());
+                pool.intern(name);
             }
         }
     }
 
     for rd in &module.records {
-        pool.intern(rd.name.clone());
+        pool.intern(&rd.name);
         for fd in &rd.fields {
-            pool.intern(fd.name.clone());
+            pool.intern(&fd.name);
         }
     }
 
     for g in &module.globals {
-        pool.intern(g.name.clone());
+        pool.intern(&g.name);
         if let Some(c) = &g.initializer {
             collect_constant_strings(c, &mut pool);
         }
     }
 
     for f in &module.functions {
-        pool.intern(f.name.clone());
+        pool.intern(&f.name);
         for b in &f.blocks {
             for node in &b.body {
                 collect_inst_strings(&node.inst, &mut pool);
@@ -514,62 +521,62 @@ fn collect_strings(module: &Module) -> StringPool {
         // v18: separate-compilation contract strings (schemas/payloads/params).
         if let Some(summary) = &f.summary {
             for c in summary.requires.iter().chain(summary.ensures.iter()) {
-                pool.intern(c.schema.clone());
-                pool.intern(c.payload.clone());
+                pool.intern(&c.schema);
+                pool.intern(&c.payload);
                 if let Some(s) = &c.smtlib {
-                    pool.intern(s.clone());
+                    pool.intern(s);
                 }
                 if let Some(s) = &c.sort {
-                    pool.intern(s.clone());
+                    pool.intern(s);
                 }
             }
             for p in &summary.params {
-                pool.intern(p.clone());
+                pool.intern(p);
             }
         }
         // v32: debug value names (C2-names).
         if let Some(names) = &f.value_names {
             for (_, n) in names {
-                pool.intern(n.clone());
+                pool.intern(n);
             }
         }
         // v35: semantic source-binding names.
         if let Some(provenance) = &f.source_provenance {
             for source_loop in &provenance.loops {
                 for binding in &source_loop.bindings {
-                    pool.intern(binding.name.clone());
+                    pool.intern(&binding.name);
                 }
             }
         }
         // v23: producer provenance — only the Other escape carries a string.
         if let Some(Producer::Other(s)) = &f.producer {
-            pool.intern(s.clone());
+            pool.intern(s);
         }
     }
 
     for po in &module.proof_obligations {
-        pool.intern(po.description.clone());
+        pool.intern(&po.description);
         if let Some(f) = &po.formula {
-            pool.intern(f.schema.clone());
-            pool.intern(f.payload.clone());
+            pool.intern(&f.schema);
+            pool.intern(&f.payload);
             if let Some(s) = &f.smtlib {
-                pool.intern(s.clone());
+                pool.intern(s);
             }
             if let Some(s) = &f.sort {
-                pool.intern(s.clone());
+                pool.intern(s);
             }
         }
         if let Some(source) = &po.source {
-            pool.intern(source.source_id.clone());
-            pool.intern(source.assertion_id.clone());
+            pool.intern(&source.source_id);
+            pool.intern(&source.assertion_id);
             if let Some(public) = &source.public {
-                pool.intern(public.obligation_id.clone());
+                pool.intern(&public.obligation_id);
             }
         }
     }
 
     for pc in &module.proof_certificates {
-        pool.intern(pc.prover.clone());
+        pool.intern(&pc.prover);
         collect_evidence_strings(&pc.evidence, &mut pool);
     }
 
@@ -583,39 +590,39 @@ fn collect_strings(module: &Module) -> StringPool {
 /// Pre-intern every string referenced by a [`SpecModule`] so that the lazy
 /// `write_str` calls in `write_spec_module` only ever hit already-pooled ids.
 fn collect_spec_module_strings(sm: &crate::spec::SpecModule, pool: &mut StringPool) {
-    pool.intern(sm.name.clone());
+    pool.intern(&sm.name);
     for v in &sm.vars {
-        pool.intern(v.name.clone());
-        pool.intern(v.ty.clone());
+        pool.intern(&v.name);
+        pool.intern(&v.ty);
     }
     for a in &sm.actions {
-        pool.intern(a.clone());
+        pool.intern(a);
     }
     for inv in &sm.invariants {
-        pool.intern(inv.name.clone());
-        pool.intern(inv.formula.clone());
+        pool.intern(&inv.name);
+        pool.intern(&inv.formula);
     }
     for anchor in &sm.anchors {
-        pool.intern(anchor.machine.clone());
-        pool.intern(anchor.action.clone());
-        pool.intern(anchor.rust_symbol.clone());
-        pool.intern(anchor.span.clone());
+        pool.intern(&anchor.machine);
+        pool.intern(&anchor.action);
+        pool.intern(&anchor.rust_symbol);
+        pool.intern(&anchor.span);
         if let Some(p) = &anchor.project {
-            pool.intern(p.clone());
+            pool.intern(p);
         }
     }
     for w in &sm.waivers {
-        pool.intern(w.machine.clone());
-        pool.intern(w.action.clone());
-        pool.intern(w.reason.clone());
+        pool.intern(&w.machine);
+        pool.intern(&w.action);
+        pool.intern(&w.reason);
     }
     for p in &sm.proofs {
-        pool.intern(p.machine.clone());
-        pool.intern(p.action.clone());
-        pool.intern(p.proof_name.clone());
+        pool.intern(&p.machine);
+        pool.intern(&p.action);
+        pool.intern(&p.proof_name);
     }
     if let crate::spec::SpecOrigin::External(path) = &sm.origin {
-        pool.intern(path.clone());
+        pool.intern(path);
     }
 }
 
@@ -632,7 +639,7 @@ fn collect_constant_strings(c: &Constant, pool: &mut StringPool) {
         }
         Constant::Record(fields) => {
             for (name, val) in fields {
-                pool.intern(name.clone());
+                pool.intern(name);
                 collect_constant_strings(val, pool);
             }
         }
@@ -642,7 +649,7 @@ fn collect_constant_strings(c: &Constant, pool: &mut StringPool) {
             }
         }
         Constant::SymbolAddr { symbol, .. } => {
-            pool.intern(symbol.clone());
+            pool.intern(symbol);
         }
         _ => {}
     }
@@ -651,18 +658,18 @@ fn collect_constant_strings(c: &Constant, pool: &mut StringPool) {
 fn collect_inst_strings(inst: &Inst, pool: &mut StringPool) {
     match inst {
         Inst::OpenFrame { def } => {
-            pool.intern(def.name.clone());
+            pool.intern(&def.name);
             for slot in &def.slots {
-                pool.intern(slot.name.clone());
+                pool.intern(&slot.name);
             }
         }
         Inst::DialectOp(op) => {
-            pool.intern(op.dialect.clone());
-            pool.intern(op.op.clone());
+            pool.intern(&op.dialect);
+            pool.intern(&op.op);
             for entry in &op.attrs {
-                pool.intern(entry.name.clone());
+                pool.intern(&entry.name);
                 if let crate::dialect::AttrValue::Str(s) = &entry.value {
-                    pool.intern(s.clone());
+                    pool.intern(s);
                 }
             }
         }
@@ -681,22 +688,22 @@ fn collect_inst_strings(inst: &Inst, pool: &mut StringPool) {
 fn collect_evidence_strings(ev: &ProofEvidence, pool: &mut StringPool) {
     match ev {
         ProofEvidence::LeanProof(s) | ProofEvidence::KaniHarness(s) | ProofEvidence::Trusted(s) => {
-            pool.intern(s.clone());
+            pool.intern(s);
         }
         ProofEvidence::TranslationValidation { rule_name, .. } => {
-            pool.intern(rule_name.clone());
+            pool.intern(rule_name);
         }
         ProofEvidence::CleanCic {
             kernel_recheck: Some(recheck),
             ..
         } => {
-            pool.intern(recheck.module.clone());
+            pool.intern(&recheck.module);
             for thm in &recheck.theorems {
-                pool.intern(thm.clone());
+                pool.intern(thm);
             }
-            pool.intern(recheck.anchor.clone());
+            pool.intern(&recheck.anchor);
             for ax in &recheck.allowed_axioms {
-                pool.intern(ax.clone());
+                pool.intern(ax);
             }
         }
         _ => {}
@@ -709,7 +716,10 @@ fn collect_evidence_strings(ev: &ProofEvidence, pool: &mut StringPool) {
 
 struct Reader<'a> {
     cursor: Cursor<&'a [u8]>,
-    pool: Option<StringPool>,
+    // Decoding only needs id -> string lookup. Keeping the writer's ordered
+    // index here used to rebuild an otherwise-unused BTreeMap and duplicate
+    // every decoded string.
+    pool: Option<Vec<String>>,
     /// Format version of the module being read, set once after the header is
     /// validated. Lets version-gated reads (e.g. fast-3 v8 fields) consult
     /// `r.version` without threading it through every `read_*` signature.
@@ -745,9 +755,23 @@ impl<'a> Reader<'a> {
         Ok(buf)
     }
 
+    /// Read a fixed-width field into stack storage.
+    ///
+    /// Tags, varints, ids, fixed integers, and digests dominate the binary
+    /// grammar. Routing them through `read_exact` allocated a fresh `Vec` for
+    /// every encoded scalar (and for every byte of a multi-byte varint). Keep
+    /// the same pre-read bounds check while removing that per-field heap work.
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], BinaryError> {
+        self.reserve_checked(N)?;
+        let mut bytes = [0u8; N];
+        self.cursor
+            .read_exact(&mut bytes)
+            .map_err(|_| BinaryError::UnexpectedEof)?;
+        Ok(bytes)
+    }
+
     fn read_u8(&mut self) -> Result<u8, BinaryError> {
-        let b = self.read_exact(1)?;
-        Ok(b[0])
+        Ok(self.read_array::<1>()?[0])
     }
 
     fn read_bool(&mut self) -> Result<bool, BinaryError> {
@@ -759,22 +783,18 @@ impl<'a> Reader<'a> {
     }
 
     fn read_u32(&mut self) -> Result<u32, BinaryError> {
-        let b = self.read_exact(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        self.read_array().map(u32::from_le_bytes)
     }
 
     fn read_u64(&mut self) -> Result<u64, BinaryError> {
-        let b = self.read_exact(8)?;
-        Ok(u64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        self.read_array().map(u64::from_le_bytes)
     }
 
     fn read_v64(&mut self) -> Result<u64, BinaryError> {
         let mut result = 0u64;
         let mut shift = 0;
         loop {
-            let b = self.read_exact(1)?[0];
+            let b = self.read_u8()?;
             let payload = b & 0x7f;
             // A u64 LEB128 value has at most one payload bit in byte ten.
             // Shifting (for example) 0x02 by 63 silently discards the
@@ -846,24 +866,15 @@ impl<'a> Reader<'a> {
     }
 
     fn read_i128(&mut self) -> Result<i128, BinaryError> {
-        let b = self.read_exact(16)?;
-        let mut arr = [0u8; 16];
-        arr.copy_from_slice(&b);
-        Ok(i128::from_le_bytes(arr))
+        self.read_array().map(i128::from_le_bytes)
     }
 
     fn read_u128(&mut self) -> Result<u128, BinaryError> {
-        let b = self.read_exact(16)?;
-        let mut arr = [0u8; 16];
-        arr.copy_from_slice(&b);
-        Ok(u128::from_le_bytes(arr))
+        self.read_array().map(u128::from_le_bytes)
     }
 
     fn read_f64(&mut self) -> Result<f64, BinaryError> {
-        let b = self.read_exact(8)?;
-        Ok(f64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        self.read_array().map(f64::from_le_bytes)
     }
 
     fn read_raw_str(&mut self) -> Result<String, BinaryError> {
@@ -875,7 +886,12 @@ impl<'a> Reader<'a> {
     fn read_str(&mut self) -> Result<String, BinaryError> {
         if self.pool.is_some() {
             let id = self.read_v32()?;
-            self.pool.as_ref().unwrap().get(id)
+            self.pool
+                .as_ref()
+                .expect("checked above")
+                .get(id as usize)
+                .cloned()
+                .ok_or(BinaryError::BadStringId(id))
         } else {
             self.read_raw_str()
         }
@@ -1462,7 +1478,7 @@ fn read_constant_inner(r: &mut Reader<'_>) -> Result<Constant, BinaryError> {
         14 => {
             let utf8 = r.read_bool()?;
             let len = r.read_checked_len()?;
-            let data = r.read_exact(len)?.to_vec();
+            let data = r.read_exact(len)?;
             if utf8 && std::str::from_utf8(&data).is_err() {
                 return Err(BinaryError::InvalidData(
                     "Constant::Bytes marked utf8 carries invalid UTF-8".to_string(),
@@ -2247,12 +2263,7 @@ fn read_attr_value(r: &mut Reader<'_>) -> Result<crate::dialect::AttrValue, Bina
     use crate::dialect::AttrValue;
     let tag = r.read_u8()?;
     Ok(match tag {
-        0 => {
-            let b = r.read_exact(8)?;
-            AttrValue::I64(i64::from_le_bytes([
-                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-            ]))
-        }
+        0 => AttrValue::I64(i64::from_le_bytes(r.read_array()?)),
         // `write_attr_value` encodes U64 as a varint (`write_v64`); the reader
         // must decode the same way. Using `read_u64` here consumed a fixed 8
         // bytes, desynchronizing the stream for every following field (it
@@ -2928,9 +2939,7 @@ fn read_proof_evidence(r: &mut Reader<'_>) -> Result<ProofEvidence, BinaryError>
         }
         4 => {
             let rule_name = r.read_str()?;
-            let hash_bytes = r.read_exact(32)?;
-            let mut smt_hash = [0u8; 32];
-            smt_hash.copy_from_slice(&hash_bytes);
+            let smt_hash = r.read_array()?;
             Ok(ProofEvidence::TranslationValidation {
                 rule_name,
                 smt_hash,
@@ -3764,9 +3773,7 @@ fn read_proof_digest(r: &mut Reader<'_>) -> Result<ProofDigest, BinaryError> {
         1 => ProofDigestAlgorithm::TrustIrStableV1,
         tag => return Err(BinaryError::InvalidTag(tag)),
     };
-    let bytes = r.read_exact(32)?;
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(&bytes);
+    let digest = r.read_array()?;
     Ok(ProofDigest {
         algorithm,
         bytes: digest,
@@ -4387,15 +4394,15 @@ fn read_function(r: &mut Reader<'_>, version: u32) -> Result<Function, BinaryErr
 fn collect_lineage_strings(nodes: &[ProofLineageNode]) -> StringPool {
     let mut pool = StringPool::new();
     for node in nodes {
-        pool.intern(node.transform.name.clone());
-        pool.intern(node.transform.producer.clone());
-        pool.intern(node.transform.version.clone());
+        pool.intern(&node.transform.name);
+        pool.intern(&node.transform.producer);
+        pool.intern(&node.transform.version);
         for cert in &node.certificates {
-            pool.intern(cert.prover.clone());
+            pool.intern(&cert.prover);
         }
         if let Some(replay) = &node.replay {
-            pool.intern(replay.engine.clone());
-            pool.intern(replay.invocation.clone());
+            pool.intern(&replay.engine);
+            pool.intern(&replay.invocation);
         }
     }
     pool
@@ -4449,7 +4456,7 @@ pub fn deserialize_proof_lineage_manifest(
     bytes: &[u8],
 ) -> Result<ProofLineageManifest, BinaryError> {
     let mut r = Reader::new(bytes);
-    let magic = r.read_exact(PROOF_LINEAGE_MAGIC.len())?;
+    let magic = r.read_array::<{ PROOF_LINEAGE_MAGIC.len() }>()?;
     if magic != PROOF_LINEAGE_MAGIC[..] {
         return Err(BinaryError::InvalidMagic);
     }
@@ -4463,13 +4470,10 @@ pub fn deserialize_proof_lineage_manifest(
     if version >= 2 {
         let pool_size = r.read_checked_len()?;
         let mut strings = Vec::with_capacity(pool_size);
-        let mut map = BTreeMap::new();
-        for i in 0..pool_size {
-            let s = r.read_raw_str()?;
-            map.insert(s.clone(), len_u32(i));
-            strings.push(s);
+        for _ in 0..pool_size {
+            strings.push(r.read_raw_str()?);
         }
-        r.pool = Some(StringPool { strings, map });
+        r.pool = Some(strings);
     }
 
     let node_count = r.read_checked_len()?;
@@ -4632,7 +4636,7 @@ pub fn deserialize_native_verification_bundle(
     // the TMPL lineage and TRUST_IR module segments follow.
     if bytes.starts_with(NATIVE_BUNDLE_MAGIC) {
         let mut r = Reader::new(bytes);
-        let _magic = r.read_exact(NATIVE_BUNDLE_MAGIC.len())?;
+        let _magic = r.read_array::<{ NATIVE_BUNDLE_MAGIC.len() }>()?;
         let version = r.read_u32()?;
         if version != NATIVE_BUNDLE_VERSION {
             return Err(BinaryError::UnsupportedVersion);
@@ -5082,7 +5086,7 @@ pub fn deserialize_module(bytes: &[u8]) -> Result<Module, BinaryError> {
     let mut r = Reader::new(bytes);
 
     // Header
-    let magic = r.read_exact(MAGIC.len())?;
+    let magic = r.read_array::<{ MAGIC.len() }>()?;
     if magic != MAGIC[..] {
         return Err(BinaryError::InvalidMagic);
     }
@@ -5102,13 +5106,10 @@ pub fn deserialize_module(bytes: &[u8]) -> Result<Module, BinaryError> {
     if version >= 4 {
         let pool_size = r.read_checked_len()?;
         let mut strings = Vec::with_capacity(pool_size);
-        let mut map = BTreeMap::new();
-        for i in 0..pool_size {
-            let s = r.read_raw_str()?;
-            map.insert(s.clone(), len_u32(i));
-            strings.push(s);
+        for _ in 0..pool_size {
+            strings.push(r.read_raw_str()?);
         }
-        r.pool = Some(StringPool { strings, map });
+        r.pool = Some(strings);
     }
 
     // Module name
@@ -5334,6 +5335,23 @@ pub fn deserialize_module(bytes: &[u8]) -> Result<Module, BinaryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_string_pool_shares_one_owned_value_between_order_and_lookup() {
+        let mut pool = StringPool::new();
+        let first = pool.intern("shared-compiler-identity");
+        let repeated = pool.intern("shared-compiler-identity");
+
+        assert_eq!(first, repeated);
+        assert_eq!(pool.strings.len(), 1);
+        assert_eq!(pool.map.len(), 1);
+        let ordered = &pool.strings[first as usize];
+        let indexed = pool.map.keys().next().expect("one lookup-index allocation");
+        assert!(
+            Rc::ptr_eq(ordered, indexed),
+            "wire order and lookup index must share the same string allocation"
+        );
+    }
 
     fn v(n: u32) -> ValueId {
         ValueId::new(n)
@@ -5716,7 +5734,7 @@ mod tests {
 
         let mut reader = Reader::new(&bytes);
         reader.version = 25;
-        reader.pool = Some(pool);
+        reader.pool = Some(pool.into_reader_strings());
         let spec = read_spec_module(&mut reader).expect("v25 SpecModule decode");
         assert_eq!(spec.anchors.len(), 1);
         assert_eq!(spec.anchors[0].function, None);
@@ -5758,7 +5776,7 @@ mod tests {
 
         let mut reader = Reader::new(&bytes);
         reader.version = 26;
-        reader.pool = Some(pool);
+        reader.pool = Some(pool.into_reader_strings());
         let spec = read_spec_module(&mut reader).expect("v26 SpecModule decode");
         assert_eq!(spec.anchors[0].function, Some(FuncId::new(7)));
         assert_eq!(spec.anchors[0].projection_target, None);
@@ -5790,7 +5808,7 @@ mod tests {
 
         let mut reader = Reader::new(&bad_projection);
         reader.version = 27;
-        reader.pool = Some(pool);
+        reader.pool = Some(pool.into_reader_strings());
         assert_eq!(
             read_spec_module(&mut reader),
             Err(BinaryError::InvalidTag(99))
@@ -5810,7 +5828,7 @@ mod tests {
 
         let mut reader = Reader::new(&bad_enforcement);
         reader.version = 27;
-        reader.pool = Some(pool);
+        reader.pool = Some(pool.into_reader_strings());
         assert_eq!(
             read_spec_module(&mut reader),
             Err(BinaryError::InvalidTag(99))
@@ -6682,7 +6700,7 @@ mod tests {
 
         let mut reader = Reader::new(&bytes);
         reader.version = 30;
-        reader.pool = Some(pool);
+        reader.pool = Some(pool.into_reader_strings());
         let decoded = read_enum_def(&mut reader).expect("v30 enum record");
         assert!(decoded.variants[0].field_names.is_empty());
         assert_eq!(decoded.layout, None);
@@ -8464,7 +8482,7 @@ mod tests {
         let mut buf = Vec::new();
         write_proof_evidence(&mut buf, &mut pool, &ev);
         let mut reader = Reader::new(&buf);
-        reader.pool = Some(pool);
+        reader.pool = Some(pool.into_reader_strings());
         let back = read_proof_evidence(&mut reader).expect("read CleanCic w/ recheck");
         assert_eq!(ev, back);
     }
@@ -8823,6 +8841,27 @@ mod tests {
                 remaining: 0
             })
         ));
+    }
+
+    /// Stack-backed fixed-width reads retain the same fail-before-read bound
+    /// and advance the cursor by exactly the admitted width.
+    #[test]
+    fn fixed_width_reads_preserve_bounds_and_cursor_contract() {
+        let mut r = Reader::new(&[1, 2, 3, 4]);
+        assert_eq!(r.read_array::<2>().unwrap(), [1, 2]);
+        assert_eq!(r.cursor.position(), 2);
+        assert!(matches!(
+            r.read_array::<3>(),
+            Err(BinaryError::TooLarge {
+                declared: 3,
+                remaining: 2
+            })
+        ));
+        assert_eq!(
+            r.cursor.position(),
+            2,
+            "rejected read must not consume input"
+        );
     }
 
     /// Nested CleanCic directive counts are untrusted collection lengths too;
