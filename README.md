@@ -14,7 +14,8 @@ Install it with aterm's package manager, which verifies every signed binary:
 aterm pkg install trust-ir
 ```
 
-Every release is listed under [Releases](https://github.com/alabsystems/trust-ir/releases).
+Every release is listed under [Releases](https://github.com/alabsystems/trust-ir/releases),
+and its notes are in `release-notes/`.
 
 ## Security
 
