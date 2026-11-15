@@ -61,6 +61,13 @@ cd "$ROOT"
 
 PIN_REWRITE="$ROOT/scripts/pin_rewrite.py"
 TARGO_RUNNER="$ROOT/scripts/run-targo.sh"
+AUTHORITY="$ROOT/scripts/dependency_authority.py"
+# Local status/object reads must not inherit namespace, replacement, graft,
+# template or global config routing. GitHub reads below use native Agh only.
+for key in $(compgen -v GIT_); do unset "$key"; done
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_GRAFT_FILE=/dev/null
+export GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_TERMINAL_PROMPT=0
+
 CLEAN_OBJECT_REPO="${TRUST_IR_CLEAN_REPO:-${TRUST_IR_CLEAN_SIBLING:-$ROOT/../clean}}"
 
 usage() {
@@ -83,8 +90,10 @@ usage: scripts/bump-dep-pin.sh <clean|ay> <40-hex-sha> [version] [options]
                           refresh still needs the network for a clean bump)
   --allow-sibling-ahead   deprecated compatibility no-op; immutable target
                           commits, never sibling HEADs, are authoritative
-  --no-guard-test         skip the Rust guard test; the exact toolchain-free
-                          mirror still runs and proves every invariant
+  --no-guard-test         skip the compiled Rust guard test. The toolchain-
+                          free mirror still runs and checks every assertion
+                          but one: whether frontend/Cargo.lock resolves under
+                          --locked, which only the Rust guard asks Cargo
   --dry-run               stage the edits and diff them; change nothing
 
 env:
@@ -211,28 +220,13 @@ review_version_move() {
 
 clean_manifest_at() {
     local clean_rev="$1"
-    if [[ "$(git -C "$CLEAN_OBJECT_REPO" rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] \
-        && git -C "$CLEAN_OBJECT_REPO" cat-file -e "${clean_rev}^{commit}" 2>/dev/null; then
-        git -C "$CLEAN_OBJECT_REPO" show "${clean_rev}:Cargo.toml" \
-            || die "Clean commit $clean_rev has no readable Cargo.toml"
-        return
-    fi
-
     if [[ $OFFLINE -eq 1 ]]; then
-        die "offline Clean authority check cannot find commit $clean_rev in
-      $CLEAN_OBJECT_REPO. Fetch that immutable commit into the local object
-      cache, or omit --offline so the script can fetch it into a temporary repo."
+        python3 -B "$AUTHORITY" offline-manifest "$CLEAN_OBJECT_REPO" "$clean_rev" \
+            || die "offline Clean authority check cannot find commit $clean_rev or its readable Cargo.toml in $CLEAN_OBJECT_REPO"
+    else
+        python3 -B "$AUTHORITY" manifest clean "$clean_rev" \
+            || die "native Clean authority read refused"
     fi
-
-    local authority="$TMP/clean-authority"
-    if [[ ! -d "$authority/.git" ]]; then
-        git init -q "$authority" || die "cannot create Clean authority repository"
-    fi
-    GIT_TERMINAL_PROMPT=0 git -C "$authority" fetch --depth=1 -q \
-        "https://github.com/alabsystems/clean.git" "$clean_rev" \
-        || die "Clean remote does not serve authority commit $clean_rev"
-    git -C "$authority" show "FETCH_HEAD:Cargo.toml" \
-        || die "Clean commit $clean_rev has no readable Cargo.toml"
 }
 
 validate_clean_commit_ay_pin() {
@@ -339,6 +333,8 @@ trap 'trap - EXIT; cleanup; trap - TERM; kill -TERM $$' TERM
 
 # --- PHASE A: preconditions (read-only; nothing is written) ------------------
 say "PHASE A — preconditions for $DEP -> $REV"
+pin integrity --root "$ROOT" \
+    || die "pin input integrity failed; refusing before staging"
 
 REPAIR=0
 ALREADY_COHERENT=0
@@ -525,26 +521,14 @@ if [[ $OFFLINE -eq 1 ]]; then
     warn "--offline: skipping the remote-existence probe. A revision that is
       local-only will resolve here and fail for every downstream consumer."
 else
-    PROBE="$TMP/remote-probe"
-    git init -q "$PROBE" || die "cannot create the remote probe repository"
-    if ! GIT_TERMINAL_PROMPT=0 git -C "$PROBE" fetch --depth=1 -q "$REMOTE" "$REV" \
-        2>"$TMP/probe.err"; then
-        die "$REMOTE does not serve $REV:
-$(sed 's/^/        /' "$TMP/probe.err")
-      Push the revision before pinning it, or pass --offline if you are
-      deliberately pinning an unpushed commit."
-    fi
+    if [[ "$DEP" == "ay" ]]; then REMOTE_REPO=ay; else REMOTE_REPO=clean; fi
+    python3 -B "$AUTHORITY" remote "$REMOTE_REPO" "$REV" \
+        || die "native dependency authority does not serve $REV"
     printf 'remote %s serves %s\n' "$REMOTE" "$REV"
     if [[ "$DEP" == "clean-ay" ]]; then
-        AY_REMOTE="https://github.com/alabsystems/ay.git"
-        if ! GIT_TERMINAL_PROMPT=0 git -C "$PROBE" fetch --depth=1 -q "$AY_REMOTE" "$AY_REV" \
-            2>"$TMP/ay-probe.err"; then
-            die "$AY_REMOTE does not serve $AY_REV:
-$(sed 's/^/        /' "$TMP/ay-probe.err")
-      Push the AY revision before pinning it, or pass --offline only for a
-      deliberately non-public preparation run."
-        fi
-        printf 'remote %s serves %s\n' "$AY_REMOTE" "$AY_REV"
+        python3 -B "$AUTHORITY" remote ay "$AY_REV" \
+            || die "native AY authority does not serve $AY_REV"
+        printf 'remote AY serves %s\n' "$AY_REV"
     fi
 fi
 
@@ -630,18 +614,21 @@ done <<<"$STAGED"
 # --- PHASE E: refresh the lockfiles ------------------------------------------
 # The root lock is refreshed for BOTH dependencies. Since the path patch was
 # removed it records the selected Clean revision and Clean's dependency graph.
+# Resolve through the same explicitly selected Trust-owned frontend as the
+# compiled guard. These commands do not compile or establish verification;
+# run-targo deliberately omits the compilation-only --unverified flag here.
 say "PHASE E — refreshing lockfiles"
-cargo metadata --format-version 1 --all-features \
+"$TARGO_RUNNER" metadata --format-version 1 --all-features \
     --manifest-path "$ROOT/Cargo.toml" >/dev/null \
-    || die "root lock refresh failed (cargo metadata)"
+    || die "root lock refresh failed (Targo metadata)"
 printf 'refreshed Cargo.lock\n'
 
 if [[ "$DEP" == "clean" || "$DEP" == "clean-ay" ]]; then
     # THE LEG THAT KEEPS GETTING MISSED. frontend/ is a separate, workspace-
     # excluded package with no [patch], so this lock records the git revision
     # literally — and no --workspace command will ever touch it.
-    cargo update --manifest-path "$ROOT/frontend/Cargo.toml" -p clean-kernel \
-        || die "frontend/Cargo.lock refresh failed (cargo update -p clean-kernel)"
+    "$TARGO_RUNNER" update --manifest-path "$ROOT/frontend/Cargo.toml" -p clean-kernel \
+        || die "frontend/Cargo.lock refresh failed (Targo update -p clean-kernel)"
     printf 'refreshed frontend/Cargo.lock\n'
 fi
 
@@ -651,7 +638,9 @@ say "PHASE F — verification"
 # Tier 1 (MANDATORY, no Rust toolchain required): every leg agrees on the new
 # revision, then an exact Python mirror replays every runtime assertion in the
 # compiled dependency_pin_coherence guard (manifest selectors, provenance,
-# versions/cardinality, root patch exclusion, and both lockfiles).
+# versions/cardinality, root patch exclusion, and both lockfiles) except one:
+# whether frontend/Cargo.lock still RESOLVES under --locked is Cargo's
+# resolver's answer, so only Tier 2 (and Phase E's refresh) asks it.
 if [[ "$DEP" == "clean-ay" ]]; then
     pin census --root "$ROOT" --dep clean \
         || die "post-bump Clean census is still incoherent — see the table above"
@@ -699,7 +688,7 @@ if [[ $RUN_GUARD_TEST -eq 1 ]]; then
         --test dependency_pin_coherence 2>&1)"
     GUARD_CODE=$?
     if [[ $GUARD_CODE -eq 0 ]]; then
-        printf '%s\n' "$GUARD_OUT" | tail -5
+        printf '%s\n' "$GUARD_OUT"
         printf 'VERIFY: guard test PASSED\n'
     elif grep -q 'Trust targo was not found' <<<"$GUARD_OUT"; then
         printf 'VERIFY: compiled guard SKIPPED (targo unavailable) — the exact\n'

@@ -23,9 +23,10 @@
 //   --mir-lower     Phase 2 (best-effort): also attempt a MINIMAL lowering of
 //                   the simplest functions and report lowered-ok vs failed.
 //
-// Build against the bootstrap-prepared rustc-private metadata as documented in
-// Cargo.toml. At runtime set RUSTC to the matching public stage1 compiler (or
-// pass its `--sysroot` explicitly) and provide the private dylib search path.
+// Build with `targo --unverified build --manifest-path frontend/Cargo.toml`
+// (Cargo.toml): the installed Trust sysroot resolves rustc_private directly, and
+// build.rs bakes an rpath to its `librustc_driver`. At runtime RUSTC defaults to
+// `trustc`; set it (or pass `--sysroot`) to name another ABI-matching compiler.
 
 #![feature(rustc_private)]
 #![allow(rustc::default_hash_types)]
@@ -36,6 +37,7 @@ extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_index;
 extern crate rustc_interface;
+extern crate rustc_attr_ir;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -55,6 +57,10 @@ mod mir_lower;
 // `trust_ir_frontend` lib as `trust_ir_frontend::span_map`). Included as SOURCE
 // so this binary stays lib-independent (like `mir_lower`'s layout re-derivation).
 mod span_map;
+
+#[cfg(test)]
+#[path = "mir_param_attrs_artifact_tests.rs"]
+mod param_attrs_artifact_tests;
 
 struct MirCallbacks {
     /// Phase 1: enumerate + histogram (always on for this driver).
@@ -508,6 +514,17 @@ fn run_mir_emit_each<'tcx>(tcx: TyCtxt<'tcx>, outdir: &str, local_only: bool) {
     // validate is NOT written — the affected symbols then dangle at link
     // (loud), never silently zero-filled.
     let (statics_module, statics_defined, statics_extern) = mir_lower::emit_statics_module(tcx);
+    let statics_module = match statics_module {
+        Some(Err(fault)) => {
+            eprintln!(
+                "EMIT-EACH STATICS-FAIL :: the module builder refused: {fault} (statics module NOT written)"
+            );
+            fail += 1;
+            None
+        }
+        Some(Ok(built)) => Some(built),
+        None => None,
+    };
     if let Some((module, errs)) = statics_module {
         for d in &statics_defined {
             eprintln!(
@@ -752,6 +769,7 @@ fn cast_kind_name(c: &CastKind) -> &'static str {
         CastKind::PtrToPtr => "PtrToPtr",
         CastKind::FnPtrToPtr => "FnPtrToPtr",
         CastKind::Transmute => "Transmute",
+        CastKind::BoxDerefTransmute => "BoxDerefTransmute",
         CastKind::Subtype => "Subtype",
     }
 }
@@ -1064,6 +1082,7 @@ fn instance_kind_name(k: &ty::InstanceKind<'_>) -> &'static str {
     match k {
         ty::InstanceKind::Item(_) => "Item",
         ty::InstanceKind::Intrinsic(_) => "Intrinsic",
+        ty::InstanceKind::LlvmIntrinsic(_) => "LlvmIntrinsic",
         ty::InstanceKind::Virtual(_, _) => "Virtual",
         ty::InstanceKind::Shim(ty::ShimKind::VTable(_)) => "VTableShim",
         ty::InstanceKind::Shim(ty::ShimKind::Reify(_, _)) => "ReifyShim",
@@ -1075,7 +1094,8 @@ fn instance_kind_name(k: &ty::InstanceKind<'_>) -> &'static str {
         ty::InstanceKind::Shim(ty::ShimKind::ThreadLocal(_)) => "ThreadLocalShim",
         ty::InstanceKind::Shim(ty::ShimKind::DropGlue(_, _)) => "DropGlue",
         ty::InstanceKind::Shim(ty::ShimKind::Clone(_, _)) => "CloneShim",
-        ty::InstanceKind::Shim(ty::ShimKind::FnPtrAddr(_, _)) => "FnPtrAddrShim",
+        ty::InstanceKind::Shim(ty::ShimKind::FnPtrAsPtr(_, _)) => "FnPtrAsPtrShim",
+        ty::InstanceKind::Shim(ty::ShimKind::FnPtrFromPtr(_, _)) => "FnPtrFromPtrShim",
         ty::InstanceKind::Shim(ty::ShimKind::AsyncDropGlue(_, _)) => "AsyncDropGlue",
         ty::InstanceKind::Shim(ty::ShimKind::FutureDropPoll(_, _, _)) => {
             "FutureDropPollShim"

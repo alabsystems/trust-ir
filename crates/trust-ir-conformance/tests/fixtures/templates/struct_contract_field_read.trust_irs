@@ -1,0 +1,17 @@
+; TrustIr template text format v1
+template "alloc::vec::Vec::<T>::len"
+param $0 type
+hole ?0 type struct { ?1, usize } key "rust" [97, 108, 108, 111, 99, 58, 58, 118, 101, 99, 58, 58, 86, 101, 99] args ($0)
+hole ?1 type opaque key "rust" [97, 108, 108, 111, 99, 58, 58, 114, 97, 119, 95, 118, 101, 99, 58, 58, 82, 97, 119, 86, 101, 99] args ($0)
+; TrustIr text format v1
+module "alloc"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = (ptr) -> (usize)
+
+fn @"!template_body"(functy.0) {
+bb0(%0: ptr):
+    %1 = load ?0, ptr %0
+    %2 = extractfield usize %1, 1
+    ret %2
+}

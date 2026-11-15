@@ -1,0 +1,15 @@
+; TrustIr template text format v1
+template "source_pointer_equality"
+param $0 type
+hole ?0 type thinptr key "rust" [115, 111, 117, 114, 99, 101, 95, 112, 111, 105, 110, 116, 101, 114, 95, 114, 101, 112, 114, 101, 115, 101, 110, 116, 97, 116, 105, 111, 110] args ($0)
+; TrustIr text format v1
+module "pointer_contract"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = (?0, ?0) -> (bool)
+
+fn @"!template_body"(functy.0) {
+bb0(%0: ?0, %1: ?0):
+    %2 = icmp eq ?0 %0, %1
+    ret %2
+}

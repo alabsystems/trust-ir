@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -126,11 +129,62 @@ fn no_run_doc() {}
 
 
 class TargoRunnerTests(unittest.TestCase):
-    def make_fake(self, directory: Path, name: str = "targo") -> tuple[Path, Path]:
+    def test_fixture_interpreter_path_with_spaces_and_quotes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="interpreter's path ") as temporary:
+            root = Path(temporary)
+            interpreter = root / "python interpreter"
+            interpreter.symlink_to(sys.executable)
+            with mock.patch.object(sys, "executable", os.fspath(interpreter)):
+                binary, log = self.make_fake(root)
+                self.make_rustup(root)
+            result = self.run_wrapper(binary, log, "test", "argument with spaces")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(log.read_text()),
+                             ["--unverified", "test", "argument with spaces"])
+            rustup_log = root / "rustup-args"
+            # Neither launcher may rely on python being available on PATH.
+            result = self.run_isolated({
+                "PATH": os.fspath(root),
+                "FAKE_TARGO_LOG": os.fspath(log),
+                "FAKE_RUSTUP_LOG": os.fspath(rustup_log),
+                "FAKE_RUSTUP_TARGO": os.fspath(binary),
+            }, "metadata")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # PATH finds targo first; invoke rustup directly to exercise its launcher.
+            result = subprocess.run(
+                [os.fspath(root / "rustup"), "which", "targo"],
+                env={"PATH": "", "FAKE_RUSTUP_LOG": os.fspath(rustup_log),
+                     "FAKE_RUSTUP_TARGO": os.fspath(binary)},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(rustup_log.read_text()), ["which", "targo"])
+
+    def make_fake(
+        self,
+        directory: Path,
+        name: str = "targo",
+        *,
+        exit_code: int = 0,
+        discriminates: bool = True,
+    ) -> tuple[Path, Path]:
+        # A real targo answers `--unverified --version`; upstream Cargo named
+        # targo rejects it. The probe is answered without touching the log, so
+        # the log still records exactly the dispatched gate command.
+        # Quote the interpreter with a shell launcher: an OS shebang splits
+        # interpreter paths containing spaces.
         binary = directory / name
         log = directory / "args"
         binary.write_text(
-            '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_TARGO_LOG"\n',
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(sys.executable)} - \"$@\" <<'PYTHON_FIXTURE'\n"
+            "import json, os, sys\n"
+            "if sys.argv[1:] == ['--unverified', '--version']:\n"
+            f"    raise SystemExit({0 if discriminates else 1})\n"
+            "with open(os.environ['FAKE_TARGO_LOG'], 'w', encoding='utf-8') as log:\n"
+            "    json.dump(sys.argv[1:], log)\n"
+            f"raise SystemExit({exit_code})\n"
+            "PYTHON_FIXTURE\n",
             encoding="utf-8",
         )
         binary.chmod(0o755)
@@ -154,16 +208,191 @@ class TargoRunnerTests(unittest.TestCase):
     def test_compile_command_uses_explicit_unverified_targo_lane(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             binary, log = self.make_fake(Path(temporary))
-            result = self.run_wrapper(binary, log, "test", "--locked")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(log.read_text(encoding="utf-8"), "--unverified\ntest\n--locked\n")
+            for command in ("bench", "build", "check", "doc", "fix",
+                            "run", "rustc", "rustdoc", "test"):
+                with self.subTest(command=command):
+                    result = self.run_wrapper(binary, log, command, "--locked")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(log.read_text(encoding="utf-8")),
+                                     ["--unverified", command, "--locked"])
+
+    def test_lints_run_through_targo_tippy_without_a_lane_flag(self) -> None:
+        # `targo tippy` is Trust's clippy and takes no lane flag; `clippy` is
+        # kept as an alias so an older caller cannot reach upstream clippy.
+        with tempfile.TemporaryDirectory() as temporary:
+            binary, log = self.make_fake(Path(temporary))
+            for command in ("clippy", "tippy"):
+                with self.subTest(command=command):
+                    result = self.run_wrapper(binary, log, command, "--locked", "--", "-D", "warnings")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(log.read_text(encoding="utf-8")),
+                                     ["tippy", "--locked", "--", "-D", "warnings"])
+
+    def test_upstream_cargo_named_targo_is_refused_before_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary, log = self.make_fake(Path(temporary), discriminates=False)
+            for command in ("test", "fmt", "metadata", "tippy"):
+                with self.subTest(command=command):
+                    result = self.run_wrapper(binary, log, command)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("is not Trust's targo", result.stderr)
+                    self.assertFalse(log.exists(), "a refused binary must never be dispatched")
 
     def test_format_command_uses_targo_without_compile_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             binary, log = self.make_fake(Path(temporary))
             result = self.run_wrapper(binary, log, "fmt", "--check", "--all")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(log.read_text(encoding="utf-8"), "fmt\n--check\n--all\n")
+            self.assertEqual(json.loads(log.read_text(encoding="utf-8")),
+                             ["fmt", "--check", "--all"])
+
+    def test_dependency_commands_make_no_compilation_authorization_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary, log = self.make_fake(Path(temporary))
+            for args in (
+                ["metadata", "--format-version", "1", "--all-features", "--manifest-path", "dir with spaces/Cargo.toml"],
+                ["update", "--manifest-path", "frontend/Cargo.toml", "-p", "clean-kernel"],
+                ["generate-lockfile", "--manifest-path", "export/frontend/Cargo.toml"],
+            ):
+                with self.subTest(command=args[0]):
+                    result = self.run_wrapper(binary, log, *args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(log.read_text(encoding="utf-8")), args)
+
+    def test_arguments_are_forwarded_byte_exactly_without_shell_reinterpretation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="targo path with spaces ") as temporary:
+            binary, log = self.make_fake(Path(temporary))
+            args = ["metadata", "", "line one\nline two", "$(not-executed)", "*", "semi;colon"]
+            result = self.run_wrapper(binary, log, *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(log.read_text(encoding="utf-8")), args)
+
+    def test_frontend_failure_status_is_preserved_in_both_lanes(self) -> None:
+        for command in ("test", "metadata", "update", "fmt"):
+            for status in (23, 127):
+                with self.subTest(command=command, status=status):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        binary, log = self.make_fake(Path(temporary), exit_code=status)
+                        result = self.run_wrapper(binary, log, command)
+                        self.assertEqual(result.returncode, status, result.stderr)
+                        prefix = ["--unverified"] if command == "test" else []
+                        self.assertEqual(json.loads(log.read_text(encoding="utf-8")), prefix + [command])
+
+    @staticmethod
+    def make_rustup(directory: Path, *, status: int = 0) -> Path:
+        binary = directory / "rustup"
+        binary.write_text(
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(sys.executable)} - \"$@\" <<'PYTHON_FIXTURE'\n"
+            "import json, os, sys\n"
+            "with open(os.environ['FAKE_RUSTUP_LOG'], 'w', encoding='utf-8') as log:\n"
+            "    json.dump(sys.argv[1:], log)\n"
+            "print(os.environ['FAKE_RUSTUP_TARGO'])\n"
+            f"raise SystemExit({status})\n"
+            "PYTHON_FIXTURE\n",
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
+        return binary
+
+    @staticmethod
+    def run_isolated(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+        # No workstation PATH/rustup/override can satisfy a synthetic test.
+        return subprocess.run(
+            ["/bin/bash", os.fspath(RUN_TARGO), *args],
+            check=False, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def test_explicit_selection_precedes_path_and_rustup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            explicit = root / "explicit path"
+            search = root / "search"
+            explicit.mkdir()
+            search.mkdir()
+            binary, log = self.make_fake(explicit)
+            self.make_fake(search, exit_code=71)
+            self.make_rustup(search, status=72)
+            rustup_log = root / "rustup-args"
+            result = self.run_isolated({
+                "PATH": os.fspath(search),
+                "TRUST_TARGO_BIN": os.fspath(binary),
+                "FAKE_TARGO_LOG": os.fspath(log),
+                "FAKE_RUSTUP_LOG": os.fspath(rustup_log),
+                "FAKE_RUSTUP_TARGO": os.fspath(binary),
+            }, "metadata")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(log.read_text(encoding="utf-8")), ["metadata"])
+            self.assertFalse(rustup_log.exists())
+
+    def test_path_selection_precedes_rustup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binary, log = self.make_fake(directory)
+            self.make_rustup(directory, status=72)
+            rustup_log = directory / "rustup-args"
+            result = self.run_isolated({
+                "PATH": os.fspath(directory),
+                "FAKE_TARGO_LOG": os.fspath(log),
+                "FAKE_RUSTUP_LOG": os.fspath(rustup_log),
+                "FAKE_RUSTUP_TARGO": os.fspath(binary),
+            }, "update")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(log.read_text(encoding="utf-8")), ["update"])
+            self.assertFalse(rustup_log.exists())
+
+    def test_rustup_resolution_selects_only_successful_exact_trust_tool(self) -> None:
+        for status in (0, 17):
+            with self.subTest(status=status):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    search = root / "search"
+                    installed = root / "installed tool"
+                    search.mkdir()
+                    installed.mkdir()
+                    binary, log = self.make_fake(installed)
+                    self.make_rustup(search, status=status)
+                    rustup_log = root / "rustup-args"
+                    result = self.run_isolated({
+                        "PATH": os.fspath(search),
+                        "FAKE_TARGO_LOG": os.fspath(log),
+                        "FAKE_RUSTUP_LOG": os.fspath(rustup_log),
+                        "FAKE_RUSTUP_TARGO": os.fspath(binary),
+                    }, "metadata")
+                    self.assertEqual(json.loads(rustup_log.read_text(encoding="utf-8")),
+                                     ["which", "--toolchain", "trust", "targo"])
+                    if status == 0:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(log.read_text(encoding="utf-8")), ["metadata"])
+                    else:
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("Trust targo was not found", result.stderr)
+                        self.assertFalse(log.exists(), "failed resolver stdout grants no selection")
+
+    def test_invalid_explicit_path_does_not_fall_back_to_available_targo(self) -> None:
+        for kind in ("empty", "missing", "nonexecutable"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    binary, log = self.make_fake(directory)
+                    bad = directory / "override" / "targo"
+                    if kind == "nonexecutable":
+                        bad.parent.mkdir()
+                        bad.write_text("not executable\n", encoding="utf-8")
+                    result = self.run_isolated({
+                        "PATH": os.fspath(directory),
+                        "TRUST_TARGO_BIN": "" if kind == "empty" else os.fspath(bad),
+                        "FAKE_TARGO_LOG": os.fspath(log),
+                    }, "metadata")
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertFalse(log.exists())
+                    self.assertTrue(binary.is_file())
+
+    def test_missing_command_is_usage_error_without_resolving_a_tool(self) -> None:
+        result = self.run_isolated({"PATH": "/nonexistent-targo-test-path"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage: scripts/run-targo.sh", result.stderr)
 
     def test_cargo_named_override_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -211,7 +440,7 @@ class TargoRunnerTests(unittest.TestCase):
     def test_unknown_command_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             binary, log = self.make_fake(Path(temporary))
-            result = self.run_wrapper(binary, log, "metadata")
+            result = self.run_wrapper(binary, log, "publish")
             self.assertEqual(result.returncode, 2)
             self.assertIn("unsupported internal Targo gate command", result.stderr)
             self.assertFalse(log.exists())
@@ -233,7 +462,7 @@ class TargoRunnerTests(unittest.TestCase):
                 self.assertNotRegex(
                     line,
                     r"(^|[;&|()\s])cargo\s+"
-                    r"(bench|build|check|clippy|doc|fix|run|rustc|rustdoc|test)\b",
+                    r"(bench|build|check|clippy|doc|fix|run|rustc|rustdoc|test|metadata|update)\b",
                 )
 
 

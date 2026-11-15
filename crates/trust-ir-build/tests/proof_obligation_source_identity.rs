@@ -35,7 +35,9 @@ fn valid_source() -> ProofObligationSourceIdentity {
 
 fn module_with(source: Option<ProofObligationSourceIdentity>) -> Module {
     let mut module = Module::new("source_validation");
-    module.intern_file("src/módulo.rs");
+    module
+        .intern_file("src/módulo.rs")
+        .expect("Module::intern_file: test fixture");
     let mut proof = obligation(0);
     proof.source = source;
     module.proof_obligations.push(proof);

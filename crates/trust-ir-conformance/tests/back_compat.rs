@@ -31,8 +31,9 @@ use std::path::{Path, PathBuf};
 
 use trust_ir::Module;
 
-#[allow(dead_code)]
-mod generate;
+// The fixture generators (tests/generate.rs), compiled once as the library's
+// `fixtures` module rather than again inside every test binary.
+use trust_ir_conformance::fixtures as generate;
 
 fn compat_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -69,10 +70,13 @@ fn current_binary_goldens_and_normative_docs_track_format_version() {
             "{} is not a TrustIR module binary",
             path.display()
         );
+        let module = trust_ir::binary::deserialize_module(&bytes).expect("decode current golden");
+        let current =
+            trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
         assert_eq!(
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            trust_ir::binary::FORMAT_VERSION,
-            "{} is a current-format golden and must be regenerated whenever FORMAT_VERSION changes",
+            &bytes[8..12],
+            &current[8..12],
+            "{} must retain its minimum lossless writer version, not follow unrelated new format features",
             path.display()
         );
     }
@@ -179,10 +183,11 @@ fn v30_enum_binary_blob_defaults_v31_fields_and_reaches_trailing_sections() {
 
     assert_eq!(
         module,
-        generate::build_ty_composite(),
+        generate::build_ty_composite().expect("the fixture builds"),
         "v30 decoding must preserve the complete typed-model module semantics"
     );
-    let current = trust_ir::binary::serialize_module(&module);
+    let current =
+        trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
     let round_tripped = trust_ir::binary::deserialize_module(&current)
         .expect("v30 semantics re-encoded in the current wire version must decode");
     assert_eq!(round_tripped, module);
@@ -255,10 +260,11 @@ fn v32_binary_debug_metadata_defaults_v33_scopes_without_desynchronizing() {
         .expect("pinned v32 debug-metadata binary must keep decoding");
     assert_v32_debug_metadata(&module);
 
-    let current = trust_ir::binary::serialize_module(&module);
+    let current =
+        trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
     assert_eq!(
         u32::from_le_bytes(current[8..12].try_into().unwrap()),
-        trust_ir::binary::FORMAT_VERSION,
+        trust_ir::binary::BASE_FORMAT_VERSION,
         "re-encoded artifact must carry the current format version"
     );
     let round_tripped = trust_ir::binary::deserialize_module(&current)
@@ -271,4 +277,712 @@ fn v32_msgpack_debug_metadata_defaults_v33_scopes_without_shifting_fields() {
     let module: Module = rmp_serde::from_slice(&read_compat("v32_debug_metadata.msgpack"))
         .expect("pinned v32 positional MessagePack must keep decoding");
     assert_v32_debug_metadata(&module);
+}
+
+/// WS4.7 (F-075): a v41 blob whose import table carries a PUSHED duplicate row
+/// decodes faithfully — the reader keeps the table exactly as written, it does
+/// not silently re-intern it — and the decoded module is refused by the
+/// validator as `ImportTableNotInterned`. Written by the current writer (no
+/// pinned blob is added or changed; the goldens stay byte-identical), which
+/// selects v41 for an import table, so this is the decode path a pre-WS4.7
+/// producer's duplicate-row artifact takes.
+#[test]
+fn v41_duplicate_import_row_blob_decodes_and_is_refused_as_not_interned() {
+    use trust_ir::{Endianness, ModuleImport, Producer, TargetInfo};
+    use trust_ir_build::ValidationError;
+
+    let mut module = Module::new("dup_import_root");
+    module.target_info = Some(TargetInfo {
+        triple: "aarch64-apple-darwin".into(),
+        pointer_size: 8,
+        endianness: Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    // Legacy (V2) rows: the v41 blob this test pins carries no scheme byte.
+    let digest = Module::new("mixed_dep").stable_digest_under(trust_ir::IdentityScheme::V2);
+    let v2 = |row: ModuleImport| row.with_scheme(trust_ir::IdentityScheme::V2);
+    module
+        .intern_import(v2(
+            ModuleImport::new("mixed_dep", digest).with_producer(Producer::TRust)
+        ))
+        .expect("Module::intern_import: test fixture");
+    module
+        .intern_import(v2(
+            ModuleImport::new("mixed_dep", digest).with_producer(Producer::Clean)
+        ))
+        .expect("Module::intern_import: test fixture");
+    let interned =
+        trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
+    module.imports.push(module.imports[0].clone());
+    let bytes =
+        trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 41);
+
+    let decoded = trust_ir::binary::deserialize_module(&bytes)
+        .expect("a duplicate row is still well-formed wire");
+    assert_eq!(
+        decoded.imports.len(),
+        3,
+        "the reader must not re-intern the table"
+    );
+    assert_eq!(decoded.imports[0], decoded.imports[2]);
+    let errors = trust_ir_build::validate_module(&decoded);
+    assert!(
+        errors.iter().any(|e| matches!(
+            e,
+            ValidationError::ImportTableNotInterned { first: 0, duplicate: 2, name }
+                if name == "mixed_dep"
+        )),
+        "{errors:?}"
+    );
+
+    // Mutation control: the interned two-producer table (one digest, two
+    // producers) decodes and validates clean.
+    let decoded = trust_ir::binary::deserialize_module(&interned).expect("interned table");
+    assert_eq!(decoded.imports.len(), 2);
+    let errors = trust_ir_build::validate_module(&decoded);
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ImportTableNotInterned { .. })),
+        "{errors:?}"
+    );
+}
+
+/// WS4.7 review: the TEXT and JSON transports are just as faithful as the
+/// binary one — neither the text parser (which pushes rows raw so embedded
+/// `ImportId`s keep their meaning) nor serde silently re-interns a duplicated
+/// import table, so a duplicate-row artifact cannot be laundered into a valid
+/// module by a format round trip. Each decoded module is refused with the
+/// same named reason; the interned twin decodes and validates clean.
+#[test]
+fn duplicate_import_row_survives_text_and_json_and_is_refused() {
+    use trust_ir::{Endianness, ModuleImport, Producer, TargetInfo};
+    use trust_ir_build::ValidationError;
+
+    let mut module = Module::new("dup_import_root");
+    module.target_info = Some(TargetInfo {
+        triple: "aarch64-apple-darwin".into(),
+        pointer_size: 8,
+        endianness: Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    let digest = Module::new("mixed_dep").stable_digest();
+    module
+        .intern_import(ModuleImport::new("mixed_dep", digest).with_producer(Producer::TRust))
+        .expect("Module::intern_import: test fixture");
+    module
+        .intern_import(ModuleImport::new("mixed_dep", digest).with_producer(Producer::Clean))
+        .expect("Module::intern_import: test fixture");
+    let interned = module.clone();
+    module.imports.push(module.imports[1].clone());
+
+    let not_interned = |m: &Module| {
+        trust_ir_build::validate_module(m).iter().any(|e| {
+            matches!(
+                e,
+                ValidationError::ImportTableNotInterned { first: 1, duplicate: 2, name }
+                    if name == "mixed_dep"
+            )
+        })
+    };
+    let any_interning_error = |m: &Module| {
+        trust_ir_build::validate_module(m)
+            .iter()
+            .any(|e| matches!(e, ValidationError::ImportTableNotInterned { .. }))
+    };
+
+    let text = trust_ir::parser::parse_module(&trust_ir::format::canonical(&module))
+        .expect("duplicate rows are well-formed text");
+    assert_eq!(
+        text.imports, module.imports,
+        "the parser must not re-intern"
+    );
+    assert!(not_interned(&text), "text");
+
+    let json: Module =
+        serde_json::from_str(&serde_json::to_string(&module).expect("serialize json"))
+            .expect("duplicate rows are well-formed json");
+    assert_eq!(json.imports, module.imports, "serde must not re-intern");
+    assert!(not_interned(&json), "json");
+
+    // Mutation control: the interned table survives both transports and is
+    // accepted.
+    let text = trust_ir::parser::parse_module(&trust_ir::format::canonical(&interned)).unwrap();
+    let json: Module = serde_json::from_str(&serde_json::to_string(&interned).unwrap()).unwrap();
+    assert!(!any_interning_error(&text) && !any_interning_error(&json));
+}
+
+/// Ratchet row verify/c12 repro 3 (WS1.7, F-075) — CLOSED. A CALL-ONLY
+/// importer whose import row was cloned (pushed, not interned) was measured
+/// passing every tier after a binary and a JSON round trip. The linked walk
+/// now authenticates every row — so the clone authenticates, byte-for-byte
+/// honest — and the ONLY thing that can refuse it is the interning rule,
+/// which it does on the DECODED module, against the first equal row.
+/// Mutation control: the interned table decodes and links.
+#[test]
+fn verify_c12_3_a_cloned_call_only_import_row_is_refused_after_a_binary_round_trip() {
+    use trust_ir::proof::RejectingModuleProofAuthority;
+    use trust_ir::ty::Ty;
+    use trust_ir::{Endianness, ModuleImport, Producer, TargetInfo};
+    use trust_ir_build::{ModuleBuilder, ModuleSet, ValidationError, validate_linked_module};
+
+    let target = TargetInfo {
+        triple: "aarch64-apple-darwin".into(),
+        pointer_size: 8,
+        endianness: Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    };
+    let mut mb = ModuleBuilder::new_with_target_info("dep", target.clone());
+    mb.set_default_producer(Producer::TRust);
+    let ft = mb.add_func_type(vec![Ty::U64], vec![Ty::U64]);
+    let mut fb = mb.function("g", ft);
+    let entry = fb.create_block();
+    let x = fb.add_block_param(entry, Ty::U64);
+    fb.switch_to_block(entry);
+    fb.ret(vec![x]);
+    fb.build();
+    let dep = mb.build().expect("ModuleBuilder::build: test fixture");
+
+    let mut mb = ModuleBuilder::new_with_target_info("root", target);
+    mb.set_default_producer(Producer::TRust);
+    let gt = mb.add_func_type(vec![Ty::U64], vec![Ty::U64]);
+    let pt = mb.add_func_type(vec![], vec![Ty::U64]);
+    let g = mb.declare_function("g", gt);
+    let mut fb = mb.function("program", pt);
+    let entry = fb.create_block();
+    fb.switch_to_block(entry);
+    let one = fb.uconst(Ty::U64, 1);
+    let r = fb.call(g, vec![one]);
+    fb.ret(vec![r]);
+    fb.build();
+    let mut root = mb.build().expect("ModuleBuilder::build: test fixture");
+    root.intern_import(
+        ModuleImport::new("dep", dep.stable_digest()).with_producer(Producer::TRust),
+    )
+    .expect("Module::intern_import: test fixture");
+
+    let round_trip = |m: &Module| {
+        trust_ir::binary::deserialize_module(
+            &trust_ir::binary::serialize_module(m).expect("serialize_module: test fixture"),
+        )
+        .expect("well-formed wire")
+    };
+    let dep = round_trip(&dep);
+    let set = ModuleSet::new([&dep]);
+
+    let interned = round_trip(&root);
+    let report = validate_linked_module(&interned, &set, &RejectingModuleProofAuthority);
+    assert!(report.is_ok(), "{:?}", report.errors());
+
+    root.imports.push(root.imports[0].clone());
+    let cloned = round_trip(&root);
+    assert_eq!(cloned.imports.len(), 2, "the reader does not re-intern");
+    let report = validate_linked_module(&cloned, &set, &RejectingModuleProofAuthority);
+    assert!(
+        report.errors().iter().any(|e| matches!(
+            e,
+            ValidationError::ImportTableNotInterned { first: 0, duplicate: 1, name } if name == "dep"
+        )),
+        "{:?}",
+        report.errors()
+    );
+}
+
+/// WS4.10 (wire v44): a v43 blob whose import table holds rows — which carry
+/// NO scheme byte — decodes under the v44 reader with every row V2 (the legacy
+/// identity it was recorded under) and re-encodes to the same v43 bytes.
+///
+/// Mutation control: the `version >= 44` gate is load-bearing. A reader that
+/// gated `scheme` one version early (`>= 43`) would read a scheme byte out of
+/// this blob; that is simulated by relabelling the header to 44, and the
+/// decode must NOT reproduce the module. The converse relabel (the v44
+/// `import_scheme` golden read as v43) must not either.
+#[test]
+fn v43_import_rows_decode_as_v2_and_the_v44_gate_is_load_bearing() {
+    use trust_ir::proof::ProofDigest;
+    use trust_ir::{IdentityScheme, ModuleImport, Producer};
+
+    let mut module = generate::build_ty_handle().expect("the fixture builds");
+    module
+        .intern_import(
+            ModuleImport::new("handle_dep", ProofDigest::sha256([0x44; 32]))
+                .with_producer(Producer::TRust)
+                .with_scheme(IdentityScheme::V2),
+        )
+        .expect("Module::intern_import: test fixture");
+    let v43 = trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
+    assert_eq!(u32::from_le_bytes(v43[8..12].try_into().unwrap()), 43);
+    let decoded = trust_ir::binary::deserialize_module(&v43).expect("v43 decodes under v44");
+    assert_eq!(decoded.imports[0].scheme, IdentityScheme::V2);
+    assert_eq!(decoded, module);
+    assert_eq!(
+        trust_ir::binary::serialize_module(&decoded).expect("serialize_module: test fixture"),
+        v43
+    );
+
+    // Mis-gated reader, simulated: the same bytes read as if a scheme byte
+    // were present.
+    let mut early = v43.clone();
+    early[8..12].copy_from_slice(&44u32.to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&early);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != module),
+        "a v43 import row read with a scheme byte must not reproduce the module: {misread:?}"
+    );
+
+    // The converse: the v44 golden read without its scheme bytes.
+    let golden = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("import_scheme.tmbc"),
+    )
+    .expect("the v44 import_scheme golden");
+    assert_eq!(u32::from_le_bytes(golden[8..12].try_into().unwrap()), 44);
+    let expected = trust_ir::binary::deserialize_module(&golden).expect("v44 golden");
+    assert_eq!(
+        expected
+            .imports
+            .iter()
+            .map(|r| r.scheme)
+            .collect::<Vec<_>>(),
+        [IdentityScheme::V2, IdentityScheme::V3]
+    );
+    let mut late = golden.clone();
+    late[8..12].copy_from_slice(&43u32.to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&late);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != expected),
+        "a v44 table read without its scheme bytes must not reproduce the module: {misread:?}"
+    );
+}
+
+/// WS3.10 (wire v45): a v44 blob — whose function records carry NO symbol
+/// triple — decodes under the v45 reader with every function at the pre-v45
+/// defaults (no section, `Default` visibility, not retained) and re-encodes to
+/// the same v44 bytes.
+///
+/// Mutation control: the `version >= 45` gate is load-bearing both ways. The
+/// v44 golden relabelled 45 reads a symbol triple that is not there, and the
+/// v45 `abi_function_symbol` golden relabelled 44 skips one that is; neither
+/// may reproduce its module.
+#[test]
+fn v44_functions_decode_with_default_symbol_attributes_and_the_v45_gate_is_load_bearing() {
+    let fixture = |name: &str| {
+        std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join(name),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+    };
+    let header = |bytes: &[u8]| u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let abi = trust_ir::binary::ABI_SURFACE_FORMAT_VERSION;
+
+    let v44 = fixture("import_scheme.tmbc");
+    assert_eq!(header(&v44), abi - 1);
+    let decoded = trust_ir::binary::deserialize_module(&v44).expect("v44 decodes under v45");
+    assert!(!decoded.functions.is_empty());
+    for f in &decoded.functions {
+        assert_eq!(f.section, None);
+        assert_eq!(f.visibility, trust_ir::Visibility::Default);
+        assert!(!f.retained);
+    }
+    assert_eq!(
+        trust_ir::binary::serialize_module(&decoded).expect("serialize_module: test fixture"),
+        v44
+    );
+
+    let mut early = v44.clone();
+    early[8..12].copy_from_slice(&abi.to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&early);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != decoded),
+        "a v44 function read with a symbol triple must not reproduce the module: {misread:?}"
+    );
+
+    let v45 = fixture("abi_function_symbol.tmbc");
+    assert_eq!(header(&v45), abi);
+    let expected = trust_ir::binary::deserialize_module(&v45).expect("v45 golden");
+    assert!(expected.functions.iter().any(|f| f.retained));
+    let mut late = v45.clone();
+    late[8..12].copy_from_slice(&(abi - 1).to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&late);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != expected),
+        "a v45 function read without its symbol triple must not reproduce the module: {misread:?}"
+    );
+}
+
+/// WS4.14 (wire v46): a pre-v46 blob carrying a spec module and an obligation
+/// — which carry NO sort / typed / temporal / spec bytes — decodes under the
+/// v46 reader with every carrier field NOT RECORDED and re-encodes to the
+/// same bytes.
+///
+/// Mutation control: the `version >= 46` gate is load-bearing both ways. The
+/// legacy bytes relabelled 46 must not reproduce the module (the reader would
+/// consume carrier bytes that are not there), and the v46 `spec_carrier`
+/// golden relabelled one version lower must not either.
+#[test]
+fn pre_v46_spec_modules_decode_with_the_carrier_absent_and_the_v46_gate_is_load_bearing() {
+    let mut module = generate::build_spec_carrier().expect("the fixture builds");
+    for machine in &mut module.spec_modules {
+        for v in &mut machine.vars {
+            v.sort = None;
+        }
+        for inv in &mut machine.invariants {
+            inv.typed = None;
+        }
+        machine.temporal.clear();
+        for proof in &mut machine.proofs {
+            proof.kind = trust_ir::ProofKind::Kani;
+        }
+    }
+    for obligation in &mut module.proof_obligations {
+        obligation.spec = None;
+        if let Some(formula) = &mut obligation.formula {
+            formula.bindings.clear();
+        }
+    }
+    let legacy =
+        trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
+    let legacy_version = u32::from_le_bytes(legacy[8..12].try_into().unwrap());
+    assert!(legacy_version < 46, "got v{legacy_version}");
+    let decoded = trust_ir::binary::deserialize_module(&legacy).expect("legacy decodes under v46");
+    assert_eq!(decoded, module);
+    assert!(
+        decoded.spec_modules[0]
+            .vars
+            .iter()
+            .all(|v| v.sort.is_none())
+    );
+    assert!(decoded.spec_modules[0].temporal.is_empty());
+    assert_eq!(decoded.proof_obligations[0].spec, None);
+    assert_eq!(
+        trust_ir::binary::serialize_module(&decoded).expect("serialize_module: test fixture"),
+        legacy
+    );
+
+    let mut early = legacy.clone();
+    early[8..12].copy_from_slice(&46u32.to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&early);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != module),
+        "legacy spec bytes read with the v46 carrier must not reproduce the module: {misread:?}"
+    );
+
+    let golden = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("spec_carrier.tmbc"),
+    )
+    .expect("the v46 spec_carrier golden");
+    assert_eq!(u32::from_le_bytes(golden[8..12].try_into().unwrap()), 46);
+    let expected = trust_ir::binary::deserialize_module(&golden).expect("v46 golden");
+    assert_eq!(
+        expected,
+        generate::build_spec_carrier().expect("the fixture builds")
+    );
+    let mut late = golden.clone();
+    late[8..12].copy_from_slice(&45u32.to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&late);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != expected),
+        "a v46 carrier read without its gate must not reproduce the module: {misread:?}"
+    );
+}
+
+/// Amendment D (wire v55): the drop-glue section and `DropInvoke` (Inst tag
+/// 68) are read-gated on `DROP_GLUE_FORMAT_VERSION`, and the gate is
+/// load-bearing both ways. `compat/drop_glue_table.tmbc` is the `drop_glue`
+/// golden as first written (NEVER regenerated): it keeps decoding, with its
+/// three rows. The SAME bytes relabelled one version lower are refused (tag
+/// 68 is unknown there), and bytes written below the version relabelled to
+/// it are refused too (the reader would demand a section that is not there),
+/// never misread into a module.
+#[test]
+fn the_drop_glue_version_gate_is_load_bearing() {
+    let pinned = read_compat("drop_glue_table.tmbc");
+    let gate = trust_ir::binary::DROP_GLUE_FORMAT_VERSION;
+    assert_eq!(u32::from_le_bytes(pinned[8..12].try_into().unwrap()), gate);
+    let module = trust_ir::binary::deserialize_module(&pinned).expect("the pinned blob decodes");
+    assert_eq!(module.drop_glue.len(), 3);
+    assert!(
+        module
+            .functions
+            .iter()
+            .flat_map(|f| &f.blocks)
+            .flat_map(|b| &b.body)
+            .any(|n| matches!(n.inst, trust_ir::Inst::DropInvoke { .. }))
+    );
+    let mut lower = pinned.clone();
+    lower[8..12].copy_from_slice(&(gate - 1).to_le_bytes());
+    assert!(matches!(
+        trust_ir::binary::deserialize_module(&lower),
+        Err(trust_ir::binary::BinaryError::InvalidTag(68))
+    ));
+
+    // A module with a drop but no table is written below the gate; relabelled
+    // to it, the reader looks for a section the bytes do not have.
+    let mut legacy = module.clone();
+    legacy.drop_glue.clear();
+    for function in &mut legacy.functions {
+        for block in &mut function.blocks {
+            for node in &mut block.body {
+                if let trust_ir::Inst::DropInvoke { ty, ptr, .. } = &node.inst {
+                    node.inst = trust_ir::Inst::Drop {
+                        ty: ty.clone(),
+                        ptr: *ptr,
+                    };
+                }
+            }
+        }
+    }
+    let legacy_bytes =
+        trust_ir::binary::serialize_module(&legacy).expect("serialize_module: test fixture");
+    let legacy_version = u32::from_le_bytes(legacy_bytes[8..12].try_into().unwrap());
+    assert!(legacy_version < gate, "got v{legacy_version}");
+    assert_eq!(
+        trust_ir::binary::deserialize_module(&legacy_bytes).expect("legacy decodes"),
+        legacy
+    );
+    let mut early = legacy_bytes;
+    early[8..12].copy_from_slice(&gate.to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&early);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != legacy),
+        "legacy bytes read with the drop-glue section must not reproduce the module: {misread:?}"
+    );
+}
+
+/// Amendment S (wire v57): `compat/template_ident_param.{tmbs,json}` is the
+/// `ident_param` template golden as first written (NEVER regenerated). It
+/// keeps decoding, to the same template in both formats; it re-encodes to
+/// exactly its bytes; and its identity (SHA-256 of the blob under
+/// `trust_ir.template.v1`) is pinned, so a codec or domain change that moves a
+/// template's identity fails here rather than silently re-keying every
+/// instance a consumer cached by it.
+#[test]
+fn the_pinned_template_blob_keeps_its_bytes_and_identity() {
+    let pinned = read_compat("template_ident_param.tmbs");
+    assert_eq!(&pinned[..8], b"TRUST_IS");
+    assert_eq!(
+        u32::from_le_bytes(pinned[8..12].try_into().unwrap()),
+        trust_ir::binary::TEMPLATE_FORMAT_VERSION
+    );
+    let template =
+        trust_ir::binary::deserialize_template(&pinned).expect("the pinned template decodes");
+    assert_eq!(
+        trust_ir::binary::serialize_template(&template).expect("it re-encodes"),
+        pinned
+    );
+    let json = String::from_utf8(read_compat("template_ident_param.json")).expect("UTF-8");
+    let from_json: trust_ir::template::Template =
+        serde_json::from_str(&json).expect("the pinned JSON decodes");
+    assert_eq!(from_json, template, "the two pinned formats agree");
+    assert_eq!(
+        template
+            .digest()
+            .expect("a valid template has an identity")
+            .to_string(),
+        PINNED_TEMPLATE_DIGEST
+    );
+    // The module reader never takes it.
+    assert_eq!(
+        trust_ir::binary::deserialize_module(&pinned),
+        Err(trust_ir::binary::BinaryError::InvalidMagic)
+    );
+}
+
+/// The identity of `compat/template_ident_param.tmbs`, cross-checked outside
+/// Rust (SHA-256 over the `trust-ir.sha256-domain.v1` framing of the blob).
+const PINNED_TEMPLATE_DIGEST: &str =
+    "sha256:0a970b3d6a81b00c12629969ffee20f4877b8fb63e9fc0432b64f90dfbd049f1";
+
+/// Amendment S, commit A: the level-R carriers became generic over an
+/// extension (`Ty` = `TyG<NoExt>`, …) whose level-R instance is uninhabited.
+/// That change must move no byte. Every live module golden decodes and
+/// re-encodes to exactly its own bytes in the three wire formats (binary,
+/// JSON, MessagePack), and its portable identity is a function of those bytes
+/// alone: independent of the generators, so a carrier refactor that changed
+/// an encoding fails here even if it changed the generator's output with it.
+#[test]
+fn level_r_goldens_are_byte_identical_after_the_extension() {
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let mut checked = 0usize;
+    let mut stems: Vec<String> = std::fs::read_dir(&fixture_dir)
+        .expect("read the golden directory")
+        .map(|entry| entry.expect("read a golden entry").path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("tmbc"))
+        .map(|path| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .expect("a UTF-8 golden name")
+                .to_owned()
+        })
+        .collect();
+    stems.sort();
+    for stem in stems {
+        let bytes = std::fs::read(fixture_dir.join(format!("{stem}.tmbc"))).expect("read binary");
+        let module = trust_ir::binary::deserialize_module(&bytes)
+            .unwrap_or_else(|e| panic!("{stem}.tmbc: decode failed: {e:?}"));
+        assert_eq!(
+            trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture"),
+            bytes,
+            "{stem}.tmbc: re-encoding moved a byte"
+        );
+        let digest = module.stable_digest();
+        let again = trust_ir::binary::deserialize_module(&bytes).expect("decode twice");
+        assert_eq!(
+            again.stable_digest(),
+            digest,
+            "{stem}: identity is not a function of the bytes"
+        );
+
+        let json_path = fixture_dir.join(format!("{stem}.json"));
+        if let Ok(text) = std::fs::read_to_string(&json_path) {
+            let decoded: Module = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("{stem}.json: decode failed: {e}"));
+            assert_eq!(
+                serde_json::to_string_pretty(&decoded).expect("re-encode JSON"),
+                text.trim_end_matches('\n'),
+                "{stem}.json: re-encoding moved a byte"
+            );
+        }
+        let msgpack_path = fixture_dir.join(format!("{stem}.msgpack"));
+        if let Ok(packed) = std::fs::read(&msgpack_path) {
+            let decoded: Module = rmp_serde::from_slice(&packed)
+                .unwrap_or_else(|e| panic!("{stem}.msgpack: decode failed: {e}"));
+            assert_eq!(
+                rmp_serde::to_vec(&decoded).expect("re-encode MessagePack"),
+                packed,
+                "{stem}.msgpack: re-encoding moved a byte"
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 40,
+        "the live module corpus shrank to {checked} goldens"
+    );
+}
+
+/// WS3.9 back_compat row: a pre-v58 blob decodes every definition UNKEYED
+/// (`origin = None`) and keeps structural equality, and the v58 read gate is
+/// load-bearing in both directions.
+#[test]
+fn definitions_older_than_nominal_identity_decode_unkeyed_and_its_gate_is_load_bearing() {
+    use trust_ir::imports::{TyEquivalence, ty_equivalence_across};
+    use trust_ir::ty::Ty;
+    use trust_ir::value::{EnumId, StructId};
+
+    // Named, never spelled: a renumber must move the boundary this test
+    // probes, and a literal is exactly what the last one left behind.
+    let nominal = trust_ir::binary::NOMINAL_IDENTITY_FORMAT_VERSION;
+
+    // `ty_composite` carries structs AND enums and selects the legacy v38
+    // header; `ty_container_vtable` carries a struct under a v40 header (the
+    // roadmap row says "v43": the v43 golden itself defines no struct or
+    // enum, so the nearest def-bearing pre-v58 goldens stand in).
+    for (module, expected_version) in [
+        (
+            generate::build_ty_composite().expect("the fixture builds"),
+            38,
+        ),
+        (
+            generate::build_ty_container_vtable().expect("the fixture builds"),
+            40,
+        ),
+    ] {
+        assert!(
+            !module.structs.is_empty() || !module.enums.is_empty(),
+            "the fixture must carry a definition for the key to be absent from"
+        );
+        let bytes =
+            trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            expected_version,
+            "an unkeyed module must not be promoted to v58"
+        );
+        let decoded = trust_ir::binary::deserialize_module(&bytes).expect("a pre-v58 blob decodes");
+        assert!(decoded.structs.iter().all(|sd| sd.origin.is_none()));
+        assert!(decoded.enums.iter().all(|ed| ed.origin.is_none()));
+        assert_eq!(decoded, module);
+        assert_eq!(
+            trust_ir::binary::serialize_module(&decoded).expect("serialize_module: test fixture"),
+            bytes
+        );
+        // Structural equality is exactly the pre-v58 rule for unkeyed defs.
+        for sd in &decoded.structs {
+            assert_eq!(
+                ty_equivalence_across(&decoded, &Ty::Struct(sd.id), &module, &Ty::Struct(sd.id)),
+                TyEquivalence::Equal
+            );
+        }
+        for ed in &decoded.enums {
+            assert_eq!(
+                ty_equivalence_across(&decoded, &Ty::Enum(ed.id), &module, &Ty::Enum(ed.id)),
+                TyEquivalence::Equal
+            );
+        }
+
+        // Mis-gated reader, simulated: the same bytes read as if every
+        // definition carried an origin presence byte and the module a closure
+        // table.
+        let mut early = bytes.clone();
+        early[8..12].copy_from_slice(&nominal.to_le_bytes());
+        let misread = trust_ir::binary::deserialize_module(&early);
+        assert!(
+            misread.as_ref().map_or(true, |m| *m != module),
+            "a pre-v58 definition read with an origin byte must not reproduce the module: {misread:?}"
+        );
+    }
+
+    // The converse: the v58 golden read without its origin bytes.
+    let golden = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("nominal_type_origin.tmbc"),
+    )
+    .expect("the v58 nominal_type_origin golden");
+    assert_eq!(
+        u32::from_le_bytes(golden[8..12].try_into().unwrap()),
+        nominal
+    );
+    let expected = trust_ir::binary::deserialize_module(&golden).expect("v58 golden");
+    assert!(
+        expected
+            .struct_def(StructId::new(0))
+            .is_some_and(|sd| matches!(sd.origin, Some(trust_ir::ty::TypeOrigin::Rust { .. })))
+    );
+    assert!(
+        expected
+            .struct_def(StructId::new(1))
+            .is_some_and(|sd| sd.origin.is_none())
+    );
+    assert!(
+        expected
+            .enum_def(EnumId::new(0))
+            .is_some_and(|ed| matches!(ed.origin, Some(trust_ir::ty::TypeOrigin::Clean { .. })))
+    );
+    // Relabelled one version down — the reader immediately below the gate,
+    // which parses every definition record up to (and not including) the
+    // origin byte.
+    let mut late = golden.clone();
+    late[8..12].copy_from_slice(&(nominal - 1).to_le_bytes());
+    let misread = trust_ir::binary::deserialize_module(&late);
+    assert!(
+        misread.as_ref().map_or(true, |m| *m != expected),
+        "a v58 definition read without its origin bytes must not reproduce the module: {misread:?}"
+    );
 }

@@ -1,0 +1,84 @@
+{
+  "name": "refuse_global_asm",
+  "functions": [
+    {
+      "id": 0,
+      "name": "f",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [],
+          "body": [
+            {
+              "inst": {
+                "Return": {
+                  "values": []
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [],
+      "returns": [],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": null,
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [
+    ".globl trust_probe\ntrust_probe:\n  ret\n"
+  ],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

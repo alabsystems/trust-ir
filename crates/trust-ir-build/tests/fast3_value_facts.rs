@@ -24,7 +24,7 @@ fn one_fn() -> Module {
     let z = fb.iconst(Ty::I32, 0);
     fb.ret(vec![z]);
     fb.build();
-    mb.build()
+    mb.build().expect("ModuleBuilder::build: test fixture")
 }
 
 #[test]

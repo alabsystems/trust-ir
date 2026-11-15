@@ -1,0 +1,273 @@
+{
+  "header": {
+    "identity": "alloc::vec::Vec::<T>::len",
+    "params": [
+      "Type"
+    ],
+    "holes": [
+      {
+        "kind": {
+          "Type": {
+            "contract": {
+              "Struct": {
+                "fields": [
+                  {
+                    "Ext": {
+                      "Hole": 1
+                    }
+                  },
+                  "Usize"
+                ]
+              }
+            }
+          }
+        },
+        "key": {
+          "namespace": "rust",
+          "bytes": [
+            97,
+            108,
+            108,
+            111,
+            99,
+            58,
+            58,
+            118,
+            101,
+            99,
+            58,
+            58,
+            86,
+            101,
+            99
+          ]
+        },
+        "args": [
+          {
+            "Type": {
+              "Ext": {
+                "Param": 0
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": {
+          "Type": {
+            "contract": "Opaque"
+          }
+        },
+        "key": {
+          "namespace": "rust",
+          "bytes": [
+            97,
+            108,
+            108,
+            111,
+            99,
+            58,
+            58,
+            114,
+            97,
+            119,
+            95,
+            118,
+            101,
+            99,
+            58,
+            58,
+            82,
+            97,
+            119,
+            86,
+            101,
+            99
+          ]
+        },
+        "args": [
+          {
+            "Type": {
+              "Ext": {
+                "Param": 0
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": {
+          "Type": {
+            "contract": "Opaque"
+          }
+        },
+        "key": {
+          "namespace": "rust",
+          "bytes": [
+            97,
+            108,
+            108,
+            111,
+            99,
+            58,
+            58,
+            114,
+            97,
+            119,
+            95,
+            118,
+            101,
+            99,
+            58,
+            58,
+            82,
+            97,
+            119,
+            86,
+            101,
+            99
+          ]
+        },
+        "args": [
+          {
+            "Type": {
+              "Ext": {
+                "Param": 0
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "module": {
+    "name": "alloc",
+    "functions": [
+      {
+        "id": 0,
+        "name": "!template_body",
+        "ty": 0,
+        "entry": 0,
+        "blocks": [
+          {
+            "id": 0,
+            "params": [
+              [
+                0,
+                "Ptr"
+              ]
+            ],
+            "body": [
+              {
+                "inst": {
+                  "Load": {
+                    "ty": {
+                      "Ext": {
+                        "Hole": 0
+                      }
+                    },
+                    "ptr": 0,
+                    "volatile": false,
+                    "align": null
+                  }
+                },
+                "results": [
+                  1
+                ],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              },
+              {
+                "inst": {
+                  "ExtractField": {
+                    "ty": "Usize",
+                    "aggregate": 1,
+                    "field": 1
+                  }
+                },
+                "results": [
+                  2
+                ],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              },
+              {
+                "inst": {
+                  "Return": {
+                    "values": [
+                      2
+                    ]
+                  }
+                },
+                "results": [],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              }
+            ]
+          }
+        ],
+        "proofs": [],
+        "calling_conv": "C",
+        "linkage": "External",
+        "attrs": {
+          "readonly": false,
+          "readnone": false,
+          "inlinehint": false,
+          "cold": false,
+          "params": [],
+          "naked": false,
+          "target_features": []
+        },
+        "summary": null,
+        "producer": null,
+        "value_names": null,
+        "scopes": null,
+        "source_provenance": null,
+        "body_gate": null,
+        "display_path": null,
+        "section": null,
+        "visibility": "Default"
+      }
+    ],
+    "structs": [],
+    "enums": [],
+    "records": [],
+    "closure_types": [],
+    "globals": [],
+    "func_types": [
+      {
+        "params": [
+          "Ptr"
+        ],
+        "returns": [
+          "Usize"
+        ],
+        "is_vararg": false
+      }
+    ],
+    "types": [],
+    "proof_obligations": [],
+    "proof_certificates": [],
+    "target_info": {
+      "triple": "aarch64-apple-darwin",
+      "pointer_size": 8,
+      "endianness": "Little",
+      "abi": null,
+      "struct_passing": "NativeC"
+    },
+    "files": [],
+    "obligation_diagnostics": [],
+    "spec_modules": [],
+    "universes": [],
+    "predicates": [],
+    "global_asm": [],
+    "imports": [],
+    "tuple_layouts": [],
+    "completeness": null,
+    "drop_glue": [],
+    "closure_layouts": []
+  }
+}

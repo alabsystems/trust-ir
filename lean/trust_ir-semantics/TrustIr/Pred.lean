@@ -283,7 +283,7 @@ abbrev UnivTable := List Universe
 
 /-- Resolve a universe id; `none` for a dangling id. -/
 def UnivTable.get? (U : UnivTable) (u : UnivId) : Option Universe :=
-  List.get? U u.index
+  trustIrListGet? U u.index
 
 /-! ## Pred -/
 
@@ -711,7 +711,7 @@ def sequencePreds : List (Option Pred) → Option (List Pred)
 def PredTable.resolveFuel (T : PredTable) : Nat → Nat → Option Pred
   | 0, _ => none
   | fuel + 1, i =>
-    match List.get? T i with
+    match trustIrListGet? T i with
     | none => none
     | some e =>
       match e with

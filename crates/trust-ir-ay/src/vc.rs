@@ -16,11 +16,16 @@
 //!
 //! # Scope — honest and fail-closed
 //!
-//! * **Straight-line bodies only (v1).** A function must consist of a single
-//!   entry block ending in `Return`. Control flow (`Br`/`CondBr`/`Switch`),
-//!   calls, atomics, aggregates, and every other unencoded instruction fail
-//!   closed with [`AYError::UnsupportedOp`] — there is no silent havoc: an
-//!   unencodable instruction aborts VC generation rather than weakening it.
+//! * **Straight-line bodies only (v1).** The whole-function walk covers a
+//!   single entry block ending in `Return`. Control flow (`Br`/`CondBr`/
+//!   `Switch`), calls, atomics, aggregates, and every other unencoded
+//!   instruction abort the walk with [`AYError::UnsupportedOp`] /
+//!   [`AYError::UnsupportedType`] — there is no silent havoc: an unencodable
+//!   instruction is never approximated. Such a body (and every multi-block
+//!   body) gets the SITED VC instead: one block-local, hypothesis-free
+//!   condition per obligation site, which can lose proofs but never mint one
+//!   (WS5.4 (2); the walk's refusal is kept in
+//!   [`FunctionVc::whole_function_fallback`]).
 //! * **Annotations.** Encodable annotations (`NoOverflow`/`NoWrap`,
 //!   `DivNonZero`, `ShiftInRange`, `NotNull`, `Aligned`, and the borrow
 //!   family) become solver-checked conditions over the node's actual operand
@@ -34,10 +39,15 @@
 //!   containing one can never read as a full PASS.
 //! * **Obligations (B4).** Module obligations scoped to the function
 //!   (`ProofObligation::function == Some(id)`) are reported with an explicit
-//!   [`VcObligationOutcome`]. An obligation is `ProvedByVc` only when the body
-//!   produced at least one condition and every condition proved;
-//!   formula-carrying obligations fail closed (`Unsupported`) because the
-//!   adapter has no in-process SMT-LIB bridge.
+//!   [`VcObligationOutcome`]. An obligation is `ProvedByVc` only when the
+//!   conditions generated at its site exist and all proved. A row sited on an
+//!   assert-shaped node must be of an assert-class kind
+//!   ([`trust_ir::proof::ASSERT_CLASS_OBLIGATION_KINDS`]); any other kind is
+//!   `Unsupported` there (WS5.4 (1a)). A formula-carrying obligation is
+//!   addressed only when its formula states the goal re-derived at its site
+//!   ([`trust_ir::proof::formula_binds_site_goal`]); any other formula fails
+//!   closed (`Unsupported`) because the adapter has no in-process SMT-LIB
+//!   bridge (WS5.4 (1b)).
 //! * **Counterexamples.** A refuting model is mapped back to
 //!   `(ValueId, ModelValue)` pairs over the schema-bound symbols (the
 //!   function's parameters), feeding the diagnostics counterexample payload
@@ -52,7 +62,9 @@ use ay::{Model, ModelValue, Solver, Sort, Term};
 
 use trust_ir::inst::{BinOp, Inst, OverflowOp};
 use trust_ir::proof::{
-    ObligationDiagnostic, ObligationKind, ProofAnnotation, ProofDigest, ProofStatus,
+    ObligationDiagnostic, ObligationKind, PRODUCER_FORMULA_DISAGREES, ProofAnnotation, ProofDigest,
+    ProofObligation, ProofStatus, assert_class_kind_refusal, derive_site_goal,
+    formula_binds_site_goal, is_assert_class_kind, is_assert_site_inst,
 };
 use trust_ir::ty::Ty;
 use trust_ir::value::{BlockId, FuncId, ProofId, ValueId};
@@ -61,7 +73,7 @@ use trust_ir::{Constant, Function, InstrNode, Module};
 use crate::{
     AYError, ArcModel, BorrowModel, MemoryModel, ProofCondition, ProofOperands, ay_sort, ay_symbol,
     create_fp_solver, encode_binop, encode_cast, encode_fcmp, encode_icmp, encode_overflow_check,
-    encode_unop, encode_vector_binop, verify_proof_obligation,
+    encode_unop, encode_vector_binop, encode_vector_unop, verify_proof_obligation,
 };
 
 /// Where a VC condition came from.
@@ -73,12 +85,12 @@ pub enum VcSource {
     /// An instruction-level proof annotation, checked over the node's actual
     /// operand terms.
     Annotation(ProofAnnotation),
-    /// A LOWERED assert: the `CondBr` at a [`trust_ir::ObligationSite`] exactly
-    /// one of whose successors diverges (a `core::panicking` arm ending
-    /// `Unreachable`). The VC is that control never takes the diverging arm.
-    ///
-    /// This is how a rustc `Assert` arrives in TrustIr — the frontend lowers it
-    /// to explicit control flow, so there is no `Inst::Assert` to find.
+    /// A SITED assert: the node at a [`trust_ir::ObligationSite`] is either an
+    /// `Inst::Assert { cond }` (the direct lane's shape — the VC is that `cond`
+    /// holds) or a lowered `CondBr` exactly one of whose successors diverges (a
+    /// `core::panicking` arm ending `Unreachable` — the VC is that control never
+    /// takes the diverging arm). Both are read by the one shared
+    /// [`trust_ir::proof::lowered_assert_condition`].
     LoweredAssert {
         /// The module obligation whose `site` selected this node.
         obligation: ProofId,
@@ -94,14 +106,20 @@ pub enum VcVerdict {
     /// (trusted via the `ay_sound_unsat` boundary, `AYBridge.lean`).
     Proved,
     /// The negated condition is SAT: the condition can be violated.
-    /// `counterexample` maps the schema-bound inputs back to source values.
+    /// `counterexample` is the witness ay vouches for, or why there is none.
     Refuted {
-        /// `(value, assignment)` pairs over the function's bound symbols,
-        /// in binding (declaration) order.
-        counterexample: Vec<(ValueId, ModelValue)>,
+        /// A consumer-accepted model mapped back to source values, or the
+        /// typed reason ay gave no such model. Never an empty stand-in for a
+        /// missing model.
+        counterexample: Counterexample,
     },
-    /// The solver could not decide (timeout / resource limit).
-    Unknown,
+    /// The solver could not decide (timeout / resource limit), or the solver
+    /// session could not be trusted to decide (a solver frame failed to open
+    /// or close — see `reason`). Never `Proved`.
+    Unknown {
+        /// Why no verdict exists.
+        reason: String,
+    },
     /// Fail-closed: the annotation has no BV/FP encoding (the
     /// `DataRaceFree`-class fallthrough of [`verify_proof_obligation`]).
     /// Surfaced structurally so it can never be mistaken for a PASS.
@@ -109,6 +127,65 @@ pub enum VcVerdict {
         /// Why the condition could not be encoded.
         reason: String,
     },
+}
+
+/// The witness of a [`VcVerdict::Refuted`] condition.
+///
+/// ay answered SAT. What backs that answer is either a model ay itself
+/// accepts for a consumer ([`Self::Model`]), or nothing it will vouch for
+/// ([`Self::Unavailable`], with ay's typed reason). The two used to share one
+/// spelling — an EMPTY assignment list — which presented "no model" as "a
+/// model that assigns nothing".
+#[derive(Debug, Clone, PartialEq)]
+pub enum Counterexample {
+    /// A consumer-accepted model projected onto the bound symbols, in
+    /// binding (declaration) order. Empty only when the model assigns none of
+    /// the bound symbols.
+    Model(Vec<(ValueId, ModelValue)>),
+    /// ay answered SAT but gave no consumer-accepted witness.
+    Unavailable(WitnessUnavailable),
+}
+
+/// Why a SAT answer carries no consumer-accepted model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WitnessUnavailable {
+    /// ay did not accept its own SAT model for a consumer
+    /// (`SolverError::SatModelNotValidated`).
+    NotValidated,
+    /// Model generation failed; ay's message.
+    GenerationFailed(String),
+    /// The solver held no SAT result to take a model from
+    /// (`SolverError::NoResult` / `SolverError::NotSat`).
+    NoSatResult,
+}
+
+impl core::fmt::Display for WitnessUnavailable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotValidated => f.write_str("ay did not validate its SAT model for a consumer"),
+            Self::GenerationFailed(message) => write!(f, "model generation failed: {message}"),
+            Self::NoSatResult => f.write_str("the solver holds no SAT result"),
+        }
+    }
+}
+
+/// The ONE place a SAT answer becomes a witness: ay's consumer-boundary model
+/// (`Solver::try_get_model_for_consumer`, which requires the model to have
+/// passed ay's own validation), projected onto `bindings`. Both solve paths
+/// call it; neither falls back to the unvalidated `Solver::model()`.
+fn sat_witness(solver: &Solver, bindings: &[(ValueId, String)]) -> Counterexample {
+    match solver.try_get_model_for_consumer() {
+        Ok(model) => Counterexample::Model(model_counterexample(model.model(), bindings)),
+        Err(ay::SolverError::SatModelNotValidated) => {
+            Counterexample::Unavailable(WitnessUnavailable::NotValidated)
+        }
+        Err(ay::SolverError::NoResult | ay::SolverError::NotSat) => {
+            Counterexample::Unavailable(WitnessUnavailable::NoSatResult)
+        }
+        Err(other) => {
+            Counterexample::Unavailable(WitnessUnavailable::GenerationFailed(other.to_string()))
+        }
+    }
 }
 
 /// One condition of a whole-function VC, tied to the body position that
@@ -161,7 +238,7 @@ pub struct SmtReplayEvidence {
 }
 
 /// The exact ay revision this adapter is pinned to (see `Cargo.toml`).
-pub const AY_REV: &str = "5d586a5c2035e94c3f6ad00028e21ae5529cd2f3";
+pub const AY_REV: &str = "9dfa20b5790b03c8ffe57fbbe67316ece665c5be";
 
 /// Re-check a captured proof bundle OFFLINE — no solver run, no network, no
 /// producer cooperation.
@@ -231,7 +308,12 @@ pub struct FunctionVc {
     /// Sealed application inputs. Public report fields remain inspectable for
     /// compatibility, but mutating them cannot redirect proof-table updates.
     application_obligations: Vec<(ProofId, VcObligationOutcome)>,
+    /// Refutations backed by a consumer-accepted model: the only ones that
+    /// may mint `Failed` (see [`apply_vc_outcomes`]).
     application_refutations: Vec<VcCondition>,
+    /// SAT answers ay would not vouch for ([`Counterexample::Unavailable`]):
+    /// reported, never used to mint `Failed`.
+    application_unwitnessed: Vec<VcCondition>,
     /// Sealed replay evidence per proved obligation. Sealed for the same reason
     /// the outcomes are: a caller must not be able to hand `apply_vc_outcomes`
     /// a payload the solver never produced.
@@ -252,6 +334,13 @@ pub struct FunctionVc {
     /// Outcome for each module obligation scoped to this function (B4),
     /// in module order.
     pub obligations: Vec<(ProofId, VcObligationOutcome)>,
+    /// `Some(refusal)` when this single-block body's whole-function walk
+    /// refused (`UnsupportedOp` / `UnsupportedType`) and the SITED VC was
+    /// generated instead (WS5.4 (2)). The refusal is kept, typed and verbatim,
+    /// so the fallback never hides WHY the stronger VC was unavailable. `None`
+    /// for a whole-function VC and for a multi-block body (which only ever gets
+    /// the sited VC).
+    pub whole_function_fallback: Option<AYError>,
 }
 
 impl FunctionVc {
@@ -264,10 +353,20 @@ impl FunctionVc {
     /// `Unknown` verdicts count as not proved (fail-closed). Note this is
     /// vacuously true for a body with no conditions; obligation outcomes
     /// guard against vacuous discharge separately.
+    ///
+    /// Always `false` for a sited FALLBACK ([`Self::whole_function_fallback`]
+    /// is `Some`, WS5.4 (2)): the whole-function walk that would have turned
+    /// every body `Assert` and instruction annotation into a condition REFUSED,
+    /// and the sited VC that replaced it covers only sited obligations. Before
+    /// the fallback existed such a body was an `Err`; answering `true` for it
+    /// now — over a condition list that silently omits the unsited checks —
+    /// would turn a refusal into a vacuous pass.
     pub fn all_proved(&self) -> bool {
-        self.conditions
-            .iter()
-            .all(|c| matches!(c.verdict, VcVerdict::Proved))
+        self.whole_function_fallback.is_none()
+            && self
+                .conditions
+                .iter()
+                .all(|c| matches!(c.verdict, VcVerdict::Proved))
     }
 
     /// Conditions the solver refuted, with their counterexamples.
@@ -347,7 +446,12 @@ impl std::error::Error for VcApplyError {}
 /// * **`Failed` requires a real refutation.** `NotDischarged` without at least
 ///   one `Refuted` condition (a vacuous body, `Unknown`/`Unsupported`
 ///   conditions) leaves the obligation `Pending` — no evidence either way, so
-///   no verdict is invented in either direction.
+///   no verdict is invented in either direction. A SAT answer whose witness ay
+///   will not vouch for ([`Counterexample::Unavailable`]) is not a real
+///   refutation either: the obligation stays `Pending`, with an INFO
+///   diagnostic naming the reason. (Owner decision D3 of the r11 design: to
+///   let such a SAT mint `Failed` instead, admit `Unavailable` witnesses into
+///   `application_refutations` in `finish` — one filter.)
 /// * **`Precondition` obligations never transition.** The body *assumes* its
 ///   `requires` clauses; they are established by callers (the B5 call-site
 ///   flow, outside this seed's scope). A body VC can neither discharge nor
@@ -378,6 +482,14 @@ pub fn apply_vc_outcomes(
 
     let refuted: Vec<&VcCondition> = vc.application_refutations.iter().collect();
     let mut transitions = Vec::new();
+    // The rows this pass flips to `Failed`. Any non-inherited certificate on
+    // such a row is dropped afterwards: the module validator refuses a
+    // discharging certificate beside a refutation
+    // (`GroundCertificateStatusInconsistent`, trust-ir WS1.8 rule (a)), and a
+    // Pending row may legitimately carry an evidence-awaiting-replay
+    // certificate that an earlier pass attached. The refutation wins; the
+    // stale evidence is not left to contradict it.
+    let mut failed_rows: Vec<ProofId> = Vec::new();
     for (id, outcome) in &vc.application_obligations {
         let Some(obligation) = module.proof_obligations.iter_mut().find(|o| o.id == *id) else {
             continue;
@@ -424,6 +536,18 @@ pub fn apply_vc_outcomes(
             }
             VcObligationOutcome::NotDischarged { reason } => {
                 if refuted.is_empty() {
+                    if let Some(unwitnessed) = unwitnessed_reasons(&vc.application_unwitnessed) {
+                        module
+                            .obligation_diagnostics
+                            .push(ObligationDiagnostic::note(
+                                *id,
+                                format!(
+                                    "ay answered SAT for this obligation's VC but gave no \
+                                     consumer-accepted witness ({unwitnessed}); status stays \
+                                     Pending: `Failed` requires a real refutation"
+                                ),
+                            ));
+                    }
                     continue;
                 }
                 obligation.status = ProofStatus::Failed;
@@ -433,17 +557,45 @@ pub fn apply_vc_outcomes(
                     .obligation_diagnostics
                     .push(ObligationDiagnostic::error(*id, message).with_detail(detail));
                 transitions.push((*id, ProofStatus::Failed));
+                failed_rows.push(*id);
             }
             VcObligationOutcome::Unsupported { .. } => {}
         }
     }
+    if !failed_rows.is_empty() {
+        module.proof_certificates.retain(|certificate| {
+            !failed_rows.contains(&certificate.obligation)
+                || matches!(
+                    certificate.evidence,
+                    trust_ir::proof::ProofEvidence::InheritedFromCallee { .. }
+                )
+        });
+    }
     Ok(transitions)
+}
+
+/// The distinct reasons of unwitnessed SAT answers, joined, or `None`.
+fn unwitnessed_reasons(conditions: &[VcCondition]) -> Option<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    for condition in conditions {
+        if let VcVerdict::Refuted {
+            counterexample: Counterexample::Unavailable(reason),
+        } = &condition.verdict
+        {
+            let reason = reason.to_string();
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+    }
+    (!reasons.is_empty()).then(|| reasons.join("; "))
 }
 
 /// Render the refuted conditions of a VC as the machine-readable `detail` of
 /// an [`ObligationDiagnostic`]: one `counterexample …` line per refutation,
 /// each assignment in binding (declaration) order — deterministic because
-/// [`model_counterexample`] is.
+/// [`model_counterexample`] is. A refutation without a consumer-accepted
+/// witness says so (`counterexample unavailable (<reason>)`).
 fn render_refutations(refuted: &[&VcCondition]) -> String {
     let mut lines = Vec::with_capacity(refuted.len());
     for condition in refuted {
@@ -461,16 +613,25 @@ fn render_refutations(refuted: &[&VcCondition]) -> String {
                 obligation.index()
             ),
         };
-        let assignments = counterexample
-            .iter()
-            .map(|(value, mv)| format!("v{} = {mv:?}", value.index()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        lines.push(format!(
-            "counterexample (bb{} #{}, {source}): {assignments}",
-            condition.block.index(),
-            condition.inst_index
-        ));
+        match counterexample {
+            Counterexample::Model(assignments) => {
+                let assignments = assignments
+                    .iter()
+                    .map(|(value, mv)| format!("v{} = {mv:?}", value.index()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!(
+                    "counterexample (bb{} #{}, {source}): {assignments}",
+                    condition.block.index(),
+                    condition.inst_index
+                ));
+            }
+            Counterexample::Unavailable(reason) => lines.push(format!(
+                "counterexample unavailable (bb{} #{}, {source}): {reason}",
+                condition.block.index(),
+                condition.inst_index
+            )),
+        }
     }
     lines.join("\n")
 }
@@ -547,8 +708,22 @@ pub fn generate_function_vc(module: &Module, function: &Function) -> Result<Func
     }
 
     let mut vcb = VcBuilder::new(module, function)?;
-    vcb.walk()?;
-    Ok(vcb.finish())
+    match vcb.walk() {
+        Ok(()) => Ok(vcb.finish()),
+        // WS5.4 (2): a single-block body the whole-function walk cannot encode
+        // (a `Call`, an aggregate, a fat parameter, ...) falls back to the SITED
+        // VC instead of erroring. The fallback is strictly weaker — fewer
+        // hypotheses, one block-local condition per site — so it can lose
+        // proofs but never mint one, and it never supplies a refutation (see
+        // `generate_sited_vc`). Any other failure (solver, memory model) is
+        // still an error.
+        Err(refusal @ (AYError::UnsupportedOp(_) | AYError::UnsupportedType(_))) => {
+            let mut vc = generate_sited_vc(module, function)?;
+            vc.whole_function_fallback = Some(refusal);
+            Ok(vc)
+        }
+        Err(other) => Err(other),
+    }
 }
 
 /// Instructions the SITED VC will encode in a condition's backward slice.
@@ -648,6 +823,13 @@ fn generate_sited_vc(module: &Module, function: &Function) -> Result<FunctionVc,
         let Some(node) = block.body.get(site.inst_index as usize) else {
             continue;
         };
+        // WS5.4 (1a): only an assert-class row may be backed by the condition of
+        // an assert-shaped node. No condition is generated for any other kind —
+        // not even an Unsupported one, since conditions are shared by every row
+        // at the site; `bind_obligations` reports the refusal for this row.
+        if is_assert_site_inst(&node.inst) && !is_assert_class_kind(&obligation.kind) {
+            continue;
+        }
         let (cond_value, expected) = match lowered_assert_condition(function, node) {
             Ok(pair) => pair,
             Err(reason) => {
@@ -702,12 +884,14 @@ fn generate_sited_vc(module: &Module, function: &Function) -> Result<FunctionVc,
         // Feeding those to `apply_vc_outcomes` would mint `Failed` on correct
         // code. See `generate_sited_vc`'s soundness note.
         application_refutations: Vec::new(),
+        application_unwitnessed: Vec::new(),
         application_evidence,
         func: function.id,
         bindings,
         conditions,
         unsupported_function_proofs,
         obligations,
+        whole_function_fallback: None,
     })
 }
 
@@ -743,6 +927,14 @@ struct VcBuilder<'m> {
     /// Declared (schema-named) symbols only — the model-visible bindings.
     bindings: Vec<(ValueId, String)>,
     pending: Vec<PendingCondition>,
+    /// Set when a solver frame failed to open or close, was left unbalanced,
+    /// or a solver step inside it failed ([`Self::in_frame`]). The solver is
+    /// then not the one this builder believes: a leftover negated goal would
+    /// make every later prefix UNSAT and every later condition falsely
+    /// `Proved`, and after a caught panic (`SolverError::SolverPanic`) ay
+    /// itself says the solver's state is likely corrupted. From then on no
+    /// condition is solved — each is `Unknown` with this reason.
+    poisoned: Option<String>,
 }
 
 impl<'m> VcBuilder<'m> {
@@ -755,9 +947,9 @@ impl<'m> VcBuilder<'m> {
         let f = function.id.index();
         // State arrays use deterministic per-function names disjoint from the
         // value-symbol namespace (`f{F}_v{V}`).
-        let mem = MemoryModel::new(&mut solver, &format!("f{f}_mem"));
-        let borrow = BorrowModel::new(&mut solver, &format!("f{f}_perm"));
-        let arc = ArcModel::new(&mut solver, &format!("f{f}_rc"));
+        let mem = MemoryModel::new(&mut solver, &format!("f{f}_mem"))?;
+        let borrow = BorrowModel::new(&mut solver, &format!("f{f}_perm"))?;
+        let arc = ArcModel::new(&mut solver, &format!("f{f}_rc"))?;
         Ok(Self {
             module,
             function,
@@ -769,6 +961,7 @@ impl<'m> VcBuilder<'m> {
             types: Vec::new(),
             bindings: Vec::new(),
             pending: Vec::new(),
+            poisoned: None,
         })
     }
 
@@ -782,7 +975,7 @@ impl<'m> VcBuilder<'m> {
     fn declare(&mut self, value: ValueId, ty: &Ty) -> Result<Term, AYError> {
         let name = ay_symbol(self.function.id, value);
         let sort = ay_sort(ty)?;
-        let term = self.solver.declare_const(&name, sort);
+        let term = self.solver.try_declare_const(&name, sort)?;
         self.bindings.push((value, name));
         self.bind(value, term, ty.clone());
         Ok(term)
@@ -813,40 +1006,113 @@ impl<'m> VcBuilder<'m> {
     /// BitVec(1) <- Bool: the schema stores Bool values as 1-bit bitvectors
     /// (matching `ay_sort(Bool)`), so encoder-produced Bool terms are
     /// normalized at binding time.
-    fn bool_to_bv1(&mut self, b: Term) -> Term {
-        let one = self.solver.bv_const(1, 1);
-        let zero = self.solver.bv_const(0, 1);
-        self.solver.ite(b, one, zero)
+    fn bool_to_bv1(&mut self, b: Term) -> Result<Term, AYError> {
+        let one = self.solver.try_bv_const(1, 1)?;
+        let zero = self.solver.try_bv_const(0, 1)?;
+        Ok(self.solver.try_ite(b, one, zero)?)
     }
 
     /// Bool <- BitVec(1): the inverse normalization for `Assume`/`Assert`/
     /// `Select` conditions.
-    fn bv1_to_bool(&mut self, t: Term) -> Term {
-        let one = self.solver.bv_const(1, 1);
-        self.solver.eq(t, one)
+    fn bv1_to_bool(&mut self, t: Term) -> Result<Term, AYError> {
+        let one = self.solver.try_bv_const(1, 1)?;
+        Ok(self.solver.try_eq(t, one)?)
+    }
+
+    /// Run `body` inside ONE solver frame: `try_push`, the body, then
+    /// ALWAYS `try_pop` — also when the body failed. The body cannot leave
+    /// the frame early (it returns its result; there is no `?` between push
+    /// and pop). The session is POISONED ([`Self::poisoned`]) when the frame
+    /// cannot be opened or closed, when the stack is unbalanced afterwards,
+    /// when the session was already poisoned — AND when the body itself
+    /// returns an error.
+    ///
+    /// The last clause is load-bearing (r11 review H1). ay's
+    /// `try_check_sat` catches a panic inside the solver and returns
+    /// `SolverError::SolverPanic`, whose contract (ay
+    /// `api/types/error.rs`) is that the solver's internal state is then
+    /// "likely corrupted" and must not be solved on again. The
+    /// whole-function walk shares ONE solver across every condition, so
+    /// answering one condition `Unknown` and solving the next on the same
+    /// solver could mint a false `Proved`. [`AYError::SolverError`] flattens
+    /// ay's error to a string, so no variant is matched: EVERY error a frame
+    /// body returns ends the session. That is fail-closed — a benign refusal
+    /// (an assertion ay rejects) costs only the later conditions' verdicts,
+    /// which become `Unknown`, never a verdict.
+    ///
+    /// # Errors
+    ///
+    /// The poison reason. Every caller turns it into
+    /// [`VcVerdict::Unknown`], never a verdict.
+    fn in_frame<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T, AYError>,
+    ) -> Result<T, String> {
+        if let Some(reason) = &self.poisoned {
+            return Err(reason.clone());
+        }
+        let level = self.solver.num_scopes();
+        if let Err(error) = self.solver.try_push() {
+            return Err(self.poison(format!("solver frame could not be opened: {error}")));
+        }
+        let value = body(self);
+        if let Err(error) = self.solver.try_pop() {
+            return Err(self.poison(format!("solver frame could not be closed: {error}")));
+        }
+        // A body that pushed without popping leaves frames — and whatever it
+        // asserted in them — on the stack after the pop above succeeds. That
+        // is the same hazard as a failed pop, so it is the same poison.
+        let after = self.solver.num_scopes();
+        if after != level {
+            return Err(self.poison(format!(
+                "solver frame stack unbalanced: {after} scope(s) open after the frame, expected \
+                 {level}"
+            )));
+        }
+        value.map_err(|error| {
+            self.poison(format!(
+                "a solver step inside the frame failed, and ay may have left the solver \
+                 corrupted: {error}"
+            ))
+        })
+    }
+
+    /// Record a frame failure; the session proves nothing afterwards.
+    fn poison(&mut self, reason: String) -> String {
+        let reason = format!("solver session poisoned: {reason}");
+        self.poisoned = Some(reason.clone());
+        reason
     }
 
     /// Solve one condition NOW, under the current (prefix-only) solver
     /// context, in its own push/pop frame. Called at the program point where
     /// the condition occurs — see [`Pending::Solved`].
+    ///
+    /// Fail-closed at every solver step: a refused assertion or check is
+    /// `Unknown` AND poisons the session, as does a frame failure (see
+    /// [`Self::in_frame`]), so that no LATER condition can be solved against
+    /// a stack that still holds this one's negated goal or a solver ay has
+    /// declared corrupted.
     fn solve_condition_now(&mut self, cond: ProofCondition) -> VcVerdict {
-        self.solver.push();
-        self.solver.assert_term(cond.term);
-        let result = self.solver.check_sat();
-        let verdict = if result.is_unsat() {
-            VcVerdict::Proved
-        } else if result.is_sat() {
-            let counterexample = self
-                .solver
-                .model()
-                .map(|m| model_counterexample(m.model(), &self.bindings))
-                .unwrap_or_default();
-            VcVerdict::Refuted { counterexample }
-        } else {
-            VcVerdict::Unknown
-        };
-        self.solver.pop();
-        verdict
+        let framed = self.in_frame(|vcb| -> Result<VcVerdict, AYError> {
+            vcb.solver.try_assert_term(cond.term)?;
+            let result = vcb.solver.try_check_sat()?;
+            Ok(if result.is_unsat() {
+                VcVerdict::Proved
+            } else if result.is_sat() {
+                VcVerdict::Refuted {
+                    counterexample: sat_witness(&vcb.solver, &vcb.bindings),
+                }
+            } else {
+                VcVerdict::Unknown {
+                    reason: "ay returned unknown".to_string(),
+                }
+            })
+        });
+        match framed {
+            Ok(verdict) => verdict,
+            Err(poisoned) => VcVerdict::Unknown { reason: poisoned },
+        }
     }
 
     /// Encode the pure backward context of one block up to `upto_index`, then
@@ -864,18 +1130,16 @@ impl<'m> VcBuilder<'m> {
         cond: ValueId,
         expected: bool,
     ) -> (VcVerdict, Option<SmtReplayEvidence>) {
+        // A parameter with no solver sort (a `FatPtr(Slice)` `(ptr, len)` pair,
+        // an aggregate, ...) is left UNDECLARED rather than refusing every
+        // condition in the block (WS5.4 (3)). Nothing that reads it can encode,
+        // so a condition depending on it ends up unbound and is `Unsupported`
+        // below — for THAT condition only. Leaving a value unbound removes
+        // facts; it can never add one.
+        let mut unsortable: Vec<String> = Vec::new();
         for (value, ty) in &block.params {
             if self.declare(*value, ty).is_err() {
-                return (
-                    VcVerdict::Unsupported {
-                        reason: format!(
-                            "block parameter v{} has type {ty}, which has no solver sort \
-                             (fail-closed)",
-                            value.index()
-                        ),
-                    },
-                    None,
-                );
+                unsortable.push(format!("v{}: {ty}", value.index()));
             }
         }
         for (index, node) in block.body.iter().enumerate() {
@@ -892,19 +1156,49 @@ impl<'m> VcBuilder<'m> {
             let _ = self.encode_node(block.id, index, node);
         }
         let Ok(term) = self.term(cond) else {
+            let unsortable = if unsortable.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; block parameters with no solver sort, left undeclared: {}",
+                    unsortable.join(", ")
+                )
+            };
             return (
                 VcVerdict::Unsupported {
                     reason: format!(
                         "the assert condition v{} is not derivable from this block's pure prefix \
-                         (it depends on memory, a call, or a value defined in another block); \
-                         the sited VC encodes no such context (fail-closed)",
+                         (it depends on memory, a call, a value defined in another block, or a \
+                         block parameter with no solver sort); the sited VC encodes no such \
+                         context (fail-closed){unsortable}",
                         cond.index()
                     ),
                 },
                 None,
             );
         };
-        let holds = self.bv1_to_bool(term);
+        if let Some(reason) = &self.poisoned {
+            return (
+                VcVerdict::Unknown {
+                    reason: reason.clone(),
+                },
+                None,
+            );
+        }
+        match self.sited_goal(term, expected) {
+            Ok((negated, goal_canonical)) => self.solve_sited_goal(negated, goal_canonical),
+            Err(error) => (
+                VcVerdict::Unknown {
+                    reason: error.to_string(),
+                },
+                None,
+            ),
+        }
+    }
+
+    /// The negated sited goal and its canonical rendering.
+    fn sited_goal(&mut self, term: Term, expected: bool) -> Result<(Term, String), AYError> {
+        let holds = self.bv1_to_bool(term)?;
         // `expected` is ALWAYS `true` now: `lowered_assert_condition` accepts
         // only the producer's `condbr assert_cond, <success>, <panic>` shape and
         // fails closed on a diverging `then` arm rather than inferring an
@@ -915,34 +1209,54 @@ impl<'m> VcBuilder<'m> {
         let holds = if expected {
             holds
         } else {
-            self.solver.not(holds)
+            self.solver.try_not(holds)?
         };
-        let negated = self.solver.not(holds);
-        let goal_canonical = self.solver.render_term_canonical(negated);
-        // Inlined rather than routed through `solve_condition_now`, because the
-        // proof payload must be exported INSIDE the solver frame: `pop()`
-        // discards the last proof along with the assertion that produced it.
-        self.solver.push();
-        self.solver.assert_term(negated);
-        let result = self.solver.check_sat();
-        let (verdict, evidence) = if result.is_unsat() {
-            // Capture the replayable payload ONLY on Proved, and only if it
-            // actually replays offline. A payload that does not replay is not
-            // attached at all — it would be a claim, not evidence.
-            let evidence = self.capture_replay_evidence(goal_canonical);
-            (VcVerdict::Proved, evidence)
-        } else if result.is_sat() {
-            let counterexample = self
-                .solver
-                .model()
-                .map(|m| model_counterexample(m.model(), &self.bindings))
-                .unwrap_or_default();
-            (VcVerdict::Refuted { counterexample }, None)
-        } else {
-            (VcVerdict::Unknown, None)
-        };
-        self.solver.pop();
-        (verdict, evidence)
+        let negated = self.solver.try_not(holds)?;
+        let goal_canonical = self.solver.try_render_term_canonical(negated)?;
+        Ok((negated, goal_canonical))
+    }
+
+    /// Solve one sited goal in ONE frame. Inlined rather than routed through
+    /// `solve_condition_now`, because the proof payload must be exported
+    /// INSIDE the solver frame: `pop()` discards the last proof along with the
+    /// assertion that produced it.
+    fn solve_sited_goal(
+        &mut self,
+        negated: Term,
+        goal_canonical: String,
+    ) -> (VcVerdict, Option<SmtReplayEvidence>) {
+        let framed = self.in_frame(
+            |vcb| -> Result<(VcVerdict, Option<SmtReplayEvidence>), AYError> {
+                vcb.solver.try_assert_term(negated)?;
+                let result = vcb.solver.try_check_sat()?;
+                Ok(if result.is_unsat() {
+                    // Capture the replayable payload ONLY on Proved, and only
+                    // if it actually replays offline. A payload that does not
+                    // replay is not attached at all — it would be a claim, not
+                    // evidence.
+                    let evidence = vcb.capture_replay_evidence(goal_canonical);
+                    (VcVerdict::Proved, evidence)
+                } else if result.is_sat() {
+                    (
+                        VcVerdict::Refuted {
+                            counterexample: sat_witness(&vcb.solver, &vcb.bindings),
+                        },
+                        None,
+                    )
+                } else {
+                    (
+                        VcVerdict::Unknown {
+                            reason: "ay returned unknown".to_string(),
+                        },
+                        None,
+                    )
+                })
+            },
+        );
+        match framed {
+            Ok(outcome) => outcome,
+            Err(poisoned) => (VcVerdict::Unknown { reason: poisoned }, None),
+        }
     }
 
     /// Export the last UNSAT proof, re-check it OFFLINE, and return it only if
@@ -1034,7 +1348,7 @@ impl<'m> VcBuilder<'m> {
                 self.bind(Self::result0(node)?, term, ty.clone());
             }
             Inst::NullPtr => {
-                let term = self.solver.bv_const(0, 64);
+                let term = self.solver.try_bv_const(0, 64)?;
                 self.bind(Self::result0(node)?, term, Ty::Ptr);
             }
             Inst::BinOp { op, ty, lhs, rhs } => {
@@ -1050,7 +1364,12 @@ impl<'m> VcBuilder<'m> {
             }
             Inst::UnOp { op, ty, operand } => {
                 let t = self.term(*operand)?;
-                let term = encode_unop(&mut self.solver, *op, t)?;
+                let term = match ty {
+                    Ty::Vector(elem, lanes) => {
+                        encode_vector_unop(&mut self.solver, *op, elem, *lanes, t)?
+                    }
+                    _ => encode_unop(&mut self.solver, *op, t)?,
+                };
                 self.bind(Self::result0(node)?, term, ty.clone());
             }
             Inst::Overflow { op, ty, lhs, rhs } => {
@@ -1062,9 +1381,9 @@ impl<'m> VcBuilder<'m> {
                     OverflowOp::MulOverflow => BinOp::Mul,
                 };
                 let value = encode_binop(&mut self.solver, bin, l, r)?;
-                let safe = encode_overflow_check(&mut self.solver, *op, ty.is_signed(), l, r);
-                let overflowed = self.solver.not(safe);
-                let flag = self.bool_to_bv1(overflowed);
+                let safe = encode_overflow_check(&mut self.solver, *op, ty.is_signed(), l, r)?;
+                let overflowed = self.solver.try_not(safe)?;
+                let flag = self.bool_to_bv1(overflowed)?;
                 let (v0, v1) = match node.results.as_slice() {
                     [v0, v1] => (*v0, *v1),
                     _ => {
@@ -1079,15 +1398,15 @@ impl<'m> VcBuilder<'m> {
             Inst::ICmp { op, lhs, rhs, .. } => {
                 let l = self.term(*lhs)?;
                 let r = self.term(*rhs)?;
-                let b = encode_icmp(&mut self.solver, *op, l, r);
-                let term = self.bool_to_bv1(b);
+                let b = encode_icmp(&mut self.solver, *op, l, r)?;
+                let term = self.bool_to_bv1(b)?;
                 self.bind(Self::result0(node)?, term, Ty::Bool);
             }
             Inst::FCmp { op, lhs, rhs, .. } => {
                 let l = self.term(*lhs)?;
                 let r = self.term(*rhs)?;
-                let b = encode_fcmp(&mut self.solver, *op, l, r);
-                let term = self.bool_to_bv1(b);
+                let b = encode_fcmp(&mut self.solver, *op, l, r)?;
+                let term = self.bool_to_bv1(b)?;
                 self.bind(Self::result0(node)?, term, Ty::Bool);
             }
             Inst::Cast {
@@ -1113,10 +1432,10 @@ impl<'m> VcBuilder<'m> {
                 else_val,
             } => {
                 let c = self.term(*cond)?;
-                let c = self.bv1_to_bool(c);
+                let c = self.bv1_to_bool(c)?;
                 let t = self.term(*then_val)?;
                 let e = self.term(*else_val)?;
-                let term = self.solver.ite(c, t, e);
+                let term = self.solver.try_ite(c, t, e)?;
                 self.bind(Self::result0(node)?, term, ty.clone());
             }
             Inst::Load { ty, ptr, .. } => {
@@ -1137,7 +1456,7 @@ impl<'m> VcBuilder<'m> {
                 align: _,
             } => {
                 let size = u64::from(byte_width(ty)?);
-                let addr = self.mem.encode_alloca(&mut self.solver, size);
+                let addr = self.mem.encode_alloca(&mut self.solver, size)?;
                 self.bind(Self::result0(node)?, addr, Ty::Ptr);
             }
             Inst::GEP {
@@ -1169,17 +1488,17 @@ impl<'m> VcBuilder<'m> {
                     let t = self.term(*index)?;
                     sum = Some(match sum {
                         None => t,
-                        Some(s) => self.solver.bvadd(s, t),
+                        Some(s) => self.solver.try_bvadd(s, t)?,
                     });
                 }
                 let offset = match sum {
-                    None => self.solver.bv_const(0, 64),
+                    None => self.solver.try_bv_const(0, 64)?,
                     Some(s) => {
-                        let size = self.solver.bv_const(elem_bytes, 64);
-                        self.solver.bvmul(s, size)
+                        let size = self.solver.try_bv_const(elem_bytes, 64)?;
+                        self.solver.try_bvmul(s, size)?
                     }
                 };
-                let term = self.mem.encode_gep(&mut self.solver, base_term, offset);
+                let term = self.mem.encode_gep(&mut self.solver, base_term, offset)?;
                 self.bind(Self::result0(node)?, term, Ty::Ptr);
             }
             Inst::Borrow { ptr } => {
@@ -1197,23 +1516,23 @@ impl<'m> VcBuilder<'m> {
                 // value through the 64-bit thin-pointer model under a false
                 // `ptr`.
                 let result_ty = trust_ir::bridge::borrow_result_ty(self.value_ty(*ptr));
-                let (borrowed, _) = self.borrow.encode_borrow(&mut self.solver, t);
+                let (borrowed, _) = self.borrow.encode_borrow(&mut self.solver, t)?;
                 self.bind(Self::result0(node)?, borrowed, result_ty);
             }
             Inst::BorrowMut { ptr } => {
                 let t = self.term(*ptr)?;
                 // Same shared rule as `Borrow` above; no local restatement.
                 let result_ty = trust_ir::bridge::borrow_result_ty(self.value_ty(*ptr));
-                let (borrowed, _) = self.borrow.encode_borrow_mut(&mut self.solver, t);
+                let (borrowed, _) = self.borrow.encode_borrow_mut(&mut self.solver, t)?;
                 self.bind(Self::result0(node)?, borrowed, result_ty);
             }
             Inst::EndBorrow { borrow_ptr } => {
                 let t = self.term(*borrow_ptr)?;
-                self.borrow.encode_end_borrow(&mut self.solver, t);
+                self.borrow.encode_end_borrow(&mut self.solver, t)?;
             }
             Inst::Retain { ptr } => {
                 let t = self.term(*ptr)?;
-                self.arc.encode_retain(&mut self.solver, t);
+                self.arc.encode_retain(&mut self.solver, t)?;
             }
             Inst::Release { ptr } => {
                 let t = self.term(*ptr)?;
@@ -1221,20 +1540,20 @@ impl<'m> VcBuilder<'m> {
             }
             Inst::IsUnique { ptr } => {
                 let t = self.term(*ptr)?;
-                let b = self.arc.encode_is_unique(&mut self.solver, t);
-                let term = self.bool_to_bv1(b);
+                let b = self.arc.encode_is_unique(&mut self.solver, t)?;
+                let term = self.bool_to_bv1(b)?;
                 self.bind(Self::result0(node)?, term, Ty::Bool);
             }
             Inst::Assume { cond } => {
                 let t = self.term(*cond)?;
-                let b = self.bv1_to_bool(t);
-                self.solver.assert_term(b);
+                let b = self.bv1_to_bool(t)?;
+                self.solver.try_assert_term(b)?;
             }
-            Inst::Assert { cond } => {
+            Inst::Assert { cond, .. } => {
                 let t = self.term(*cond)?;
-                let b = self.bv1_to_bool(t);
+                let b = self.bv1_to_bool(t)?;
                 // Assert-and-check-UNSAT contract: check the NEGATION.
-                let negated = self.solver.not(b);
+                let negated = self.solver.try_not(b)?;
                 let verdict = self.solve_condition_now(ProofCondition {
                     term: negated,
                     strategy: crate::ProofStrategy::AssertAndCheckUnsat,
@@ -1266,27 +1585,49 @@ impl<'m> VcBuilder<'m> {
 
     fn encode_constant(&mut self, ty: &Ty, value: &Constant) -> Result<Term, AYError> {
         match value {
-            Constant::Bool(b) => Ok(self.solver.bv_const(i64::from(*b), 1)),
-            Constant::Int(i) => {
-                let width = match ay_sort(ty)? {
-                    Sort::BitVec(bv) => bv.width,
+            Constant::Bool(b) => Ok(self.solver.try_bv_const(i64::from(*b), 1)?),
+            Constant::Float(value) => {
+                let (bits, eb, sb) = match ty {
+                    Ty::F16 => (
+                        u64::from(trust_ir::interpret::f64_to_f16_bits(*value)),
+                        5,
+                        11,
+                    ),
+                    Ty::F32 => (u64::from((*value as f32).to_bits()), 8, 24),
+                    Ty::F64 => (value.to_bits(), 11, 53),
                     _ => {
                         return Err(AYError::UnsupportedOp(format!(
-                            "integer constant of non-bitvector type {ty}"
+                            "float constant at non-float type {ty}"
                         )));
                     }
                 };
-                let v = i64::try_from(*i).map_err(|_| {
-                    AYError::UnsupportedOp(format!(
-                        "constant {i} exceeds the i64 range of the ay bv_const API"
-                    ))
-                })?;
-                Ok(self.solver.bv_const(v, width))
+                Ok(self.solver.try_fp_const_from_bits(bits, eb, sb)?)
+            }
+            Constant::Int(i) => self.encode_integer_constant(ty, ay::BigInt::from(*i)),
+            Constant::U128(i) => {
+                if *ty != Ty::U128 || !value.is_canonical_int_spelling() {
+                    return Err(AYError::UnsupportedOp(format!(
+                        "noncanonical or mistyped U128 constant at {ty}"
+                    )));
+                }
+                self.encode_integer_constant(ty, ay::BigInt::from(*i))
             }
             other => Err(AYError::UnsupportedOp(format!(
                 "constant {other:?} is not supported by the whole-function VC"
             ))),
         }
+    }
+
+    fn encode_integer_constant(&mut self, ty: &Ty, value: ay::BigInt) -> Result<Term, AYError> {
+        let width = match ay_sort(ty)? {
+            Sort::BitVec(bv) => bv.width,
+            _ => {
+                return Err(AYError::UnsupportedOp(format!(
+                    "integer constant of non-bitvector type {ty}"
+                )));
+            }
+        };
+        Ok(self.solver.try_bv_const_bigint(&value, width)?)
     }
 
     /// Build the solver condition for an instruction-level annotation over
@@ -1391,7 +1732,10 @@ impl<'m> VcBuilder<'m> {
                 }
                 let width = bit_width(ty).map_err(|e| e.to_string())?;
                 let shift = self.term(*rhs).map_err(|e| e.to_string())?;
-                let bit_width_term = self.solver.bv_const(i64::from(width), width);
+                let bit_width_term = self
+                    .solver
+                    .try_bv_const(i64::from(width), width)
+                    .map_err(|e| e.to_string())?;
                 let operands =
                     ProofOperands::for_annotation(annotation, &[shift, bit_width_term], width)
                         .map_err(|e| e.to_string())?;
@@ -1418,7 +1762,10 @@ impl<'m> VcBuilder<'m> {
                     format!("{annotation}: the node has no pointer operand to bind")
                 })?;
                 let t = self.term(ptr).map_err(|e| e.to_string())?;
-                let permission = self.borrow.get_permission(&mut self.solver, t);
+                let permission = self
+                    .borrow
+                    .get_permission(&mut self.solver, t)
+                    .map_err(|e| e.to_string())?;
                 let operands = ProofOperands::for_annotation(annotation, &[t, permission], 2)
                     .map_err(|e| e.to_string())?;
                 verify_proof_obligation(&mut self.solver, annotation, &operands)
@@ -1520,25 +1867,48 @@ impl<'m> VcBuilder<'m> {
         let obligations = bind_obligations(self.module, self.function, &conditions);
 
         let application_obligations = obligations.clone();
-        let application_refutations = conditions
-            .iter()
-            .filter(|condition| matches!(condition.verdict, VcVerdict::Refuted { .. }))
-            .cloned()
-            .collect();
+        let (application_refutations, application_unwitnessed) = split_refutations(&conditions);
         let application_evidence =
             collect_application_evidence(self.module, self.function, &conditions);
         FunctionVc {
             source_module_digest: self.module.stable_digest(),
             application_obligations,
             application_refutations,
+            application_unwitnessed,
             application_evidence,
             func: self.function.id,
             bindings: self.bindings,
             conditions,
             unsupported_function_proofs,
             obligations,
+            whole_function_fallback: None,
         }
     }
+}
+
+/// Split a VC's refuted conditions into the ones that may mint `Failed` and
+/// the ones that may not.
+///
+/// D3 — the crate's rule "`Failed` requires a real refutation" (see
+/// [`apply_vc_outcomes`]): only a SAT answer backed by a consumer-accepted
+/// model ([`Counterexample::Model`]) is a refutation; one ay will not vouch
+/// for ([`Counterexample::Unavailable`]) is reported, never applied. Admitting
+/// `Unavailable` into the first list is the one-line owner reversal.
+fn split_refutations(conditions: &[VcCondition]) -> (Vec<VcCondition>, Vec<VcCondition>) {
+    let mut witnessed = Vec::new();
+    let mut unwitnessed = Vec::new();
+    for condition in conditions {
+        match &condition.verdict {
+            VcVerdict::Refuted {
+                counterexample: Counterexample::Model(_),
+            } => witnessed.push(condition.clone()),
+            VcVerdict::Refuted {
+                counterexample: Counterexample::Unavailable(_),
+            } => unwitnessed.push(condition.clone()),
+            _ => {}
+        }
+    }
+    (witnessed, unwitnessed)
 }
 
 /// Pair each obligation with the replay evidence of the condition at its site,
@@ -1553,12 +1923,10 @@ fn collect_application_evidence(
         if obligation.function != Some(function.id) {
             continue;
         }
-        let Some(site) = &obligation.site else {
+        if obligation.site.is_none() {
             continue;
-        };
-        let mut at_site = conditions
-            .iter()
-            .filter(|c| c.block == site.block && c.inst_index == site.inst_index as usize);
+        }
+        let mut at_site = conditions_at_site(obligation, conditions).into_iter();
         if let Some(evidence) = at_site.find_map(|c| c.evidence.clone()) {
             out.push((obligation.id, evidence));
         }
@@ -1595,12 +1963,24 @@ fn bind_obligations(
         if obligation.function != Some(function.id) {
             continue;
         }
-        let outcome = if obligation.formula.is_some() {
+        let sited_on_assert = obligation.site.as_ref().is_some_and(|site| {
+            function
+                .blocks
+                .iter()
+                .find(|b| b.id == site.block)
+                .and_then(|b| b.body.get(site.inst_index as usize))
+                .is_some_and(|node| is_assert_site_inst(&node.inst))
+        });
+        let outcome = if sited_on_assert && !is_assert_class_kind(&obligation.kind) {
+            // WS5.4 (1a): the condition at an assert-shaped site states a
+            // panic-class fact about THAT check; a Postcondition, a
+            // LoopInvariant or any other kind merely sited there is not backed
+            // by it, however provable the condition is.
             VcObligationOutcome::Unsupported {
-                reason: "obligation carries a formula payload; the adapter has no in-process \
-                         SMT-LIB bridge (fail-closed)"
-                    .to_string(),
+                reason: assert_class_kind_refusal(&obligation.kind),
             }
+        } else if let Some(refusal) = formula_refusal(module, obligation) {
+            VcObligationOutcome::Unsupported { reason: refusal }
         } else if !vc_addressable_kind(&obligation.kind) {
             VcObligationOutcome::Unsupported {
                 reason: format!(
@@ -1609,10 +1989,7 @@ fn bind_obligations(
                 ),
             }
         } else if let Some(site) = &obligation.site {
-            let at_site: Vec<&VcCondition> = conditions
-                .iter()
-                .filter(|c| c.block == site.block && c.inst_index == site.inst_index as usize)
-                .collect();
+            let at_site = conditions_at_site(obligation, conditions);
             if at_site.is_empty() {
                 VcObligationOutcome::NotDischarged {
                     reason: format!(
@@ -1632,6 +2009,23 @@ fn bind_obligations(
             }) {
                 VcObligationOutcome::Unsupported {
                     reason: unsupported,
+                }
+            } else if at_site
+                .iter()
+                .any(|c| matches!(c.source, VcSource::LoweredAssert { .. }))
+            {
+                // The SITED VC's `Refuted` means "not provable from this block
+                // alone", never "the program is wrong" — and it never mints
+                // `Failed` (it supplies no refutations to `apply_vc_outcomes`).
+                VcObligationOutcome::NotDischarged {
+                    reason: format!(
+                        "the VC condition at this obligation's site (bb{}#{}) is not provable \
+                         locally: the sited VC is block-local and hypothesis-free, so a \
+                         counterexample over the block's free inputs is not a claim that the \
+                         program is wrong",
+                        site.block.index(),
+                        site.inst_index
+                    ),
                 }
             } else {
                 VcObligationOutcome::NotDischarged {
@@ -1686,6 +2080,59 @@ fn bind_obligations(
         obligations.push((obligation.id, outcome));
     }
     obligations
+}
+
+/// The conditions that can back `obligation`: those generated at its site.
+///
+/// A sited-VC condition names the obligation it was generated FOR, and backs
+/// only that one — two rows sited on one node each get their own condition, so
+/// one row's verdict can never be read as another's. A whole-function condition
+/// (an `Inst::Assert` walked in body order, or an instruction annotation) is
+/// shared by every row at its position.
+fn conditions_at_site<'c>(
+    obligation: &ProofObligation,
+    conditions: &'c [VcCondition],
+) -> Vec<&'c VcCondition> {
+    let Some(site) = &obligation.site else {
+        return Vec::new();
+    };
+    conditions
+        .iter()
+        .filter(|c| c.block == site.block && c.inst_index == site.inst_index as usize)
+        .filter(|c| match c.source {
+            VcSource::LoweredAssert {
+                obligation: owner, ..
+            } => owner == obligation.id,
+            _ => true,
+        })
+        .collect()
+}
+
+/// Why a formula-bearing obligation cannot be addressed, or `None` when it
+/// carries no formula or its formula states the goal re-derived at its site.
+///
+/// WS5.4 (1b): the adapter has no in-process SMT-LIB bridge, so a formula is
+/// admitted only in the one spelling trust-ir can compare to the IR —
+/// [`trust_ir::proof::formula_binds_site_goal`] (the bit-blast goal claim, or a
+/// producer `smtlib2` formula whose one SMT-LIB text IS the canonical
+/// bit-vector rendering of the site goal).
+/// Anything else stays `Unsupported`; the formula is never ignored and never
+/// replaced.
+fn formula_refusal(module: &Module, obligation: &ProofObligation) -> Option<String> {
+    obligation.formula.as_ref()?;
+    match derive_site_goal(module, obligation) {
+        Ok(goal) if formula_binds_site_goal(obligation, &goal) => None,
+        Ok(_) => Some(format!(
+            "{PRODUCER_FORMULA_DISAGREES}: the obligation's formula does not state the \
+             bit-vector goal re-derived at its site, and the adapter has no in-process SMT-LIB \
+             bridge to check any other spelling (fail-closed)"
+        )),
+        Err(err) => Some(format!(
+            "obligation carries a formula payload and no bit-vector site goal is derivable to \
+             compare it with ({err}); the adapter has no in-process SMT-LIB bridge \
+             (fail-closed)"
+        )),
+    }
 }
 
 /// The obligation kinds a whole-function VC over in-IR conditions
@@ -1755,13 +2202,10 @@ fn node_ptr_operand(inst: &Inst) -> Option<ValueId> {
     }
 }
 
-/// Total bit width of a schema-sorted type (BitVec width, or eb+sb for FP).
+/// Total bit width of a schema-sorted type (BitVec width, or eb+sb for FP),
+/// by the crate's one width rule, [`crate::sort_bit_width`].
 fn bit_width(ty: &Ty) -> Result<u32, AYError> {
-    match ay_sort(ty)? {
-        Sort::BitVec(bv) => Ok(bv.width),
-        Sort::FloatingPoint(eb, sb) => Ok(eb + sb),
-        _ => Err(AYError::UnsupportedType(ty.clone())),
-    }
+    crate::sort_bit_width(&ay_sort(ty)?).ok_or_else(|| AYError::UnsupportedType(ty.clone()))
 }
 
 /// Byte width for the byte-addressable memory model. Fails closed on types
@@ -1784,4 +2228,252 @@ fn inst_label(inst: &Inst) -> String {
         .next()
         .unwrap_or(&debug)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_methods)]
+
+    use super::*;
+    use trust_ir::Block;
+    use trust_ir::proof::{ObligationKind, ProofObligation, ProofStatus};
+    use trust_ir::ty::FuncTy;
+
+    /// A one-block `f(i32) -> ()` function and its module.
+    fn single_block_module() -> Module {
+        let mut module = Module::new("vc_frames");
+        let signature = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![Ty::I32],
+                returns: vec![],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let mut function = Function::new(FuncId::new(0), "f", signature, BlockId::new(0));
+        let mut block = Block::new(BlockId::new(0));
+        block.params.push((ValueId::new(0), Ty::I32));
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        function.blocks.push(block);
+        module.functions.push(function);
+        module
+    }
+
+    /// `(= a b)` over two fresh 8-bit constants: `holds == false` is PROVED
+    /// when `a != b` (the negation `a = b` is UNSAT), REFUTED when `a == b`.
+    fn condition(vcb: &mut VcBuilder<'_>, a: i64, b: i64) -> ProofCondition {
+        let a = vcb.solver.try_bv_const(a, 8).expect("constant");
+        let b = vcb.solver.try_bv_const(b, 8).expect("constant");
+        ProofCondition {
+            term: vcb.solver.try_eq(a, b).expect("eq"),
+            strategy: crate::ProofStrategy::AssertAndCheckUnsat,
+        }
+    }
+
+    /// r11 C1 (evidence kind ii: no seam on origin/main). When ay's panics
+    /// became `Err`s, a failed or unbalanced solver frame could leave a goal
+    /// on the stack; every later condition is checked "under the current
+    /// (prefix-only) solver context", so a leftover `false` would make every
+    /// later condition falsely `Proved`. The session is POISONED instead and
+    /// proves nothing afterwards. Mutation checks: ignoring `poisoned` in
+    /// `in_frame` turns (a) `Proved`; dropping the scope-level check turns (c)
+    /// into a FALSE `Proved`.
+    #[test]
+    fn a_poisoned_session_proves_nothing_after_the_frame_error() {
+        let module = single_block_module();
+        let function = &module.functions[0];
+
+        // (a) A poisoned session does not solve an otherwise-PROVED goal.
+        let mut vcb = VcBuilder::new(&module, function).expect("builder");
+        let provable = condition(&mut vcb, 1, 2);
+        assert_eq!(vcb.solve_condition_now(provable), VcVerdict::Proved);
+        vcb.poisoned = Some("solver session poisoned: test".to_string());
+        let provable = condition(&mut vcb, 1, 2);
+        assert_eq!(
+            vcb.solve_condition_now(provable),
+            VcVerdict::Unknown {
+                reason: "solver session poisoned: test".to_string()
+            }
+        );
+
+        // (b) The guard's own pop underflows (the body popped its frame):
+        // poisoned, and the next trivially-provable goal is `Unknown`.
+        let mut vcb = VcBuilder::new(&module, function).expect("builder");
+        let framed = vcb.in_frame(|vcb| vcb.solver.try_pop().map_err(AYError::from));
+        assert!(matches!(&framed, Err(reason) if reason.contains("could not be closed")));
+        let provable = condition(&mut vcb, 1, 2);
+        assert!(matches!(
+            vcb.solve_condition_now(provable),
+            VcVerdict::Unknown { reason } if reason.starts_with("solver session poisoned")
+        ));
+
+        // (c) The body leaves an extra frame holding `false`: the guard's pop
+        // succeeds, but the stack is unbalanced. A REFUTABLE goal would read
+        // `Proved` against the leftover `false`; the poisoned session says
+        // `Unknown` instead.
+        let mut vcb = VcBuilder::new(&module, function).expect("builder");
+        let framed = vcb.in_frame(|vcb| {
+            vcb.solver.try_push().expect("push");
+            let contradiction = condition(vcb, 1, 2);
+            vcb.solver
+                .try_assert_term(contradiction.term)
+                .expect("assert");
+            vcb.solver.try_push().expect("push");
+            Ok(())
+        });
+        assert!(matches!(&framed, Err(reason) if reason.contains("unbalanced")));
+        let refutable = condition(&mut vcb, 3, 3);
+        assert!(matches!(
+            vcb.solve_condition_now(refutable),
+            VcVerdict::Unknown { reason } if reason.starts_with("solver session poisoned")
+        ));
+    }
+
+    /// r11 review H1 (evidence kind ii: the seam is new). ay's
+    /// `try_check_sat` turns a panic inside the solver into
+    /// `SolverError::SolverPanic`, after which ay says the solver's state is
+    /// likely corrupted. Before this rule the frame mapped such an error to
+    /// `Unknown` and the whole-function walk went on solving later
+    /// conditions on the SAME solver. Every error a frame body returns now
+    /// poisons the session. Mutation check: keeping the message but dropping
+    /// the `self.poison(..)` call on a body error turns the follow-up goal in
+    /// (d) into `Proved` (measured at landing).
+    #[test]
+    fn a_failed_solver_step_inside_a_frame_poisons_the_session() {
+        let module = single_block_module();
+        let function = &module.functions[0];
+
+        // (d) The `SolverPanic` shape: no input is known that makes ay's
+        // `check_sat` panic, so the body returns the error a caught panic
+        // flattens to. The frame closes cleanly; the session is poisoned
+        // anyway, and the next trivially-provable goal is `Unknown`.
+        let mut vcb = VcBuilder::new(&module, function).expect("builder");
+        let framed: Result<(), String> = vcb.in_frame(|_| {
+            Err(AYError::SolverError(
+                "solver panicked: simulated internal invariant failure".to_string(),
+            ))
+        });
+        assert!(
+            matches!(&framed, Err(reason) if reason.contains("inside the frame failed")),
+            "{framed:?}"
+        );
+        assert_eq!(vcb.solver.num_scopes(), 0, "the frame was still closed");
+        let provable = condition(&mut vcb, 1, 2);
+        assert!(matches!(
+            vcb.solve_condition_now(provable),
+            VcVerdict::Unknown { reason } if reason.starts_with("solver session poisoned")
+        ));
+
+        // (e) A real refusal on the condition path: ay refuses to assert a
+        // non-Boolean term. That condition is `Unknown` and the session is
+        // poisoned, so a following trivially-provable goal is `Unknown` too
+        // — never solved on the solver that just failed.
+        let mut vcb = VcBuilder::new(&module, function).expect("builder");
+        let not_boolean = ProofCondition {
+            term: vcb.solver.try_bv_const(1, 8).expect("constant"),
+            strategy: crate::ProofStrategy::AssertAndCheckUnsat,
+        };
+        assert!(matches!(
+            vcb.solve_condition_now(not_boolean),
+            VcVerdict::Unknown { reason } if reason.starts_with("solver session poisoned")
+        ));
+        let provable = condition(&mut vcb, 1, 2);
+        assert!(matches!(
+            vcb.solve_condition_now(provable),
+            VcVerdict::Unknown { reason } if reason.starts_with("solver session poisoned")
+        ));
+    }
+
+    /// r11 item 4 (evidence kind ii: the seam is new). A SAT answer ay will
+    /// not vouch for is `Unavailable`, never an EMPTY model: with no
+    /// `check_sat` at all, and after an UNSAT, there is no SAT result.
+    #[test]
+    fn a_sat_without_a_consumer_model_is_unavailable_never_empty() {
+        let module = single_block_module();
+        let function = &module.functions[0];
+        let mut vcb = VcBuilder::new(&module, function).expect("builder");
+        assert_eq!(
+            sat_witness(&vcb.solver, &vcb.bindings),
+            Counterexample::Unavailable(WitnessUnavailable::NoSatResult)
+        );
+        let provable = condition(&mut vcb, 1, 2);
+        vcb.solver.try_assert_term(provable.term).expect("assert");
+        assert!(vcb.solver.try_check_sat().expect("check").is_unsat());
+        assert_eq!(
+            sat_witness(&vcb.solver, &vcb.bindings),
+            Counterexample::Unavailable(WitnessUnavailable::NoSatResult)
+        );
+    }
+
+    /// r11 item 4 / D3 (evidence kind ii). A VC whose only refutation carries
+    /// an `Unavailable` witness mints no `Failed`: the row stays `Pending`
+    /// and a diagnostic names ay's reason. A model-backed refutation still
+    /// fails the row. Mutation check: admitting `Unavailable` in
+    /// `split_refutations` mints `Failed` here.
+    #[test]
+    fn an_unavailable_witness_never_mints_failed() {
+        let refuted = |counterexample| VcCondition {
+            block: BlockId::new(0),
+            inst_index: 0,
+            source: VcSource::Assert,
+            verdict: VcVerdict::Refuted { counterexample },
+            evidence: None,
+        };
+        for (witness, expect_failed) in [
+            (
+                Counterexample::Unavailable(WitnessUnavailable::NotValidated),
+                false,
+            ),
+            (Counterexample::Model(Vec::new()), true),
+        ] {
+            let mut module = single_block_module();
+            let id = ProofId::new(0);
+            module.proof_obligations.push(
+                ProofObligation::new(
+                    id,
+                    ObligationKind::Postcondition,
+                    ProofStatus::Pending,
+                    "ensures",
+                )
+                .with_function(FuncId::new(0)),
+            );
+            let conditions = vec![refuted(witness)];
+            let (application_refutations, application_unwitnessed) = split_refutations(&conditions);
+            let outcome = VcObligationOutcome::NotDischarged {
+                reason: "1 of 1 VC conditions are not proved".to_string(),
+            };
+            let vc = FunctionVc {
+                source_module_digest: module.stable_digest(),
+                application_obligations: vec![(id, outcome.clone())],
+                application_refutations,
+                application_unwitnessed,
+                application_evidence: Vec::new(),
+                func: FuncId::new(0),
+                bindings: Vec::new(),
+                conditions,
+                unsupported_function_proofs: Vec::new(),
+                obligations: vec![(id, outcome)],
+                whole_function_fallback: None,
+            };
+            let transitions = apply_vc_outcomes(&mut module, &vc).expect("same module");
+            if expect_failed {
+                assert_eq!(transitions, vec![(id, ProofStatus::Failed)]);
+            } else {
+                assert!(transitions.is_empty(), "no Failed on an unvouched SAT");
+                assert_eq!(module.proof_obligations[0].status, ProofStatus::Pending);
+                assert!(
+                    module
+                        .obligation_diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic
+                            .message
+                            .contains("ay did not validate its SAT model for a consumer")),
+                    "the diagnostic names the reason: {:?}",
+                    module.obligation_diagnostics
+                );
+            }
+        }
+    }
 }

@@ -1,0 +1,27 @@
+{
+  "sources": [
+    { "module": "SemR", "path": "SemR.lean" },
+    { "module": "SemRBoolBody", "path": "SemRBoolBody.lean" }
+  ],
+  "module": "SemRBoolBody",
+  "roots": [
+    "SemR.binopStep",
+    "SemR.evalBinop",
+    "SemR.bindResults",
+    "SemR.BoolBody.readAndNode_sound",
+    "SemR.BoolBody.eval_and",
+    "SemR.BoolBody.readAndNode_step",
+    "SemR.BoolBody.or_mutant_refused",
+    "SemR.BoolBody.missing_result_refused",
+    "SemR.BoolBody.extra_result_refused",
+    "SemR.BoolBody.AndGoal",
+    "SemR.BoolBody.OrInsteadOfAnd",
+    "SemR.BoolBody.or_counterexample"
+  ],
+  "positive": [
+    { "proof": "SemR.BoolBody.eval_and", "goal": "SemR.BoolBody.AndGoal" }
+  ],
+  "negative": [
+    { "proof": "SemR.BoolBody.eval_and", "goal": "SemR.BoolBody.OrInsteadOfAnd" }
+  ]
+}

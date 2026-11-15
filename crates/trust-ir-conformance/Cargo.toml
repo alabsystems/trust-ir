@@ -11,12 +11,18 @@
 # ty, ay) pin these fixtures to guarantee wire-format compatibility
 # across TrustIr releases.
 #
-# The one LIBRARY surface is `src/subset.rs` — the machine-readable
+# The LIBRARY surface is `src/subset.rs` — the machine-readable
 # lowering-target conformance subset (lowering-target-subset.md, repo root) and
-# its checker, `subset::module_subset_violations`. Producers self-gating
-# their emission (Clean's emit_trust_ir; see the spec doc's "Producer
-# notes") depend on this crate with `default-features = false`: the lib
-# target needs no features — the defaults exist only for the test corpus.
+# its checker, `subset::module_subset_violations` — and, behind the
+# `must-refuse` feature, `src/refuse.rs`: the must-refuse corpus runner a
+# CONSUMER (trust-cg) calls from its own test to show it refuses every row of
+# `tests/fixtures/refuse/` and accepts the control row (KIND 4; test-rung
+# evidence over the corpus, never proof). Producers self-gating their emission
+# (Clean's emit_trust_ir; see the spec doc's "Producer notes") depend on this
+# crate with `default-features = false`: the lib target needs no features —
+# the defaults exist only for the test corpus. A consumer of the refuse corpus
+# adds `features = ["must-refuse"]`, which forwards only `trust-ir/binary`
+# (the corpus is decoded from its checked-in wire bytes).
 
 [package]
 name = "trust-ir-conformance"
@@ -30,8 +36,9 @@ publish = false
 
 [lib]
 # Library surface = the `subset` module (machine-readable lowering-target
-# subset + checker, feature-free); everything else lives in the
-# integration test targets.
+# subset + checker, feature-free) and the `must-refuse`-gated `refuse`
+# module (the corpus runner); everything else lives in the integration test
+# targets.
 path = "src/lib.rs"
 
 [features]
@@ -39,14 +46,20 @@ path = "src/lib.rs"
 # box; this crate exists *to* run the all-formats corpus.
 default = ["all"]
 all = [
+    "must-refuse",
     "trust-ir/parser",
     "trust-ir/binary",
     "trust-ir/fmt",
     "trust-ir/serde",
     "trust-ir/dialect-verif-example",
     "trust-ir/clean-expr",
+    "trust-ir/diff",
     "trust-ir-build/serde",
+    "trust-ir-build/binary",
 ]
+# The must-refuse corpus runner (`refuse` module): decodes the checked-in
+# `.tmbc` rows, so it needs exactly the binary codec and nothing else.
+must-refuse = ["trust-ir/binary"]
 
 [dependencies]
 trust-ir = { path = "../trust-ir" }
@@ -55,7 +68,65 @@ trust-ir-build = { path = "../trust-ir-build" }
 [dev-dependencies]
 serde_json = "1.0"
 rmp-serde = "1.3"
+# SemR (lean/semr): the source digest Clean's fixture copy pins too.
+sha2 = { version = "0.10", default-features = false }
 
 [[test]]
 name = "conformance"
 path = "tests/conformance.rs"
+
+# tests/generate.rs is the fixture library (the lib's `fixtures` module, where
+# its `fixture_validity` tests run as lib unit tests), not a test target of its
+# own: `test = false` keeps `cargo test` from building it a second time.
+[[test]]
+name = "generate"
+path = "tests/generate.rs"
+test = false
+
+# The two-language ratchets (roadmap WS8.6): the archived 2026-09-17 Part B
+# battery, ported. Every row is checked against
+# tests/two_language/RATCHETS.tsv (see tests/two_language/harness.rs); the
+# CLI rows live in trust-ir-cli's `two_language_cli` target.
+[[test]]
+name = "two_language_harness"
+path = "tests/two_language/harness_selftest.rs"
+
+[[test]]
+name = "two_language_b0"
+path = "tests/two_language/b0_smoke.rs"
+
+[[test]]
+name = "two_language_b1"
+path = "tests/two_language/b1_mixed_module.rs"
+
+[[test]]
+name = "two_language_b2"
+path = "tests/two_language/b2_contracts_obligations.rs"
+
+[[test]]
+name = "two_language_b3"
+path = "tests/two_language/b3_kernel_certified.rs"
+
+[[test]]
+name = "two_language_b4"
+path = "tests/two_language/b4_cross_crate_linking.rs"
+
+[[test]]
+name = "two_language_b5"
+path = "tests/two_language/b5_nat_handle.rs"
+
+[[test]]
+name = "two_language_b6"
+path = "tests/two_language/b6_data_carriers.rs"
+
+[[test]]
+name = "two_language_b7"
+path = "tests/two_language/b7_codec_and_semantics_gaps.rs"
+
+[[test]]
+name = "two_language_field_ratchets"
+path = "tests/two_language/field_ratchets.rs"
+
+[[test]]
+name = "closure_storage"
+required-features = ["all"]

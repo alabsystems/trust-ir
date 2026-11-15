@@ -1,0 +1,36 @@
+# Declared run-time reads of Rust sources that climb out of their package
+# (scripts/gate_select.py). A file that climbs to the REPOSITORY ROOT (a `..`
+# literal resolving to the root or to an ancestor of its package, or
+# `.parent()`/`.ancestors()`/`current_dir` beside CARGO_MANIFEST_DIR) can read
+# anything, so the selector runs every target that compiles it on EVERY change
+# unless a row here names what it reads. A row must cover every path literal of
+# the file that names a repository path (the selector checks; an uncovered
+# literal is EVERYTHING again), and `gate_select.py audit` refuses a row whose
+# file no longer escapes.
+#
+# Columns (tab-separated): file, patterns (space-separated), why.
+# A pattern is a directory (`dir/`), an fnmatch glob (`*` crosses `/`), an exact
+# path, or `lean:<Module>@<package dir>` (the Lean import closure of Module).
+# The patterns are reviewed claims about code the selector cannot execute:
+# a path built from data (not a literal) must be named here by the reviewer.
+crates/trust-ir-build/tests/validation_holes/repair_options.rs	crates/*/src/*	scans every crates/*/src .rs file for `repair_options` readers
+crates/trust-ir-conformance/tests/back_compat.rs	docs/binary-format.md docs/formats.md	the normative format documents' TRUST_IR_BINARY_FORMAT_VERSION markers
+crates/trust-ir-conformance/tests/bridge_subset_agreement.rs	crates/*.rs	scans every .rs under crates/ (fixtures/ and target/ skipped) for subset spellings
+crates/trust-ir-conformance/tests/conformance.rs	lean/trust_ir-semantics/TrustIr/Semantics/ExecutableFixtures.lean	repo_root().join("lean")...: the Lean executable fixtures
+crates/trust-ir-conformance/tests/import_identity.rs	crates/trust-ir/src/ crates/trust-ir-build/src/	scans the sources of trust-ir and trust-ir-build
+crates/trust-ir-conformance/tests/lowering_subset.rs	lowering-target-subset.md	the subset document's rows
+crates/trust-ir-conformance/tests/names_not_numbers.rs	benchmarks/ frontend/tests/ crates/*/tests/* crates/*/benches/*	walks the NAMES under every tests/ and benches/ tree, frontend/tests and benchmarks/ (GRANDFATHERED rows lie inside them)
+crates/trust-ir-conformance/tests/refuse_corpus.rs	paths-in:crates/trust-ir-conformance/tests/fixtures/refuse/MANIFEST.tsv crates/trust-ir-conformance/tests/generate/refuse.rs crates/trust-ir-build/src/validate.rs crates/trust-ir/src/binary.rs exists:CLAUDE.md exists:docs	every MANIFEST row's obligation file must cite the row back (data-driven: the files the manifest names); the variant censuses; `is_public_snapshot` asks only whether docs/ and CLAUDE.md exist; the merge-base shrink rule reads git (keyed on HEAD and the merge-base)
+crates/trust-ir-conformance/tests/template_refuse_corpus.rs	crates/trust-ir/src/template.rs crates/trust-ir-build/src/template.rs	the TemplateError / InstantiateError variant lists
+crates/trust-ir-conformance/tests/union_carrier.rs	lowering-target-subset.md	the subset document names this test
+crates/trust-ir/src/binary/wire_census.rs	wire-allocations.toml crates/*/src/* frontend/src/	the registry, and every versioned literal in crates/*/src and frontend/src (cfg(test): the trust-ir lib-test legs only)
+crates/trust-ir/tests/dependency_pin_coherence.rs	Cargo.toml Cargo.lock crates/*/Cargo.toml crates/trust-ir-ay/src/vc.rs crates/trust-ir-ay/src/bvblast.rs frontend/Cargo.toml frontend/Cargo.lock	every pin leg (include_str!), and `cargo metadata --locked` over frontend/ (its path dependencies' manifests)
+crates/trust-ir-conformance/tests/lean_exec_differential.rs	lean:TrustIrEval.Main@lean/trust_ir-semantics lean:Main@lean/semr lean/semr/	`lake build trustir_eval` in the Lean package, and `lake build semr_eval` in lean/semr (SemR, RM4): the import closures of the two executable roots (their configuration files are GLOBAL); and `semr_source_digest_is_pinned` reads lean/semr/SemR.lean itself, so the SemR package is declared as a directory too
+crates/trust-ir-conformance/tests/semr_bool_memory.rs	lean/semr-memory/ lean/semr/ lean:TrustIr.Proofs.ByteMemory@lean/trust_ir-semantics scripts/semr_frame_refusals.py	The complete Bool/frame memory package and audits, canonical SemR types/operations and exact canonical byte-memory proof import closure; local Lake dependency pins/configuration are package inputs
+crates/trust-ir-conformance/tests/semr_bool_memory/toolchain_cache.rs	lean/semr-memory/ lean/semr/ lean:TrustIr.Proofs.ByteMemory@lean/trust_ir-semantics lean:TrustIrEval.Main@lean/trust_ir-semantics	No-clean native 4.8 oracle to 4.30 Bool-memory proof to 4.8 real import/load and execution; canonical ByteMemory and full legacy oracle import closures, with local package configuration as global inputs
+crates/trust-ir/tests/lean_schema_parity.rs	lean/trust_ir-semantics/TrustIr/Basic.lean lean/trust_ir-semantics/TrustIr/BinOp.lean lean/trust_ir-semantics/TrustIr/CastOp.lean lean/trust_ir-semantics/TrustIr/Constant.lean lean/trust_ir-semantics/TrustIr/Inst.lean lean/trust_ir-semantics/TrustIr/Pred.lean lean/trust_ir-semantics/TrustIr/Template.lean lean/trust_ir-semantics/TrustIr/Proofs/PredLatticeProps.lean lean/trust_ir-semantics/TrustIr/Semantics/Call.lean lean/trust_ir-semantics/TrustIr/Semantics/Eval.lean lean/trust_ir-semantics/TrustIr/Semantics/Memory.lean lean/trust_ir-semantics/TrustIr/Semantics/Step.lean lean/semr/SemR.lean lean/semr/FRAGMENT.tsv lean/semr/QUOTED_MODEL.tsv lean/semr/TY_FRAGMENT.tsv lean/semr/CONSTANT_FRAGMENT.tsv	The exact Lean files read by lean_dir(), SemR's decoded/quoted constructor partition and its type- and constant-fragment ledgers; no directory walk or quoted runtime-parity credit
+crates/trust-ir-conformance/tests/template_subst_differential.rs	lean:TrustIrEval.Main@lean/trust_ir-semantics	`lake build trustir_eval`, as lean_exec_differential: the import closure of the executable root
+crates/trust-ir-build/tests/tensor_contraction_equals_loop_nest.rs	lean:TensorContraction@lean/semr lean/semr/TensorContraction.lean lean/semr/lean-toolchain	`lake build TensorContraction` in lean/semr: the module's import closure (SemR), its source (the import/escape-hatch tripwire) and the package's Lean pin; the .olean output under lean/semr/.lake is built, not read as an input
+
+crates/trust-ir-build/tests/bytev1_clean_uint32_runtime.rs	crates/trust-ir/tests/fixtures/clean_uint32_runtime/ crates/trust-ir-build/tests/fixtures/source_value_equations/boundActualEquation/module.bin	Complete pinned runtime source binding and unchanged complete original module; no selected-only source
+crates/trust-ir-build/tests/template_validation.rs	lean/semr/TY_FRAGMENT.tsv crates/trust-ir-conformance/tests/generate/templates.rs	the `#[path]` template fixtures, and SemR's type-fragment ledger, the variants whose every template occurrence T8 refuses (`template_refuses_every_semr_fragment_type`)

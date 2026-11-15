@@ -1,0 +1,184 @@
+{
+  "name": "refuse_c_unwind",
+  "functions": [
+    {
+      "id": 0,
+      "name": "may_throw",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    },
+    {
+      "id": 1,
+      "name": "unwinding_entry",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [
+            [
+              0,
+              "U64"
+            ]
+          ],
+          "body": [
+            {
+              "inst": {
+                "Invoke": {
+                  "callee": 0,
+                  "args": [
+                    0
+                  ],
+                  "normal_dest": 1,
+                  "normal_args": [],
+                  "unwind_dest": 2
+                }
+              },
+              "results": [
+                1
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        },
+        {
+          "id": 1,
+          "params": [],
+          "body": [
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    1
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "params": [],
+          "body": [
+            {
+              "inst": {
+                "LandingPad": {
+                  "is_cleanup": true,
+                  "catch_type_indices": []
+                }
+              },
+              "results": [
+                2,
+                3
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Resume": {
+                  "exn": 2
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "CUnwind",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [
+        "U64"
+      ],
+      "returns": [
+        "U64"
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": {
+    "triple": "aarch64-apple-darwin",
+    "pointer_size": 8,
+    "endianness": "Little",
+    "abi": null,
+    "struct_passing": "NativeC"
+  },
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

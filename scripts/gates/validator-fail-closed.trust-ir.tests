@@ -1,0 +1,15 @@
+# Gate 9, trust-ir crate leg: tests the validator's refusals depend on.
+union_byte_overlap_model  # WS2.3: the overlap rule points producers at the ratified byte-carrier union model; its over-refusal control needs it to execute
+make_aggregate_formats  # WS3.5: MakeAggregate through all four codecs; binary since the v51 INST wire batch (Inst tag 60, read-gated), which retired the `ModuleHasNoWireIdentity` refusal it used to pin
+bulk_memory_ops  # WS3.20: MemCopy/MemSet + bit intrinsics executed and refused by name (F-057); goal-g1-g8 rows ported
+bool_lane_width_vs_layout  # F-161: bit_width (1 bit/lane) vs ty_layout_shape (1 byte/lane) pinned for bool and <n x bool>; the layout authority refuses a bool-lane Bitcast/Transmute by name
+char_validity_invariant  # WS2.17: the Char Unicode-scalar-value invariant is UB in the interpreter at every bind site (subset v4 condition 6, dynamic half)
+function_dependencies  # Borrowed root dependency census: exact IDs, all-block references, transitive tables and explicit unresolved frontiers; no proof authority
+formula_inventory  # Borrowed formula census: exact carrier order, duplicate leaves, detached functions and scoped allocation controls
+array_splat_formats  # v50: Constant::Splat / Inst::ArraySplat through all four codecs at u64-scale lengths, the v50 read gate, v38 projection refusal, non-canonical splat refused at decode and parse
+signature_abi  # Typed function-pointer ABI facts: all four codecs, source/carrier census, target and attribute mismatch mutations, content identity
+pointer_roots  # C1 §3.3: the pointer roots D28 and the thread model read; parity with the census's private copy, its four corrections, the escape bit against mem2reg
+effect_summaries  # WS1.14: v59 FunctionSummary.effects + WorldPre/WorldPost — selection, both read gates, strict flag bytes, EffectSummaryRequiresV59, obligation digest v8 (F-013)
+
+clean_boxed_u32_runtime
+storage_policy_inventory  # Complete same-module Storage seed absence; foreign layouts/body refusals and exact witness ordering

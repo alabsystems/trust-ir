@@ -30,7 +30,11 @@ use trust_ir::{
 /// (`.tmbc` is the binary codec extension per the CLI's format contract.)
 fn write_bin(dir: &std::path::Path, name: &str, module: &Module) -> std::path::PathBuf {
     let path = dir.join(format!("{name}.tmbc"));
-    fs::write(&path, trust_ir::binary::serialize_module(module)).expect("write bin");
+    fs::write(
+        &path,
+        trust_ir::binary::serialize_module(module).expect("serialize_module: test fixture"),
+    )
+    .expect("write bin");
     path
 }
 
@@ -884,4 +888,272 @@ fn require_manifest_accumulates_typed_anchor_and_coverage_failures() {
         typed_anchor < coverage && coverage < missing_manifest,
         "nondeterministic order: {stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// S3 — the typed surface of a Linked machine (roadmap WS1.10, F-014)
+// ---------------------------------------------------------------------------
+
+/// The L1 control module (Linked, typed anchor, proof binding) with its one
+/// invariant replaced by `formula`.
+fn linked_with_invariant(formula: &str) -> Module {
+    let mut module = build_spec_pass_l1_module();
+    module.spec_modules[0].invariants[0].formula = formula.to_string();
+    module
+}
+
+fn run_spec_link_with_manifest(module: &Module, name: &str) -> std::process::Output {
+    let dir = tempdir().expect("tempdir");
+    let path = write_bin(dir.path(), name, module);
+    let manifest = write_manifest(dir.path(), "m", &harness_manifest_with_proof());
+    trust_ir_cmd()
+        .arg("spec-link")
+        .arg(&path)
+        .arg("--harness-manifest")
+        .arg(&manifest)
+        .output()
+        .expect("run trust-ir")
+}
+
+/// crit.unex07 — the positive certifying Linked path through the real binary:
+/// a Linked module with an anchor and a manifest-resolved proof binding, whose
+/// invariant is a well-sorted SMT-LIB2 term, reports `certifying` and exits 0.
+#[test]
+fn crit_unex07_linked_module_with_anchors_and_manifest_reports_certifying() {
+    let output = run_spec_link_with_manifest(
+        &linked_with_invariant("(and (<= 0 seq) (<= seq 7))"),
+        "unex07",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("spec-link-status: certifying"),
+        "got: {stdout}"
+    );
+    assert!(stdout.contains("S0/S1/S2/S3"), "got: {stdout}");
+}
+
+/// Negative twins of crit.unex07: garbage syntax, an undeclared variable and an
+/// ill-sorted comparison each exit 1 with the named S3 refusal.
+#[test]
+fn spec_link_linked_unparsed_invariants_exit_one_naming_s3() {
+    for (name, formula, needle) in [
+        (
+            "garbage",
+            ")))( @@ [] <> not a formula",
+            "not one quantifier-free SMT-LIB2 term",
+        ),
+        (
+            "undeclared",
+            "(>= zzz_undeclared 0)",
+            "undeclared variable `zzz_undeclared`",
+        ),
+        ("ill-sorted", "(>= seq true)", "ill-sorted"),
+        ("tla", "seq <= 7", "not one quantifier-free SMT-LIB2 term"),
+    ] {
+        let output = run_spec_link_with_manifest(&linked_with_invariant(formula), name);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("spec-link-status: non-certifying"),
+            "{name}: {stderr}"
+        );
+        assert!(
+            stderr.contains("[S3 linked-surface]") && stderr.contains("\"BoundedSeq\""),
+            "{name}: {stderr}"
+        );
+        assert!(stderr.contains(needle), "{name}: {stderr}");
+    }
+}
+
+/// Mutation control: the same garbage under DesignOnly is not read — no S3
+/// violation — and the report is non-certifying only because it is
+/// design-only.
+#[test]
+fn spec_link_design_only_garbage_invariant_is_not_read() {
+    let mut module = linked_with_invariant(")))( @@ [] <> not a formula");
+    module.spec_modules[0].enforcement = trust_ir::SpecEnforcementMode::DesignOnly;
+    let output = run_spec_link_with_manifest(&module, "design-garbage");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("code=design-only"), "got: {stderr}");
+    assert!(!stderr.contains("S3"), "got: {stderr}");
+    assert!(!stderr.contains("spec-link failed"), "got: {stderr}");
+}
+
+// ---------------------------------------------------------------------------
+// S4 — the v46 typed carrier through the real binary (roadmap WS4.14, F-014)
+// ---------------------------------------------------------------------------
+
+/// The L1 control module (Linked, typed anchor, Kani binding + manifest) with
+/// its `ring` machine carrying the whole v46 typed carrier: `seq` declares its
+/// sort, `BoundedSeq` carries the typed clause, and three temporal properties
+/// (an `Always`, an `Eventually`, a `WeakFair` with a primed action relation)
+/// are declared.
+fn typed_linked_ring() -> Module {
+    use trust_ir::proof::{ClauseBinding, ClausePlace, ClauseSort, ProofFormula};
+    use trust_ir::{SpecTemporal, TemporalForm};
+
+    let seq = |place: ClausePlace| {
+        (
+            "seq".to_string(),
+            ClauseBinding {
+                sort: ClauseSort::Int,
+                place,
+            },
+        )
+    };
+    let mut bounded = ProofFormula::smtlib2("(<= seq 7)", "Bool");
+    bounded.bindings = vec![seq(ClausePlace::SpecVar { index: 0 })];
+    let mut full = ProofFormula::smtlib2("(= seq 7)", "Bool");
+    full.bindings = vec![seq(ClausePlace::SpecVar { index: 0 })];
+    let mut push = ProofFormula::smtlib2("(= seq_next (+ seq 1))", "Bool");
+    push.bindings = vec![
+        seq(ClausePlace::SpecVar { index: 0 }),
+        (
+            "seq_next".to_string(),
+            ClauseBinding {
+                sort: ClauseSort::Int,
+                place: ClausePlace::SpecVarNext { index: 0 },
+            },
+        ),
+    ];
+
+    let mut module = build_spec_pass_l1_module();
+    let ring = &mut module.spec_modules[0];
+    ring.vars[0].sort = Some(ClauseSort::Int);
+    ring.invariants[0].typed = Some(bounded.clone());
+    ring.temporal = vec![
+        SpecTemporal::new("AlwaysBounded", TemporalForm::Always(bounded)),
+        SpecTemporal::new("EventuallyFull", TemporalForm::Eventually(full)),
+        SpecTemporal::new(
+            "PushFair",
+            TemporalForm::WeakFair {
+                action: "Push".to_string(),
+                relation: Some(push),
+            },
+        ),
+    ];
+    module
+}
+
+/// Positive: the typed `ring` certifies through the real binary — the literal
+/// `spec-link-status: certifying` line, exit 0, and the header word is v46.
+#[test]
+fn spec_link_typed_ring_reports_certifying_at_v46() {
+    let module = typed_linked_ring();
+    let bytes =
+        trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 46);
+    let output = run_spec_link_with_manifest(&module, "typed_ring");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("spec-link-status: certifying"),
+        "got: {stdout}"
+    );
+}
+
+/// Negative twins of the typed ring, one mutation each, each exit 1 naming
+/// `[S4 typed-carrier]` and its specific reason: the typed clause bound to an
+/// undeclared variable index; a primed `SpecVarNext` inside the single-state
+/// `Always` leaf; a binding sort that contradicts the variable's declared sort.
+#[test]
+fn spec_link_typed_ring_twins_exit_one_naming_s4() {
+    use trust_ir::proof::{ClausePlace, ClauseSort};
+    use trust_ir::{SpecTemporal, TemporalForm};
+
+    type Twin = (&'static str, fn(&mut Module), &'static str);
+    let twins: Vec<Twin> = vec![
+        (
+            "undeclared-index",
+            |m| {
+                let typed = m.spec_modules[0].invariants[0].typed.as_mut().unwrap();
+                typed.bindings[0].1.place = ClausePlace::SpecVar { index: 5 };
+            },
+            "state variable 5 is out of range",
+        ),
+        (
+            "primed-in-always",
+            |m| {
+                let relation = match &m.spec_modules[0].temporal[2].form {
+                    TemporalForm::WeakFair { relation, .. } => relation.clone().unwrap(),
+                    _ => unreachable!(),
+                };
+                m.spec_modules[0].temporal[0] =
+                    SpecTemporal::new("AlwaysBounded", TemporalForm::Always(relation));
+            },
+            "names the SUCCESSOR state",
+        ),
+        (
+            "sort-contradiction",
+            |m| {
+                let typed = m.spec_modules[0].invariants[0].typed.as_mut().unwrap();
+                typed.bindings[0].1.sort = ClauseSort::BitVec(64);
+            },
+            "at sort BitVec(64), but the variable declares sort Int",
+        ),
+    ];
+    for (name, mutate, needle) in twins {
+        let mut module = typed_linked_ring();
+        mutate(&mut module);
+        let output = run_spec_link_with_manifest(&module, name);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("spec-link-status: non-certifying"),
+            "{name}: {stderr}"
+        );
+        assert!(
+            stderr.contains("[S4 typed-carrier]") && stderr.contains("\"ring\""),
+            "{name}: {stderr}"
+        );
+        assert!(stderr.contains(needle), "{name}: {stderr}");
+    }
+}
+
+/// A `clean-theorem` proof binding with no kernel-established theorem behind
+/// it is non-certifying: the binary validates the module to mint the kernel
+/// re-check witness (here: zero theorems — the fixture carries no CleanCic
+/// certificate) and the binding is refused by name. Writing `Certified` into
+/// the module by hand changes nothing, because the witness comes from the
+/// validator's replay, not from the status byte.
+#[test]
+fn spec_link_clean_theorem_without_a_kernel_witness_is_non_certifying() {
+    let mut module = typed_linked_ring();
+    module.spec_modules[0].proofs[0].kind = ProofKind::CleanTheorem {
+        name: "Ring.push_refines".to_string(),
+    };
+    let output = run_spec_link_with_manifest(&module, "clean-theorem");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("spec-link: kernel re-check witness established 0 theorems"),
+        "got: {stdout}"
+    );
+    assert!(
+        stderr.contains("spec-link-status: non-certifying"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("[S4 typed-carrier]")
+            && stderr.contains("cites Clean theorem \"Ring.push_refines\"")
+            && stderr.contains("the kernel re-check witness does not establish it"),
+        "got: {stderr}"
+    );
+
+    // Mutation control: the same binding as a Kani harness the manifest
+    // lists certifies — the refusal is the Clean-theorem rule, not the
+    // fixture.
+    let output = run_spec_link_with_manifest(&typed_linked_ring(), "clean-theorem-control");
+    assert!(output.status.success());
 }

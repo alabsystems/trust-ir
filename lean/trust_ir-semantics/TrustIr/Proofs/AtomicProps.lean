@@ -172,4 +172,33 @@ theorem xchg_writes_operand_holds (width : Nat) (old new_ : Int) :
    an atomic operation with o1 provides all guarantees of o2.
 -/
 
+-- =================================================================
+-- Two-result binding (WS2.24)
+-- =================================================================
+
+/-- Every successful `CmpXchg` binds its two components as SEPARATE SSA
+    values: the old (loaded) value and the success flag, exactly the pair the
+    exchange computed, in two DISTINCT destinations. No aggregate projection:
+    the statement names each component directly. -/
+theorem semCmpXchg_binds_components {ty : Ty} {ptrId expectedId desiredId : ValueId}
+    {success failure : MemOrdering} {s s' : MachineState}
+    {ids : ValueId × ValueId}
+    (h : Sem.run (semCmpXchg ty ptrId expectedId desiredId success failure) s
+      = .ok (ids, s')) :
+    ∃ smid old ok,
+      Sem.run (semCmpXchgExchange ty ptrId expectedId desiredId) s
+        = .ok ((old, ok), smid) ∧
+      ids.1 ≠ ids.2 ∧ s'.lookupValue ids.1 = some old ∧
+      s'.lookupValue ids.2 = some (.bool ok) := by
+  unfold semCmpXchg at h
+  rw [Sem.run_bind] at h
+  cases hx : Sem.run (semCmpXchgExchange ty ptrId expectedId desiredId) s with
+  | error e =>
+    rw [hx] at h
+    cases h
+  | ok v =>
+    rw [hx] at h
+    obtain ⟨⟨old, ok⟩, smid⟩ := v
+    exact ⟨smid, old, ok, rfl, Sem.bindFreshPair_ok h⟩
+
 end TrustIr

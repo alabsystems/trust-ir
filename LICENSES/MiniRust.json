@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "upstream": "https://github.com/minirust/minirust",
+  "revision": "e8666821f7ee06282199e126a623679f8df85a36",
+  "translation": "lean/semr/MiniRust.lean",
+  "translation_sha256": "3bf00652679675fd80e304a36766b5e2f7f200949f99c79a76fb742fe388e0e5",
+  "scope": "Generated MiniRust operator slice follows the upstream revision marker; hand-authored Specr prelude is maintained by Trust. License texts are exact upstream blobs.",
+  "license_files": {
+    "LICENSES/MiniRust-MIT.txt": {
+      "upstream_path": "LICENSE-MIT",
+      "git_blob_sha1": "31aa79387f27e730e33d871925e152e35e428031",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    "LICENSES/MiniRust-APACHE.txt": {
+      "upstream_path": "LICENSE-APACHE",
+      "git_blob_sha1": "16fe87b06e802f094b3fbb0894b137bca2b16ef1",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+    }
+  }
+}

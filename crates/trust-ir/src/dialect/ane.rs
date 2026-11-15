@@ -22,6 +22,18 @@
 //! `decode*` helpers and the [`AneSpec`] view exist so a consumer can
 //! pattern-match the payload without re-parsing attributes; a backend that
 //! offloads to the ANE registers its own lowering.
+//!
+//! # Not a tensor vocabulary
+//!
+//! `ane.*` ops are opaque hardware descriptors, not tensor operations: they
+//! carry no shape typing, no semantics and no proof obligation, and nothing
+//! here or in the builder helpers states what a `tensor_conv` or
+//! `tensor_matmul` computes. The white-box annex's ruling (matmul/conv as
+//! contract instances, not string-named ops) governs the tensor region. Its
+//! deferral (`designs/2026-09-01-tensor-region-scoping.md` §6, decided
+//! 2026-10-02) was amended 2026-11-13: core TrustIr now carries `Ty::Tensor`
+//! and `Inst::TensorContract` (v67), the contract instance a matmul is. These
+//! descriptors stay opaque and are not a spelling of it.
 
 use crate::dialect::{AttrValue, Dialect, DialectError, DialectInst};
 use crate::ty::Ty;

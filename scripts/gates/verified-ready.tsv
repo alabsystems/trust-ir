@@ -1,0 +1,24 @@
+# The rows of gate 16, `verified-ready` (scripts/verified_ready.py): the
+# workspace targets whose advisory run (`targo trust check --allow-l0-gaps`,
+# debug profile) is JUDGED with no refuted row. Each is held to staying that
+# way and to a floor of PROVED rows of its primary unit; unknown rows never
+# count. A floor is about 80% of a measured run's proved rows, rounded down,
+# because proved totals move with load. Raise one when a measured run
+# sustains more; lower one only in a commit naming the Trust change that
+# moved it. A crate joins when its own advisory run is clean (no ledger here).
+#
+# Measured 2026-10-02, trustc 321aaeda7, on the commit that added this table
+# (two runs, identical counts; load 13-30 from other sessions):
+#   trust-ir-laws lib  10 proved / 872 unknown / 882 total (+317 demoted law
+#                      postconditions admitted on gate 13's verdict)
+#   trust-ir-fmt bins   2 proved /  10 unknown /  17 total
+#   trust-ir-diff bins  5 proved /  17 unknown /  28 total
+# Re-measured 2026-10-03, trustc 321aaeda7, after parse_args' arity check
+# became the `[PathBuf; 2]` conversion in `ParsedArgs::new` (two runs, one of
+# them this gate's own row, identical counts):
+#   trust-ir-diff bins  8 proved /  18 unknown /  30 total
+# Tab-separated.
+crate	target	floor	why
+trust-ir-laws	lib	8	80% of 10 proved (2026-10-02, trustc 321aaeda7); gate 13 holds its laws at --release
+trust-ir-fmt	bins	1	80% of 2 proved (2026-10-02, trustc 321aaeda7)
+trust-ir-diff	bins	6	80% of 8 proved (2026-10-03, trustc 321aaeda7); clean since parse_args' index step stopped panicking and its arity check stopped unwrapping

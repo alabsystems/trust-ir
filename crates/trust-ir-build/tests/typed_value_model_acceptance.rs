@@ -193,6 +193,7 @@ fn cite_predicate(module: &mut Module, id: u32, pred: PredId, proof_name: &str) 
         function: None,
         source: None,
         site: None,
+        spec: None,
     });
 }
 
@@ -231,12 +232,14 @@ fn fixture_wp18(carrier: Carrier) -> Module {
     // U = {1..=8}: the union-key universe (MEMBER space).
     let u = m
         .intern_universe(Universe::IntRange { lo: 1, hi: M })
+        .expect("Module::intern_universe: test fixture")
         .expect("canonical");
     let required = m
         .intern_pred(Pred::InUniverse(u, Space::Member))
+        .expect("Module::intern_pred: test fixture")
         .expect("in range");
 
-    let i64_ty = m.add_type(Ty::I64);
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
     let required_ty = Ty::Refine(i64_ty, required);
 
     let carrier_ty = match carrier {
@@ -246,6 +249,7 @@ fn fixture_wp18(carrier: Carrier) -> Module {
         Carrier::RawIndexInterval => {
             let p = m
                 .intern_pred(Pred::Interval { lo: 0, hi: M })
+                .expect("Module::intern_pred: test fixture")
                 .expect("canonical");
             cite_predicate(&mut m, 0, p, "row-index proof");
             Ty::Refine(i64_ty, p)
@@ -253,6 +257,7 @@ fn fixture_wp18(carrier: Carrier) -> Module {
         Carrier::IndexIntoUniverse => {
             let p = m
                 .intern_pred(Pred::InUniverse(u, Space::Index))
+                .expect("Module::intern_pred: test fixture")
                 .expect("in range");
             cite_predicate(&mut m, 0, p, "row-index proof");
             Ty::Refine(i64_ty, p)
@@ -261,9 +266,11 @@ fn fixture_wp18(carrier: Carrier) -> Module {
         Carrier::MemberOfSubUniverse => {
             let sub = m
                 .intern_universe(Universe::IntRange { lo: 2, hi: 5 })
+                .expect("Module::intern_universe: test fixture")
                 .expect("canonical");
             let p = m
                 .intern_pred(Pred::InUniverse(sub, Space::Member))
+                .expect("Module::intern_pred: test fixture")
                 .expect("in range");
             Ty::Refine(i64_ty, p)
         }
@@ -290,16 +297,22 @@ fn build_call_pair(m: &mut Module, carrier_ty: Ty, required_ty: Ty) {
     use trust_ir::node::InstrNode;
     use trust_ir::{Block, BlockId, FuncId, Function};
 
-    let key_of_ty = m.add_func_type(FuncTy {
-        params: vec![required_ty],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let row_lookup_ty = m.add_func_type(FuncTy {
-        params: vec![carrier_ty.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let key_of_ty = m
+        .add_func_type(FuncTy {
+            params: vec![required_ty],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let row_lookup_ty = m
+        .add_func_type(FuncTy {
+            params: vec![carrier_ty.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut key_of = Function::new(FuncId::new(0), "key_of", key_of_ty, BlockId::new(0));
     let mut entry = Block::new(BlockId::new(0));
@@ -473,14 +486,16 @@ fn fixture_wp28(shape: JoinShape) -> Module {
     use trust_ir::{Block, BlockId, FuncId, Function};
 
     let mut m = Module::new("wp28_join_drop");
-    let i64_ty = m.add_type(Ty::I64);
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
 
     // The universe every well-formed carrier on this path is over.
     let u = m
         .intern_universe(Universe::IntRange { lo: 1, hi: M })
+        .expect("Module::intern_universe: test fixture")
         .expect("canonical");
     let required = m
         .intern_pred(Pred::InUniverse(u, Space::Member))
+        .expect("Module::intern_pred: test fixture")
         .expect("in range");
     cite_predicate(&mut m, 0, required, "join-site proof");
 
@@ -489,9 +504,11 @@ fn fixture_wp28(shape: JoinShape) -> Module {
             // TWO INDEPENDENT MINTS. Two passes, two proofs, one universe.
             let a = m
                 .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+                .expect("Module::intern_in_universe: test fixture")
                 .expect("canonical");
             let b = m
                 .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+                .expect("Module::intern_in_universe: test fixture")
                 .expect("canonical");
             cite_predicate(&mut m, 1, a, "then-branch proof");
             cite_predicate(&mut m, 2, b, "else-branch proof");
@@ -500,21 +517,25 @@ fn fixture_wp28(shape: JoinShape) -> Module {
         JoinShape::SameUniverseTwoSpellings => {
             let a = m
                 .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+                .expect("Module::intern_in_universe: test fixture")
                 .expect("canonical");
             let b = m
                 .intern_in_universe(
                     Universe::Members((1..=M).map(Constant::Int).collect::<Vec<_>>()),
                     Space::Member,
                 )
+                .expect("Module::intern_in_universe: test fixture")
                 .expect("canonical");
             (Ty::Refine(i64_ty, a), Ty::Refine(i64_ty, b))
         }
         JoinShape::DifferentUniverses => {
             let a = m
                 .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+                .expect("Module::intern_in_universe: test fixture")
                 .expect("canonical");
             let b = m
                 .intern_in_universe(Universe::IntRange { lo: 100, hi: 200 }, Space::Member)
+                .expect("Module::intern_in_universe: test fixture")
                 .expect("canonical");
             cite_predicate(&mut m, 1, a, "then-branch proof");
             cite_predicate(&mut m, 2, b, "else-branch proof");
@@ -524,16 +545,22 @@ fn fixture_wp28(shape: JoinShape) -> Module {
     };
 
     let required_ty = Ty::Refine(i64_ty, required);
-    let key_of_ty = m.add_func_type(FuncTy {
-        params: vec![required_ty.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let merge_ty = m.add_func_type(FuncTy {
-        params: vec![Ty::Bool, edge_a.clone(), edge_b.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let key_of_ty = m
+        .add_func_type(FuncTy {
+            params: vec![required_ty.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let merge_ty = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Bool, edge_a.clone(), edge_b.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut key_of = Function::new(FuncId::new(0), "key_of", key_of_ty, BlockId::new(0));
     let mut kb = Block::new(BlockId::new(0));
@@ -606,7 +633,8 @@ fn wp28_content_interning_makes_two_proofs_agree_on_one_id() {
     // The join PRESERVES the fact.
     let p = in_universe_id(&m, &Universe::IntRange { lo: 1, hi: M }, Space::Member);
     assert_eq!(
-        m.join_preds(Some(p), Some(p)),
+        m.join_preds(Some(p), Some(p))
+            .expect("Module::join_preds: test fixture"),
         p,
         "joining a fact with itself must preserve it, not drop it"
     );
@@ -675,7 +703,9 @@ fn wp28_two_spellings_of_one_universe_still_preserve_the_fact() {
     );
 
     let required = a;
-    let joined = m.join_preds(Some(a), Some(b));
+    let joined = m
+        .join_preds(Some(a), Some(b))
+        .expect("Module::join_preds: test fixture");
     assert!(
         m.pred_implies(Some(joined), Some(required)),
         "the join must still satisfy the site: the fact survived"
@@ -693,7 +723,9 @@ fn wp28_a_genuinely_different_universe_weakens_to_top_and_fails() {
 
     // The join weakens to TOP — never to "one of them", which is what a
     // silent reinterpretation looks like.
-    let joined = m.join_preds(Some(a), Some(b));
+    let joined = m
+        .join_preds(Some(a), Some(b))
+        .expect("Module::join_preds: test fixture");
     assert_eq!(
         m.predicates[joined.as_usize()],
         Pred::Top,
@@ -721,7 +753,9 @@ fn wp28_an_edge_that_dropped_the_fact_fails_instead_of_reverting() {
     let mut m = fixture_wp28(JoinShape::OneEdgeDroppedTheFact);
 
     let required = in_universe_id(&m, &Universe::IntRange { lo: 1, hi: M }, Space::Member);
-    let joined = m.join_preds(Some(required), None);
+    let joined = m
+        .join_preds(Some(required), None)
+        .expect("Module::join_preds: test fixture");
     assert_eq!(
         m.predicates[joined.as_usize()],
         Pred::Top,
@@ -746,11 +780,14 @@ fn wp28_non_vacuity_the_baseline_join_compiles_today() {
     use trust_ir::{Block, BlockId, FuncId, Function};
 
     let mut m = Module::new("wp28_baseline_no_refinements");
-    let merge_ty = m.add_func_type(FuncTy {
-        params: vec![Ty::Bool, Ty::I64, Ty::I64],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let merge_ty = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Bool, Ty::I64, Ty::I64],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut merge = Function::new(FuncId::new(0), "merge", merge_ty, BlockId::new(0));
     let mut bb0 = Block::new(BlockId::new(0));
     bb0.params.push((ValueId::new(0), Ty::Bool));
@@ -899,11 +936,14 @@ fn a_cardinality_blowup_is_rejected() {
     // The interning constructor refuses it outright — fail-closed at the door.
     let mut m = Module::new("blowup");
     assert!(
-        m.intern_pred(Pred::FiniteSet(oversized.clone())).is_none(),
+        m.intern_pred(Pred::FiniteSet(oversized.clone()))
+            .expect("Module::intern_pred: test fixture")
+            .is_none(),
         "intern_pred must refuse an over-cap extension rather than truncate it"
     );
     assert!(
         m.intern_universe(Universe::Members(oversized.clone()))
+            .expect("Module::intern_universe: test fixture")
             .is_none(),
         "intern_universe must refuse it too"
     );
@@ -932,8 +972,12 @@ fn implies_is_fast_enough_to_run_at_every_consumption_site() {
     let big: Vec<Constant> = (0..1024).map(Constant::Int).collect();
     let a = m
         .intern_pred(Pred::FiniteSet(big.iter().take(512).cloned().collect()))
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
-    let b = m.intern_pred(Pred::FiniteSet(big)).expect("canonical");
+    let b = m
+        .intern_pred(Pred::FiniteSet(big))
+        .expect("Module::intern_pred: test fixture")
+        .expect("canonical");
     let table = m.pred_table();
 
     let start = std::time::Instant::now();
@@ -988,8 +1032,9 @@ fn dangling_references_are_rejected() {
     );
 
     let mut m = Module::new("dangling_pred");
-    m.add_type(Ty::I64);
-    m.add_type(Ty::Refine(TyId::new(0), PredId::new(4)));
+    m.add_type(Ty::I64).expect("Module::add_type: test fixture");
+    m.add_type(Ty::Refine(TyId::new(0), PredId::new(4)))
+        .expect("Module::add_type: test fixture");
     assert!(
         refinement_errors(&m).iter().any(|e| matches!(
             e,
@@ -1008,10 +1053,16 @@ fn nested_refinements_and_unstateable_predicates_are_rejected() {
     // One refinement layer per spelling: nesting would give one fact two
     // spellings and break interning as an identity.
     let mut m = Module::new("nested");
-    let p = m.intern_pred(Pred::NonZero).expect("leaf");
-    let i64_ty = m.add_type(Ty::I64);
-    let inner = m.add_type(Ty::Refine(i64_ty, p));
-    m.add_type(Ty::Refine(inner, p));
+    let p = m
+        .intern_pred(Pred::NonZero)
+        .expect("Module::intern_pred: test fixture")
+        .expect("leaf");
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
+    let inner = m
+        .add_type(Ty::Refine(i64_ty, p))
+        .expect("Module::add_type: test fixture");
+    m.add_type(Ty::Refine(inner, p))
+        .expect("Module::add_type: test fixture");
     assert!(
         refinement_errors(&m).iter().any(|e| matches!(
             e,
@@ -1022,9 +1073,13 @@ fn nested_refinements_and_unstateable_predicates_are_rejected() {
 
     // `nonnull` is a pointer fact; an integer carrier cannot state it.
     let mut m = Module::new("unstateable");
-    let p = m.intern_pred(Pred::NonNull).expect("leaf");
-    let i64_ty = m.add_type(Ty::I64);
-    m.add_type(Ty::Refine(i64_ty, p));
+    let p = m
+        .intern_pred(Pred::NonNull)
+        .expect("Module::intern_pred: test fixture")
+        .expect("leaf");
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
+    m.add_type(Ty::Refine(i64_ty, p))
+        .expect("Module::add_type: test fixture");
     assert!(
         refinement_errors(&m).iter().any(|e| matches!(
             e,
@@ -1046,19 +1101,24 @@ fn a_body_may_not_assume_more_than_its_signature_guarantees() {
     use trust_ir::{Block, BlockId, FuncId, Function};
 
     let mut m = Module::new("entry_direction");
-    let i64_ty = m.add_type(Ty::I64);
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
     let weak = m
         .intern_pred(Pred::Interval { lo: 1, hi: M })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let strong = m
         .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+        .expect("Module::intern_in_universe: test fixture")
         .expect("canonical");
 
-    let ft = m.add_func_type(FuncTy {
-        params: vec![Ty::Refine(i64_ty, weak)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(i64_ty, weak)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "f", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     // The body claims MORE than the signature promises.
@@ -1072,18 +1132,23 @@ fn a_body_may_not_assume_more_than_its_signature_guarantees() {
     // And the sound direction — a signature promising membership satisfying a
     // body that only needs the interval — validates clean.
     let mut m = Module::new("entry_direction_ok");
-    let i64_ty = m.add_type(Ty::I64);
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
     let weak = m
         .intern_pred(Pred::Interval { lo: 1, hi: M })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let strong = m
         .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+        .expect("Module::intern_in_universe: test fixture")
         .expect("canonical");
-    let ft = m.add_func_type(FuncTy {
-        params: vec![Ty::Refine(i64_ty, strong)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(i64_ty, strong)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "f", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), Ty::Refine(i64_ty, weak)));
@@ -1102,20 +1167,29 @@ fn representation_disagreement_is_reported_as_a_type_error_not_an_implication_on
     use trust_ir::{Block, BlockId, FuncId, Function};
 
     let mut m = Module::new("repr_mismatch");
-    let p = m.intern_pred(Pred::NonZero).expect("leaf");
-    let i64_ty = m.add_type(Ty::I64);
-    let i32_ty = m.add_type(Ty::I32);
+    let p = m
+        .intern_pred(Pred::NonZero)
+        .expect("Module::intern_pred: test fixture")
+        .expect("leaf");
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
+    let i32_ty = m.add_type(Ty::I32).expect("Module::add_type: test fixture");
 
-    let callee_ty = m.add_func_type(FuncTy {
-        params: vec![Ty::Refine(i32_ty, p)],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let caller_ty = m.add_func_type(FuncTy {
-        params: vec![Ty::Refine(i64_ty, p)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let callee_ty = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(i32_ty, p)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let caller_ty = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(i64_ty, p)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut callee = Function::new(FuncId::new(0), "callee", callee_ty, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));

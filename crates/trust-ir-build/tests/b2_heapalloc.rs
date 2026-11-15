@@ -9,10 +9,14 @@
 // lowered. These tests exercise: build -> validate -> interpret of a heap
 // allocate/store/load/free cycle, double-free detection, and all origins.
 //
-// Note (deferred, see docs/roadmap/B2-heap-alloc.md): `Dealloc` is still
-// permissive about origin (it frees any live region); origin-aware rejection of
-// freeing a stack/global region is a tracked follow-up that requires migrating
-// existing alloca+dealloc programs.
+// Origin rule (landed 2026-09-27, SPEC "A reference-counted cell is released by
+// `Release`, never by `Dealloc`"): `Dealloc` of a `SwiftHeap` / `CleanHeap`
+// cell is undefined behaviour in both engines — a reference-counted cell is
+// released by the `Release` that takes its count to zero — so the RC-origin
+// programs below release with `Release`. Still deferred (see
+// docs/roadmap/B2-heap-alloc.md): `Dealloc` of a stack `Alloca` or a global's
+// reservation is admitted by both engines; refusing it is a tracked follow-up
+// that requires migrating existing alloca+dealloc programs.
 
 use trust_ir::inst::AllocOrigin;
 use trust_ir::interpret::{InterpretErrorCode, InterpretValue, Interpreter};
@@ -34,7 +38,7 @@ fn heap_alloc_store_load_dealloc_executes() {
     fb.dealloc(p);
     fb.ret(vec![v]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(
         validate_module(&module).is_empty(),
@@ -67,7 +71,7 @@ fn heap_alloc_double_free_is_detected() {
     let c = fb.iconst(Ty::I32, 0);
     fb.ret(vec![c]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(validate_module(&module).is_empty());
     let r = Interpreter::with_module(&module).execute_func(module.functions[0].id, []);
@@ -96,7 +100,7 @@ fn heap_alloc_use_after_free_is_ub() {
     let v = fb.load(Ty::I32, p); // freed region: runtime UB
     fb.ret(vec![v]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(validate_module(&module).is_empty());
     let r = Interpreter::with_module(&module).execute_func(module.functions[0].id, []);
@@ -132,7 +136,7 @@ fn arc_release_after_last_release_is_ub() {
         let c = fb.iconst(Ty::I32, 0);
         fb.ret(vec![c]);
         fb.build();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
         assert!(validate_module(&module).is_empty());
         let r = Interpreter::with_module(&module).execute_func(module.functions[0].id, []);
@@ -170,7 +174,7 @@ fn clean_heap_rc_lifecycle_mirrors_swift_heap() {
         }
         fb.ret(vec![uniq]);
         fb.build();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
         assert!(
             validate_module(&module).is_empty(),
@@ -197,6 +201,8 @@ fn clean_heap_rc_lifecycle_mirrors_swift_heap() {
 }
 
 /// A counted heap allocation (Vec-style: count elements) validates and executes.
+/// It is a `SwiftHeap` cell, so it is released by `Release` (count 1 -> 0),
+/// never by `Dealloc`.
 #[test]
 fn heap_alloc_counted_validates_and_executes() {
     let mut mb = ModuleBuilder::new("b2_counted");
@@ -205,15 +211,15 @@ fn heap_alloc_counted_validates_and_executes() {
     let entry = fb.create_block();
     fb.switch_to_block(entry);
     let n = fb.iconst(Ty::I64, 4);
-    // 4 i32 elements from the Swift heap, then free.
+    // 4 i32 elements from the Swift heap, then released (the last owner).
     let p = fb.heap_alloc(Ty::I32, Some(n), Some(4), AllocOrigin::SwiftHeap);
     let seven = fb.iconst(Ty::I32, 7);
     fb.store(Ty::I32, p, seven);
     let v = fb.load(Ty::I32, p);
-    fb.dealloc(p);
+    fb.release(p);
     fb.ret(vec![v]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(
         validate_module(&module).is_empty(),

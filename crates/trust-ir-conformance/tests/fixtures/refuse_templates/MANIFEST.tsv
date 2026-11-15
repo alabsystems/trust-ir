@@ -1,0 +1,48 @@
+# The level-S must-refuse corpus (amendment S, `docs/SPEC_RATIFICATIONS.md` §22).
+#
+# Every row is an artifact a template consumer (a host calling
+# `deserialize_template`, `validate_template` and `instantiate`) must refuse,
+# paired with the verdict that names why; the `control` row it must accept.
+# A module consumer meets none of these: the module-side rows (a template
+# blob or its `Ext` tags under the module magic) are in `../refuse/MANIFEST.tsv`.
+#
+# Carriers: `template_bytes` (`<row>.tmbs`), `template` (`<row>.json`),
+# `instance` (`<row>.json` + `<row>.host.json`, a scripted host), `control`.
+# Verdicts: `<entry>=<verdict>` with entries deserialize_template,
+# validate_template, instantiate, and verdicts `accepts`,
+# `Template:<TemplateError>`, `LevelR:<ValidationError>`,
+# `Instantiate:<InstantiateError>`.
+# Runner: `tests/template_refuse_corpus.rs`; builders:
+# `tests/generate/refuse_templates.rs`. Row ids name features, never versions.
+row	carrier	verdicts	obligation	why
+template_reader_refuses_a_module_blob	template_bytes	deserialize_template=Template:NotATemplate	docs/SPEC_RATIFICATIONS.md	a TRUST_IR module blob handed to the template reader: a template is its own artifact (magic TRUST_IS), never a module
+template_below_its_version	template_bytes	deserialize_template=Template:Binary	docs/SPEC_RATIFICATIONS.md	a template blob whose header is below TEMPLATE_FORMAT_VERSION: no template exists at an older version
+template_trailing_bytes	template_bytes	deserialize_template=Template:Binary	docs/SPEC_RATIFICATIONS.md	bytes after a template blob's canonical payload are refused, never dropped
+template_identity_empty	template	validate_template=Template:InvalidIdentity	docs/SPEC_RATIFICATIONS.md	T9: a template's identity is nonempty and carries no line break
+template_param_out_of_scope	template	validate_template=Template:ParamOutOfScope	docs/SPEC_RATIFICATIONS.md	T1: a body type names a parameter the header does not declare
+template_host_param_in_a_body_position	template	validate_template=Template:ParamKindMismatch	docs/SPEC_RATIFICATIONS.md	T1: a host parameter (no level-R spelling) appears in a body type position
+template_hole_out_of_scope	template	validate_template=Template:HoleOutOfScope	docs/SPEC_RATIFICATIONS.md	T1: a body type names a hole the header does not declare
+template_const_hole_in_a_type_position	template	validate_template=Template:HoleKindMismatch	docs/SPEC_RATIFICATIONS.md	T1: a const hole stands where a type must
+template_duplicate_hole	template	validate_template=Template:DuplicateHole	docs/SPEC_RATIFICATIONS.md	T2: two holes with one kind, key and arguments (one spelling per construct)
+template_ground_hole	template	validate_template=Template:GroundHole	docs/SPEC_RATIFICATIONS.md	T2: a hole that depends on no parameter has a level-R spelling instead
+template_host_key_namespace_invalid	template	validate_template=Template:InvalidHostKey	docs/SPEC_RATIFICATIONS.md	T2: a host key namespace outside [A-Za-z0-9_.]+
+template_hole_names_a_later_hole	template	validate_template=Template:HoleCycle	docs/SPEC_RATIFICATIONS.md	T2: a hole's arguments (the host's input) name a hole that is not answered before it
+template_hole_row_mismatch	template	validate_template=Template:HoleRowMismatch	docs/SPEC_RATIFICATIONS.md	T2: a callee hole's row does not carry the hole's reserved name
+template_unused_hole	template	validate_template=Template:UnusedHole	docs/SPEC_RATIFICATIONS.md	T2: a type hole nothing references
+template_generic_declaration_not_a_hole	template	validate_template=Template:GenericRowNotAHole	docs/SPEC_RATIFICATIONS.md	T2: a declaration whose signature depends on a parameter is not a hole row (one symbol has one signature)
+template_alignment_literal_at_a_parameter	template	validate_template=Template:ParamDependentLiteral	docs/SPEC_RATIFICATIONS.md	T3: an alignment literal other than 1 at a parameter-dependent type
+template_arithmetic_on_an_opaque_parameter	template	validate_template=Template:OpaqueOperation	docs/SPEC_RATIFICATIONS.md	T4: arithmetic on an opaque parameter inspects it; an opaque value is only transported
+template_parameter_in_a_ground_table	template	validate_template=Template:ExtInGroundTable	docs/SPEC_RATIFICATIONS.md	T5: a struct row (a ground table) names a parameter-dependent type row
+template_body_states_a_host_fact	template	validate_template=Template:TemplateBodyShape	docs/SPEC_RATIFICATIONS.md	T7: the body row states its linkage, which the host answers at instantiation
+template_coroutine_suspend	template	validate_template=Template:TemplateUnsupported	docs/SPEC_RATIFICATIONS.md	T8: a coroutine suspend in a template body (first amendment scope)
+template_skolem_instance_breaks_level_r	template	validate_template=LevelR:NonCanonicalDrop	docs/SPEC_RATIFICATIONS.md	T6: a drop at a reference to a parameter is a drop of a reference at every instance, refused by the level-R rules on the skolem instance
+instance_of_an_invalid_template	instance	instantiate=Instantiate:TemplateInvalid	docs/SPEC_RATIFICATIONS.md	step 1: instantiation validates the template first
+instance_arity_mismatch	instance	instantiate=Instantiate:ArityMismatch	docs/SPEC_RATIFICATIONS.md	step 3: the host gives fewer arguments than the template has parameters
+instance_argument_kind	instance	instantiate=Instantiate:ArgumentKind	docs/SPEC_RATIFICATIONS.md	step 3: a constant where a type argument must be
+instance_host_refused	instance	instantiate=Instantiate:HostRefused	docs/SPEC_RATIFICATIONS.md	a host refusal names its question and is never an instance
+instance_host_edits_the_instance	instance	instantiate=Instantiate:HostRowsInvalid	docs/SPEC_RATIFICATIONS.md	a host may append rows, never change one: this one renames the instance
+instance_answer_violates_struct_contract	instance	instantiate=Instantiate:AnswerContract	docs/SPEC_RATIFICATIONS.md	step 5: a struct answer with the right field types in the wrong order breaks its contract
+instance_two_answers_one_symbol_different_signatures	instance	instantiate=Instantiate:AnswerConflict	docs/SPEC_RATIFICATIONS.md	step 7: one symbol declared with two signatures cannot become one row
+instance_header_reserved_symbol	instance	instantiate=Instantiate:InstanceHeader	docs/SPEC_RATIFICATIONS.md	step 6: the instance header names a reserved template name, not a link symbol
+instance_output_fails_level_r_validation	instance	instantiate=Instantiate:OutputInvalid	docs/SPEC_RATIFICATIONS.md	step 10: the output breaks a level-R rule (a struct containing itself by value), so nothing is returned
+template_control_instantiates	control	instantiate=accepts	docs/SPEC_RATIFICATIONS.md	the control: a valid template and host a conforming consumer must instantiate (refusing everything does not pass)

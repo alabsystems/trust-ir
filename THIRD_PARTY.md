@@ -33,3 +33,16 @@ the publication mapping ledger.
 for the workspace and excluded frontend. Before redistribution, review those
 graphs with an appropriate license-audit or SBOM tool for the intended build
 and feature set.
+
+## MiniRust and the SemR operator slice
+
+`lean/semr/MiniRust.lean` contains a generated translation of the selected
+MiniRust specification at revision `e8666821f7ee06282199e126a623679f8df85a36`,
+preceded by Trust's hand-authored Specr-compatible primitive prelude. The
+translation's upstream revision marker and existing byte identity are retained.
+
+The exact upstream [Apache license text](LICENSES/MiniRust-APACHE.txt) and
+[MIT license text](LICENSES/MiniRust-MIT.txt) accompany the translated material.
+[Provenance and byte hashes](LICENSES/MiniRust.json) bind them to the
+[pinned upstream source](https://github.com/minirust/minirust/tree/e8666821f7ee06282199e126a623679f8df85a36).
+TrustIr-authored sources remain under the repository's Apache-2.0 terms.

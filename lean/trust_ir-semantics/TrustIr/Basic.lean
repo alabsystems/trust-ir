@@ -194,14 +194,36 @@ inductive SetRepr where
 instance : Inhabited SetRepr := ⟨.Boxed⟩
 
 /-- Wide/fat pointer kind. Mirrors Rust `trust_ir::ty::FatPtrKind`
-    (`Slice(TyId)` / `Str` / `TraitObject { trait_id }`). Carried by
-    `Ty.FatPtr`. The Lean operational model gives all three kinds a two-lane
-    `(data, metadata)` value, the pointer decomposition/recomposition trio, and
-    the fixed 64-bit target's 16-byte memory image. -/
+    (`Slice(TyId)` / `Str` / `TraitObject { trait_id }` / `ContainerLen` /
+    `ContainerVtable`). Carried by `Ty.FatPtr`. The Lean operational model
+    gives every kind a two-lane `(data, metadata)` value, the pointer
+    decomposition/recomposition trio, and the fixed 64-bit target's 16-byte
+    memory image.
+
+    The two container-tail kinds (wire v38 / v40) differ from their siblings
+    only in what the DATA pointer addresses (the container header, not the
+    DST content), never in the metadata lane, so they are classified by what
+    their metadata MEANS, exactly as Rust `PointerMetadataShape::metadata_ty`
+    (crates/trust-ir/src/shape.rs) classifies them:
+
+    * `ContainerLen` joins `Slice`/`Str` on the unsigned-length `U64` lane;
+    * `ContainerVtable` joins `TraitObject` on the opaque vtable `Ptr` lane,
+      and must NEVER join a length arm — a vtable word read as a length is a
+      type confusion (`FatPtrKind.metadataTy` / `metadataTyMatches` /
+      `decodeValue`, Semantics/Memory.lean).
+
+    Neither carries a payload: the tail type is not what either kind is about
+    (Rust carries no `TyId` / trait id for them either). The addressed
+    container has an unsized tail, which no `StructDef` can describe, so
+    consumers reach into it with explicit `GEP` / typed `Load`. Unsized-tail
+    pointee ids are a DECISION GATE (finding F-123, AD-1'), not drift; adding
+    one is a coordinated Rust + Lean + wire change. -/
 inductive FatPtrKind where
-  | Slice       : TyId -> FatPtrKind
-  | Str         : FatPtrKind
-  | TraitObject : UInt32 -> FatPtrKind
+  | Slice           : TyId -> FatPtrKind
+  | Str             : FatPtrKind
+  | TraitObject     : UInt32 -> FatPtrKind
+  | ContainerLen    : FatPtrKind
+  | ContainerVtable : FatPtrKind
   deriving Repr, DecidableEq
 
 /-- TrustIr type. Mirrors Rust trust_ir::Ty exactly (issue #53 closes the
@@ -304,43 +326,111 @@ inductive Ty where
       REINTERPRETS the value rather than widening it. Carried here, a dropped
       fact becomes the lattice top and fails its consumption site instead. -/
   | Refine    : TyId -> PredId -> Ty
+  /-- Exact nominal semantic identity. No Core layout or operational rule is
+      implied; explicit checked dialect legalization must eliminate it. -/
+  | Dialect   : String -> String -> UInt32 -> Ty
+  /-- Nominal opaque runtime handle (v43, mirrors Rust `Ty::Handle(HandleTy)`):
+      the exact `(name, runtime)` pair of a trusted runtime's opaque value. One
+      pointer word at the machine level (see `Ty.bitWidth`), but NOT
+      pointer-like: no memory, cast or arithmetic rule accepts it, so the only
+      operational rules that touch a handle are exact-typed transport (copy,
+      select, call, return, branch). Its origin is a pinned runtime entry
+      point the model does not execute; a module using one is outside the
+      proven subset (`bridge.rs` excludes it). -/
+  | Handle    : String -> String -> Ty
+  /-- Addressable possibly-uninitialized geometry; excluded from by-value lowering. -/
+  | Storage : Nat -> Nat -> Ty
   deriving Repr, BEq
 
-/-- Returns the bit width of a type, or none for compound types.
-    Mirrors Rust Ty::bit_width. -/
-def Ty.bitWidth : Ty -> Option Nat
-  | .Bool     => some 1
-  | .I8       => some 8
-  | .I16      => some 16
-  | .I32      => some 32
-  | .I64      => some 64
-  | .I128     => some 128
-  -- Issue #53: unsigned integer widths match their signed counterparts.
-  | .U8       => some 8
-  | .U16      => some 16
-  | .U32      => some 32
-  | .U64      => some 64
-  | .U128     => some 128
-  -- v25: pointer-width integers at the model's 64-bit pin; char is 32-bit.
-  | .Isize    => some 64
-  | .Usize    => some 64
-  | .Char     => some 32
-  | .F16      => some 16
-  | .F32      => some 32
-  | .F64      => some 64
-  | .Vector lanes elemTy =>
-    match elemTy.bitWidth with
-    | some elemWidth => some (lanes * elemWidth)
-    | none => none
-  | .Ptr      => some 64
-  -- Pointer-like types are 64-bit
-  | .Ref _    => some 64
-  | .RefMut _ => some 64
-  | .PtrConst _ => some 64
-  | .PtrMut _ => some 64
-  | .Rc _     => some 64
-  -- Zero-sized and compound types have no fixed bit width
-  | _         => none
+/-- One exhaustive width policy for fixed scalars, pointer words and vectors.
+Every new type constructor must make an explicit width decision. The supplied
+pointer width is a mathematical parameter; supported runtime models remain
+exactly ByteModel.le32/le64. -/
+@[reducible] def Ty.bitWidthAtPointerBits (pointerBits : Nat) : Ty → Option Nat
+  | .I8 => some 8
+  | .I16 => some 16
+  | .I32 => some 32
+  | .I64 => some 64
+  | .I128 => some 128
+  | .U8 => some 8
+  | .U16 => some 16
+  | .U32 => some 32
+  | .U64 => some 64
+  | .U128 => some 128
+  | .Isize => some pointerBits
+  | .Usize => some pointerBits
+  | .Char => some 32
+  | .Error => none
+  | .F16 => some 16
+  | .F32 => some 32
+  | .F64 => some 64
+  | .Bool => some 1
+  | .Ptr => some pointerBits
+  | .FatPtr _ => none
+  | .Struct _ => none
+  | .Array _ _ => none
+  | .Func _ => none
+  | .Unit => none
+  | .Never => none
+  | .Tuple _ => none
+  | .Enum _ => none
+  | .Vector lanes elem => (elem.bitWidthAtPointerBits pointerBits).map (lanes * ·)
+  | .Ref _ => some pointerBits
+  | .RefMut _ => some pointerBits
+  | .PtrConst _ => some pointerBits
+  | .PtrMut _ => some pointerBits
+  | .Rc _ => some pointerBits
+  | .Set _ _ => none
+  | .Sequence _ => none
+  | .Record _ => none
+  | .Closure _ => none
+  | .Refine _ _ => none
+  | .Dialect _ _ _ => none
+  | .Handle _ _ => some pointerBits
+  | .Storage _ _ => none
+
+/-- Legacy default width, sharing the same policy as target-width queries. -/
+def Ty.bitWidth (ty : Ty) : Option Nat := ty.bitWidthAtPointerBits 64
+
+/-- The two canonical little-endian pointer representations. -/
+inductive ByteModel where
+  | le32
+  | le64
+  deriving Repr, DecidableEq, BEq
+
+def ByteModel.pointerBytes : ByteModel → Nat
+  | .le32 => 4
+  | .le64 => 8
+
+/-- Kept as a computation in compiled code, like `Sem.addrBits`, rather than
+    storing a closed large integer's platform padding in an olean. -/
+@[noinline] def ByteModel.pointerBits (model : ByteModel) : Nat :=
+  8 * model.pointerBytes
+
+def ByteModel.addressLimit (model : ByteModel) : Nat :=
+  256 ^ model.pointerBytes
+
+/-- No malformed width or byte order can construct a supported model. The
+    caller must additionally establish the module's canonical scalar ABI. -/
+def ByteModel.ofRepresentation : Nat → Bool → Option ByteModel
+  | 4, true => some .le32
+  | 8, true => some .le64
+  | _, _ => none
+
+def ByteModel.lengthTy : ByteModel → Ty
+  | .le32 => .U32
+  | .le64 => .U64
+
+/-- Pointer-width integers and pointer representations use the selected
+    width. All fixed-width scalar types retain their existing meanings. -/
+def Ty.bitWidthAtModel (model : ByteModel) (ty : Ty) : Option Nat :=
+  ty.bitWidthAtPointerBits model.pointerBits
+
+/-- The default remains definitionally the legacy width query. -/
+def Ty.bitWidthFor (model : ByteModel) (ty : Ty) : Option Nat :=
+  match model with
+  | .le64 => ty.bitWidth
+  | .le32 => ty.bitWidthAtModel .le32
 
 /-- Returns true if the type is a signed integer type (I8..I128).
     Mirrors Rust Ty::is_signed. -/
@@ -354,6 +444,14 @@ def Ty.isUnsigned : Ty → _root_.Bool
   | .U8 | .U16 | .U32 | .U64 | .U128 | .Usize | .Char => true
   | _ => false
 
+/-- Test only the Bool constructor without recursive type equality. -/
+def Ty.isBool : Ty → _root_.Bool
+  | .Bool => true
+  | _ => false
+
+theorem Ty.isBool_iff (ty : Ty) : ty.isBool = true ↔ ty = .Bool := by
+  cases ty <;> simp [Ty.isBool]
+
 /-- Returns true if the type is an integer type (signed or unsigned).
     Mirrors Rust Ty::is_integer. Issue #53 widened this to include
     U8..U128 alongside I8..I128. -/
@@ -362,6 +460,55 @@ def Ty.isInteger : Ty → _root_.Bool
   | .U8 | .U16 | .U32 | .U64 | .U128
   | .Isize | .Usize | .Char => true
   | _ => false
+
+/-- The `Char` VALIDITY INVARIANT (lowering-target subset v4, WS2.17).
+
+    `Ty.Char` is a 32-bit unsigned carrier, but its inhabitants are exactly
+    the Unicode SCALAR VALUES: `v < 0x110000` and `v` outside the surrogate
+    block `0xD800..=0xDFFF`. Nothing in the arithmetic model rules a
+    surrogate out — the carrier is just an integer — so the invariant is a
+    separate predicate every `Char` origin must re-establish.
+
+    Mirrors the reference interpreter's `check_char_validity`
+    (`crates/trust-ir/src/interpret.rs`), which reports a violation as
+    UNDEFINED BEHAVIOUR at every SSA bind site, and the STATIC half of the
+    same rule, subset v4 structural condition 6
+    (`ConformanceSubset::char_origin_excluded`), which admits only a
+    range-validated `Const` and `Cast ZExt` of a `U8` as origins. -/
+def validChar (v : Nat) : Prop :=
+  v < 0x110000 ∧ ¬(0xD800 ≤ v ∧ v ≤ 0xDFFF)
+
+instance (v : Nat) : Decidable (validChar v) := by
+  unfold validChar; infer_instance
+
+/-- Every `u8` is a Unicode scalar value, so the ONE admitted computed
+    `Char` origin — `zext u8 -> char`, subset v4 condition 6 — establishes
+    [`validChar`] by construction. This is the theorem the condition rests
+    on: no range check is needed on that edge. -/
+theorem validChar_of_lt_256 {v : Nat} (h : v < 256) : validChar v := by
+  refine ⟨by omega, ?_⟩
+  rintro ⟨hlo, -⟩
+  omega
+
+/-- The mutation control: the first surrogate is NOT a valid `char`, so a
+    `Char` constant of `0xD800` is refused. A model that dropped the
+    surrogate conjunct from [`validChar`] would accept it. -/
+theorem not_validChar_surrogate : ¬ validChar 0xD800 := by
+  rintro ⟨-, hsur⟩
+  exact hsur ⟨by omega, by omega⟩
+
+/-- The other mutation control: `0x110000` is one past the last code point.
+    A model that dropped the range conjunct would accept it. -/
+theorem not_validChar_above_max : ¬ validChar 0x110000 := by
+  rintro ⟨hlt, -⟩
+  omega
+
+/-- The `Char` carrier is 32 bits wide, so [`validChar`] is a STRICTLY
+    stronger property than "fits the carrier": the carrier admits values the
+    type does not. -/
+theorem validChar_lt_two_pow_32 {v : Nat} (h : validChar v) : v < 2 ^ 32 := by
+  have := h.1
+  omega
 
 /-- Returns true if the type is a floating-point type.
     Mirrors Rust `Ty::is_float()`. -/
@@ -432,11 +579,145 @@ def Ty.refinePred : Ty -> Option PredId
   | .Refine _ pred => some pred
   | _              => none
 
+/-- Calling convention of an indirect call site. Mirrors Rust
+    `trust_ir::CallingConv` (crates/trust-ir/src/lib.rs; default `C`).
+    Carried by `Inst.CallIndirect`. It is an ABI fact for the backend: the
+    executable model, like the reference interpreter, resolves the callee by
+    address and signature, and no convention changes a call's VALUE
+    semantics. It is carried so the Lean instruction is not a lossy image of
+    the Rust one (WS2.18 field-level parity). -/
+inductive CallingConv where
+  | C : CallingConv
+  | Fast : CallingConv
+  | Cold : CallingConv
+  | Rust : CallingConv
+  | Swift : CallingConv
+  -- v45 (WS3.12): recorded ABI facts; `CUnwind` carries no unwind semantics
+  -- under the ratified panic=abort policy.
+  | CUnwind : CallingConv
+  | SysV64 : CallingConv
+  | Win64 : CallingConv
+  | Aapcs : CallingConv
+  | EfiApi : CallingConv
+  | VectorCall : CallingConv
+  | RustCold : CallingConv
+  deriving Repr, DecidableEq, BEq
+
+/-- Producer ABI claims. These records confer no proof authority. Natural
+    number fields mirror bounded Rust integers; the JSON decoder checks their
+    u8/u32/u64 bounds. Execution with typed ABI metadata is currently refused
+    until the transport semantics checks all of these facts. -/
+structure AbiTarget where
+  triple : String
+  dataLayout : String
+  abi : String
+  cpu : String
+  features : List String
+  targetSpec : String
+  pointerBytes : Nat
+  littleEndian : Bool
+  deriving BEq, Repr
+
+structure AbiFrontend where
+  name : String
+  revision : String
+  deriving BEq, Repr
+
+inductive AbiBindingPlace where
+  | Parameter (index : Nat)
+  | Result (index : Nat)
+  | HiddenResult (index : Nat)
+  deriving BEq, Repr
+
+structure AbiBinding where
+  place : AbiBindingPlace
+  sourceOffset : Nat
+  sourceBytes : Nat
+  carrierOffset : Nat
+  carrierBytes : Nat
+  deriving BEq, Repr
+
+inductive AbiExtension where
+  | None | Sign | Zero
+  deriving BEq, Repr
+
+inductive AbiCapture where
+  | Any | ReadOnly | Address | None
+  deriving BEq, Repr
+
+structure AbiAttributes where
+  extension : AbiExtension
+  inReg : Bool
+  noAlias : Bool
+  nonnull : Bool
+  readonly : Bool
+  noUndef : Bool
+  writable : Bool
+  noFree : Bool
+  capture : AbiCapture
+  pointeeSize : Nat
+  pointeeAlign : Option Nat
+  deriving BEq, Repr
+
+inductive AbiRegisterClass where
+  | Integer | Float | Vector
+  deriving BEq, Repr
+
+structure AbiRegister where
+  regClass : AbiRegisterClass
+  bytes : Nat
+  deriving BEq, Repr
+
+structure AbiScalar where
+  register : AbiRegister
+  sourceOffset : Nat
+  sourceBytes : Nat
+  valueBits : Nat
+  attributes : AbiAttributes
+  deriving BEq, Repr
+
+structure AbiUniform where
+  unit : AbiRegister
+  total : Nat
+  consecutive : Bool
+  deriving BEq, Repr
+
+inductive AbiPassMode where
+  | Ignore
+  | Direct (scalar : AbiScalar)
+  | Pair (first second : AbiScalar)
+  | Cast (padI32 : Bool) (prefixRegs : List AbiRegister) (restOffset : Option Nat)
+      (rest : AbiUniform) (attributes : AbiAttributes)
+  | Indirect (attributes : AbiAttributes) (metadataAttributes : Option AbiAttributes)
+      (onStack callerCopy : Bool)
+  deriving BEq, Repr
+
+structure AbiArgument where
+  size : Nat
+  align : Nat
+  mode : AbiPassMode
+  bindings : List AbiBinding
+  deriving BEq, Repr
+
+structure SignatureAbi where
+  target : AbiTarget
+  frontend : AbiFrontend
+  convention : String
+  loweredConvention : CallingConv
+  sourceAbi : String
+  canUnwind : Bool
+  variadic : Bool
+  fixedCount : Nat
+  arguments : List AbiArgument
+  result : AbiArgument
+  deriving BEq, Repr
+
 /-- Function type definition. Mirrors Rust trust_ir::FuncTy. -/
 structure FuncTyDef where
   params   : List Ty
   returns  : List Ty
   isVararg : Bool
+  abi : Option SignatureAbi := none
   deriving BEq, Repr
 
 /-- Struct field definition. Mirrors Rust trust_ir::FieldDef. -/
@@ -446,22 +727,54 @@ structure FieldDef where
   offset : Option Nat
   deriving BEq, Repr
 
-/-- Struct type definition. Mirrors Rust trust_ir::StructDef. -/
+/-- Producer-declared struct representation. Packed alignment is a normative
+    clamp on field alignment, not a request to synthesize a different image. -/
+inductive StructRepr where
+  | rust
+  | c
+  | transparent
+  | packed (align : Nat)
+  deriving BEq, Repr
+
+/-- Struct type definition. Mirrors Rust trust_ir::StructDef's execution
+    layout fields. The absent serde representation defaults to Rust. -/
 structure StructDef where
   id     : StructId
   name   : String
   fields : List FieldDef
   size   : Option Nat
   align  : Option Nat
+  repr   : StructRepr := .rust
   deriving Repr
+
+/-- A v42 declared tuple image. The source type id resolves to the exact
+    inline tuple; physical field order need not equal logical element order. -/
+structure TupleLayoutDescriptor where
+  tupleType : TyId
+  size : Nat
+  align : Nat
+  fieldOffsets : List Nat
+  deriving BEq, Repr
 
 /-- Enum tag-representation hint. Mirrors Rust trust_ir::EnumTagRepr. -/
 inductive EnumTagRepr where
-  | u8 | u16 | u32 | u64 | i8 | i16 | i32 | i64
+  | u8 : EnumTagRepr
+  | u16 : EnumTagRepr
+  | u32 : EnumTagRepr
+  | u64 : EnumTagRepr
+  | i8 : EnumTagRepr
+  | i16 : EnumTagRepr
+  | i32 : EnumTagRepr
+  | i64 : EnumTagRepr
+  -- v45 (WS3.14(b)): the 128-bit tag lanes. `u128` spells only the
+  -- non-negative half, since a discriminant is an i128. One constructor per
+  -- line, because the Rust<->Lean parity gate reads them line by line.
+  | u128 : EnumTagRepr
+  | i128 : EnumTagRepr
   deriving BEq, Repr
 
 /-- How an enum's discriminant is represented in memory. Mirrors Rust
-    trust_ir::EnumTagEncoding (wire v31; `untagged` added in v37). -/
+    trust_ir::EnumTagEncoding (wire v31; `untagged` in v37, `singleInhabited` in v65). -/
 inductive EnumTagEncoding where
   | direct (tagOffset : Nat)
   | niche (untaggedVariant nicheVariantsStart nicheVariantsEnd : Nat)
@@ -469,6 +782,9 @@ inductive EnumTagEncoding where
   /-- No stored tag: the image is the sole variant's payload alone. Well-formed
       only for a one-variant enum, since nothing in the image discriminates. -/
   | untagged
+  /-- No stored tag, retaining every logical variant. Only the selected variant
+      is inhabited; all others require a finite structural uninhabitedness fact. -/
+  | singleInhabited (variant : Nat) : EnumTagEncoding
   deriving BEq, Repr
 
 /-- Producer-supplied concrete enum layout. It is normative when present.
@@ -629,3 +945,7 @@ theorem xor_comm (a b : Int) : xor a b = xor b a := by
     | negSucc n => rfl
 
 end Int
+
+/-- info: 'TrustIr.Ty.isBool_iff' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms TrustIr.Ty.isBool_iff

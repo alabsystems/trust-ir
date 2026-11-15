@@ -1,0 +1,10 @@
+   = note: native verifier status: Inconclusive; requested=3, proved=0, failed=0, unknown=2, timed_out=0, unsupported=1, skipped=0, insufficient_strength=0
+   = note: native verifier status: Inconclusive; requested=2, proved=0, failed=0, unknown=1, timed_out=0, unsupported=1, skipped=0, insufficient_strength=0
+    = note: native verifier status: Inconclusive; requested=1, proved=0, failed=0, unknown=0, timed_out=0, unsupported=1, skipped=0, insufficient_strength=0
+    = note: native verifier status: Inconclusive; requested=2, proved=0, failed=0, unknown=0, timed_out=0, unsupported=2, skipped=0, insufficient_strength=0
+    = note: native verifier status: Inconclusive; requested=1, proved=0, failed=0, unknown=0, timed_out=0, unsupported=1, skipped=0, insufficient_strength=0
+    = note: native verifier status: Inconclusive; requested=2, proved=1, failed=0, unknown=0, timed_out=0, unsupported=1, skipped=0, insufficient_strength=0
+   = note: native verifier status: Inconclusive; requested=7, proved=1, failed=0, unknown=0, timed_out=0, unsupported=6, skipped=0, insufficient_strength=0
+Summary: 3 proved, 0 failed, 0 runtime-checked, 0 assumed, 6 mandated, 0 contract-panic, 14 inconclusive (23 total)
+Publication boundary: 3 obligation(s) passed the compiler, all 3 published (0 withheld)
+Coverage: 8/8 eligible function bodies verified (complete)

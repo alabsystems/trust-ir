@@ -1,0 +1,192 @@
+{
+  "name": "refuse_rust_reference_permission_borrow",
+  "functions": [
+    {
+      "id": 0,
+      "name": "bump",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [],
+          "body": [
+            {
+              "inst": {
+                "Alloca": {
+                  "ty": "I32",
+                  "count": null,
+                  "align": null
+                }
+              },
+              "results": [
+                0
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Const": {
+                  "ty": "I32",
+                  "value": {
+                    "Int": 5
+                  }
+                }
+              },
+              "results": [
+                1
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Store": {
+                  "ty": "I32",
+                  "ptr": 0,
+                  "value": 1,
+                  "volatile": false,
+                  "align": null
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "BorrowMut": {
+                  "ptr": 0
+                }
+              },
+              "results": [
+                2
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Const": {
+                  "ty": "I32",
+                  "value": {
+                    "Int": 6
+                  }
+                }
+              },
+              "results": [
+                3
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Store": {
+                  "ty": "I32",
+                  "ptr": 2,
+                  "value": 3,
+                  "volatile": false,
+                  "align": null
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Load": {
+                  "ty": "I32",
+                  "ptr": 0,
+                  "volatile": false,
+                  "align": null
+                }
+              },
+              "results": [
+                4
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    4
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": "Trust",
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [],
+      "returns": [
+        "I32"
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": null,
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

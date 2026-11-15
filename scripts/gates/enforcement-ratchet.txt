@@ -1,0 +1,65 @@
+# The enforcement-link ratchet (scripts/check_enforcement_links.py, rules E4/V).
+#
+# This is a list of claims with NO CHECKED EVIDENCE.  It is the first rung of
+# "move in-text claims to mechanically verified proof", and it proves nothing:
+# a claim leaves this file when a TEST (evidence), a TYPE (unrepresentable), a
+# PROVED CONTRACT (a law gate 13 holds, cited after its own table), a Lean
+# THEOREM or a KERNEL CERTIFICATE backs it, and the gate checks only that the
+# named artifact EXISTS and is of that kind.
+#
+# Two kinds of line, and the gate checks both.
+#
+#   <ledger> <YYYY-MM-DD> <count> <why>     COUNT rows: the history.
+#       APPEND-ONLY and NON-INCREASING.  The LAST row of each ledger must
+#       EQUAL what the gate measures today.
+#         measured > last : a claim lost its backing, or a new unbacked one was
+#                           added.  Back it; this number does not go up.
+#         measured < last : good.  APPEND a row with the smaller number, so the
+#                           gain is written down and cannot silently be lost.
+#
+#   member <ledger> <name>                  MEMBER lines: the present.
+#       EXACTLY the debts measured today, by name.  Delete a line when its
+#       claim gets backed.  Never add one: against the merge-base with
+#       origin/main the member set only SHRINKS, so retiring one debt does not
+#       buy a new one (a swap a bare count cannot see).
+#
+#   correction units-without-checked-evidence <YYYY-MM-DD> <unit> :: <why>
+#       CORRECTION rows: history too, and the ONE way a count rises (by exactly
+#       one).  Somebody READ a unit's cited evidence, found it does not back
+#       the claim, and downgraded the class.  That is the honest act this
+#       ledger exists to encourage, so it is RECORDED, not refused: add the
+#       unit's member line and append the correction.  Against the merge-base
+#       the unit must have EXISTED, WITH checked evidence: a NEW unbacked claim
+#       is a regression whatever it is called.  Units only; whether a test
+#       names a variant is measured, not judged, so there is nothing to correct.
+#
+# Against that same merge-base the history rows must be a PREFIX of today's: a
+# landed row is never edited.  And a unit that was normative there cannot be
+# marked `not-normative` now: a marker does not retire a claim.  Nothing in
+# this header names a member, because a comment that named one would be an
+# unchecked in-text claim.
+#
+# units-without-checked-evidence
+#     normative units (a ratification section, a trusted-base item) whose every
+#     Enforcement entry is `code`, `external` or `prose-only`.
+# validation-error-variants-unnamed
+#     `ValidationError` variants no test context in a workspace crate names.
+#     "Names" is a proxy, and a weak one: it is not "tests the rule".
+# validation-error-variants-never-constructed
+#     variants no non-test code BUILDS: a documented refusal that cannot fire.
+
+units-without-checked-evidence               2026-09-18 3 initial census
+validation-error-variants-unnamed            2026-09-18 9 initial census
+validation-error-variants-never-constructed  2026-09-18 1 initial census
+units-without-checked-evidence               2026-09-18 2 ratification 1.1 backed by function_symbol_identity.rs
+validation-error-variants-unnamed            2026-09-18 7 DuplicateFunctionSymbol and InvalidDisplayPath named by function_symbol_identity.rs
+validation-error-variants-unnamed            2026-09-18 6 InvalidBodyGate named by the two-language ratchets (b1_mixed_module.rs, b7_codec_and_semantics_gaps.rs)
+validation-error-variants-unnamed            2026-09-22 5 GlobalAlignInvalid named by validate.rs global_alignment_must_be_a_positive_power_of_two
+validation-error-variants-unnamed            2026-09-22 4 GroundCertificateStatusInconsistent named by authority_hygiene.rs (WS1.8 rule (a), revived Failed-only)
+validation-error-variants-never-constructed  2026-09-22 0 GroundCertificateStatusInconsistent constructed again by validate_proof_obligation_integrity (WS1.8 rule (a))
+validation-error-variants-unnamed            2026-09-24 1 DuplicateEnumId, FuncTypeNotFound and PointerOpInvalid pinned by must-refuse corpus rows (refuse_corpus.rs runs every MANIFEST.tsv verdict; KIND 4)
+units-without-checked-evidence               2026-09-29 1 TRUST.md item 1: its boundary (only the named native_decide fixture modules add the Lean compiler to the kernel) is checked by ProofCensus.lean under the lean-proofs gate
+
+validation-error-variants-unnamed            2026-10-17 0 ImportClosureTooDeep named by observed_error_retirement/tests/witnesses/part_1.rs; linked-depth rule remains UNCOVERED
+
+member units-without-checked-evidence docs/SPEC_RATIFICATIONS.md §4

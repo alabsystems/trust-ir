@@ -1,0 +1,20 @@
+; TrustIr template text format v1
+template "core::mem::drop::<T>"
+param $0 type
+; TrustIr text format v1
+module "core"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = ($0) -> ()
+
+fn @"!template_body"(functy.0) {
+bb0(%0: $0):
+    %1 = alloca $0
+    store $0 %0, ptr %1
+    drop_invoke $0, %1 to bb1() unwind bb2
+bb1:
+    ret
+bb2:
+    %2, %3 = landingpad cleanup
+    resume %2
+}

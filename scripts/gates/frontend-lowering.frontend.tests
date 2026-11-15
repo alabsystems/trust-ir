@@ -1,0 +1,9 @@
+# Gate 17 (`frontend-lowering`): test targets of the workspace-EXCLUDED
+# `frontend/` package (the rustc_private MIR driver), run as ONE
+# `test --locked --manifest-path frontend/Cargo.toml` (scripts/ci_gates.sh,
+# run_excluded_registry). A listed target must pass WHOLE: a target with
+# known failures (real_lowering_acceptance, CLAUDE.md "Toolchain")
+# stays off this list, and a test that must be gated lives in a target that
+# passes.
+switch_case_lowering  # SPEC_RATIFICATIONS §3.3: a MIR switch case is its selector's value
+mir_switch_source_width  # SPEC_RATIFICATIONS §3.3: a host isize case is its signed value; a u128 case above i128::MAX stays canonical

@@ -72,8 +72,10 @@
 //!
 //! STILL TRUSTED: (a) that ay's private `ExprBlaster` wires the correct gate
 //! TOPOLOGY for each node — `validate()` catches a wrong CNF *for* a gate, not a
-//! wrong gate; and (b) the producer's `condbr assert_cond, <success>, <panic>`
-//! convention, which every other shape fails closed on. The falsifiers for (a)
+//! wrong gate; and (b) for a lowered `CondBr` site, the producer's
+//! `condbr assert_cond, <success>, <panic>` convention, which every other
+//! branch shape fails closed on. An `Inst::Assert` site (WS5.4) needs no such
+//! convention: `assert c` states `c` itself. The falsifiers for (a)
 //! are the sharp-boundary matrix and the anti-vacuity tests in
 //! `tests/bvblast_authority.rs`; they are tests, not a proof, and are named as a
 //! residual rather than glossed. Closing (a) needs trust-ir's own canonical
@@ -88,8 +90,10 @@ use ay_proof::{
 };
 use trust_ir::Module;
 use trust_ir::proof::{
-    BvGoal, BvTerm, GoalDeriveError, ObligationKind, ProofCertificate, ProofEvidence,
-    ProofObligation, ProofStatus, bvblast_goal_formula_parts, bvgoal_digest_hex, derive_site_goal,
+    ASSERT_CLASS_OBLIGATION_KINDS, BVBLAST_GOAL_SCHEMA, BvGoal, BvTerm, GoalDeriveError,
+    ObligationKind, PRODUCER_FORMULA_DISAGREES, ProofCertificate, ProofEvidence, ProofObligation,
+    ProofStatus, bvblast_goal_formula_parts, bvgoal_digest_hex, derive_site_goal,
+    formula_binds_site_goal, formula_matches_goal, is_assert_class_kind, is_bvgoal_digest_hex,
 };
 
 use crate::vc::AY_REV;
@@ -100,7 +104,7 @@ use crate::vc::AY_REV;
 /// certificate rather than silently re-interpreting it: `ProofCertificateRef`
 /// is `(obligation, prover, evidence_digest)`, and the authority capability
 /// requires an exact match on this string.
-pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@5d586a5c2035e94c3f6ad00028e21ae5529cd2f3";
+pub const BVBLAST_PROVER: &str = "trust-ir-ay/bvblast@9dfa20b5790b03c8ffe57fbbe67316ece665c5be";
 
 /// Schema tag of the certificate payload carried inside
 /// [`ProofEvidence::SmtProof`].
@@ -158,15 +162,32 @@ fn replay_limits() -> BvBlastValidateLimits {
     }
 }
 
-fn ensure_certificate_size(actual: usize) -> Result<(), String> {
+fn ensure_certificate_size(actual: usize) -> Result<(), BvBlastPayloadError> {
     if actual <= BVBLAST_MAX_CERTIFICATE_BYTES {
         Ok(())
     } else {
-        Err(format!(
-            "certificate payload exceeds byte limit {} (actual {actual})",
-            BVBLAST_MAX_CERTIFICATE_BYTES
-        ))
+        Err(BvBlastPayloadError::Oversized {
+            limit: BVBLAST_MAX_CERTIFICATE_BYTES,
+            actual,
+        })
     }
+}
+
+/// How many leading characters of a goal digest a refusal message shows.
+const DIGEST_PREFIX_CHARS: usize = 16;
+
+/// The leading [`DIGEST_PREFIX_CHARS`] characters of a goal digest, for a
+/// refusal message.
+///
+/// Total by construction: `str::get` never panics, so a digest that is shorter
+/// than the prefix or whose cut would split a UTF-8 character (possible only
+/// for an untrusted spelling — every canonical digest is 64 ASCII hex digits,
+/// [`is_bvgoal_digest_hex`]) renders as a fixed marker instead of aborting the
+/// validator. No bytes of such a spelling are echoed.
+fn digest_prefix(digest: &str) -> &str {
+    digest
+        .get(..DIGEST_PREFIX_CHARS)
+        .unwrap_or("<non-canonical digest>")
 }
 
 fn replay_stored_proof(proof: &BvBlastProof) -> Result<(), String> {
@@ -191,7 +212,10 @@ fn classify_replay(error: BvBlastValidateError) -> ProveError {
     }
 }
 
-/// Obligation kinds this route may back.
+/// Obligation kinds this route may back: exactly
+/// [`trust_ir::proof::ASSERT_CLASS_OBLIGATION_KINDS`], the one constant the
+/// SMT sited VC and [`trust_ir::proof::derive_site_goal`] read too (WS5.4
+/// (1a)), so no route can back a kind another refuses.
 ///
 /// Deliberately narrow, and the narrowness is the point. A bit-vector proof that
 /// the sited `CondBr` condition always holds establishes a panic-freedom fact:
@@ -210,13 +234,10 @@ fn classify_replay(error: BvBlastValidateError) -> ProveError {
 ///
 /// `PanicFreedom` is excluded for a different reason: it is a whole-function
 /// claim, and one site's condition does not establish it.
-pub const BVBLAST_ALLOWED_KINDS: [ObligationKind; 2] = [
-    ObligationKind::BoundsCheck,
-    ObligationKind::ArithmeticSafety,
-];
+pub const BVBLAST_ALLOWED_KINDS: [ObligationKind; 2] = ASSERT_CLASS_OBLIGATION_KINDS;
 
 fn kind_is_allowed(kind: &ObligationKind) -> bool {
-    BVBLAST_ALLOWED_KINDS.iter().any(|allowed| allowed == kind)
+    is_assert_class_kind(kind)
 }
 
 // ─────────────────────────────── the lowering ───────────────────────────────
@@ -302,8 +323,10 @@ impl core::fmt::Display for ProveError {
             ),
             Self::NoRefutation => write!(
                 f,
-                "no refutation: the obligation is SATISFIABLE, i.e. the claimed condition does \
-                 not hold for every valuation"
+                "no refutation: the goal is SATISFIABLE, i.e. the claimed condition does not \
+                 hold for every valuation of its free inputs. For a sited goal — block-local \
+                 and hypothesis-free — that means it is not provable locally, NOT that the \
+                 program is wrong: no Failed is ever minted from it"
             ),
             Self::OutOfScope(detail) => {
                 write!(f, "goal is outside the bit-blast fragment: {detail}")
@@ -340,6 +363,10 @@ fn classify(err: BvExprExportError) -> ProveError {
         BvExprExportError::SolverUnknown => {
             ProveError::Incomplete("solver returned unknown".into())
         }
+        // ay 82111544f (0.27.0): the caller's cancellation hook refused further
+        // work before a verdict. Nothing about the goal was decided, so this is
+        // incompleteness — never falsity, never malformed evidence.
+        BvExprExportError::Cancelled => ProveError::Incomplete("proof production cancelled".into()),
         BvExprExportError::RefutationNotSurfaceable(detail) => ProveError::Incomplete(detail),
         BvExprExportError::ResourceLimit {
             resource,
@@ -348,184 +375,6 @@ fn classify(err: BvExprExportError) -> ProveError {
         } => ProveError::Incomplete(format!(
             "proof resource `{resource}` exceeded limit {limit} (actual {actual})"
         )),
-    }
-}
-
-#[cfg(test)]
-mod classify_tests {
-    use std::time::Duration;
-
-    use ay_proof::BvExprProofBudget;
-    use trust_ir::proof::{BvGoal, BvTerm};
-
-    use super::{
-        BVBLAST_MAX_CERTIFICATE_BYTES, BVBLAST_MAX_REPLAY_VARS, BvBlastAuthority,
-        BvBlastCertPayload, BvBlastValidateError, BvExprExportError, ProveError, bvgoal_digest_hex,
-        classify, classify_replay, ensure_certificate_size, prove, prove_with_budget,
-        replay_stored_proof,
-    };
-
-    fn shift_identity_goal() -> BvGoal {
-        let value = BvTerm::leaf("value", 4);
-        let amount = BvTerm::leaf("amount", 4);
-        let shift = BvTerm::Shl(Box::new(value), Box::new(amount));
-        BvGoal {
-            lhs: BvTerm::Or(
-                Box::new(BvTerm::Const { value: 0, width: 4 }),
-                Box::new(shift.clone()),
-            ),
-            rhs: shift,
-        }
-    }
-
-    #[test]
-    fn proof_resource_exhaustion_is_incomplete_not_falsity() {
-        let classified = classify(BvExprExportError::ResourceLimit {
-            resource: "resolution-steps",
-            limit: 10,
-            actual: 11,
-        });
-        assert!(matches!(
-            classified,
-            ProveError::Incomplete(detail)
-                if detail == "proof resource `resolution-steps` exceeded limit 10 (actual 11)"
-        ));
-    }
-
-    #[test]
-    fn real_bounded_export_exhaustion_is_incomplete_not_falsity() {
-        // This is the exact public bounded-export path with an intentionally
-        // tiny cap, not a fabricated error value. `0 | (x << k) == x << k` is
-        // valid but needs more than one surfaced resolution step.
-        let goal = shift_identity_goal();
-        let budget = BvExprProofBudget::conservative(Duration::from_secs(2), 1)
-            .expect("one step is a valid, deliberately insufficient budget");
-        let error = prove_with_budget(&goal, &budget).unwrap_err();
-        assert!(
-            matches!(error, ProveError::Incomplete(detail)
-                if detail.contains("proof resource") && detail.contains("limit 1")),
-            "resource exhaustion must remain typed as incompleteness"
-        );
-    }
-
-    #[test]
-    fn replay_resource_exhaustion_is_incomplete_not_malformed_evidence() {
-        let error = classify_replay(BvBlastValidateError::ResourceLimit {
-            resource: "replay work",
-            limit: 10,
-            actual: 11,
-        });
-        assert!(matches!(
-            error,
-            ProveError::Incomplete(detail)
-                if detail == "proof replay resource `replay work` exceeded limit 10 (actual 11)"
-        ));
-    }
-
-    #[test]
-    fn replay_deadline_is_incomplete_not_malformed_evidence() {
-        assert_eq!(
-            classify_replay(BvBlastValidateError::DeadlineExceeded),
-            ProveError::Incomplete("proof replay deadline expired".to_string())
-        );
-    }
-
-    #[test]
-    fn malformed_replay_remains_validation_failure() {
-        let error = classify_replay(BvBlastValidateError::UnsupportedFormatVersion {
-            got: 0,
-            expected: 1,
-        });
-        assert!(matches!(error, ProveError::ValidationFailed(_)));
-    }
-
-    #[test]
-    fn authority_cache_retains_only_the_most_recent_distinct_goal() {
-        let first = shift_identity_goal();
-        let mut second = shift_identity_goal();
-        second.lhs = BvTerm::Xor(
-            Box::new(BvTerm::leaf("second-value", 4)),
-            Box::new(BvTerm::Const { value: 0, width: 4 }),
-        );
-        second.rhs = BvTerm::leaf("second-value", 4);
-
-        let first_digest = bvgoal_digest_hex(&first);
-        let second_digest = bvgoal_digest_hex(&second);
-        assert_ne!(
-            first_digest, second_digest,
-            "the cache keys must be distinct"
-        );
-
-        let authority = BvBlastAuthority::new();
-        assert!(
-            authority.rederive_cnf(&first, &first_digest).is_some(),
-            "the first valid goal must really be proved"
-        );
-        assert_eq!(
-            authority.cached_digest().as_deref(),
-            Some(first_digest.as_str())
-        );
-
-        assert!(
-            authority.rederive_cnf(&second, &second_digest).is_some(),
-            "the second valid goal must really be proved"
-        );
-        assert_eq!(
-            authority.cached_digest().as_deref(),
-            Some(second_digest.as_str()),
-            "a distinct goal must evict rather than accumulate beside the first"
-        );
-
-        assert!(
-            authority.rederive_cnf(&first, &first_digest).is_some(),
-            "the evicted goal must remain reproducible"
-        );
-        assert_eq!(
-            authority.cached_digest().as_deref(),
-            Some(first_digest.as_str())
-        );
-    }
-
-    #[test]
-    fn serialized_payload_size_is_checked_without_allocating_the_boundary() {
-        assert_eq!(
-            ensure_certificate_size(BVBLAST_MAX_CERTIFICATE_BYTES),
-            Ok(())
-        );
-        let error = ensure_certificate_size(BVBLAST_MAX_CERTIFICATE_BYTES + 1)
-            .expect_err("one byte over the policy must fail before JSON decoding");
-        assert!(
-            error.contains("certificate payload exceeds byte limit")
-                && error.contains(&(BVBLAST_MAX_CERTIFICATE_BYTES + 1).to_string()),
-            "unexpected size rejection: {error}"
-        );
-    }
-
-    #[test]
-    fn stored_proof_one_over_the_replay_cap_is_rejected_before_traversal() {
-        let goal = shift_identity_goal();
-        let mut payload = BvBlastCertPayload::new(
-            &goal,
-            prove(&goal).expect("small stored-proof control must prove"),
-        );
-        payload.proof.vars.roles.resize(
-            BVBLAST_MAX_REPLAY_VARS + 1,
-            ay_proof::VarRole::Aux { bit: 0 },
-        );
-
-        // Round-trip the hostile object so this exercises the stored format,
-        // while remaining well below the independent 16 MiB byte ceiling.
-        let bytes = payload.to_bytes().expect("cap+1 vars fit the byte cap");
-        assert!(bytes.len() < BVBLAST_MAX_CERTIFICATE_BYTES);
-        let decoded = BvBlastCertPayload::from_bytes(&bytes).expect("stored payload decodes");
-        let error = replay_stored_proof(&decoded.proof)
-            .expect_err("one variable over the policy must fail before graph traversal");
-        assert!(
-            error.contains("ResourceLimit")
-                && error.contains("variables")
-                && error.contains(&BVBLAST_MAX_REPLAY_VARS.to_string()),
-            "unexpected oversized-proof rejection: {error}"
-        );
     }
 }
 
@@ -581,7 +430,9 @@ fn prove_with_budget(
 /// `goal_digest` is stored so the artifact is self-describing to an auditor. It
 /// is NOT the binding: the capability re-derives the goal from the IR and
 /// compares, so a payload that lies about its own digest is rejected rather than
-/// believed.
+/// believed. [`Self::from_bytes`] refuses a `goal_digest` that is not spelled as
+/// a goal digest at all ([`BvBlastPayloadError::MalformedGoalDigest`]), so an
+/// untrusted spelling never reaches the comparison.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BvBlastCertPayload {
     /// Always [`BVBLAST_CERT_SCHEMA`].
@@ -608,33 +459,85 @@ impl BvBlastCertPayload {
     /// Serialize to the bytes carried by [`ProofEvidence::SmtProof`].
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        ensure_certificate_size(bytes.len())?;
+        ensure_certificate_size(bytes.len()).map_err(|e| e.to_string())?;
         Ok(bytes)
     }
 
     /// Strictly decode, rejecting an oversized payload before JSON allocation,
-    /// a wrong schema, or a foreign ay revision.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    /// a wrong schema, a foreign ay revision, or a `goal_digest` that is not
+    /// spelled as a goal digest.
+    ///
+    /// # Errors
+    ///
+    /// [`BvBlastPayloadError`], naming which check refused.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, BvBlastPayloadError> {
         ensure_certificate_size(bytes.len())?;
-        let payload: Self =
-            serde_json::from_slice(bytes).map_err(|e| format!("payload does not decode: {e}"))?;
+        let payload: Self = serde_json::from_slice(bytes)
+            .map_err(|e| BvBlastPayloadError::Undecodable(e.to_string()))?;
         if payload.schema != BVBLAST_CERT_SCHEMA {
-            return Err(format!(
-                "payload schema is {:?}, expected {BVBLAST_CERT_SCHEMA:?}",
-                payload.schema
-            ));
+            return Err(BvBlastPayloadError::WrongSchema(payload.schema));
         }
         if payload.ay_rev != AY_REV {
-            return Err(format!(
-                "payload was produced at ay rev {}, but this build is pinned to {AY_REV}; the \
-                 blaster's gate topology and var numbering are implementation details, so a \
-                 cross-rev payload cannot be bound to a re-derived CNF",
-                payload.ay_rev
-            ));
+            return Err(BvBlastPayloadError::ForeignAyRev(payload.ay_rev));
+        }
+        if !is_bvgoal_digest_hex(&payload.goal_digest) {
+            return Err(BvBlastPayloadError::MalformedGoalDigest {
+                bytes: payload.goal_digest.len(),
+            });
         }
         Ok(payload)
     }
 }
+
+/// Why [`BvBlastCertPayload::from_bytes`] refused a certificate payload.
+///
+/// Every variant is a refusal of UNTRUSTED bytes before any of their content is
+/// used; none is a verdict about the goal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BvBlastPayloadError {
+    /// The serialized payload exceeds the byte ceiling (checked before JSON
+    /// decoding, so an oversized string never allocates).
+    Oversized { limit: usize, actual: usize },
+    /// The bytes are not a JSON payload of this shape.
+    Undecodable(String),
+    /// `schema` is not [`BVBLAST_CERT_SCHEMA`].
+    WrongSchema(String),
+    /// The payload was produced at a different ay revision.
+    ForeignAyRev(String),
+    /// `goal_digest` is not 64 lowercase hex digits
+    /// ([`is_bvgoal_digest_hex`]). Its content is deliberately not carried: an
+    /// untrusted spelling is never echoed, only its byte length.
+    MalformedGoalDigest { bytes: usize },
+}
+
+impl core::fmt::Display for BvBlastPayloadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Oversized { limit, actual } => write!(
+                f,
+                "certificate payload exceeds byte limit {limit} (actual {actual})"
+            ),
+            Self::Undecodable(detail) => write!(f, "payload does not decode: {detail}"),
+            Self::WrongSchema(schema) => write!(
+                f,
+                "payload schema is {schema:?}, expected {BVBLAST_CERT_SCHEMA:?}"
+            ),
+            Self::ForeignAyRev(rev) => write!(
+                f,
+                "payload was produced at ay rev {rev}, but this build is pinned to {AY_REV}; the \
+                 blaster's gate topology and var numbering are implementation details, so a \
+                 cross-rev payload cannot be bound to a re-derived CNF"
+            ),
+            Self::MalformedGoalDigest { bytes } => write!(
+                f,
+                "payload goal_digest is not a goal digest ({bytes} bytes; a goal digest is \
+                 exactly 64 lowercase hex digits)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BvBlastPayloadError {}
 
 /// Everything needed to attach evidence for one obligation.
 #[derive(Debug, Clone)]
@@ -675,6 +578,10 @@ pub fn certify_obligation(
             obligation: obligation.id,
             prover: BVBLAST_PROVER.to_string(),
             evidence: ProofEvidence::SmtProof(bytes),
+            // v41: this adapter records no coverage bound of its own; the
+            // projection is the bundle writer's job, and `None` reads as
+            // UNKNOWN coverage rather than `Unbounded`.
+            assurance: None,
         },
     }))
 }
@@ -705,6 +612,13 @@ impl std::error::Error for BvBlastAttachError {}
 /// Attach bit-blast evidence to every eligible obligation in `module`, flipping
 /// each proved row `Pending` -> `Discharged`.
 ///
+/// A formula-less row gets the bit-blast goal claim stamped as its formula. A
+/// row that already carries a formula keeps it unchanged, and is discharged
+/// only when that formula states the goal re-derived at its site
+/// ([`trust_ir::proof::formula_binds_site_goal`]); otherwise it stays `Pending`
+/// with the outcome detail "producer formula disagrees with the site goal"
+/// (WS5.4 (1b)).
+///
 /// The status flip is only meaningful together with [`BvBlastAuthority`]: a
 /// `Discharged` row with no capability supplied to the validator is INVALID
 /// (`DischargedWithoutCertificate`), so this function cannot smuggle a status
@@ -721,17 +635,52 @@ pub fn attach_bvblast_evidence(module: &mut Module) -> Vec<BvBlastAttachOutcome>
         .collect();
 
     for obligation in candidates {
+        // WS5.4 (1b): a row that ALREADY carries a formula is discharged only
+        // when that formula states the goal re-derived at its site. The check
+        // runs before any solver work, and the formula is never replaced: a
+        // producer formula that disagrees with the site IS the disagreement a
+        // verifier must see, so it stays on the row, byte for byte, and the row
+        // stays Pending.
+        if obligation.formula.is_some() {
+            match derive_site_goal(module, &obligation) {
+                Ok(goal) if formula_binds_site_goal(&obligation, &goal) => {}
+                Ok(_) => {
+                    outcomes.push(BvBlastAttachOutcome {
+                        obligation: obligation.id.index(),
+                        discharged: false,
+                        detail: format!(
+                            "{PRODUCER_FORMULA_DISAGREES}: the row's formula does not state the \
+                             bit-vector goal re-derived at its site; it is left unchanged and \
+                             the row stays Pending"
+                        ),
+                    });
+                    continue;
+                }
+                Err(err) => {
+                    outcomes.push(BvBlastAttachOutcome {
+                        obligation: obligation.id.index(),
+                        discharged: false,
+                        detail: err.to_string(),
+                    });
+                    continue;
+                }
+            }
+        }
         match certify_obligation(module, &obligation) {
             Ok(None) => {}
             Ok(Some(minted)) => {
-                let formula = trust_ir::proof::bvblast_goal_formula(
-                    obligation
-                        .site
-                        .as_ref()
-                        .expect("derive_site_goal succeeded, so the site is present"),
-                    &obligation.kind,
-                    &minted.goal,
-                );
+                let formula = match &obligation.formula {
+                    // Admitted above: the producer's own statement stays.
+                    Some(existing) => Some(existing.clone()),
+                    None => trust_ir::proof::bvblast_goal_formula(
+                        obligation
+                            .site
+                            .as_ref()
+                            .expect("derive_site_goal succeeded, so the site is present"),
+                        &obligation.kind,
+                        &minted.goal,
+                    ),
+                };
                 let Some(formula) = formula else {
                     // Unreachable for an allowed kind, but a silent `None` here
                     // would leave a Discharged row with no binding claim.
@@ -760,7 +709,7 @@ pub fn attach_bvblast_evidence(module: &mut Module) -> Vec<BvBlastAttachOutcome>
                     discharged: true,
                     detail: format!(
                         "goal {} proved and validated; {bytes} bytes of evidence",
-                        &bvgoal_digest_hex(&minted.goal)[..16]
+                        digest_prefix(&bvgoal_digest_hex(&minted.goal))
                     ),
                 });
             }
@@ -804,7 +753,12 @@ pub struct BvBlastAttachOutcome {
 /// 6. the goal RE-DERIVES from the module IR at the obligation's own site;
 /// 7. **the binding** — the obligation's `formula` parses in the bv-blast goal
 ///    schema, its site and kind equal the obligation's own, and its goal digest
-///    equals the digest of the re-derived goal;
+///    equals the digest of the re-derived goal; OR (WS5.4 (1b)) the formula is a
+///    producer formula whose ONE SMT-LIB text (an `smtlib2` payload; an
+///    opaque schema states none) makes
+///    [`trust_ir::proof::formula_matches_goal`] hold against the re-derived goal
+///    (canonical bit-vector rendering equality, bindings included) — anything
+///    else is refused as "producer formula disagrees with the site goal";
 /// 8. the payload's self-reported digest also matches (redundant, checked so a
 ///    stored artifact is self-describing);
 /// 9. **the re-derivation** — re-running the blaster on the re-derived goal
@@ -910,7 +864,7 @@ impl BvBlastAuthority {
         let ProofEvidence::SmtProof(bytes) = &certificate.evidence else {
             return Err("certificate evidence is not SmtProof".to_string());
         };
-        let payload = BvBlastCertPayload::from_bytes(bytes)?;
+        let payload = BvBlastCertPayload::from_bytes(bytes).map_err(|e| e.to_string())?;
 
         // (6) the goal RE-DERIVES from the IR. Nothing from the payload is used.
         let goal = derive_site_goal(module, obligation).map_err(|e| e.to_string())?;
@@ -925,6 +879,19 @@ impl BvBlastAuthority {
             .formula
             .as_ref()
             .ok_or("obligation carries no formula, so it states no goal to bind against")?;
+        // (7') WS5.4 (1b): a PRODUCER formula (any schema other than the
+        //      bit-blast claim) binds only when its one SMT-LIB text is the
+        //      canonical bit-vector rendering of the re-derived goal, bindings
+        //      included. The claim schema keeps the site/kind/digest gates below.
+        if formula.schema != BVBLAST_GOAL_SCHEMA {
+            if !formula_matches_goal(formula, &goal) {
+                return Err(format!(
+                    "{PRODUCER_FORMULA_DISAGREES}: the obligation's formula does not state the \
+                     goal re-derived from its site"
+                ));
+            }
+            return self.replay_and_bind(&goal, &digest_hex, &payload);
+        }
         let ((f, b, i), kind_tag, claimed_digest) = bvblast_goal_formula_parts(formula)
             .ok_or("obligation formula is not a well-formed bv-blast goal claim")?;
         if (f, b, i) != (site.function.index(), site.block.index(), site.inst_index) {
@@ -944,16 +911,27 @@ impl BvBlastAuthority {
             return Err(format!(
                 "BINDING FAILURE: the obligation claims goal {}…, but the goal re-derived from \
                  its site is {}…; this certificate is about a different fact",
-                &claimed_digest[..16.min(claimed_digest.len())],
-                &digest_hex[..16]
+                digest_prefix(claimed_digest),
+                digest_prefix(&digest_hex)
             ));
         }
+        self.replay_and_bind(&goal, &digest_hex, &payload)
+    }
+
+    /// Gates (8)-(11): the payload's self-report, the stored replay, the
+    /// re-derivation, and exact CNF equality. Shared by both formula spellings.
+    fn replay_and_bind(
+        &self,
+        goal: &BvGoal,
+        digest_hex: &str,
+        payload: &BvBlastCertPayload,
+    ) -> Result<(), String> {
         // (8) the payload's self-report agrees too.
         if payload.goal_digest != digest_hex {
             return Err(format!(
                 "payload claims goal {}…, but the re-derived goal is {}…",
-                &payload.goal_digest[..16.min(payload.goal_digest.len())],
-                &digest_hex[..16]
+                digest_prefix(&payload.goal_digest),
+                digest_prefix(digest_hex)
             ));
         }
 
@@ -976,7 +954,7 @@ impl BvBlastAuthority {
         // (9b) RE-DERIVE the CNF by re-running the blaster on the re-derived
         //      goal. A FALSE obligation dies here with `NoRefutation`.
         let fresh = self
-            .rederive_cnf(&goal, &digest_hex)
+            .rederive_cnf(goal, digest_hex)
             .ok_or("re-deriving a refutation for this goal failed (unprovable, out of scope, or undecided)")?;
 
         // (10) the payload must refute EXACTLY the re-derived CNF.
@@ -1009,5 +987,274 @@ impl trust_ir::proof::ModuleProofAuthority for BvBlastAuthority {
         certificate: &ProofCertificate,
     ) -> bool {
         self.explain(module, obligation, certificate).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use std::time::Duration;
+
+    use ay_proof::BvExprProofBudget;
+    use trust_ir::proof::{BvGoal, BvTerm};
+
+    use super::{
+        BVBLAST_MAX_CERTIFICATE_BYTES, BVBLAST_MAX_REPLAY_VARS, BvBlastAuthority,
+        BvBlastCertPayload, BvBlastPayloadError, BvBlastValidateError, BvExprExportError,
+        ProveError, bvgoal_digest_hex, classify, classify_replay, digest_prefix,
+        ensure_certificate_size, prove, prove_with_budget, replay_stored_proof,
+    };
+
+    fn shift_identity_goal() -> BvGoal {
+        let value = BvTerm::leaf("value", 4);
+        let amount = BvTerm::leaf("amount", 4);
+        let shift = BvTerm::Shl(Box::new(value), Box::new(amount));
+        BvGoal {
+            lhs: BvTerm::Or(
+                Box::new(BvTerm::Const { value: 0, width: 4 }),
+                Box::new(shift.clone()),
+            ),
+            rhs: shift,
+        }
+    }
+
+    #[test]
+    fn proof_resource_exhaustion_is_incomplete_not_falsity() {
+        let classified = classify(BvExprExportError::ResourceLimit {
+            resource: "resolution-steps",
+            limit: 10,
+            actual: 11,
+        });
+        assert!(matches!(
+            classified,
+            ProveError::Incomplete(detail)
+                if detail == "proof resource `resolution-steps` exceeded limit 10 (actual 11)"
+        ));
+    }
+
+    #[test]
+    fn cancelled_proof_production_is_incomplete_not_falsity() {
+        // ay 0.27.0 added `BvExprExportError::Cancelled` ("the caller refused
+        // further work; this is not a satisfiability verdict"). It must land on
+        // the incompleteness side of the NoRefutation/Incomplete line.
+        assert_eq!(
+            classify(BvExprExportError::Cancelled),
+            ProveError::Incomplete("proof production cancelled".to_string())
+        );
+    }
+
+    #[test]
+    fn real_bounded_export_exhaustion_is_incomplete_not_falsity() {
+        // This is the exact public bounded-export path with an intentionally
+        // tiny cap, not a fabricated error value. `0 | (x << k) == x << k` is
+        // valid but needs more than one surfaced resolution step.
+        let goal = shift_identity_goal();
+        let budget = BvExprProofBudget::conservative(Duration::from_secs(2), 1)
+            .expect("one step is a valid, deliberately insufficient budget");
+        let error = prove_with_budget(&goal, &budget).unwrap_err();
+        assert!(
+            matches!(error, ProveError::Incomplete(detail)
+                if detail.contains("proof resource") && detail.contains("limit 1")),
+            "resource exhaustion must remain typed as incompleteness"
+        );
+    }
+
+    #[test]
+    fn replay_resource_exhaustion_is_incomplete_not_malformed_evidence() {
+        let error = classify_replay(BvBlastValidateError::ResourceLimit {
+            resource: "replay work",
+            limit: 10,
+            actual: 11,
+        });
+        assert!(matches!(
+            error,
+            ProveError::Incomplete(detail)
+                if detail == "proof replay resource `replay work` exceeded limit 10 (actual 11)"
+        ));
+    }
+
+    #[test]
+    fn replay_deadline_is_incomplete_not_malformed_evidence() {
+        assert_eq!(
+            classify_replay(BvBlastValidateError::DeadlineExceeded),
+            ProveError::Incomplete("proof replay deadline expired".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_replay_remains_validation_failure() {
+        let error = classify_replay(BvBlastValidateError::UnsupportedFormatVersion {
+            got: 0,
+            expected: 1,
+        });
+        assert!(matches!(error, ProveError::ValidationFailed(_)));
+    }
+
+    #[test]
+    fn authority_cache_retains_only_the_most_recent_distinct_goal() {
+        let first = shift_identity_goal();
+        let mut second = shift_identity_goal();
+        second.lhs = BvTerm::Xor(
+            Box::new(BvTerm::leaf("second-value", 4)),
+            Box::new(BvTerm::Const { value: 0, width: 4 }),
+        );
+        second.rhs = BvTerm::leaf("second-value", 4);
+
+        let first_digest = bvgoal_digest_hex(&first);
+        let second_digest = bvgoal_digest_hex(&second);
+        assert_ne!(
+            first_digest, second_digest,
+            "the cache keys must be distinct"
+        );
+
+        let authority = BvBlastAuthority::new();
+        assert!(
+            authority.rederive_cnf(&first, &first_digest).is_some(),
+            "the first valid goal must really be proved"
+        );
+        assert_eq!(
+            authority.cached_digest().as_deref(),
+            Some(first_digest.as_str())
+        );
+
+        assert!(
+            authority.rederive_cnf(&second, &second_digest).is_some(),
+            "the second valid goal must really be proved"
+        );
+        assert_eq!(
+            authority.cached_digest().as_deref(),
+            Some(second_digest.as_str()),
+            "a distinct goal must evict rather than accumulate beside the first"
+        );
+
+        assert!(
+            authority.rederive_cnf(&first, &first_digest).is_some(),
+            "the evicted goal must remain reproducible"
+        );
+        assert_eq!(
+            authority.cached_digest().as_deref(),
+            Some(first_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn serialized_payload_size_is_checked_without_allocating_the_boundary() {
+        assert_eq!(
+            ensure_certificate_size(BVBLAST_MAX_CERTIFICATE_BYTES),
+            Ok(())
+        );
+        let error = ensure_certificate_size(BVBLAST_MAX_CERTIFICATE_BYTES + 1)
+            .expect_err("one byte over the policy must fail before JSON decoding");
+        assert_eq!(
+            error,
+            BvBlastPayloadError::Oversized {
+                limit: BVBLAST_MAX_CERTIFICATE_BYTES,
+                actual: BVBLAST_MAX_CERTIFICATE_BYTES + 1,
+            }
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("certificate payload exceeds byte limit")
+                && message.contains(&(BVBLAST_MAX_CERTIFICATE_BYTES + 1).to_string()),
+            "unexpected size rejection: {message}"
+        );
+    }
+
+    /// A goal digest spelled with multi-byte characters, 64 BYTES long, whose
+    /// byte 16 falls inside a character (21 three-byte euro signs, then `0`).
+    fn non_ascii_digest() -> String {
+        let digest = format!("{}0", "\u{20ac}".repeat(21));
+        assert_eq!(digest.len(), 64);
+        assert!(
+            !digest.is_char_boundary(16),
+            "the cut must split a character"
+        );
+        digest
+    }
+
+    #[test]
+    fn digest_prefix_is_total_on_any_spelling() {
+        let canonical = bvgoal_digest_hex(&shift_identity_goal());
+        assert_eq!(digest_prefix(&canonical), &canonical[..16]);
+        assert_eq!(digest_prefix("abc"), "<non-canonical digest>");
+        assert_eq!(digest_prefix(&non_ascii_digest()), "<non-canonical digest>");
+    }
+
+    #[test]
+    fn a_non_hex_goal_digest_is_refused_at_decode_by_name() {
+        // The certificate bytes are untrusted: `goal_digest` arrives through
+        // serde from whatever a producer wrote. A spelling other than the one
+        // `bvgoal_digest_hex` emits is refused before anything reads it.
+        let goal = shift_identity_goal();
+        let proof = prove(&goal).expect("small control goal proves");
+        for (spelling, label) in [
+            (non_ascii_digest(), "non-ASCII"),
+            (bvgoal_digest_hex(&goal).to_uppercase(), "uppercase hex"),
+            ("00".to_string(), "short"),
+        ] {
+            let mut payload = BvBlastCertPayload::new(&goal, proof.clone());
+            payload.goal_digest = spelling.clone();
+            let bytes = payload
+                .to_bytes()
+                .expect("the encoder does not police content");
+            assert_eq!(
+                BvBlastCertPayload::from_bytes(&bytes),
+                Err(BvBlastPayloadError::MalformedGoalDigest {
+                    bytes: spelling.len()
+                }),
+                "{label} goal_digest must be refused at decode"
+            );
+        }
+        // Control: the writer's own spelling decodes.
+        let payload = BvBlastCertPayload::new(&goal, proof);
+        let bytes = payload.to_bytes().expect("encodes");
+        assert_eq!(BvBlastCertPayload::from_bytes(&bytes), Ok(payload));
+    }
+
+    #[test]
+    fn a_non_canonical_payload_digest_is_an_error_not_a_panic() {
+        // Behind the decode check, the comparison gate itself must still be
+        // total: a payload built in memory (its fields are public) reaches
+        // gate (8) without `from_bytes`. Slicing its digest at byte 16 split
+        // a character and aborted the validator; now it is a refusal.
+        let goal = shift_identity_goal();
+        let digest_hex = bvgoal_digest_hex(&goal);
+        let mut payload =
+            BvBlastCertPayload::new(&goal, prove(&goal).expect("small control goal proves"));
+        payload.goal_digest = non_ascii_digest();
+        let error = BvBlastAuthority::new()
+            .replay_and_bind(&goal, &digest_hex, &payload)
+            .expect_err("a payload naming another digest is refused");
+        assert!(
+            error.contains("payload claims goal <non-canonical digest>")
+                && error.contains(&digest_hex[..16]),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn stored_proof_one_over_the_replay_cap_is_rejected_before_traversal() {
+        let goal = shift_identity_goal();
+        let mut payload = BvBlastCertPayload::new(
+            &goal,
+            prove(&goal).expect("small stored-proof control must prove"),
+        );
+        payload.proof.vars.roles.resize(
+            BVBLAST_MAX_REPLAY_VARS + 1,
+            ay_proof::VarRole::Aux { bit: 0 },
+        );
+
+        // Round-trip the hostile object so this exercises the stored format,
+        // while remaining well below the independent 16 MiB byte ceiling.
+        let bytes = payload.to_bytes().expect("cap+1 vars fit the byte cap");
+        assert!(bytes.len() < BVBLAST_MAX_CERTIFICATE_BYTES);
+        let decoded = BvBlastCertPayload::from_bytes(&bytes).expect("stored payload decodes");
+        let error = replay_stored_proof(&decoded.proof)
+            .expect_err("one variable over the policy must fail before graph traversal");
+        assert!(
+            error.contains("ResourceLimit")
+                && error.contains("variables")
+                && error.contains(&BVBLAST_MAX_REPLAY_VARS.to_string()),
+            "unexpected oversized-proof rejection: {error}"
+        );
     }
 }

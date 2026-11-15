@@ -5,8 +5,16 @@ A pin move is an ATOMIC transaction across every leg listed below.  Moving
 fewer than all of them leaves `main` red, and `cargo check` does not execute
 the compiled guard (`crates/trust-ir/tests/dependency_pin_coherence.rs`). That
 is exactly how a partial move shipped three times. The `static-guard` command
-now mirrors every runtime assertion in that Rust test without requiring a
-compiler, while the Rust test remains an independent parity check.
+mirrors every runtime assertion in that Rust test but one without requiring a
+compiler, while the Rust test remains an independent parity check. The one
+assertion with no mirror here: `frontend_lock_resolves_under_locked` asks
+Cargo's resolver (`metadata --locked`, offline first, non-compiling but not
+toolchain-free) whether `frontend/Cargo.lock` still describes the manifests,
+which no text census of the pin rows can decide. That claim is held per test
+FUNCTION, not stated: `GUARD_TEST_MIRRORS` names every `#[test]` of the Rust
+guard with what mirrors it (or why nothing does), and `static-guard` fails
+when the guard gains a test the table does not name or loses one it does.
+An assertion added INSIDE an already-mirrored test is not detected that way.
 
 This module is the machine-readable statement of "which files hold the pin".
 It never mutates the repository: `apply` and `apply-clean-ay` write candidates
@@ -22,13 +30,18 @@ and `AY_REVISION` independent inside the one file that holds both -- a global
 string replace is only accidentally correct while the two SHAs differ.
 
 NOTE FOR MAINTAINERS: the expected counts here duplicate the inventory the
-guard test asserts (`assert_exact_manifest_pins(.., 1)` / `(.., 3)`).  Adding a
-fourth `clean-*` dependency to trust-ir-build means updating BOTH.
+guard test asserts (`assert_exact_manifest_pins(.., 1)` / `(.., 4)`). Adding a
+`clean-*` dependency to trust-ir-build means updating BOTH, including dev deps.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import fnmatch
+import hashlib
+import json
+import os
 import re
 import subprocess
 import sys
@@ -97,8 +110,8 @@ CLEAN_LEGS: Tuple[Leg, ...] = (
     Leg(
         relpath="crates/trust-ir-build/Cargo.toml",
         pattern=rf'git = "{CLEAN_URL}", rev = "{SHA}"',
-        note="clean-kernel + clean-mathverse + clean-olean",
-        expected=3,
+        note="clean-kernel + clean-mathverse + optional and dev clean-olean + optional and dev clean-verify",
+        expected=6,
     ),
     Leg(
         relpath=GUARD_TEST,
@@ -201,8 +214,8 @@ VERSION_LEGS: Dict[str, Tuple[VersionLeg, ...]] = {
                 rf'(?m)^(?=[^#\n]*git = "{CLEAN_URL}")[^#\n]*?'
                 r'version = "(?P<version>[^"]+)"'
             ),
-            note="clean-kernel + clean-mathverse + clean-olean requirements",
-            expected=3,
+            note="clean-kernel + clean-mathverse + optional and dev clean-olean + optional and dev clean-verify requirements",
+            expected=6,
         ),
         VersionLeg(
             relpath=GUARD_TEST,
@@ -267,6 +280,31 @@ class NotAGitCheckout(Exception):
 # --------------------------------------------------------------------------
 # Pure helpers (no I/O) -- the unit-testable core.
 # --------------------------------------------------------------------------
+
+
+# Rust str::trim uses Unicode White_Space, excluding Python's additional
+# U+001C..U+001F controls. Keep this local to the existing pin-checking core.
+_RUST_WHITESPACE = (
+    "\t\n\v\f\r \u0085\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def _rust_trim(text: str) -> str:
+    return text.strip(_RUST_WHITESPACE)
+
+
+def _rust_lines(text: str) -> List[str]:
+    # Rust lines() splits LF/CRLF, excludes a final empty line, and retains
+    # a bare CR at unterminated EOF. Other Unicode separators stay in a line.
+    rows = text.split("\n")
+    terminated = len(rows) - 1
+    return [
+        row[:-1] if index < terminated and row.endswith("\r") else row
+        for index, row in enumerate(rows)
+        if index < terminated or row != ""
+    ]
 
 
 def _scan_text(text: str, leg: Leg) -> str:
@@ -445,6 +483,115 @@ class VersionCensus:
         return "\n".join(rows)
 
 
+#: Every `#[test]` of the compiled guard (`GUARD_TEST`), with what mirrors it
+#: in `static_guard`. `None` marks the deliberate exemption, with its reason
+#: in the module docstring. `static_guard` refuses a guard test this table
+#: does not name, and a row whose test is gone: a new assertion the mirror
+#: does not know is how the mirror's "exact" claim went false once already
+#: (`x86_icmp_certificate_rule_names_the_pinned_ay`, 2026-09-30, until this
+#: table existed). Parity is per test FUNCTION; an assertion added inside an
+#: already-mirrored test is not detected here.
+GUARD_TEST_MIRRORS: Dict[str, Optional[str]] = {
+    "clean_consumability_baseline_is_exact_and_atomic": (
+        "the two Clean manifest inventories and frontend/Cargo.lock's one "
+        "Clean package, version and source"
+    ),
+    "clean_pin_is_not_path_patched": (
+        "no root clean.git [patch]; every root Cargo.lock clean.git source "
+        "exact, and at least one"
+    ),
+    "frontend_lock_resolves_under_locked": None,
+    "ay_manifest_and_root_lock_are_exact_and_atomic": (
+        "the trust-ir-ay manifest, AY_REV, BVBLAST_PROVER and the root "
+        "Cargo.lock's AY selectors, sources and versions"
+    ),
+    "x86_icmp_certificate_rule_names_the_pinned_ay": (
+        "CHC_X86_ICMP_CERTIFICATE_RULE.ay (rev, version) equal to "
+        "(AY_REVISION, AY_VERSION)"
+    ),
+}
+
+GUARD_TEST_ATTRIBUTE = re.compile(r"(?m)^#\[test\]$")
+GUARD_TEST_FUNCTION = re.compile(
+    r"(?m)^#\[test\]\n(?:#\[[^\n]*\]\n)*fn (?P<name>[A-Za-z_][A-Za-z0-9_]*)\(\)"
+)
+
+
+def guard_test_parity(guard: str) -> List[str]:
+    """Violations of ``GUARD_TEST_MIRRORS`` against the guard's ``#[test]`` set."""
+
+    names = [match["name"] for match in GUARD_TEST_FUNCTION.finditer(guard)]
+    attributes = len(GUARD_TEST_ATTRIBUTE.findall(guard))
+    if len(names) != attributes:
+        return [
+            f"{GUARD_TEST}: {attributes} top-level #[test] attribute(s) but "
+            f"{len(names)} readable `fn name()` test(s); the mirror table "
+            "cannot be checked against a guard it cannot read"
+        ]
+    violations: List[str] = []
+    known = set(GUARD_TEST_MIRRORS)
+    for name in sorted(set(names) - known):
+        violations.append(
+            f"{GUARD_TEST} test {name} has no row in "
+            "scripts/pin_rewrite.py GUARD_TEST_MIRRORS: mirror its assertions "
+            "in static_guard (or record why nothing can) before claiming the "
+            "static guard is exact"
+        )
+    for name in sorted(known - set(names)):
+        violations.append(
+            f"scripts/pin_rewrite.py GUARD_TEST_MIRRORS names {name}, which "
+            f"{GUARD_TEST} no longer defines"
+        )
+    if len(names) != len(set(names)):
+        violations.append(f"{GUARD_TEST} defines a #[test] name twice")
+    return violations
+
+
+#: The x86-64 vector-compare certificate rule names the AY that produced
+#: every certificate. It is NOT a pin leg: the bumper cannot move it, because
+#: moving it asserts a re-certification (`docs/dialects.md`, the per-cell
+#: rule). It is read exactly as `publish/transforms.sh` T1 reads it: inside
+#: the ONE `CHC_X86_ICMP_CERTIFICATE_RULE` declaration, anchored on its
+#: `ay: ChcX86IcmpCertifyingBuild` literal, never on prose.
+CERTIFICATE_RULE_PATH = "crates/trust-ir/src/request/evidence.rs"
+CERTIFICATE_RULE_DECLARATION = (
+    "pub const CHC_X86_ICMP_CERTIFICATE_RULE: ChcX86IcmpCertificateRule = "
+    "ChcX86IcmpCertificateRule {\n"
+)
+CERTIFICATE_RULE_AY = re.compile(
+    r'^    ay: ChcX86IcmpCertifyingBuild \{\n'
+    r'        package: "ay",\n'
+    r'        rev: "(?P<rev>[^"\n]*)",\n'
+    r'        version: "(?P<version>[^"\n]*)",\n',
+    re.MULTILINE,
+)
+
+
+def certificate_rule_ay(text: str) -> Tuple[str, str]:
+    """The rule's AY ``(rev, version)``, or ``PinError`` naming why not."""
+
+    if text.count(CERTIFICATE_RULE_DECLARATION) != 1:
+        raise PinError(
+            f"{CERTIFICATE_RULE_PATH} must declare CHC_X86_ICMP_CERTIFICATE_RULE "
+            "exactly once, in the form the mirror anchors on"
+        )
+    start = text.index(CERTIFICATE_RULE_DECLARATION)
+    end = text.find("\n};\n", start)
+    if end < 0:
+        raise PinError(
+            f"{CERTIFICATE_RULE_PATH}: the CHC_X86_ICMP_CERTIFICATE_RULE "
+            "declaration never closes"
+        )
+    matches = list(CERTIFICATE_RULE_AY.finditer(text, start, end))
+    if len(matches) != 1:
+        raise PinError(
+            f"{CERTIFICATE_RULE_PATH}: CHC_X86_ICMP_CERTIFICATE_RULE must carry "
+            "exactly one `ay: ChcX86IcmpCertifyingBuild { package, rev, version, .. }` "
+            f"literal, found {len(matches)}"
+        )
+    return matches[0]["rev"], matches[0]["version"]
+
+
 def census(read: Reader, dep: str) -> Census:
     reports: List[LegReport] = []
     for leg in LEGS[dep]:
@@ -490,7 +637,8 @@ class StaticGuardReport:
         if self.coherent:
             return (
                 "STATIC GUARD: PASS -- exact Clean/AY manifest, provenance, "
-                "root-patch, and lockfile coherence checks passed"
+                "root-patch, lockfile and certificate-rule AY coherence checks "
+                "passed, and every guard test has a mirror row"
             )
         rows = [
             "STATIC GUARD: FAIL -- dependency_pin_coherence mirror found "
@@ -501,15 +649,20 @@ class StaticGuardReport:
 
 
 def static_guard(read: Reader) -> StaticGuardReport:
-    """Mirror every runtime assertion in ``dependency_pin_coherence.rs``.
+    """Mirror every runtime assertion in ``dependency_pin_coherence.rs`` but one.
 
     This is deliberately independent of Rust compilation so a missing Trust
     stage2 cannot turn the bumper's best-effort compiled guard into a silent
     authority gap. The Rust test remains the canonical compiled check and runs
     whenever Targo is available; this mirror is mandatory on every bump.
+
+    Not mirrored: ``frontend_lock_resolves_under_locked``, which runs
+    Cargo's resolver over ``frontend/Cargo.lock`` (see the module docstring).
+    Which guard test each check below mirrors is ``GUARD_TEST_MIRRORS``, and
+    the first check is that the table and the guard's tests agree.
     """
 
-    violations: List[str] = []
+    violations: List[str] = list(guard_test_parity(read(GUARD_TEST)))
 
     # The leg and package-version censuses are part of the fallback contract,
     # even though the bumper also prints them separately. Keeping them here
@@ -590,7 +743,7 @@ def static_guard(read: Reader) -> StaticGuardReport:
     exact_clean_version = f'version = "{clean_version}"'
     for manifest_name, expected_count in (
         ("crates/trust-ir/Cargo.toml", 1),
-        ("crates/trust-ir-build/Cargo.toml", 3),
+        ("crates/trust-ir-build/Cargo.toml", 6),
     ):
         dependency_lines = [
             line.strip()
@@ -631,8 +784,8 @@ def static_guard(read: Reader) -> StaticGuardReport:
         package
         for package in frontend_lock.split("[[package]]")
         if any(
-            line.strip().startswith('name = "clean-')
-            for line in package.splitlines()
+            _rust_trim(line).startswith('name = "clean-')
+            for line in _rust_lines(package)
         )
     ]
     if len(frontend_clean_packages) != 1:
@@ -641,7 +794,7 @@ def static_guard(read: Reader) -> StaticGuardReport:
             f"found {len(frontend_clean_packages)}"
         )
     else:
-        package_lines = {line.strip() for line in frontend_clean_packages[0].splitlines()}
+        package_lines = {_rust_trim(line) for line in _rust_lines(frontend_clean_packages[0])}
         if f'version = "{clean_version}"' not in package_lines:
             violations.append(
                 "frontend/Cargo.lock Clean package does not use the exact "
@@ -653,9 +806,9 @@ def static_guard(read: Reader) -> StaticGuardReport:
                 f"source {exact_clean_source}"
             )
     frontend_clean_source_rows = [
-        line.strip()
-        for line in frontend_lock.splitlines()
-        if clean_git_source in line.strip()
+        _rust_trim(line)
+        for line in _rust_lines(frontend_lock)
+        if clean_git_source in _rust_trim(line)
     ]
     if frontend_clean_source_rows != [exact_clean_source]:
         violations.append(
@@ -679,9 +832,9 @@ def static_guard(read: Reader) -> StaticGuardReport:
 
     root_lock = read("Cargo.lock")
     root_clean_source_rows = [
-        line.strip()
-        for line in root_lock.splitlines()
-        if clean_git_source in line.strip()
+        _rust_trim(line)
+        for line in _rust_lines(root_lock)
+        if clean_git_source in _rust_trim(line)
     ]
     if not root_clean_source_rows:
         violations.append("Cargo.lock records no clean.git source")
@@ -742,9 +895,9 @@ def static_guard(read: Reader) -> StaticGuardReport:
     ay_selector = f"git+{ay_repository}?rev={ay_revision}"
     ay_git_selector = f"git+{ay_repository}?rev="
     root_ay_selector_rows = [
-        line.strip()
-        for line in root_lock.splitlines()
-        if ay_git_selector in line.strip()
+        _rust_trim(line)
+        for line in _rust_lines(root_lock)
+        if ay_git_selector in _rust_trim(line)
     ]
     if not root_ay_selector_rows:
         violations.append("Cargo.lock records no ay.git source")
@@ -770,7 +923,7 @@ def static_guard(read: Reader) -> StaticGuardReport:
         package
         for package in root_lock.split("[[package]]")
         if any(
-            line.strip() == exact_ay_source for line in package.splitlines()
+            _rust_trim(line) == exact_ay_source for line in _rust_lines(package)
         )
     ]
     if len(root_ay_packages) != len(root_ay_source_rows):
@@ -782,8 +935,8 @@ def static_guard(read: Reader) -> StaticGuardReport:
     exact_ay_package_version = f'version = "{ay_version}"'
     if any(
         not any(
-            line.strip() == exact_ay_package_version
-            for line in package.splitlines()
+            _rust_trim(line) == exact_ay_package_version
+            for line in _rust_lines(package)
         )
         for package in root_ay_packages
     ):
@@ -792,6 +945,23 @@ def static_guard(read: Reader) -> StaticGuardReport:
             f"{ay_version}"
         )
 
+    # x86_icmp_certificate_rule_names_the_pinned_ay: the certificate rule's AY
+    # is the AY pin, revision AND version, as publish/transforms.sh T1 holds it.
+    try:
+        rule_ay = certificate_rule_ay(read(CERTIFICATE_RULE_PATH))
+    except PinError as error:
+        violations.append(str(error))
+    else:
+        if rule_ay != (ay_revision, ay_version):
+            violations.append(
+                "CHC_X86_ICMP_CERTIFICATE_RULE.ay names "
+                f"{rule_ay[0]} {rule_ay[1]}, not the AY pin {ay_revision} "
+                f"{ay_version}: re-certify the x86-64 vector-compare certificate "
+                "cells under the new AY (trust-cg scripts/check_x86_icmp_certificates.py) "
+                f"and move the rule's ay.rev, ay.version and certifying_sha256 in "
+                f"{CERTIFICATE_RULE_PATH} with the pin; the bumper cannot move them"
+            )
+
     return StaticGuardReport(tuple(violations))
 
 
@@ -799,6 +969,221 @@ def static_guard(read: Reader) -> StaticGuardReport:
 #: docs, ledgers and design notes quote revisions in prose and must not trip
 #: the complement check, but anything cargo reads must.
 PIN_BEARING_SUFFIXES = (".toml", ".lock", ".rs")
+
+# Exact captured inputs in the sealed historical SourceOp packet, not Cargo
+# workspaces. Their original names and bytes are part of the nested/outer
+# artifact manifests, so rewriting or renaming them would damage that evidence.
+# This is deliberately not a reports/ exemption: every new/neighboring build
+# input still participates in the complement census. A changed or redirected
+# captured input refuses even when it no longer contains the dependency URL.
+ARCHIVED_PIN_INPUT_SHA256 = {
+    "reports/2026-11-08-source-value-operational/evidence/afa-corrected-compact/source/Cargo.lock":
+        "cd930175713a5dbafbe1231aa4f19aa36f6737cc92e62211dc59004ff0b3abf5",
+    "reports/2026-11-08-source-value-operational/evidence/afa-corrected-compact/source/crates/trust-ir-build/Cargo.toml":
+        "479b6d4bcb8c8ced8dd4d7cf16eb87491d73e98bb44db5e4c2dc30a7d64800dc",
+}
+ARCHIVED_SOURCE_ROOT = "reports/2026-11-08-source-value-operational/evidence/afa-corrected-compact/source"
+ARCHIVED_SOURCE_MANIFEST = "reports/2026-11-08-source-value-operational/evidence/afa-corrected-compact/artifact-manifest.json"
+ARCHIVED_SOURCE_MANIFEST_SHA256 = "e2083a87711b4fc2a63d63ce1eefaa62946b3c8ba7df82ac05c45feef2cfdb10"
+
+
+def physically_within(path: Path, directory: Path) -> bool:
+    """Include filesystem aliases whose spelling resolve() does not change."""
+    for ancestor in (path, *path.parents):
+        try:
+            if ancestor.samefile(directory):
+                return True
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise PinError(f"cannot establish filesystem containment: {error}") from error
+    return False
+
+
+def inspect_cargo_pattern(base: Path, value: str, root: Path, boundary: Path) -> None:
+    pattern = base / value
+    if "**" in pattern.parts or len(pattern.parts) > 64:
+        raise PinError("recursive or over-depth Cargo glob cannot prove archive inertness")
+    candidates = [Path(pattern.anchor)]
+    visited = 0
+    for part in pattern.parts[1:]:
+        following = []
+        for candidate in candidates:
+            if any(char in part for char in "*?["):
+                if not physically_within(candidate, root):
+                    raise PinError("outside-repository Cargo glob cannot prove archive inertness")
+                if not candidate.is_dir():
+                    continue
+                try:
+                    with os.scandir(candidate) as entries:
+                        for entry in entries:
+                            visited += 1
+                            if visited > 4096:
+                                raise PinError("Cargo glob archive inspection budget exhausted")
+                            if fnmatch.fnmatchcase(entry.name.casefold(), part.casefold()):
+                                following.append(Path(entry.path).resolve())
+                except OSError as error:
+                    raise PinError(f"cannot inspect Cargo glob: {error}") from error
+            else:
+                following.append((candidate / part).resolve())
+        if len(following) > 256:
+            raise PinError("Cargo glob archive match budget exhausted")
+        for candidate in following:
+            if physically_within(candidate, boundary):
+                raise PinError("Cargo glob adopts the archived pin boundary")
+        candidates = following
+
+
+def validate_archived_pin_boundary(root: Path, tracked: Sequence[str]) -> None:
+    boundary = root / ARCHIVED_SOURCE_ROOT
+    if not boundary.exists() and not any(
+        p.startswith(ARCHIVED_SOURCE_ROOT + "/") for p in tracked
+    ):
+        return
+    manifest = root / ARCHIVED_SOURCE_MANIFEST
+    for relative in (ARCHIVED_SOURCE_ROOT, ARCHIVED_SOURCE_MANIFEST):
+        cursor = root
+        for part in Path(relative).parts:
+            cursor /= part
+            if cursor.is_symlink():
+                raise PinError("archived pin boundary contains a symlink")
+    if manifest.is_symlink() or not manifest.is_file():
+        raise PinError("archived pin boundary has no regular sealed manifest")
+    payload = manifest.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != ARCHIVED_SOURCE_MANIFEST_SHA256:
+        raise PinError("archived pin boundary manifest changed")
+    rows = json.loads(payload)["files"]
+    expected = {r["path"][7:]: r["sha256"] for r in rows if r["path"].startswith("source/")}
+    actual = set()
+    for path in boundary.rglob("*"):
+        if path.is_symlink():
+            raise PinError("archived pin boundary contains a symlink")
+        if path.is_file():
+            relative = path.relative_to(boundary).as_posix()
+            if relative not in expected:
+                raise PinError(f"archived pin boundary gained an input: {relative}")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected[relative]:
+                raise PinError(f"archived pin input content changed: {relative}")
+            actual.add(relative)
+    if actual != set(expected):
+        raise PinError("archived pin boundary lost a captured input")
+    # Cargo can activate an unchanged captured manifest through a workspace
+    # member or path dependency without repeating its Clean/AY URL. Inspect
+    # path/membership values, including glob membership; Cargo's own resolver
+    # still judges syntax and the actual dependency graph. Quoted strings and
+    # comments are tokenized before tracking assignments, so '=' inside an
+    # earlier member/description cannot hide a later member.
+    parent = boundary.parent
+    while parent != root:
+        if (parent / "Cargo.toml").exists() or (parent / "Cargo.toml").is_symlink():
+            raise PinError("archived pin boundary gained an enclosing Cargo manifest")
+        parent = parent.parent
+    destinations = [boundary.resolve(), *(p.parent.resolve() for p in boundary.rglob("Cargo.toml"))]
+    literals = re.compile(
+        r'#[^\n]*|"""(?:\\.|(?!""")[\s\S])*"""'
+        + r"|'''[\s\S]*?'''"
+        + r'''|"(?:\\.|[^"\\])*"|'[^']*' '''.strip()
+    )
+    manifests = {p for p in tracked if p.endswith("Cargo.toml") and not p.startswith(ARCHIVED_SOURCE_ROOT + "/")}
+    if (root / "Cargo.toml").exists():
+        manifests.add("Cargo.toml")
+    for relative in sorted(manifests):
+        path = root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise PinError(f"cannot inspect Cargo adoption of archive: {relative}") from error
+        cursor = 0
+        assignment = None
+        quoted_key = None
+        for match in literals.finditer(text):
+            gap = text[cursor:match.start()]
+            assignments = re.findall(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=", gap)
+            if assignments:
+                assignment = assignments[-1]
+            elif quoted_key is not None and gap.lstrip().startswith("="):
+                assignment = quoted_key
+            cursor = match.end()
+            token = match.group()
+            if token.startswith("#"):
+                continue
+            line_prefix = text[text.rfind("\n", 0, match.start()) + 1:match.start()]
+            if line_prefix.lstrip().startswith("["):
+                # Quoted table keys (notably profile.package."*") are names,
+                # not workspace/path values.
+                quoted_key = None
+                continue
+            triple = token.startswith(('"""', "'''"))
+            try:
+                if token.startswith("'"):
+                    value = token[3:-3] if triple else token[1:-1]
+                else:
+                    # TOML multiline basic strings trim continuation whitespace.
+                    value = ast.literal_eval(re.sub(r"\\\r?\n[ \t\r\n]*", "", token))
+                if triple and value.startswith("\n"):
+                    value = value[1:]
+            except (ValueError, SyntaxError):
+                raise PinError(f"unsupported Cargo string while checking archive adoption: {relative}")
+            following = text[match.end():].lstrip()
+            quoted_key = value if following.startswith(("=", ".")) else None
+            if quoted_key is not None or assignment not in {"path", "members", "default-members", "build", "workspace"}:
+                continue
+            candidate = (path.parent / value).resolve()
+            if any(char in value for char in "*?["):
+                inspect_cargo_pattern(path.parent.resolve(), value, root.resolve(), boundary.resolve())
+            # Case folding is a conservative overapproximation on case-sensitive
+            # filesystems and also catches ordinary macOS case aliases.
+            normalized = str(candidate).casefold()
+            if str(boundary.resolve()).casefold() == normalized or any(
+                str(boundary.resolve()).casefold() == str(p).casefold() for p in candidate.parents
+            ) or any(
+                fnmatch.fnmatchcase(str(target).casefold(), normalized) for target in destinations
+            ):
+                raise PinError(f"Cargo manifest adopts the archived pin boundary: {relative}")
+
+
+def validated_stage(root: Path, proposed: Path, edits: Dict[str, str]) -> Path:
+    stage = proposed.resolve()
+    source = root.resolve()
+    if physically_within(stage, source):
+        raise PinError("staging directory must be outside the source tree")
+    for relative in edits:
+        destination = (stage / relative).resolve()
+        if stage not in destination.parents:
+            raise PinError(f"staged destination escapes its directory: {relative}")
+        if physically_within(destination, source):
+            raise PinError(f"staged destination enters the source tree: {relative}")
+        if destination.exists() or destination.is_symlink():
+            raise PinError(f"staged output must be fresh: {relative}")
+    return stage
+
+
+def write_staged_output(destination: Path, text: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with destination.open("x", encoding="utf-8") as output:
+            output.write(text)
+    except OSError as error:
+        raise PinError(f"cannot exclusively create staged output {destination}: {error}") from error
+
+
+def is_archived_pin_input(root: Path, relpath: str) -> bool:
+    expected = ARCHIVED_PIN_INPUT_SHA256.get(relpath)
+    if expected is None:
+        return False
+    path = root / relpath
+    cursor = root
+    for part in Path(relpath).parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise PinError(f"archived pin input is redirected by a symlink: {relpath}")
+    try:
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise PinError(f"cannot read archived pin input {relpath}: {error}") from error
+    if actual != expected:
+        raise PinError(f"archived pin input content changed: {relpath}")
+    return True
 
 
 def undeclared_pin_sites(root: Path, dep: str) -> List[Tuple[str, int, str]]:
@@ -836,11 +1221,15 @@ def undeclared_pin_sites(root: Path, dep: str) -> List[Tuple[str, int, str]]:
         raise NotAGitCheckout(str(root))
 
     offenders: List[Tuple[str, int, str]] = []
+    tracked = [raw.decode("utf-8", "surrogateescape") for raw in listing.stdout.split(b"\0") if raw]
+    validate_archived_pin_boundary(root, tracked)
     for raw in listing.stdout.split(b"\0"):
         if not raw:
             continue
         relpath = raw.decode("utf-8", "surrogateescape")
         if relpath in declared or not relpath.endswith(PIN_BEARING_SUFFIXES):
+            continue
+        if is_archived_pin_input(root, relpath):
             continue
         try:
             text = (root / relpath).read_text(encoding="utf-8")
@@ -1046,6 +1435,11 @@ def repo_reader(root: Path) -> Reader:
     def read(relpath: str) -> str:
         path = root / relpath
         try:
+            # Lock checks must see original CR/LF bytes like Rust include_str!,
+            # rather than universal-newline normalization hiding a bare CR.
+            if path.name == "Cargo.lock":
+                with path.open(encoding="utf-8", newline="") as stream:
+                    return stream.read()
             return path.read_text(encoding="utf-8")
         except OSError as error:
             raise PinError(f"{relpath}: cannot read pin leg: {error}") from error
@@ -1091,8 +1485,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     static_guard_parser = sub.add_parser(
         "static-guard",
         help=(
-            "run the exact toolchain-free mirror of "
-            "dependency_pin_coherence.rs"
+            "run the toolchain-free mirror of dependency_pin_coherence.rs "
+            "(every assertion but the frontend-lock resolve)"
         ),
     )
     static_guard_parser.add_argument(
@@ -1101,6 +1495,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=Path(__file__).resolve().parent.parent,
         help="repository root (defaults to this script's parent repository)",
     )
+    integrity_parser = sub.add_parser("integrity", help="refuse fatal input/complement errors before staging")
+    integrity_parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
 
     legs_parser = sub.add_parser(
         "legs", help="print this dependency's leg paths, one per line"
@@ -1173,6 +1569,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     read = repo_reader(root) if root is not None else None
 
     try:
+        if args.command == "integrity":
+            for dependency in LEGS:
+                try:
+                    rogue = undeclared_pin_sites(Path(args.root), dependency)
+                except NotAGitCheckout:
+                    print("(not audited) pin integrity complement needs a Git checkout")
+                    return 0
+                if rogue:
+                    raise PinError(f"undeclared {dependency} pin site: {rogue[0][0]}")
+            print("PIN INPUT INTEGRITY: PASS")
+            return 0
         if args.command == "census":
             assert read is not None
             report = census(read, args.dep)
@@ -1309,11 +1716,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
                 return 2
             edits = plan_edits(read, args.dep, args.to, args.version_to)
-            stage = args.stage_dir.resolve()
+            stage = validated_stage(Path(args.root), args.stage_dir, edits)
             for relpath, text in sorted(edits.items()):
                 destination = stage / relpath
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(text, encoding="utf-8")
+                write_staged_output(destination, text)
                 print(relpath)
             return 0
 
@@ -1344,11 +1750,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.clean_version_to,
                 args.ay_version_to,
             )
-            stage = args.stage_dir.resolve()
+            stage = validated_stage(Path(args.root), args.stage_dir, edits)
             for relpath, staged_text in sorted(edits.items()):
                 destination = stage / relpath
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(staged_text, encoding="utf-8")
+                write_staged_output(destination, staged_text)
                 print(relpath)
             return 0
     except PinError as error:

@@ -50,12 +50,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     },
     {
       "id": 1,
@@ -106,12 +114,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     },
     {
       "id": 2,
@@ -162,12 +178,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [],
@@ -184,7 +208,10 @@
       },
       "linkage": "External",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     }
   ],
   "func_types": [
@@ -210,5 +237,12 @@
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

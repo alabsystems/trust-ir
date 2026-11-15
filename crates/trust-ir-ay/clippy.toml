@@ -1,0 +1,96 @@
+# trust-ir-ay lint policy (gate 0, `workspace-clippy`: `tippy ... -- -D warnings`).
+#
+# r11 item 5: every ay `Solver` method below PANICS on a module-derived sort
+# or width (`bvadd` is literally `try_bvadd(..).unwrap_or_else(|e| panic!(..))`
+# at the pinned ay rev), and each has a total `try_*` twin. The adapter calls
+# the twins; a new call to a panicking method fails gate 0. The rule is
+# type-resolved (clippy resolves `ay::Solver::<method>`, and an unresolvable
+# entry is itself a warning, so a typo cannot silently disable it).
+#
+# Rank: a gate-0 LINT, below type-level. Production code cannot allow it:
+# `src/lib.rs` opens with
+# `#![cfg_attr(not(test), forbid(clippy::disallowed_methods))]`, so a
+# production `#[allow(clippy::disallowed_methods)]` is E0453 under the linter
+# (plain rustc does not see it; gate 0's tippy is the enforcement). Since the
+# pin carrying ay's `try_render_term_canonical` and `try_term_sort`, every
+# panicking method the adapter needs has a twin. `sort_of` and `get_sort` are
+# listed because they are `term_sort` under other names. Test targets allow
+# the lint crate- or module-wide: they drive ay directly and a panic there is
+# a test failure.
+#
+# `model` is listed for the adapter's one-site rule (item 4): a SAT witness is
+# taken only through `vc::sat_witness`, from ay's consumer-accepted
+# `try_get_model_for_consumer`, never from the unvalidated `model()`.
+disallowed-methods = [
+  { path = "ay::Solver::and", reason = "use `try_and`: `and` panics where `try_and` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::assert_term", reason = "use `try_assert_term`: `assert_term` panics where `try_assert_term` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bv_const", reason = "use `try_bv_const`: `bv_const` panics where `try_bv_const` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bv_const_u64", reason = "use `try_bv_const_u64`: `bv_const_u64` panics where `try_bv_const_u64` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bv_to_fp", reason = "use `try_bv_to_fp`: `bv_to_fp` panics where `try_bv_to_fp` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bv_to_fp_unsigned", reason = "use `try_bv_to_fp_unsigned`: `bv_to_fp_unsigned` panics where `try_bv_to_fp_unsigned` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvadd", reason = "use `try_bvadd`: `bvadd` panics where `try_bvadd` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvadd_no_overflow", reason = "use `try_bvadd_no_overflow`: `bvadd_no_overflow` panics where `try_bvadd_no_overflow` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvadd_no_underflow", reason = "use `try_bvadd_no_underflow`: `bvadd_no_underflow` panics where `try_bvadd_no_underflow` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvand", reason = "use `try_bvand`: `bvand` panics where `try_bvand` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvashr", reason = "use `try_bvashr`: `bvashr` panics where `try_bvashr` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvconcat", reason = "use `try_bvconcat`: `bvconcat` panics where `try_bvconcat` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvextract", reason = "use `try_bvextract`: `bvextract` panics where `try_bvextract` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvlshr", reason = "use `try_bvlshr`: `bvlshr` panics where `try_bvlshr` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvmul", reason = "use `try_bvmul`: `bvmul` panics where `try_bvmul` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvmul_no_overflow", reason = "use `try_bvmul_no_overflow`: `bvmul_no_overflow` panics where `try_bvmul_no_overflow` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvmul_no_underflow", reason = "use `try_bvmul_no_underflow`: `bvmul_no_underflow` panics where `try_bvmul_no_underflow` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvneg", reason = "use `try_bvneg`: `bvneg` panics where `try_bvneg` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvnot", reason = "use `try_bvnot`: `bvnot` panics where `try_bvnot` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvor", reason = "use `try_bvor`: `bvor` panics where `try_bvor` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsdiv", reason = "use `try_bvsdiv`: `bvsdiv` panics where `try_bvsdiv` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsge", reason = "use `try_bvsge`: `bvsge` panics where `try_bvsge` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsgt", reason = "use `try_bvsgt`: `bvsgt` panics where `try_bvsgt` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvshl", reason = "use `try_bvshl`: `bvshl` panics where `try_bvshl` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsignext", reason = "use `try_bvsignext`: `bvsignext` panics where `try_bvsignext` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsle", reason = "use `try_bvsle`: `bvsle` panics where `try_bvsle` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvslt", reason = "use `try_bvslt`: `bvslt` panics where `try_bvslt` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsrem", reason = "use `try_bvsrem`: `bvsrem` panics where `try_bvsrem` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsub", reason = "use `try_bvsub`: `bvsub` panics where `try_bvsub` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsub_no_overflow", reason = "use `try_bvsub_no_overflow`: `bvsub_no_overflow` panics where `try_bvsub_no_overflow` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvsub_no_underflow", reason = "use `try_bvsub_no_underflow`: `bvsub_no_underflow` panics where `try_bvsub_no_underflow` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvudiv", reason = "use `try_bvudiv`: `bvudiv` panics where `try_bvudiv` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvuge", reason = "use `try_bvuge`: `bvuge` panics where `try_bvuge` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvugt", reason = "use `try_bvugt`: `bvugt` panics where `try_bvugt` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvule", reason = "use `try_bvule`: `bvule` panics where `try_bvule` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvult", reason = "use `try_bvult`: `bvult` panics where `try_bvult` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvurem", reason = "use `try_bvurem`: `bvurem` panics where `try_bvurem` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvxor", reason = "use `try_bvxor`: `bvxor` panics where `try_bvxor` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::bvzeroext", reason = "use `try_bvzeroext`: `bvzeroext` panics where `try_bvzeroext` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::check_sat", reason = "use `try_check_sat`: `check_sat` panics where `try_check_sat` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::declare_const", reason = "use `try_declare_const`: `declare_const` panics where `try_declare_const` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::eq", reason = "use `try_eq`: `eq` panics where `try_eq` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_abs", reason = "use `try_fp_abs`: `fp_abs` panics where `try_fp_abs` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_add", reason = "use `try_fp_add`: `fp_add` panics where `try_fp_add` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_div", reason = "use `try_fp_div`: `fp_div` panics where `try_fp_div` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_eq", reason = "use `try_fp_eq`: `fp_eq` panics where `try_fp_eq` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_ge", reason = "use `try_fp_ge`: `fp_ge` panics where `try_fp_ge` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_gt", reason = "use `try_fp_gt`: `fp_gt` panics where `try_fp_gt` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_is_nan", reason = "use `try_fp_is_nan`: `fp_is_nan` panics where `try_fp_is_nan` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_le", reason = "use `try_fp_le`: `fp_le` panics where `try_fp_le` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_lt", reason = "use `try_fp_lt`: `fp_lt` panics where `try_fp_lt` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_mul", reason = "use `try_fp_mul`: `fp_mul` panics where `try_fp_mul` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_neg", reason = "use `try_fp_neg`: `fp_neg` panics where `try_fp_neg` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_rem", reason = "use `try_fp_rem`: `fp_rem` panics where `try_fp_rem` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_rounding_mode", reason = "use `try_fp_rounding_mode`: `fp_rounding_mode` panics where `try_fp_rounding_mode` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_sub", reason = "use `try_fp_sub`: `fp_sub` panics where `try_fp_sub` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_to_fp", reason = "use `try_fp_to_fp`: `fp_to_fp` panics where `try_fp_to_fp` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_to_sbv", reason = "use `try_fp_to_sbv`: `fp_to_sbv` panics where `try_fp_to_sbv` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::fp_to_ubv", reason = "use `try_fp_to_ubv`: `fp_to_ubv` panics where `try_fp_to_ubv` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::ite", reason = "use `try_ite`: `ite` panics where `try_ite` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::not", reason = "use `try_not`: `not` panics where `try_not` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::or", reason = "use `try_or`: `or` panics where `try_or` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::pop", reason = "use `try_pop`: `pop` panics where `try_pop` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::push", reason = "use `try_push`: `push` panics where `try_push` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::select", reason = "use `try_select`: `select` panics where `try_select` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::store", reason = "use `try_store`: `store` panics where `try_store` returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::render_term_canonical", reason = "use `try_render_term_canonical`: `render_term_canonical` panics on a handle this solver did not issue where the twin returns a typed error (r11 item 5)" },
+  { path = "ay::Solver::term_sort", reason = "use `try_term_sort`: `term_sort` panics on a handle this solver did not issue where the twin returns a typed error (r11 review M1)" },
+  { path = "ay::Solver::sort_of", reason = "`term_sort` under another name; use `try_term_sort` (r11 review M1)" },
+  { path = "ay::Solver::get_sort", reason = "`term_sort` under another name; use `try_term_sort` (r11 review M1)" },
+  { path = "ay::Solver::model", reason = "take a SAT witness only through `vc::sat_witness` (ay `try_get_model_for_consumer`): `model()` has no consumer acceptance" },
+]

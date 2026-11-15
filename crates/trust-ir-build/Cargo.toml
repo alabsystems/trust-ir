@@ -18,6 +18,9 @@ description = "Builder API and validation for TrustIr programs"
 # program to its proof, fixed theorem rechecks are theorem assurance rather than
 # certification authority.
 default = ["clean-tv-anchor"]
+# Exact original module bytes for an unlicensed scalar-source witness only.
+source-identity-data = ["trust-ir/binary"]
+source-addition-data = ["source-identity-data"]
 serde = ["trust-ir/serde"]
 binary = ["trust-ir/binary"]
 # DEFAULT-ON: the in-process clean-backend TRANSLATION-VALIDATION anchor
@@ -30,10 +33,13 @@ binary = ["trust-ir/binary"]
 # + proof term from the certificate payload (the shared exact, resource-bounded
 # legacy-bincode-compatible Clean Expr carrier), and (c) declares the equation into the
 # ground `Environment::with_prelude()` where the kernel type-checks it on
-# insertion, then runs the standard per-theorem rooted authority audit and
-# micro cross-check. When OFF, the "clean_backend_tv" anchor FAILS CLOSED: a
+# insertion, then runs the standard per-theorem rooted authority audit. When
+# OFF, the "clean_backend_tv" anchor FAILS CLOSED: a
 # TranslationValidation obligation can never certify — never faith-accepted.
 clean-tv-anchor = ["trust-ir/clean-expr"]
+# DEFAULT-OFF: checked connection to the separately owned canonical ByteV1
+# model. This factory does not change the default TV reader or frontend graph.
+source-value-operational = ["clean-tv-anchor", "dep:clean-verify"]
 # DEFAULT-OFF: add the REAL Mathlib-dependent SlackCertZ kernel anchor to the
 # in-process CleanCic re-checker. When enabled, the re-checker can build the
 # `KERNEL_ANCHOR_SLACKCERTZ` environment by LOADING the vendored `.olean`
@@ -56,7 +62,17 @@ slackcertz-anchor = ["dep:clean-mathverse", "dep:clean-olean"]
 giveback-anchor = []
 
 [dependencies]
-trust-ir = { path = "../trust-ir" }
+# `fmt` (zero dependencies) computes `Module::obligation_digest` and
+# `NativeVerificationBundle::coverage_replay_context_digest`, so every build of
+# `coverage_establishment_report` recomputes every digest an attestation row
+# cites.
+trust-ir = { path = "../trust-ir", features = ["fmt", "clean-expr-codec"] }
+# The pure decision tables this crate re-exports at their old paths
+# (`coverage_supports`, `UnlicensedBodyPolicy`) and routes its license layer
+# through: their English laws are PROVED Trust contracts, re-checked by the
+# Clean kernel under the explicit verified lane (scripts/verified_contracts.py,
+# gate 13). A leaf beside trust-ir, so that lane verifies a small unit.
+trust-ir-laws = { workspace = true }
 rayon = { workspace = true }
 # In-process CleanCic kernel re-checker (de Bruijn criterion): the trusted
 # clean-kernel type-checker RE-CHECKS the emitted Farkas soundness proof TERM
@@ -79,7 +95,11 @@ rayon = { workspace = true }
 # Public snapshots resolve this exact dependency through the attested Clean
 # release mapping. Combined workspaces may redirect the public URL with their
 # own checked-out Clean subrepo `[patch]` table.
-clean-kernel = { version = "0.8.0", git = "https://github.com/alabsystems/clean.git", rev = "74811b174d8f7d5660c1c215ed775292b83a598c", features = ["farkas-constructive"] }
+clean-kernel = { version = "0.9.0", git = "https://github.com/alabsystems/clean.git", rev = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c", features = ["farkas-constructive"] }
+# Opt-in operational source-value checking owns the existing canonical model
+# and checked modular arithmetic laws; a caller-selected same-name evaluator
+# is not an authenticated operational environment. The pinned revision is shared.
+clean-verify = { version = "0.9.0", git = "https://github.com/alabsystems/clean.git", rev = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c", optional = true, features = ["source-ir-word64-addition"] }
 # OPTIONAL (default-OFF, only via the `slackcertz-anchor` feature): the
 # `.olean` load pipeline used to materialize the literal Mathlib-dependent
 # `Crownproof.SlackCertZ` environment inside the trusted kernel. `optional =
@@ -88,13 +108,13 @@ clean-kernel = { version = "0.8.0", git = "https://github.com/alabsystems/clean.
 # Clean's published manifests use exact Git dependencies for their AY crates,
 # so this default-off anchor is consumable directly from clean.git as well as
 # from workspaces that redirect Clean through a local [patch].
-clean-mathverse = { version = "0.8.0", git = "https://github.com/alabsystems/clean.git", rev = "74811b174d8f7d5660c1c215ed775292b83a598c", optional = true }
+clean-mathverse = { version = "0.9.0", git = "https://github.com/alabsystems/clean.git", rev = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c", optional = true }
 # OPTIONAL (default-OFF, only via `slackcertz-anchor`): the `.olean` search-path
 # resolver (`default_search_paths`) used to locate the Lean 4 stdlib dir before
 # loading the SlackCertZ closure. Already a transitive dep of `clean-mathverse`,
 # so this adds NOTHING to the default build (it is `optional = true` and only
 # activated by the feature).
-clean-olean = { version = "0.8.0", git = "https://github.com/alabsystems/clean.git", rev = "74811b174d8f7d5660c1c215ed775292b83a598c", optional = true }
+clean-olean = { version = "0.9.0", git = "https://github.com/alabsystems/clean.git", rev = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c", optional = true }
 # The give-back ELABORATOR — used by the TRUSTED relevance check in
 # `validate_certified_evidence`: for a GiveBackRefinement obligation that carries
 # its function, the validator RE-RUNS `elaborate_give_back` + `give_back_recheck_directive`
@@ -104,10 +124,141 @@ clean-olean = { version = "0.8.0", git = "https://github.com/alabsystems/clean.g
 # stays untrusted as a PRODUCER; here the validator re-derives rather than trusting
 # its output. It is light (deps only `trust-ir`).
 trust-ir-giveback = { path = "../trust-ir-giveback" }
-# `clean-tv-anchor` enables trust-ir's shared, legacy-bincode-compatible Clean
-# Expr codec. It preserves the existing wire bytes while adding exact
-# whole-slice and byte/node/depth-bounded decode for untrusted term/context.
+# Scoped proof transport always needs the shared bounded Clean Expr codecs.
+# Codec availability does not select kernel replay or the Clean TV anchor.
 
 [dev-dependencies]
+# The MakeClosure transport regression also parses canonical text and compares
+# modules semantically. Declare its codecs in this test graph instead of relying
+# on another workspace member to unify these features into trust-ir.
+trust-ir = { path = "../trust-ir", default-features = false, features = ["binary", "parser", "diff"] }
+# Replay assembler candidates in the existing canonical byte vocabulary. This
+# adds no production dependency or proof authority; keep its pin in the same
+# atomic Clean transaction as the runtime kernel and optional anchor crates.
+clean-verify = { version = "0.9.0", git = "https://github.com/alabsystems/clean.git", rev = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c" }
+# `tensor_contraction_equals_loop_nest` loads the lake-built SemR theorem's
+# `.olean` closure and replays it through Clean's reference kernel entry
+# (`reference_base_closed`). Test graph only, no features (never
+# `test-support`); the same atomic pin as the runtime kernel.
+clean-olean = { version = "0.9.0", git = "https://github.com/alabsystems/clean.git", rev = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c" }
 serde_json = "1.0"
 rmp-serde = "1.3"
+
+[[test]]
+name = "core_execution_byte_replay"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_atomic_replay"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_u64_codec"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_u64_shift"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_u64_shift_in_range"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_u64_add"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_u64_unsigned_compare"
+path = "tests/core_execution_u64_unsigned_compare/cases.rs"
+required-features = ["clean-tv-anchor"]
+
+# These integration fixtures mint replay certificates or call TV-only builder
+# modules. They remain in the default/all-feature gates; codec-only tests and
+# the explicit disabled-anchor refusal target remain available without replay.
+
+[[test]]
+name = "certificate_binding"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "contract_clause_binding"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_countdown_replay"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_remainder_bound_replay"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "core_execution_wrapped_add_replay"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "effect_summary_validation"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "handle_types"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "island_theorem"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "lineage_authority"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "linked_import_authentication"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "local_inheritance"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "module_completeness_validation"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "per_clause_proved"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "tv_callee_binding"
+required-features = ["clean-tv-anchor"]
+
+# Shared conformance corpus generation mints a Clean replay certificate.
+[[test]]
+name = "module_merge"
+required-features = ["clean-tv-anchor"]
+
+# Builder door controls import that same conformance corpus generator.
+[[test]]
+name = "builder_doors"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "source_value_operational_consumer"
+required-features = ["source-value-operational"]
+
+[[test]]
+name = "clean_u32_boxed_prefix"
+required-features = ["source-value-operational"]
+
+[[test]]
+name = "source_bound_calls"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "scalar_source_value_equation"
+required-features = ["clean-tv-anchor"]
+
+[[test]]
+name = "scalar_source_value_producer"
+required-features = ["clean-tv-anchor"]

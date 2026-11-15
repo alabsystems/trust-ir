@@ -6,20 +6,15 @@
 # single-match-over-enum bool-returning function into a `trust_ir::Function`
 # via the trust_ir_build ModuleBuilder/FunctionBuilder API.
 #
-# Build with the parent bootstrap's prepared rustc-private metadata. The public
-# stage1 sysroot does not ship every private host crate, while compiling this
-# tool with stage1 itself recursively invokes Trust verification. Canonical form:
-#   PRIVATE=<trust>/build/<host>/rustc-private-sysroots/rustc-private-tool-stage0-<host>-<hash>
-#   LLVM_CONFIG=<the llvm-config used to build rustc>
-#   RUSTC_BOOTSTRAP=1 RUSTC=<trust>/build/<host>/stage0/bin/rustc \
-#   CARGO_TARGET_DIR=target/stage1-private \
-#   RUSTFLAGS="-Lall=$PRIVATE/<host> -Lall=$PRIVATE/host -Lnative=$($LLVM_CONFIG --libdir)" \
-#   <trust>/build/<host>/stage0/bin/cargo build --bin trust_ir_mir
-# The native search path is required because rustc_driver can name static LLVM
-# support libraries (for example Polly) that are not copied into PRIVATE.
-# Run with the private dylib directory in DYLD_LIBRARY_PATH (macOS) or
-# LD_LIBRARY_PATH (ELF), RUSTC=<trust>/build/<host>/stage1/bin/rustc, and
-# preferably an explicit `--sysroot <trust>/build/<host>/stage1`.
+# Build and test it with the Trust toolchain (owner directive 2026-09-28):
+#   targo --unverified build --manifest-path frontend/Cargo.toml --locked
+#   targo --unverified test  --manifest-path frontend/Cargo.toml --locked
+# The installed Trust sysroot resolves `rustc_private` directly (no -L overlay, no
+# private-sysroot copy), and build.rs bakes an rpath to its `librustc_driver`, so
+# `target/*/trust_ir_mir` runs without DYLD_LIBRARY_PATH/LD_LIBRARY_PATH. At run
+# time the drivers take RUSTC (default `trustc`) as the ABI-matching compiler.
+# The x.py stage0-cargo/stage1-rustc recipe this block used to give is retired;
+# it is in git history (bf7ee706:frontend/Cargo.toml).
 #
 # Author: M1 frontend (THIR -> trust-ir lowering)
 # License: Apache-2.0
@@ -49,22 +44,71 @@ path = "src/mir_driver.rs"
 # A library so the pure THIR->trust-ir lowering core and the differential
 # harness can be unit-tested without a full rustc invocation.
 #
-# doctest = false: this crate has no doctests, and the doctest phase cannot
-# run here anyway — `cargo test` invokes rustdoc, which RUSTC= does NOT
-# redirect, so the ambient (Homebrew) rustdoc rejects the stage1-built rlibs
-# with E0514 ("compiled by an incompatible version of rustc"). The trust
-# stage1 sysroot ships no rustdoc (only rustc/trustc; the stage3-tools
-# rustdoc_tool_binary pairs with a librustc_driver hash that is no longer
-# present), so there is no compatible rustdoc to point RUSTDOC at. With
-# doctest = false, the canonical test invocation is green end-to-end:
-#   STAGE1=<trust>/build/<host>/stage1
-#   env -u RUSTUP_TOOLCHAIN RUSTFLAGS=-Zno-trust-verify \
-#   RUSTC=$STAGE1/bin/rustc \
-#   DYLD_FALLBACK_LIBRARY_PATH=$STAGE1/lib/rustlib/<host>/lib \
-#   $STAGE1/bin/cargo test
-# If doctests are ever added, build a stage1-paired rustdoc first
-# (`x.py build --stage 1 rustdoc` in the trust superproject) and wire it via
-# RUSTDOC= or .cargo/config.toml `build.rustdoc`.
+# doctest = false: this crate has no doctests, and a rustdoc run over a
+# rustc_private crate needs a rustdoc paired with the same compiler. If doctests
+# are ever added, `trustdoc` from the same toolchain is that rustdoc.
+#
+# VERIFICATION. `targo --unverified` above makes no proof claim. The verified
+# lane over this crate is `targo trust check --allow-l0-gaps --manifest-path
+# frontend/Cargo.toml` (advisory: every obligation reported, unproved ones
+# warn). Measured 2026-09-28 on trustc 321aaeda7, before and after the
+# migration: it ICEs compiling the `trust_ir_mir` bin (`RawList<(), GenericArg>
+# as Sized` has escaping bound vars, rustc_middle/src/ty/predicate.rs:492),
+# with the other units reporting 164 proved / 94 failed / 976 unknown of 1252
+# obligations — a compiler bug to fix in Trust, not a reason to reach for
+# `-Ztrust-verify=off` here.
+#
+# The intended test lane is `targo trust test --allow-l0-gaps --manifest-path
+# frontend/Cargo.toml --locked`, replacing the `--unverified` recipe above.
+# On the installed pack (trustc 321aaeda7) at least THREE refusals stand in
+# front of it, and the Trust fix for the ICE clears only the first:
+#   1. the `trust_ir_mir` ICE above;
+#   2. Trust blocker B5, build scripts. `targo trust test` takes no custom
+#      build unit as evidence (Trust `reject_certified_monitor_custom_build_unit`,
+#      src/tools/targo/src/cargo/core/compiler/mod.rs), and every build script
+#      of the unit graph counts: this crate's build.rs (the rpath), trust-ir's,
+#      and the dependencies'. `targo metadata --locked --offline` over this
+#      manifest lists 23 build-script packages (normal and build edges on
+#      every platform, so a superset; 2026-10-01), so deleting this crate's
+#      own build.rs would not clear it. On the installed pack BOTH lanes
+#      refuse, `--allow-l0-gaps` included: "evidence-grade certified-monitor
+#      tests reject custom build unit <unit>::build-script-build: arbitrary
+#      build-script processes and background side effects are not an
+#      authenticated compilation/execution TCB". Measured 2026-10-01 on a
+#      one-crate probe with a build.rs (exit 2), not on this crate;
+#   3. proc macros. `targo trust test` refuses a unit that loads an unaudited
+#      in-process proc macro (Trust `reject_in_process_proc_macro_tcb`, same
+#      file), and the graph has 4 proc-macro packages (serde_derive,
+#      thiserror-impl, bincode_derive, zerocopy-derive; same metadata
+#      reading). On the installed pack BOTH lanes refuse: "verified Targo
+#      refuses unit <unit>: in-process proc-macro dependencies [<macro>] ...
+#      Evidence-grade verification currently enforces a no-proc-macro TCB
+#      boundary". Measured 2026-10-01 on a one-crate probe with one local
+#      proc-macro dependency and no build script (exit 2 in each lane), not on
+#      this crate.
+# A pack that includes Trust ce2f898285 (2026-09-22; on Trust main, not in
+# 321aaeda7) refuses 2 and 3 only in the strict lane. The advisory lane
+# forfeits the evidence instead ("advisory lane: certified-monitor execution
+# TCB seals are forfeited for root unit ...; test execution evidence in this
+# session is not evidence-grade", and "unit <unit> forfeits proof authority:
+# in-process proc-macro dependencies [...]"), the first for every advisory
+# test run, build scripts or not. Read from that commit's code, not run: no
+# such pack is installed here.
+# That the lane runs once these clear is NOT measured: in the shell that took
+# the measurements above, the installed pack's advisory test lane refused even
+# a dependency-free crate ("missing its authenticated
+# `DYLD_FALLBACK_LIBRARY_PATH` runtime-library closure"; not investigated).
+# And the advisory lane's test execution is never evidence-grade: only the
+# strict lane's can be, and that needs AT LEAST B5 itself (contained, sealed
+# build scripts), Trust D21/PM-1 for the 4 proc macros, and an admission rule
+# for the graph's native link closure, which B5's design leaves out of scope.
+# The strict lane refuses that closure today
+# (`reject_certified_monitor_dynamic_rust_linkage_with_audited_proc_macro`):
+# this crate's own `-C link-arg` (the rpath build.rs prints), and the native
+# `-l` / `-L native=` that zstd-sys and psm emit. Read from Trust main's code
+# (1ec945d698), not run; the list is not shown to be complete.
+# Evidence class: prose-only. No gate runs either verified lane over this
+# crate.
 [lib]
 name = "trust_ir_frontend"
 path = "src/lib.rs"
@@ -79,6 +123,6 @@ trust-ir-build = { path = "../crates/trust-ir-build" }
 [package.metadata.rust-analyzer]
 rustc_private = true
 
-# Keep this crate OUT of any cargo workspace: it needs the pinned stage1
-# toolchain and links rustc internals; those concerns must not leak.
+# Keep this crate OUT of any cargo workspace: it links rustc internals from the
+# Trust sysroot; that concern must not leak into the main workspace.
 [workspace]

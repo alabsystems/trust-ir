@@ -13,6 +13,21 @@ import TrustIr.Semantics.Eval
 
 namespace TrustIr
 
+/-- A function value cannot change its signature identity by being forwarded.
+    Rejection precedes any lookup of the target body. -/
+theorem functionCall_signature_mismatch (ctx : EvalContext) (held sig : FuncTyId)
+    (target : FuncId) (h : (held != sig) = true) :
+    functionCall ctx held target sig =
+      .error (.typeError "CallIndirect: function value signature id mismatch") := by
+  unfold functionCall
+  rw [if_pos h]
+  rfl
+
+/-- Const construction retains the signature independently of its code id. -/
+theorem const_function_retains_identity (sig : FuncTyId) (target : FuncId) :
+    constValueAt (.Func sig) (.fnDef target) = .fnDef sig target := by
+  simp [constValueAt]
+
 /-!
 # Call Properties
 
@@ -146,7 +161,7 @@ theorem matchSwitchCase_found (w : Nat) (v : Int) (sc : SwitchCase)
   -- (switchVal, sc.value). For (.int w v) and sc.value = .int v,
   -- the predicate matches .int _w v, .int cv with v == v = true.
   -- So List.find? returns some sc (first element matches).
-  simp [matchSwitchCase, List.find?, hMatch]
+  simp [matchSwitchCase, switchCaseMatches, Constant.hasSymbolAddr, List.find?, hMatch]
 
 -- =================================================================
 -- B5: the evaluator's Call handling, factored (runCallReq)
@@ -176,21 +191,29 @@ theorem matchSwitchCase_found (w : Nat) (v : Int) (sc : SwitchCase)
     not mutually recursive and does not perturb the executable fixtures — so the
     B5 transfer theorem below can be stated and proved over it. -/
 def runCallReq (ctx : EvalContext) (fuel callDepth : Nat)
-    (calleeId : FuncId) (callArgs : List Value) : Sem (List Value) := do
+    (calleeId : FuncId) (callArgs : List Value) (strat : PanicStrategy := .abort) :
+    Sem (List Value) := do
   let callee ← match ctx.functions calleeId with
     | some f => pure f
-    | none => Sem.throwTypeError "Call: undefined function"
+    | none =>
+      if ctx.declared calleeId then
+        Sem.throwUnsupported .interproceduralCall
+          "Call: callee is a bodyless declaration"
+      else Sem.throwTypeError "Call: undefined function"
+  requireUntypedAbi callee.body.abi
   match checkCallArity callArgs callee.body.paramTys with
   | .ok () => pure ()
   | .error msg => Sem.throwTypeError ("Call: " ++ msg)
+  Sem.rejectPoisonValues callArgs "Call arguments"
   let callerState ← Sem.getState
   let frame := saveFrame callerState none
   Sem.setState { callerState with locals := ValueMap.empty, nextValueId := 0 }
-  let retVals ← stepNWithContext ctx fuel callDepth
-    callee.cfg callee.entryBlock callArgs
+  let retVals ← stepNWithContext (ctx.forFunction callee) fuel callDepth
+    callee.cfg callee.entryBlock callArgs strat
   match checkReturnArity retVals callee.body.returnTys with
   | .ok () => pure ()
   | .error msg => Sem.throwTypeError ("Call: " ++ msg)
+  Sem.rejectPoisonValues retVals "Call returns"
   let calleeState ← Sem.getState
   Sem.setState (restoreFrame calleeState frame [])
   pure retVals
@@ -209,6 +232,52 @@ private theorem sem_bind_congr {α β : Type} (m : Sem α) {f g : α → Sem β}
     `StateT _ (Except _)`). -/
 private theorem throwTypeError_bind {α β : Type} (msg : String) (k : α → Sem β) :
     (Sem.throwTypeError msg >>= k) = Sem.throwTypeError msg := rfl
+
+/-- An `unsupported` throw absorbs any continuation, exactly as a typeError
+    throw does (both are `Except.error` in the same monad). Needed since
+    WS2.19 gave the callee-lookup `none` arm a second refusal: a callee the
+    module only DECLARES is `unsupported.interprocedural_call`, not a type
+    error. -/
+private theorem throwUnsupported_bind {α β : Type} (feat : UnsupportedFeature)
+    (msg : String) (k : α → Sem β) :
+    (Sem.throwUnsupported feat msg >>= k) = Sem.throwUnsupported feat msg := rfl
+
+/-- The WS2.19 callee-lookup FAILURE expression absorbs any continuation: a
+    callee the module only DECLARES throws `unsupported.interprocedural_call`
+    and one absent from the module throws the `Call: undefined function` type
+    error, so whichever side of the `if` is taken, the bind is the throw. -/
+private theorem lookupFailure_bind {α β : Type} (c : Bool)
+    (feat : UnsupportedFeature) (msg₁ msg₂ : String) (k : α → Sem β) :
+    ((if c then Sem.throwUnsupported feat msg₁ else Sem.throwTypeError msg₂ :
+        Sem α) >>= k)
+      = (if c then Sem.throwUnsupported feat msg₁ else Sem.throwTypeError msg₂ :
+          Sem β) := by
+  cases c <;> rfl
+
+/-- The pure declaration/Char checks add no state change to a successful
+    destination binding. Keep the existing postcondition-transfer conclusion
+    about the values actually published in the caller. -/
+private theorem bindCallResults_ok_bare (ctx : EvalContext) (inst : Inst)
+    (dests : List ValueId) (values : List Value) (s s' : MachineState)
+    (h : Sem.run (ctx.bindCallResults inst dests values) s = .ok ((), s')) :
+    Sem.run (bindResultDests dests values) s = .ok ((), s') := by
+  unfold EvalContext.bindCallResults at h
+  split at h
+  · exact h
+  · unfold EvalContext.checkInstructionResults at h
+    cases types : ctx.instructionResultTypes inst dests values.length with
+    | error error =>
+      simp only [types, Sem.run_bind, Except.bind] at h
+      cases h
+    | ok tys =>
+      simp only [types, pure_bind] at h
+      cases valid : checkSSACharValues tys values with
+      | error error =>
+        simp only [valid, Sem.run_bind, Except.bind] at h
+        cases h
+      | ok unit =>
+        cases unit
+        simpa only [valid, pure_bind] using h
 
 /-- **B5 bridge, terminator form.** For a block whose terminator is a `Call`
     (the canonical shape producing a `StepResult.CallReq`), the real
@@ -232,19 +301,23 @@ theorem stepNWithContext_callReq_eq_runCallReq
       { params := params, body := [], terminator := .Call calleeId argIds }) :
     stepNWithContext ctx (fuel + 1) (callDepth + 1) cfg pc args
       = (do
-          bindBlockParams params args
+          bindBlockParamsChecked params args
           let callArgs ← argIds.mapM Sem.lookupValue
           runCallReq ctx fuel callDepth calleeId callArgs) := by
   unfold stepNWithContext
   rw [hBlock]
-  simp only [bodyInstsWithResultDests, forIn, List.forIn, List.forIn.loop,
-    stepInst, runCallReq, pure_bind, bind_assoc]
-  rfl
+  simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+    bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
+    stepTermWithContext, closureTermWithContext, stepInst, runCallReq, EvalContext.lookupDirectCallee, pure_bind, bind_assoc]
+  refine sem_bind_congr _ fun _ => ?_
+  refine sem_bind_congr _ fun _ => ?_
+  cases _hfn : ctx.functions calleeId <;>
+    simp only [pure_bind, throwTypeError_bind, throwUnsupported_bind, lookupFailure_bind] <;> rfl
 
 /-- **B5 bridge, exhausted call depth.** At call depth 0 the evaluator's
-    `CallReq` branch throws `outOfFuel` BEFORE any call handling: depth
-    accounting belongs to the evaluator, not to `runCallReq` (which takes the
-    already-decremented depth). -/
+    `CallReq` branch throws `outOfFuel` after the checked block-parameter
+    and operand prefixes, before callee handling. Depth accounting belongs to
+    the evaluator, not to `runCallReq` (which takes the decremented depth). -/
 theorem stepNWithContext_callReq_zero_depth
     (ctx : EvalContext) (fuel : Nat) (cfg : CFG) (pc : BlockId)
     (params : List (ValueId × Ty)) (args : List Value)
@@ -253,26 +326,25 @@ theorem stepNWithContext_callReq_zero_depth
       { params := params, body := [], terminator := .Call calleeId argIds }) :
     stepNWithContext ctx (fuel + 1) 0 cfg pc args
       = (do
-          bindBlockParams params args
+          bindBlockParamsChecked params args
           let _ ← argIds.mapM Sem.lookupValue
           throw SemError.outOfFuel) := by
   unfold stepNWithContext
   rw [hBlock]
-  simp only [bodyInstsWithResultDests, forIn, List.forIn, List.forIn.loop,
-    stepInst, pure_bind, bind_assoc]
+  simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+    bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
+    stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
 
 /-- **B5 bridge, body-instruction form.** For a block whose body contains a
     `Call` with explicit result destinations (mirroring Rust
-    `InstrNode.results`), the real evaluator is exactly: bind the block
-    parameters, resolve the argument values, `runCallReq`, then
-    `bindResultDests resultDests` on the returned values — i.e. the body
-    branch is `(runCallReq …) >>= bindResultDests resultDests`.
+    `InstrNode.results`), the evaluator checks and binds the block parameters,
+    resolves the argument values, runs `runCallReq`, then checks the actual
+    source declarations and top-level Char results in `ctx.bindCallResults`
+    before publishing the returned values.
 
-    This PROVES the body-`Call` branch of `stepNWithContext`
-    (`TrustIr/Semantics/Eval.lean`) is `runCallReq` composed with the
-    result-binding step — the branch ends `bindResultDests resultDests
-    retVals` where `runCallReq` ends `pure retVals`, and this theorem is the
-    formal account of that difference.  The `.Return retIds` terminator (its
+    This anchors the complete body-`Call` branch of `stepNWithContext` to
+    the call helper plus its actual checked publication step, including all
+    refusals. No successful-run assumption removes those checks.  The `.Return retIds` terminator (its
     semantics is the trailing `retIds.mapM Sem.lookupValue`) closes the block
     so the statement stays finite; the body-`Call` handling itself does not
     depend on the terminator. -/
@@ -287,15 +359,16 @@ theorem stepNWithContext_bodyCall_eq_runCallReq_bind
         terminator := .Return retIds }) :
     stepNWithContext ctx (fuel + 1) (callDepth + 1) cfg pc args
       = (do
-          bindBlockParams params args
+          bindBlockParamsChecked params args
           let callArgs ← argIds.mapM Sem.lookupValue
           let retVals ← runCallReq ctx fuel callDepth calleeId callArgs
-          bindResultDests resultDests retVals
+          ctx.bindCallResults (.Call calleeId argIds) resultDests retVals
           retIds.mapM Sem.lookupValue) := by
   unfold stepNWithContext
   rw [hBlock]
-  simp only [bodyInstsWithResultDests, forIn, List.forIn, List.forIn.loop,
-    stepInst, semReturn, runCallReq, pure_bind, bind_assoc, bind_pure]
+  simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+    bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
+    stepTermWithContext, closureTermWithContext, stepInst, semReturn, runCallReq, EvalContext.lookupDirectCallee, pure_bind, bind_assoc, bind_pure]
   -- Both sides are now the same monadic spine; the residual difference is
   -- WHERE the continuation sits relative to the pure `match`es (callee
   -- lookup, arity checks).  Walk under the binders and split those matches;
@@ -304,15 +377,24 @@ theorem stepNWithContext_bodyCall_eq_runCallReq_bind
   refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun callArgs => ?_
   cases _hfn : ctx.functions calleeId with
-  | none => simp only [throwTypeError_bind]
+  | none =>
+    -- WS2.19: the lookup-failure arm is now two refusals (a callee the module
+    -- only DECLARES is `unsupported.interprocedural_call`, not a type error).
+    -- No case split is needed: BOTH absorb their continuation, so the two
+    -- sides collapse to the same `if`.
+    simp only [throwTypeError_bind, throwUnsupported_bind, lookupFailure_bind]
   | some callee =>
     dsimp only
+    simp only [pure_bind, bind_assoc]
+    refine sem_bind_congr _ fun _ => ?_
     cases _hca : checkCallArity callArgs callee.body.paramTys with
     | error msg => simp only [throwTypeError_bind]
     | ok u =>
       cases u
       dsimp only
       simp only [bind_assoc]
+      -- The argument poison guard (`Sem.rejectPoisonValues`, WS2.10).
+      refine sem_bind_congr _ fun _ => ?_
       refine sem_bind_congr _ fun callerState => ?_
       refine sem_bind_congr _ fun _ => ?_
       refine sem_bind_congr _ fun retVals => ?_
@@ -354,7 +436,7 @@ theorem proof_context_assume_sound
     (hCalleePost :
       ∀ retVals sCalleeEnd,
         Sem.run
-          (stepNWithContext ctx fuel callDepth
+          (stepNWithContext (ctx.forFunction callee) fuel callDepth
              callee.cfg callee.entryBlock callArgs)
           { sCaller with locals := ValueMap.empty, nextValueId := 0 }
           = .ok (retVals, sCalleeEnd) →
@@ -369,12 +451,27 @@ theorem proof_context_assume_sound
     fun _ _ => rfl
   have hthrow : ∀ {α β : Type} (e : SemError) (k : α → Sem β) (s : MachineState),
       Sem.run (throw e >>= k) s = .error e := fun _ _ _ => rfl
+  have hAbi : callee.body.abi = none := by
+    cases h : callee.body.abi with
+    | none => rfl
+    | some abi =>
+      simp only [runCallReq, hFn, pure_bind, requireUntypedAbi, h, Sem.throwUnsupported, Option.isSome, if_true, bind_assoc, hthrow] at hrun <;> cases hrun
   unfold runCallReq at hrun
+  simp only [hFn, pure_bind, hAbi, requireUntypedAbi_none] at hrun
   simp only [hFn, checkCallArity_ok callArgs callee.body.paramTys hArity,
     Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hrun
+  -- The argument poison guard (WS2.10): poison arguments throw.
+  have hpa : callArgs.any Value.isPoison = false := by
+    cases hp : callArgs.any Value.isPoison with
+    | false => rfl
+    | true =>
+      obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error callArgs "Call arguments" sCaller hp
+      rw [he] at hrun; simp at hrun
+  rw [Sem.rejectPoisonValues_run_ok callArgs "Call arguments" sCaller hpa] at hrun
+  dsimp only at hrun
   -- Case on the callee run; `.error` contradicts the `.ok` hypothesis.
   cases hrec : Sem.run
-      (stepNWithContext ctx fuel callDepth callee.cfg callee.entryBlock callArgs)
+      (stepNWithContext (ctx.forFunction callee) fuel callDepth callee.cfg callee.entryBlock callArgs)
       { sCaller with locals := ValueMap.empty, nextValueId := 0 } with
   | error e => rw [hrec] at hrun; simp at hrun
   | ok p =>
@@ -387,8 +484,18 @@ theorem proof_context_assume_sound
       rw [hthrow] at hrun
       exact absurd hrun (by simp)
     | ok u =>
+      simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hrun
+      -- The return poison guard (WS2.10): poison returns throw.
+      have hpr : rv.any Value.isPoison = false := by
+        cases hp : rv.any Value.isPoison with
+        | false => rfl
+        | true =>
+          obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error rv "Call returns" se hp
+          rw [he] at hrun; simp at hrun
+      rw [Sem.rejectPoisonValues_run_ok rv "Call returns" se hpr] at hrun
+      dsimp only at hrun
       -- The tail is deterministic: it returns the callee's `rv` unchanged.
-      simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
+      simp only [Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
         Except.ok.injEq, Prod.mk.injEq] at hrun
       obtain ⟨hrv, _hse⟩ := hrun
       subst hrv
@@ -421,9 +528,11 @@ theorem runCallReq_ok_decomp
     (hCall : Sem.run (runCallReq ctx fuel callDepth calleeId callArgs) s
       = .ok (retVals, sEnd)) :
     callArgs.length = callee.body.paramTys.length ∧
+    callArgs.any Value.isPoison = false ∧
     retVals.length = callee.body.returnTys.length ∧
+    retVals.any Value.isPoison = false ∧
     ∃ sCalleeEnd,
-      Sem.run (stepNWithContext ctx fuel callDepth
+      Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth
           callee.cfg callee.entryBlock callArgs)
         { s with locals := ValueMap.empty, nextValueId := 0 }
         = .ok (retVals, sCalleeEnd) ∧
@@ -434,8 +543,14 @@ theorem runCallReq_ok_decomp
     fun _ _ => rfl
   have hthrow : ∀ {α β : Type} (e : SemError) (k : α → Sem β) (st : MachineState),
       Sem.run (throw e >>= k) st = .error e := fun _ _ _ => rfl
+  have hAbi : callee.body.abi = none := by
+    cases h : callee.body.abi with
+    | none => rfl
+    | some abi =>
+      simp only [runCallReq, hFn, pure_bind, requireUntypedAbi, h, Sem.throwUnsupported, Option.isSome, if_true, bind_assoc, hthrow] at hCall <;> cases hCall
   unfold runCallReq at hCall
-  simp only [hFn, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
+  simp only [hFn, pure_bind, hAbi, requireUntypedAbi_none] at hCall
+  try simp only [hFn, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
   -- The call-arity check: `.error` contradicts the `.ok` hypothesis, and
   -- `.ok` forces the lengths to match.
   cases hca : checkCallArity callArgs callee.body.paramTys with
@@ -450,12 +565,21 @@ theorem runCallReq_ok_decomp
     have hArity : callArgs.length = callee.body.paramTys.length := by
       unfold checkCallArity at hca
       split at hca
-      next h => exact Nat.eq_of_beq_eq_true h
+      next h => exact eq_of_beq h
       next h => exact absurd hca (by simp)
     simp only [Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
+    -- The argument poison guard (WS2.10): poison arguments throw.
+    have hpa : callArgs.any Value.isPoison = false := by
+      cases hp : callArgs.any Value.isPoison with
+      | false => rfl
+      | true =>
+        obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error callArgs "Call arguments" s hp
+        rw [he] at hCall; simp at hCall
+    rw [Sem.rejectPoisonValues_run_ok callArgs "Call arguments" s hpa] at hCall
+    dsimp only at hCall
     -- The callee run: `.error` contradicts `.ok`.
     cases hrec : Sem.run
-        (stepNWithContext ctx fuel callDepth callee.cfg callee.entryBlock callArgs)
+        (stepNWithContext (ctx.forFunction callee) fuel callDepth callee.cfg callee.entryBlock callArgs)
         { s with locals := ValueMap.empty, nextValueId := 0 } with
     | error e => rw [hrec] at hCall; simp at hCall
     | ok p =>
@@ -472,15 +596,25 @@ theorem runCallReq_ok_decomp
         have hRet : rv.length = callee.body.returnTys.length := by
           unfold checkReturnArity at hret
           split at hret
-          next h => exact Nat.eq_of_beq_eq_true h
+          next h => exact eq_of_beq h
           next h => exact absurd hret (by simp)
         -- The deterministic tail forces retVals = rv and pins sEnd.
-        simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
+        simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
+        -- The return poison guard (WS2.10): poison returns throw.
+        have hpr : rv.any Value.isPoison = false := by
+          cases hp : rv.any Value.isPoison with
+          | false => rfl
+          | true =>
+            obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error rv "Call returns" se hp
+            rw [he] at hCall; simp at hCall
+        rw [Sem.rejectPoisonValues_run_ok rv "Call returns" se hpr] at hCall
+        dsimp only at hCall
+        simp only [Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
           Except.ok.injEq, Prod.mk.injEq] at hCall
         obtain ⟨hrv, hse⟩ := hCall
         subst hrv
         subst hse
-        exact ⟨hArity, hRet, se, rfl, rfl⟩
+        exact ⟨hArity, hpa, hRet, hpr, se, rfl, rfl⟩
 
 /-- **Converse composition.** A successful inline run of the callee body on
     the fresh frame (with matching arities) yields the successful Call: the
@@ -492,9 +626,12 @@ theorem runCallReq_ok_of_inline
     (calleeId : FuncId) (callee : EvalFunction) (callArgs : List Value)
     (s sCalleeEnd : MachineState) (retVals : List Value)
     (hFn : ctx.functions calleeId = some callee)
+    (hAbi : callee.body.abi = none)
     (hArity : callArgs.length = callee.body.paramTys.length)
     (hRet : retVals.length = callee.body.returnTys.length)
-    (hInline : Sem.run (stepNWithContext ctx fuel callDepth
+    (hArgsClean : callArgs.any Value.isPoison = false)
+    (hRetClean : retVals.any Value.isPoison = false)
+    (hInline : Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth
           callee.cfg callee.entryBlock callArgs)
         { s with locals := ValueMap.empty, nextValueId := 0 }
         = .ok (retVals, sCalleeEnd)) :
@@ -505,9 +642,11 @@ theorem runCallReq_ok_of_inline
   have hset : ∀ st st' : MachineState, Sem.run (Sem.setState st') st = .ok ((), st') :=
     fun _ _ => rfl
   unfold runCallReq
-  simp only [hFn, checkCallArity_ok callArgs callee.body.paramTys hArity,
-    Sem.run_bind, Sem.run_pure, hget, hset, Except.bind, hInline,
-    checkReturnArity_ok retVals callee.body.returnTys hRet]
+  simp only [hFn, hAbi, requireUntypedAbi_none, checkCallArity_ok callArgs callee.body.paramTys hArity,
+    Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
+    Sem.rejectPoisonValues_run_ok callArgs _ s hArgsClean, hInline,
+    checkReturnArity_ok retVals callee.body.returnTys hRet,
+    Sem.rejectPoisonValues_run_ok retVals _ sCalleeEnd hRetClean]
 
 -- =================================================================
 -- B5: postcondition transfer over the REAL evaluator
@@ -535,7 +674,7 @@ theorem proof_context_assume_sound_evaluator
     (hFn : ctx.functions calleeId = some callee)
     (hCalleePost :
       ∀ (callArgs retVals : List Value) (sCall sCalleeEnd : MachineState),
-        Sem.run (stepNWithContext ctx fuel callDepth
+        Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth
             callee.cfg callee.entryBlock callArgs)
           { sCall with locals := ValueMap.empty, nextValueId := 0 }
           = .ok (retVals, sCalleeEnd) →
@@ -549,7 +688,7 @@ theorem proof_context_assume_sound_evaluator
     calleeId argIds hBlock] at hrun
   -- Peel the parameter-binding and argument-lookup prefix.
   rw [Sem.run_bind] at hrun
-  cases h1 : Sem.run (bindBlockParams params args) s with
+  cases h1 : Sem.run (bindBlockParamsChecked params args) s with
   | error e => rw [h1] at hrun; exact absurd hrun (by simp [Except.bind])
   | ok p1 =>
     obtain ⟨u1, s1⟩ := p1
@@ -563,7 +702,7 @@ theorem proof_context_assume_sound_evaluator
       rw [h2] at hrun
       simp only [Except.bind] at hrun
       -- hrun is now a successful runCallReq run; decompose and transfer.
-      obtain ⟨-, -, sCalleeEnd, hInline, -⟩ :=
+      obtain ⟨-, -, -, -, sCalleeEnd, hInline, -⟩ :=
         runCallReq_ok_decomp ctx fuel callDepth calleeId callee callArgs s2 sEnd
           retVals hFn hrun
       exact hCalleePost callArgs retVals s2 sCalleeEnd hInline
@@ -575,7 +714,7 @@ theorem proof_context_assume_sound_evaluator
 /-- The CALL portion of the evaluator's `InvokeReq` branch
     (`stepNWithContext`, TrustIr/Semantics/Eval.lean), factored out as a
     standalone def: resolve the callee, check call arity, save the caller
-    frame, run the callee on a fresh empty-locals frame, check return arity,
+    frame, run the callee with its own declarations on a fresh empty-locals frame, check return arity,
     restore the caller frame, and return the callee's return values
     *unchanged*.  The same program as `runCallReq` up to the `"Invoke: "`
     diagnostic prefixes on the throws — which is why it is transcribed
@@ -584,8 +723,8 @@ theorem proof_context_assume_sound_evaluator
 
     NOT faithful by fiat: `stepNWithContext_invokeReq_eq_runInvokeCall_bind`
     below PROVES the evaluator's `InvokeReq` branch is exactly this def
-    composed with the invoke node's result binding
-    (`bindResultDests terminatorResultDests`), the normal-edge argument
+    composed with the invoke node's checked result binding
+    (`ctx.bindCallResults`), the normal-edge argument
     evaluation, and the normal-edge continuation — the same anchoring
     pattern as `stepNWithContext_callReq_eq_runCallReq` /
     `stepNWithContext_bodyCall_eq_runCallReq_bind`.  Any drift between this
@@ -594,18 +733,25 @@ def runInvokeCall (ctx : EvalContext) (fuel innerDepth : Nat)
     (calleeId : FuncId) (callArgs : List Value) : Sem (List Value) := do
   let callee ← match ctx.functions calleeId with
     | some f => pure f
-    | none => Sem.throwTypeError "Invoke: undefined function"
+    | none =>
+      if ctx.declared calleeId then
+        Sem.throwUnsupported .interproceduralCall
+          "Invoke: callee is a bodyless declaration"
+      else Sem.throwTypeError "Invoke: undefined function"
+  requireUntypedAbi callee.body.abi
   match checkCallArity callArgs callee.body.paramTys with
   | .ok () => pure ()
   | .error msg => Sem.throwTypeError ("Invoke: " ++ msg)
+  Sem.rejectPoisonValues callArgs "Call arguments"
   let callerState ← Sem.getState
   let frame := saveFrame callerState none
   Sem.setState { callerState with locals := ValueMap.empty, nextValueId := 0 }
-  let retVals ← stepNWithContext ctx fuel innerDepth
+  let retVals ← stepNWithContext (ctx.forFunction callee) fuel innerDepth
     callee.cfg callee.entryBlock callArgs
   match checkReturnArity retVals callee.body.returnTys with
   | .ok () => pure ()
   | .error msg => Sem.throwTypeError ("Invoke: " ++ msg)
+  Sem.rejectPoisonValues retVals "Call returns"
   let calleeState ← Sem.getState
   Sem.setState (restoreFrame calleeState frame [])
   pure retVals
@@ -637,10 +783,10 @@ theorem stepNWithContext_invokeReq_eq_runInvokeCall_bind
         terminatorResultDests := termDests }) :
     stepNWithContext ctx (fuel + 1) (innerDepth + 1) cfg pc args
       = (do
-          bindBlockParams params args
+          bindBlockParamsChecked params args
           let callArgs ← argIds.mapM Sem.lookupValue
           let retVals ← runInvokeCall ctx fuel innerDepth calleeId callArgs
-          bindResultDests termDests retVals
+          ctx.bindCallResults (.Invoke calleeId argIds normalDest normalArgIds unwindDest) termDests retVals
           let edgeArgs ← normalArgIds.mapM Sem.lookupValue
           stepNWithContext ctx fuel (innerDepth + 1) cfg normalDest edgeArgs) := by
   -- Unfold ONLY the left-hand evaluator call: the right-hand side carries the
@@ -650,23 +796,33 @@ theorem stepNWithContext_invokeReq_eq_runInvokeCall_bind
   -- `rw` does not rewrite under binders, so it hits exactly the outer call.
   rw [stepNWithContext]
   rw [hBlock]
-  simp only [bodyInstsWithResultDests, forIn, List.forIn, List.forIn.loop,
-    stepInst, runInvokeCall, pure_bind, bind_assoc]
+  simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+    bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
+    stepTermWithContext, closureTermWithContext, stepInst, runInvokeCall, EvalContext.lookupDirectCallee, invokeCatch, pure_bind, bind_assoc]
   -- Both sides are the same monadic spine; the residual difference is WHERE
   -- the continuation (result binding + edge args + normal-edge recursion)
   -- sits relative to the pure `match`es.  Walk under the binders and split.
   refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun callArgs => ?_
   cases _hfn : ctx.functions calleeId with
-  | none => simp only [throwTypeError_bind]
+  | none =>
+    -- WS2.19: the lookup-failure arm is now two refusals (a callee the module
+    -- only DECLARES is `unsupported.interprocedural_call`, not a type error).
+    -- No case split is needed: BOTH absorb their continuation, so the two
+    -- sides collapse to the same `if`.
+    simp only [throwTypeError_bind, throwUnsupported_bind, lookupFailure_bind]
   | some callee =>
     dsimp only
+    simp only [pure_bind, bind_assoc]
+    refine sem_bind_congr _ fun _ => ?_
     cases _hca : checkCallArity callArgs callee.body.paramTys with
     | error msg => simp only [throwTypeError_bind]
     | ok u =>
       cases u
       dsimp only
       simp only [bind_assoc]
+      -- The argument poison guard (`Sem.rejectPoisonValues`, WS2.10).
+      refine sem_bind_congr _ fun _ => ?_
       refine sem_bind_congr _ fun callerState => ?_
       refine sem_bind_congr _ fun _ => ?_
       refine sem_bind_congr _ fun retVals => ?_
@@ -677,9 +833,9 @@ theorem stepNWithContext_invokeReq_eq_runInvokeCall_bind
         simp only [bind_assoc, pure_bind, bind_pure]
 
 /-- **Invoke bridge, exhausted call depth.** At call depth 0 the evaluator's
-    `InvokeReq` branch throws `outOfFuel` BEFORE any call handling — depth
-    accounting belongs to the evaluator, not to `runInvokeCall` (which takes
-    the already-decremented depth). -/
+    `InvokeReq` branch throws `outOfFuel` after the checked block-parameter
+    and operand prefixes, before callee handling. Depth accounting belongs to
+    the evaluator, not to `runInvokeCall` (which takes decremented depth). -/
 theorem stepNWithContext_invokeReq_zero_depth
     (ctx : EvalContext) (fuel : Nat) (cfg : CFG) (pc : BlockId)
     (params : List (ValueId × Ty)) (args : List Value)
@@ -692,13 +848,14 @@ theorem stepNWithContext_invokeReq_zero_depth
         terminatorResultDests := termDests }) :
     stepNWithContext ctx (fuel + 1) 0 cfg pc args
       = (do
-          bindBlockParams params args
+          bindBlockParamsChecked params args
           let _ ← argIds.mapM Sem.lookupValue
           throw SemError.outOfFuel) := by
   unfold stepNWithContext
   rw [hBlock]
-  simp only [bodyInstsWithResultDests, forIn, List.forIn, List.forIn.loop,
-    stepInst, pure_bind, bind_assoc]
+  simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+    bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
+    stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
 
 -- =================================================================
 -- B5/EH: per-invoke ProofContext postcondition transfer (soundness)
@@ -723,7 +880,7 @@ theorem proof_context_assume_sound_invoke
     (hCalleePost :
       ∀ retVals sCalleeEnd,
         Sem.run
-          (stepNWithContext ctx fuel innerDepth
+          (stepNWithContext (ctx.forFunction callee) fuel innerDepth
              callee.cfg callee.entryBlock callArgs)
           { sCaller with locals := ValueMap.empty, nextValueId := 0 }
           = .ok (retVals, sCalleeEnd) →
@@ -738,11 +895,26 @@ theorem proof_context_assume_sound_invoke
     fun _ _ => rfl
   have hthrow : ∀ {α β : Type} (e : SemError) (k : α → Sem β) (s : MachineState),
       Sem.run (throw e >>= k) s = .error e := fun _ _ _ => rfl
+  have hAbi : callee.body.abi = none := by
+    cases h : callee.body.abi with
+    | none => rfl
+    | some abi =>
+      simp only [runInvokeCall, hFn, pure_bind, requireUntypedAbi, h, Sem.throwUnsupported, Option.isSome, if_true, bind_assoc, hthrow] at hrun <;> cases hrun
   unfold runInvokeCall at hrun
+  simp only [hFn, pure_bind, hAbi, requireUntypedAbi_none] at hrun
   simp only [hFn, checkCallArity_ok callArgs callee.body.paramTys hArity,
     Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hrun
+  -- The argument poison guard (WS2.10): poison arguments throw.
+  have hpa : callArgs.any Value.isPoison = false := by
+    cases hp : callArgs.any Value.isPoison with
+    | false => rfl
+    | true =>
+      obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error callArgs "Call arguments" sCaller hp
+      rw [he] at hrun; simp at hrun
+  rw [Sem.rejectPoisonValues_run_ok callArgs "Call arguments" sCaller hpa] at hrun
+  dsimp only at hrun
   cases hrec : Sem.run
-      (stepNWithContext ctx fuel innerDepth callee.cfg callee.entryBlock callArgs)
+      (stepNWithContext (ctx.forFunction callee) fuel innerDepth callee.cfg callee.entryBlock callArgs)
       { sCaller with locals := ValueMap.empty, nextValueId := 0 } with
   | error e => rw [hrec] at hrun; simp at hrun
   | ok p =>
@@ -754,7 +926,17 @@ theorem proof_context_assume_sound_invoke
       rw [hthrow] at hrun
       exact absurd hrun (by simp)
     | ok u =>
-      simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
+      simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hrun
+      -- The return poison guard (WS2.10): poison returns throw.
+      have hpr : rv.any Value.isPoison = false := by
+        cases hp : rv.any Value.isPoison with
+        | false => rfl
+        | true =>
+          obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error rv "Call returns" se hp
+          rw [he] at hrun; simp at hrun
+      rw [Sem.rejectPoisonValues_run_ok rv "Call returns" se hpr] at hrun
+      dsimp only at hrun
+      simp only [Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
         Except.ok.injEq, Prod.mk.injEq] at hrun
       obtain ⟨hrv, _hse⟩ := hrun
       subst hrv
@@ -773,9 +955,11 @@ theorem runInvokeCall_ok_decomp
     (hCall : Sem.run (runInvokeCall ctx fuel innerDepth calleeId callArgs) s
       = .ok (retVals, sEnd)) :
     callArgs.length = callee.body.paramTys.length ∧
+    callArgs.any Value.isPoison = false ∧
     retVals.length = callee.body.returnTys.length ∧
+    retVals.any Value.isPoison = false ∧
     ∃ sCalleeEnd,
-      Sem.run (stepNWithContext ctx fuel innerDepth
+      Sem.run (stepNWithContext (ctx.forFunction callee) fuel innerDepth
           callee.cfg callee.entryBlock callArgs)
         { s with locals := ValueMap.empty, nextValueId := 0 }
         = .ok (retVals, sCalleeEnd) ∧
@@ -786,8 +970,14 @@ theorem runInvokeCall_ok_decomp
     fun _ _ => rfl
   have hthrow : ∀ {α β : Type} (e : SemError) (k : α → Sem β) (st : MachineState),
       Sem.run (throw e >>= k) st = .error e := fun _ _ _ => rfl
+  have hAbi : callee.body.abi = none := by
+    cases h : callee.body.abi with
+    | none => rfl
+    | some abi =>
+      simp only [runInvokeCall, hFn, pure_bind, requireUntypedAbi, h, Sem.throwUnsupported, Option.isSome, if_true, bind_assoc, hthrow] at hCall <;> cases hCall
   unfold runInvokeCall at hCall
-  simp only [hFn, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
+  simp only [hFn, pure_bind, hAbi, requireUntypedAbi_none] at hCall
+  try simp only [hFn, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
   cases hca : checkCallArity callArgs callee.body.paramTys with
   | error msg =>
     rw [hca] at hCall
@@ -800,11 +990,20 @@ theorem runInvokeCall_ok_decomp
     have hArity : callArgs.length = callee.body.paramTys.length := by
       unfold checkCallArity at hca
       split at hca
-      next h => exact Nat.eq_of_beq_eq_true h
+      next h => exact eq_of_beq h
       next h => exact absurd hca (by simp)
     simp only [Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
+    -- The argument poison guard (WS2.10): poison arguments throw.
+    have hpa : callArgs.any Value.isPoison = false := by
+      cases hp : callArgs.any Value.isPoison with
+      | false => rfl
+      | true =>
+        obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error callArgs "Call arguments" s hp
+        rw [he] at hCall; simp at hCall
+    rw [Sem.rejectPoisonValues_run_ok callArgs "Call arguments" s hpa] at hCall
+    dsimp only at hCall
     cases hrec : Sem.run
-        (stepNWithContext ctx fuel innerDepth callee.cfg callee.entryBlock callArgs)
+        (stepNWithContext (ctx.forFunction callee) fuel innerDepth callee.cfg callee.entryBlock callArgs)
         { s with locals := ValueMap.empty, nextValueId := 0 } with
     | error e => rw [hrec] at hCall; simp at hCall
     | ok p =>
@@ -820,14 +1019,24 @@ theorem runInvokeCall_ok_decomp
         have hRet : rv.length = callee.body.returnTys.length := by
           unfold checkReturnArity at hret
           split at hret
-          next h => exact Nat.eq_of_beq_eq_true h
+          next h => exact eq_of_beq h
           next h => exact absurd hret (by simp)
-        simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
+        simp only [hret, Sem.run_bind, Sem.run_pure, hget, hset, Except.bind] at hCall
+        -- The return poison guard (WS2.10): poison returns throw.
+        have hpr : rv.any Value.isPoison = false := by
+          cases hp : rv.any Value.isPoison with
+          | false => rfl
+          | true =>
+            obtain ⟨e, he⟩ := Sem.rejectPoisonValues_run_error rv "Call returns" se hp
+            rw [he] at hCall; simp at hCall
+        rw [Sem.rejectPoisonValues_run_ok rv "Call returns" se hpr] at hCall
+        dsimp only at hCall
+        simp only [Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
           Except.ok.injEq, Prod.mk.injEq] at hCall
         obtain ⟨hrv, hse⟩ := hCall
         subst hrv
         subst hse
-        exact ⟨hArity, hRet, se, rfl, rfl⟩
+        exact ⟨hArity, hpa, hRet, hpr, se, rfl, rfl⟩
 
 /-- **Invoke postcondition transfer over `stepNWithContext` itself.**  The
     `Invoke` analogue of `proof_context_assume_sound_evaluator`, stated
@@ -865,7 +1074,7 @@ theorem proof_context_assume_sound_invoke_evaluator
     (hFn : ctx.functions calleeId = some callee)
     (hCalleePost :
       ∀ (callArgs retVals : List Value) (sCall sCalleeEnd : MachineState),
-        Sem.run (stepNWithContext ctx fuel innerDepth
+        Sem.run (stepNWithContext (ctx.forFunction callee) fuel innerDepth
             callee.cfg callee.entryBlock callArgs)
           { sCall with locals := ValueMap.empty, nextValueId := 0 }
           = .ok (retVals, sCalleeEnd) →
@@ -886,7 +1095,7 @@ theorem proof_context_assume_sound_invoke_evaluator
     hBlock] at hrun
   -- Peel the prefix one effect at a time; each `.error` contradicts `.ok`.
   rw [Sem.run_bind] at hrun
-  cases h1 : Sem.run (bindBlockParams params args) s with
+  cases h1 : Sem.run (bindBlockParamsChecked params args) s with
   | error e => rw [h1] at hrun; exact absurd hrun (by simp [Except.bind])
   | ok p1 =>
     obtain ⟨_u1, s1⟩ := p1
@@ -907,7 +1116,8 @@ theorem proof_context_assume_sound_invoke_evaluator
         rw [h3] at hrun
         simp only [Except.bind] at hrun
         rw [Sem.run_bind] at hrun
-        cases h4 : Sem.run (bindResultDests termDests retVals) sCall with
+        cases h4 : Sem.run (ctx.bindCallResults
+            (.Invoke calleeId argIds normalDest normalArgIds unwindDest) termDests retVals) sCall with
         | error e => rw [h4] at hrun; exact absurd hrun (by simp [Except.bind])
         | ok p4 =>
           obtain ⟨u4, sBound⟩ := p4
@@ -922,11 +1132,12 @@ theorem proof_context_assume_sound_invoke_evaluator
             rw [h5] at hrun
             simp only [Except.bind] at hrun
             -- Q on retVals via the decomposition of the successful call.
-            obtain ⟨-, -, sCalleeEnd, hInline, -⟩ :=
+            obtain ⟨-, -, -, -, sCalleeEnd, hInline, -⟩ :=
               runInvokeCall_ok_decomp ctx fuel innerDepth calleeId callee callArgs
                 s2 sCall retVals hFn h3
             exact ⟨retVals, edgeArgs, sCall, sBound, sMid,
-              hCalleePost callArgs retVals s2 sCalleeEnd hInline, h4, h5, hrun⟩
+              hCalleePost callArgs retVals s2 sCalleeEnd hInline,
+              bindCallResults_ok_bare ctx _ _ _ _ _ h4, h5, hrun⟩
 
 -- =================================================================
 -- Future work stubs (Phase 4 completeness claims)

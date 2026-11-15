@@ -20,7 +20,8 @@ fn gpu_eligibility_true_when_all_annotations_present() {
     let path = dir.path().join("m.tmbc");
     fs::write(
         &path,
-        trust_ir::binary::serialize_module(&build_gpu_eligible_module()),
+        trust_ir::binary::serialize_module(&build_gpu_eligible_module())
+            .expect("serialize_module: test fixture"),
     )
     .expect("write");
 
@@ -63,7 +64,8 @@ fn gpu_eligibility_false_when_divergence_is_high() {
     let path = dir.path().join("m.tmbc");
     fs::write(
         &path,
-        trust_ir::binary::serialize_module(&build_gpu_high_divergence_module()),
+        trust_ir::binary::serialize_module(&build_gpu_high_divergence_module())
+            .expect("serialize_module: test fixture"),
     )
     .expect("write");
 
@@ -97,7 +99,8 @@ fn gpu_eligibility_without_parallel_map_is_not_eligible() {
     let path = dir.path().join("m.tmbc");
     fs::write(
         &path,
-        trust_ir::binary::serialize_module(&build_valid_module()),
+        trust_ir::binary::serialize_module(&build_valid_module())
+            .expect("serialize_module: test fixture"),
     )
     .expect("write");
 
@@ -122,7 +125,8 @@ fn gpu_eligibility_func_filter_hits_and_misses() {
     let path = dir.path().join("m.tmbc");
     fs::write(
         &path,
-        trust_ir::binary::serialize_module(&build_gpu_eligible_module()),
+        trust_ir::binary::serialize_module(&build_gpu_eligible_module())
+            .expect("serialize_module: test fixture"),
     )
     .expect("write");
 

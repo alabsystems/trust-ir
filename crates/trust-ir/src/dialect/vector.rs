@@ -781,6 +781,7 @@ fn validate_mask_result_ty(inst: &DialectInst, lanes: u32, result_ty: &Ty) -> Re
 use crate::dialect::lowering::{LoweringContext, LoweringPass, RewriteOutcome};
 use crate::inst::{BinOp, Inst};
 use crate::node::InstrNode;
+use crate::value::IdSpaceExhausted;
 
 /// Lowering pass for the vector dialect.
 ///
@@ -803,11 +804,19 @@ impl LoweringPass for VectorLoweringPass {
             return RewriteOutcome::NoChange;
         }
 
+        // A lowering that needs a fresh value id the function does not have
+        // is refused (`lower_module` reports it as
+        // `DialectError::ValueIdSpaceExhausted`), never wrapped.
+        let refused = |exhausted: IdSpaceExhausted| RewriteOutcome::Err(exhausted.to_string());
         match op.op.as_str() {
-            PACK_LANES_OP => self.lower_pack_lanes(op, results, ctx),
-            MASK_TO_BITS_OP => self.lower_mask_to_bits(op, results, ctx),
-            REDUCE_OP => self.lower_reduce(op, results, ctx),
-            SHUFFLE_OP => self.lower_shuffle(op, results, ctx),
+            PACK_LANES_OP => self
+                .lower_pack_lanes(op, results, ctx)
+                .unwrap_or_else(refused),
+            MASK_TO_BITS_OP => self
+                .lower_mask_to_bits(op, results, ctx)
+                .unwrap_or_else(refused),
+            REDUCE_OP => self.lower_reduce(op, results, ctx).unwrap_or_else(refused),
+            SHUFFLE_OP => self.lower_shuffle(op, results, ctx).unwrap_or_else(refused),
             // `vector.fma` DELIBERATELY has no core-IR scalar fallback. Its
             // contract (and the reference interpreter) is a single IEEE-754
             // rounding step per lane; the only core-IR expansion available
@@ -852,14 +861,14 @@ impl VectorLoweringPass {
         op: &DialectInst,
         results: &[ValueId],
         ctx: &mut LoweringContext<'_>,
-    ) -> RewriteOutcome {
+    ) -> Result<RewriteOutcome, IdSpaceExhausted> {
         let spec = match decode_pack_lanes(op) {
             Ok(s) => s,
-            Err(e) => return RewriteOutcome::Err(e.to_string()),
+            Err(e) => return Ok(RewriteOutcome::Err(e.to_string())),
         };
         let final_result = match Self::require_single_result(op, results) {
             Ok(r) => r,
-            Err(outcome) => return outcome,
+            Err(outcome) => return Ok(outcome),
         };
 
         let mut nodes = Vec::new();
@@ -874,7 +883,7 @@ impl VectorLoweringPass {
         // undef/poison value and the Lean refinement proof
         // (`TrustIr.VectorDialect.lowerPackLanesFrom` / `runsAgreeFrom_pack_lanes`)
         // discharges against the *exact* sequence this pass emits.
-        let mut curr_val = ctx.alloc_value();
+        let mut curr_val = ctx.alloc_value()?;
         nodes.push(
             InstrNode::new(Inst::Const {
                 value: crate::constant::Constant::Vector(vec![
@@ -889,7 +898,7 @@ impl VectorLoweringPass {
         // 2. Insert each lane
         for (i, &lane_id) in op.operands.iter().enumerate() {
             // Index constant
-            let idx_val = ctx.alloc_value();
+            let idx_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Const {
                     value: crate::constant::Constant::Int(i as i128),
@@ -902,7 +911,7 @@ impl VectorLoweringPass {
             let next_val = if i == op.operands.len() - 1 {
                 final_result // Final result uses original ID
             } else {
-                ctx.alloc_value()
+                ctx.alloc_value()?
             };
 
             nodes.push(
@@ -918,7 +927,7 @@ impl VectorLoweringPass {
             curr_val = next_val;
         }
 
-        RewriteOutcome::Replace(nodes)
+        Ok(RewriteOutcome::Replace(nodes))
     }
 
     fn lower_mask_to_bits(
@@ -926,14 +935,14 @@ impl VectorLoweringPass {
         op: &DialectInst,
         results: &[ValueId],
         ctx: &mut LoweringContext<'_>,
-    ) -> RewriteOutcome {
+    ) -> Result<RewriteOutcome, IdSpaceExhausted> {
         let spec = match decode_mask_to_bits(op) {
             Ok(s) => s,
-            Err(e) => return RewriteOutcome::Err(e.to_string()),
+            Err(e) => return Ok(RewriteOutcome::Err(e.to_string())),
         };
         let final_result = match Self::require_single_result(op, results) {
             Ok(r) => r,
-            Err(outcome) => return outcome,
+            Err(outcome) => return Ok(outcome),
         };
 
         let mut nodes = Vec::new();
@@ -949,7 +958,7 @@ impl VectorLoweringPass {
         // accumulator reads `base + 1 + 5*j`).
 
         // Shared zero constant (the `Select` else branch, common to all lanes).
-        let zero_const = ctx.alloc_value();
+        let zero_const = ctx.alloc_value()?;
         nodes.push(
             InstrNode::new(Inst::Const {
                 value: crate::constant::Constant::Int(0),
@@ -959,7 +968,7 @@ impl VectorLoweringPass {
         );
 
         // Seed accumulator (0). Lane 0 ORs its contribution into this.
-        let mut curr_acc = ctx.alloc_value();
+        let mut curr_acc = ctx.alloc_value()?;
         nodes.push(
             InstrNode::new(Inst::Const {
                 value: crate::constant::Constant::Int(0),
@@ -971,7 +980,7 @@ impl VectorLoweringPass {
         // 2. Process each lane
         for i in 0..spec.lanes {
             // Index constant
-            let idx_val = ctx.alloc_value();
+            let idx_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Const {
                     value: crate::constant::Constant::Int(i as i128),
@@ -981,7 +990,7 @@ impl VectorLoweringPass {
             );
 
             // Extract bit
-            let bit_val = ctx.alloc_value();
+            let bit_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::ExtractElement {
                     ty: Ty::Bool,
@@ -992,7 +1001,7 @@ impl VectorLoweringPass {
             );
 
             // Select pow2 contribution
-            let pow2_val = ctx.alloc_value();
+            let pow2_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Const {
                     value: crate::constant::Constant::Int(1 << i),
@@ -1001,7 +1010,7 @@ impl VectorLoweringPass {
                 .with_result(pow2_val),
             );
 
-            let contrib_val = ctx.alloc_value();
+            let contrib_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Select {
                     ty: result_ty.clone(),
@@ -1016,7 +1025,7 @@ impl VectorLoweringPass {
             let next_acc = if i == spec.lanes - 1 {
                 final_result
             } else {
-                ctx.alloc_value()
+                ctx.alloc_value()?
             };
 
             nodes.push(
@@ -1032,7 +1041,7 @@ impl VectorLoweringPass {
             curr_acc = next_acc;
         }
 
-        RewriteOutcome::Replace(nodes)
+        Ok(RewriteOutcome::Replace(nodes))
     }
 
     fn lower_reduce(
@@ -1040,14 +1049,14 @@ impl VectorLoweringPass {
         op: &DialectInst,
         results: &[ValueId],
         ctx: &mut LoweringContext<'_>,
-    ) -> RewriteOutcome {
+    ) -> Result<RewriteOutcome, IdSpaceExhausted> {
         let spec = match decode_reduce(op) {
             Ok(s) => s,
-            Err(e) => return RewriteOutcome::Err(e.to_string()),
+            Err(e) => return Ok(RewriteOutcome::Err(e.to_string())),
         };
         let final_result = match Self::require_single_result(op, results) {
             Ok(r) => r,
-            Err(outcome) => return outcome,
+            Err(outcome) => return Ok(outcome),
         };
 
         let mut nodes = Vec::new();
@@ -1070,7 +1079,7 @@ impl VectorLoweringPass {
         // lane `j` is uniformly at `base + 3*j`.
 
         // Seed accumulator (identity 0 for both `add` and `or`).
-        let mut curr_acc = ctx.alloc_value();
+        let mut curr_acc = ctx.alloc_value()?;
         nodes.push(
             InstrNode::new(Inst::Const {
                 value: crate::constant::Constant::Int(0),
@@ -1082,7 +1091,7 @@ impl VectorLoweringPass {
         // Fold each lane into the accumulator.
         for i in 0..spec.lanes {
             // Lane index constant
-            let idx_val = ctx.alloc_value();
+            let idx_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Const {
                     value: crate::constant::Constant::Int(i as i128),
@@ -1092,7 +1101,7 @@ impl VectorLoweringPass {
             );
 
             // Extract the lane
-            let lane_val = ctx.alloc_value();
+            let lane_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::ExtractElement {
                     ty: elem_ty.clone(),
@@ -1106,7 +1115,7 @@ impl VectorLoweringPass {
             let next_acc = if i == spec.lanes - 1 {
                 final_result
             } else {
-                ctx.alloc_value()
+                ctx.alloc_value()?
             };
             nodes.push(
                 InstrNode::new(Inst::BinOp {
@@ -1121,7 +1130,7 @@ impl VectorLoweringPass {
             curr_acc = next_acc;
         }
 
-        RewriteOutcome::Replace(nodes)
+        Ok(RewriteOutcome::Replace(nodes))
     }
 
     fn lower_shuffle(
@@ -1129,14 +1138,14 @@ impl VectorLoweringPass {
         op: &DialectInst,
         results: &[ValueId],
         ctx: &mut LoweringContext<'_>,
-    ) -> RewriteOutcome {
+    ) -> Result<RewriteOutcome, IdSpaceExhausted> {
         let spec = match decode_shuffle(op) {
             Ok(s) => s,
-            Err(e) => return RewriteOutcome::Err(e.to_string()),
+            Err(e) => return Ok(RewriteOutcome::Err(e.to_string())),
         };
         let final_result = match Self::require_single_result(op, results) {
             Ok(r) => r,
-            Err(outcome) => return outcome,
+            Err(outcome) => return Ok(outcome),
         };
 
         let mut nodes = Vec::new();
@@ -1160,7 +1169,7 @@ impl VectorLoweringPass {
         // with pack_lanes we seed with a fully-defined zero `Const` (not
         // `Undef`) so the emitted sequence carries no undef/poison value and
         // matches the Lean model exactly.
-        let mut curr_vec = ctx.alloc_value();
+        let mut curr_vec = ctx.alloc_value()?;
         nodes.push(
             InstrNode::new(Inst::Const {
                 value: crate::constant::Constant::Vector(vec![
@@ -1174,7 +1183,7 @@ impl VectorLoweringPass {
 
         for (j, &source) in spec.indices.iter().enumerate() {
             // Source lane index constant
-            let src_idx = ctx.alloc_value();
+            let src_idx = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Const {
                     value: crate::constant::Constant::Int(i128::from(source)),
@@ -1185,7 +1194,7 @@ impl VectorLoweringPass {
 
             // Extract the source lane (always from the ORIGINAL vector, which
             // is never overwritten — the chain only binds fresh ids).
-            let lane_val = ctx.alloc_value();
+            let lane_val = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::ExtractElement {
                     ty: elem_ty.clone(),
@@ -1196,7 +1205,7 @@ impl VectorLoweringPass {
             );
 
             // Destination lane index constant
-            let dst_idx = ctx.alloc_value();
+            let dst_idx = ctx.alloc_value()?;
             nodes.push(
                 InstrNode::new(Inst::Const {
                     value: crate::constant::Constant::Int(j as i128),
@@ -1209,7 +1218,7 @@ impl VectorLoweringPass {
             let next_vec = if j == spec.indices.len() - 1 {
                 final_result
             } else {
-                ctx.alloc_value()
+                ctx.alloc_value()?
             };
             nodes.push(
                 InstrNode::new(Inst::InsertElement {
@@ -1224,7 +1233,7 @@ impl VectorLoweringPass {
             curr_vec = next_vec;
         }
 
-        RewriteOutcome::Replace(nodes)
+        Ok(RewriteOutcome::Replace(nodes))
     }
 }
 
@@ -1853,7 +1862,8 @@ mod lowering_tests {
             b.body.push(node);
         }
         f.blocks.push(b);
-        m.add_function(f);
+        m.try_add_function(f)
+            .expect("Module::try_add_function: test fixture");
         m
     }
 
@@ -1916,7 +1926,8 @@ mod lowering_tests {
         // Deliberately leave `results` empty (the default).
         b.body.push(InstrNode::new(Inst::DialectOp(Box::new(op))));
         f.blocks.push(b);
-        m.add_function(f);
+        m.try_add_function(f)
+            .expect("Module::try_add_function: test fixture");
         m
     }
 
@@ -2168,11 +2179,14 @@ mod interpreter_crosscheck_tests {
     fn module_returning_op(vector_ty: Ty, vector: Constant, op: DialectInst) -> Module {
         let result_ty = op.result_tys[0].clone();
         let mut module = Module::new("crosscheck");
-        module.add_func_type(FuncTy {
-            params: Vec::new(),
-            returns: vec![result_ty],
-            is_vararg: false,
-        });
+        module
+            .add_func_type(FuncTy {
+                params: Vec::new(),
+                returns: vec![result_ty],
+                abi: None,
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
         let mut func = Function::new(FuncId::new(0), "f", FuncTyId::new(0), BlockId::new(0));
         let mut block = Block::new(BlockId::new(0));
         let mut const_node = InstrNode::new(Inst::Const {
@@ -2188,7 +2202,9 @@ mod interpreter_crosscheck_tests {
             .body
             .push(InstrNode::new(Inst::Return { values: vec![v(1)] }));
         func.blocks.push(block);
-        module.add_function(func);
+        module
+            .try_add_function(func)
+            .expect("Module::try_add_function: test fixture");
         module
     }
 

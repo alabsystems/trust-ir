@@ -1,0 +1,9 @@
+; TrustIr text format v1
+module "closure_frame_origin"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = () -> ()
+
+closure_layout closure.0 size=0 align=1 offsets=[] origin=rust(crate=0x0000000000000007, path=07000000000000000b00000000000000, args=sha256:41ee791eeabd42dd0aea64eff925e9c2832a0529f7461ca1bc0fc1e2cf2402ad)
+
+closure_ty functy.0 {  }

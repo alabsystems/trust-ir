@@ -6,7 +6,7 @@
 //! frontend-emitted `.trust_ir` modules.
 //!
 //! ```text
-//! cargo run -p trust-ir-ay --example bvblast_corpus --release -- <dir> [--determinism]
+//! targo --unverified run -p trust-ir-ay --example bvblast_corpus --release -- <dir> [--determinism]
 //! ```
 //!
 //! Reports, per obligation kind: how many obligations are sited, how many derive
@@ -34,6 +34,7 @@ fn kind_tag(kind: &ObligationKind) -> &'static str {
 fn derive_bucket(err: &GoalDeriveError) -> String {
     match err {
         GoalDeriveError::NoSite => "no-site".into(),
+        GoalDeriveError::KindNotAssertClass { .. } => "kind-not-assert-class".into(),
         GoalDeriveError::SiteFunctionMismatch { .. } => "site-function-mismatch".into(),
         GoalDeriveError::SiteNotResolvable { .. } => "site-not-resolvable".into(),
         GoalDeriveError::NotALoweredAssert { detail } => {

@@ -34,7 +34,7 @@ fn discriminant_validity_bool_or_validates_and_executes() {
     fb.ret(vec![valid]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     assert_eq!(validate_module(&module), []);
 
     for (disc, expected) in [(0, true), (1, true), (2, false)] {
@@ -67,7 +67,7 @@ fn scalar_bool_logic_and_comparison_execute_all_truth_tables() {
     fb.ret(vec![and, or, xor, ne]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     assert_eq!(validate_module(&module), []);
 
     for lhs in [false, true] {
@@ -119,7 +119,7 @@ fn vector_bool_logic_and_not_execute_lane_wise() {
     fb.ret(vec![and, or, xor, not]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     assert_eq!(validate_module(&module), []);
     let outcome = Interpreter::with_module(&module)
         .execute_func(FuncId::new(0), [])
@@ -160,7 +160,7 @@ fn float_logic_remains_fail_closed() {
     fb.ret(vec![result]);
     fb.build();
 
-    let errors = validate_module(&mb.build());
+    let errors = validate_module(&mb.build().expect("ModuleBuilder::build: test fixture"));
     assert!(errors.iter().any(|error| matches!(
         error,
         ValidationError::BinOpRequiresInteger { op, ty, .. }

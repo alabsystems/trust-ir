@@ -121,15 +121,20 @@ struct Seed {
 
 fn seed(name: &str) -> Seed {
     let mut module = Module::new(name);
-    let i64_ty = module.add_type(Ty::I64);
+    let i64_ty = module
+        .add_type(Ty::I64)
+        .expect("Module::add_type: test fixture");
     let u = module
         .intern_universe(Universe::IntRange { lo: 1, hi: M })
+        .expect("Module::intern_universe: test fixture")
         .expect("canonical");
     let member = module
         .intern_pred(Pred::InUniverse(u, Space::Member))
+        .expect("Module::intern_pred: test fixture")
         .expect("in range");
     let index = module
         .intern_pred(Pred::InUniverse(u, Space::Index))
+        .expect("Module::intern_pred: test fixture")
         .expect("in range");
     let _ = UnivId::new(0);
     Seed {
@@ -161,11 +166,14 @@ fn store_fixture(name: &str, carrier: PredId, location_ty: Ty, seed: Seed) -> Mo
         mut module, i64_ty, ..
     } = seed;
     let _ = name;
-    let ft = module.add_func_type(FuncTy {
-        params: vec![Ty::Refine(i64_ty, carrier)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(i64_ty, carrier)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "writer", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params
@@ -229,13 +237,18 @@ fn store_into_a_refined_location_is_checked() {
 
     // ── BASELINE: the same program with no refinements at all ─────────────
     let mut bare = Module::new("store_baseline");
-    let i64_ty = bare.add_type(Ty::I64);
+    let i64_ty = bare
+        .add_type(Ty::I64)
+        .expect("Module::add_type: test fixture");
     let _ = i64_ty;
-    let ft = bare.add_func_type(FuncTy {
-        params: vec![Ty::I64],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = bare
+        .add_func_type(FuncTy {
+            params: vec![Ty::I64],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "writer", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), Ty::I64));
@@ -278,16 +291,22 @@ fn call_indirect_fixture(carrier: PredId, sig_param: Ty, seed: Seed) -> Module {
     let Seed {
         mut module, i64_ty, ..
     } = seed;
-    let sig = module.add_func_type(FuncTy {
-        params: vec![sig_param],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let caller_ty = module.add_func_type(FuncTy {
-        params: vec![Ty::Ptr, Ty::Refine(i64_ty, carrier)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let sig = module
+        .add_func_type(FuncTy {
+            params: vec![sig_param],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let caller_ty = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Ptr, Ty::Refine(i64_ty, carrier)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "caller", caller_ty, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), Ty::Ptr));
@@ -330,6 +349,7 @@ fn call_indirect_against_its_declared_signature_is_checked() {
     let sub = s
         .module
         .intern_in_universe(Universe::IntRange { lo: 2, hi: 5 }, Space::Member)
+        .expect("Module::intern_in_universe: test fixture")
         .expect("canonical");
     let member = s.member;
     let i64_ty = s.i64_ty;
@@ -361,12 +381,16 @@ fn field_write_fixture(carrier: PredId, field_ty: Ty, seed: Seed) -> Module {
         size: None,
         align: None,
         repr: trust_ir::ty::StructRepr::Rust,
+        origin: None,
     });
-    let ft = module.add_func_type(FuncTy {
-        params: vec![Ty::Struct(row), Ty::Refine(i64_ty, carrier)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Struct(row), Ty::Refine(i64_ty, carrier)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "write", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), Ty::Struct(row)));
@@ -429,11 +453,14 @@ fn a_refined_record_field_write_is_checked() {
                 offset: None,
             }],
         });
-        let ft = module.add_func_type(FuncTy {
-            params: vec![Ty::Record(rec), Ty::Refine(i64_ty, carrier)],
-            returns: vec![],
-            is_vararg: false,
-        });
+        let ft = module
+            .add_func_type(FuncTy {
+                params: vec![Ty::Record(rec), Ty::Refine(i64_ty, carrier)],
+                returns: vec![],
+                abi: None,
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
         let mut f = Function::new(FuncId::new(0), "write", ft, BlockId::new(0));
         let mut b = Block::new(BlockId::new(0));
         b.params.push((ValueId::new(0), Ty::Record(rec)));
@@ -493,12 +520,16 @@ fn field_read_fixture(field_ty: Ty, demanded: Ty, seed: Seed) -> Module {
         size: None,
         align: None,
         repr: trust_ir::ty::StructRepr::Rust,
+        origin: None,
     });
-    let ft = module.add_func_type(FuncTy {
-        params: vec![Ty::Struct(row)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Struct(row)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "read", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), Ty::Struct(row)));
@@ -560,6 +591,7 @@ fn a_refined_field_read_may_not_narrow_what_the_definition_guarantees() {
     let numeric = s
         .module
         .intern_pred(Pred::Interval { lo: 0, hi: 9 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let (i64_ty, member) = (s.i64_ty, s.member);
     let ok = field_read_fixture(Ty::Refine(i64_ty, member), Ty::Refine(i64_ty, numeric), s);
@@ -579,13 +611,18 @@ fn element_write_fixture(carrier: PredId, elem_ty: Ty, seed: Seed) -> Module {
     let Seed {
         mut module, i64_ty, ..
     } = seed;
-    let elem_id = module.add_type(elem_ty);
+    let elem_id = module
+        .add_type(elem_ty)
+        .expect("Module::add_type: test fixture");
     let array = Ty::Array(elem_id, 4);
-    let ft = module.add_func_type(FuncTy {
-        params: vec![array.clone(), Ty::I64, Ty::Refine(i64_ty, carrier)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = module
+        .add_func_type(FuncTy {
+            params: vec![array.clone(), Ty::I64, Ty::Refine(i64_ty, carrier)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "write", ft, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), array.clone()));
@@ -665,6 +702,7 @@ fn every_instruction_has_a_stated_consumption_role() {
         CheckedConsumption::DirectCallArgs,
         CheckedConsumption::InvokeArgsAndNormalEdge,
         CheckedConsumption::IndirectCallArgs,
+        CheckedConsumption::IndirectInvokeArgsAndNormalEdge,
         CheckedConsumption::ReturnValues,
         CheckedConsumption::BranchArgs,
         CheckedConsumption::StoreValue,
@@ -866,6 +904,7 @@ fn sample_of_every_instruction() -> Vec<Inst> {
             desired: v(2),
             success: Ordering::SeqCst,
             failure: Ordering::SeqCst,
+            weak: false,
         },
         Inst::Fence {
             ordering: Ordering::SeqCst,
@@ -931,7 +970,11 @@ fn sample_of_every_instruction() -> Vec<Inst> {
         },
         Inst::Undef { ty: Ty::I64 },
         Inst::Assume { cond: v(0) },
-        Inst::Assert { cond: v(0) },
+        Inst::Assert {
+            cond: v(0),
+            kind: trust_ir::AssertKind::Unspecified,
+            site: None,
+        },
         Inst::Unreachable,
         Inst::Copy {
             ty: Ty::I64,
@@ -995,6 +1038,16 @@ fn sample_of_every_instruction() -> Vec<Inst> {
             normal_args: vec![],
             unwind_dest: b(2),
         },
+        // Amendment D, Part 2: `CallIndirect`'s unwinding twin.
+        Inst::InvokeIndirect {
+            callee: v(0),
+            sig: FuncTyId::new(0),
+            args: vec![],
+            calling_conv: trust_ir::CallingConv::C,
+            normal_dest: b(1),
+            normal_args: vec![],
+            unwind_dest: b(2),
+        },
         Inst::LandingPad {
             is_cleanup: true,
             catch_type_indices: vec![],
@@ -1038,18 +1091,29 @@ fn sample_of_every_instruction() -> Vec<Inst> {
 /// boolean carrier is 0 or 1.
 fn cmp_fixture(required: Pred) -> Module {
     let mut module = Module::new("cmp_prop");
-    let bool_ty = module.add_type(Ty::Bool);
-    let required = module.intern_pred(required).expect("canonical");
-    let sink_ty = module.add_func_type(FuncTy {
-        params: vec![Ty::Refine(bool_ty, required)],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let f_ty = module.add_func_type(FuncTy {
-        params: vec![Ty::I64, Ty::I64],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let bool_ty = module
+        .add_type(Ty::Bool)
+        .expect("Module::add_type: test fixture");
+    let required = module
+        .intern_pred(required)
+        .expect("Module::intern_pred: test fixture")
+        .expect("canonical");
+    let sink_ty = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(bool_ty, required)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let f_ty = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::I64, Ty::I64],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut sink = Function::new(FuncId::new(0), "sink", sink_ty, BlockId::new(0));
     let mut sb = Block::new(BlockId::new(0));
@@ -1123,25 +1187,35 @@ fn a_derived_fact_satisfies_a_site_the_declaration_alone_cannot() {
 /// `T` is the ONLY axis: `i8` cannot hold 200, `i16` can.
 fn overflow_fixture(base: Ty) -> Module {
     let mut module = Module::new("overflow_prop");
-    let base_id = module.add_type(base.clone());
+    let base_id = module
+        .add_type(base.clone())
+        .expect("Module::add_type: test fixture");
     let operand = module
         .intern_pred(Pred::Interval { lo: 100, hi: 127 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let sum = module
         .intern_pred(Pred::Interval { lo: 200, hi: 254 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let operand_ty = Ty::Refine(base_id, operand);
 
-    let sink_ty = module.add_func_type(FuncTy {
-        params: vec![Ty::Refine(base_id, sum)],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let f_ty = module.add_func_type(FuncTy {
-        params: vec![operand_ty.clone(), operand_ty.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let sink_ty = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(base_id, sum)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let f_ty = module
+        .add_func_type(FuncTy {
+            params: vec![operand_ty.clone(), operand_ty.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut sink = Function::new(FuncId::new(0), "sink", sink_ty, BlockId::new(0));
     let mut sb = Block::new(BlockId::new(0));
@@ -1210,14 +1284,22 @@ fn propagation_falls_to_top_when_the_arithmetic_could_wrap() {
 /// that is false and decidably so.
 fn contradiction_fixture(p: Pred) -> Module {
     let mut module = Module::new("contradiction");
-    let base_id = module.add_type(Ty::I16);
-    let p = module.intern_pred(p).expect("canonical");
+    let base_id = module
+        .add_type(Ty::I16)
+        .expect("Module::add_type: test fixture");
+    let p = module
+        .intern_pred(p)
+        .expect("Module::intern_pred: test fixture")
+        .expect("canonical");
     let ty = Ty::Refine(base_id, p);
-    let f_ty = module.add_func_type(FuncTy {
-        params: vec![ty.clone(), ty.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let f_ty = module
+        .add_func_type(FuncTy {
+            params: vec![ty.clone(), ty.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "f", f_ty, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
     b.params.push((ValueId::new(0), ty.clone()));
@@ -1297,16 +1379,22 @@ fn a_block_parameter_takes_the_join_of_its_predecessors() {
         let Seed {
             mut module, i64_ty, ..
         } = seed;
-        let sink_ty = module.add_func_type(FuncTy {
-            params: vec![Ty::Refine(i64_ty, sink_pred)],
-            returns: vec![],
-            is_vararg: false,
-        });
-        let f_ty = module.add_func_type(FuncTy {
-            params: vec![Ty::Bool, Ty::Refine(i64_ty, a), Ty::Refine(i64_ty, b)],
-            returns: vec![],
-            is_vararg: false,
-        });
+        let sink_ty = module
+            .add_func_type(FuncTy {
+                params: vec![Ty::Refine(i64_ty, sink_pred)],
+                returns: vec![],
+                abi: None,
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let f_ty = module
+            .add_func_type(FuncTy {
+                params: vec![Ty::Bool, Ty::Refine(i64_ty, a), Ty::Refine(i64_ty, b)],
+                returns: vec![],
+                abi: None,
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
 
         let mut sink = Function::new(FuncId::new(0), "sink", sink_ty, BlockId::new(0));
         let mut sb = Block::new(BlockId::new(0));
@@ -1350,14 +1438,17 @@ fn a_block_parameter_takes_the_join_of_its_predecessors() {
     let a = s
         .module
         .intern_pred(Pred::Interval { lo: 0, hi: 3 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let b = s
         .module
         .intern_pred(Pred::Interval { lo: 7, hi: 9 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let need = s
         .module
         .intern_pred(Pred::Interval { lo: 0, hi: 9 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     assert_clean(
         &build(s, need, a, b),
@@ -1370,14 +1461,17 @@ fn a_block_parameter_takes_the_join_of_its_predecessors() {
     let a = s
         .module
         .intern_pred(Pred::Interval { lo: 0, hi: 3 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let b = s
         .module
         .intern_pred(Pred::Interval { lo: 7, hi: 9 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let need = s
         .module
         .intern_pred(Pred::Interval { lo: 0, hi: 5 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let m = build(s, need, a, b);
     let errors = validate_module(&m);
@@ -1407,15 +1501,19 @@ fn a_loop_carried_value_derives_nothing_rather_than_a_fixpoint_guess() {
     let a = s
         .module
         .intern_pred(Pred::Interval { lo: 0, hi: 3 })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let Seed {
         mut module, i64_ty, ..
     } = s;
-    let f_ty = module.add_func_type(FuncTy {
-        params: vec![Ty::Refine(i64_ty, a)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let f_ty = module
+        .add_func_type(FuncTy {
+            params: vec![Ty::Refine(i64_ty, a)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "f", f_ty, BlockId::new(0));
     let mut bb0 = Block::new(BlockId::new(0));
     bb0.params.push((ValueId::new(0), Ty::Refine(i64_ty, a)));

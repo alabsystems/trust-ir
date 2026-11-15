@@ -378,6 +378,7 @@ fn translation_validation_citing_cross_domain_anchor_is_rejected() {
         theorems: vec!["NNVerify.farkas_combine_2_le_bound".to_string()],
         anchor: KERNEL_ANCHOR_FARKAS_CONSTRUCTIVE.to_string(),
         allowed_axioms: vec![],
+        binding: None,
     });
 
     let mut m = Module::new("cross-domain-anchor");

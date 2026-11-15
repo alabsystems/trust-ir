@@ -11,6 +11,7 @@
 
 import TrustIr.Semantics.Eval
 import TrustIr.Proofs.CallProps
+import TrustIr.Proofs.FloatChoiceProps
 
 namespace TrustIr
 
@@ -23,11 +24,15 @@ they are the reusable infrastructure that TrustCg instantiates.
 
 ## Key definitions
 
-1. **semantics_preserving**: Strong preservation -- same fuel, same result.
-2. **semantics_preserving_weak**: Weak preservation -- may need different fuel.
-3. **inst_equiv**: Two instructions produce the same result on all states.
-4. **instructions_commute**: Two instructions can be reordered.
-5. **state_equiv_except_locals**: States agree except for SSA bindings.
+1. **behaviour_refines**: THE transform-correctness notion. Every observable
+   behaviour of the transformed program (a return, a trap, UB, or divergence)
+   is a behaviour of the source, for every UB-free source run.
+2. **semantics_preserving**: forward, `.ok`-only, same fuel. Does NOT
+   constrain traps or divergence (see `semantics_preserving_not_imp_refines`).
+3. **semantics_preserving_weak**: the same `.ok`-only notion, fuel may differ.
+4. **inst_equiv**: Two instructions produce the same result on all states.
+5. **instructions_commute**: Two instructions can be reordered.
+6. **state_equiv_except_locals**: States agree except for SSA bindings.
 
 ## Framework theorems
 
@@ -36,7 +41,14 @@ they are the reusable infrastructure that TrustCg instantiates.
 3. Instruction reordering (pure non-aliasing instructions commute)
 4. Block-level transform lifting (instruction transforms lift to blocks)
 5. Inlining correctness, frame-discipline form (a Call succeeds iff the
-   callee body run inline on a fresh frame succeeds with the same values)
+   callee body run inline on a fresh frame succeeds with the same values;
+   every trap of the inline run is a trap of the Call)
+6. Behaviour refinement: `id_refines`, `compose_refines`,
+   `block_transform_lifts_to_cfg_refines`, `constant_fold_refines`, and the
+   `unreachableToReturn_refines` (UB is top), and the counter-models that
+   separate it from the `.ok`-only notions (`assertElim_not_refines`,
+   `loop_not_refines`, `panicToLoop_not_refines`, `divToRet_not_refines`,
+   `trapClass_not_refines`, `ub_introduction_not_refines`)
 
 ## Design note
 
@@ -49,25 +61,133 @@ provides the pass-specific details; TrustIr provides the semantic framework.
 -- Semantic equivalence definitions
 -- =================================================================
 
-/-- Strong semantic preservation: a CFG transform preserves the
-    exact result for every initial state, fuel, entry point, and args.
+/-- Forward, `.ok`-only preservation at equal fuel: whenever the source
+    RETURNS, the transformed program returns the same values and state.
 
-    This is the strongest form of correctness. It implies the
-    transformed program has exactly the same observable behavior. -/
+    **This notion does not constrain traps or divergence.** It says nothing
+    once the source panics, raises a type error, is unsupported, or runs out
+    of fuel. A transform that deletes a failing `Assert` (source `panic`,
+    target `ok`) satisfies it (`assertElim_semantics_preserving`), and so do
+    one that turns a failing `Assert` into a self-loop
+    (`panicToLoop_semantics_preserving`) and one that replaces a diverging
+    program with a returning one (`divToRet_semantics_preserving`). It is kept for the existing
+    theorems stated over it (`block_transform_lifts_to_cfg`,
+    `compose_preserving`), but it is NOT a correctness notion for
+    transforms: use `behaviour_refines`.
+    `semantics_preserving_not_imp_refines` proves the gap. -/
 def semantics_preserving (transform : CFG -> CFG) : Prop :=
   forall cfg pc args s fuel result,
     Sem.run (stepN fuel cfg pc args) s = .ok result ->
     Sem.run (stepN fuel (transform cfg) pc args) s = .ok result
 
-/-- Weak semantic preservation: the transformed program produces the
-    same result, but may need different fuel.
+/-- Forward, `.ok`-only preservation where fuel may differ: whenever the
+    source returns at some fuel, the transformed program returns the same
+    result at some (possibly different) fuel. Appropriate for transforms that
+    change the number of executed blocks (e.g. loop unrolling, block
+    splitting).
 
-    This is appropriate for optimizations that change the number of
-    basic blocks or loop structure (e.g., loop unrolling). -/
+    Like `semantics_preserving`, it does not constrain traps or divergence
+    (`panicToLoop_semantics_preserving_weak` holds, although `panicToLoop`
+    makes a panicking source diverge). -/
 def semantics_preserving_weak (transform : CFG -> CFG) : Prop :=
   forall cfg pc args s result,
     (exists fuel, Sem.run (stepN fuel cfg pc args) s = .ok result) ->
     (exists fuel', Sem.run (stepN fuel' (transform cfg) pc args) s = .ok result)
+
+-- =================================================================
+-- Behaviour refinement (WS8.15)
+-- =================================================================
+
+/-- An observable behaviour of a `stepN` run from fixed inputs
+    `(cfg, pc, args, s)`.
+
+    * `returns r`: the run returns `r` (values and final state) at some fuel.
+    * `panics msg site`: a defined trap. Under panic=abort (ub-numerics-policy
+      §4) a panic is an observable outcome, not undefined behaviour, so a
+      transform may neither remove nor add one. It carries the panic's message
+      (the rendering of its kind and operand values) and, for a sited check,
+      its resolved site (amendment P, wire v54: the entry and location), so a
+      transform may not change WHICH panic a run ends in either
+      (`siteRewrite_not_refines`).
+    * `typeError` / `unsupported f`: the run is refused as ill-formed or
+      outside the executable subset. Both are outcomes a transform must keep.
+    * `ub`: undefined behaviour. A UB source licenses every target
+      behaviour; a UB TARGET behaviour is never licensed by a UB-free source.
+    * `diverges`: `outOfFuel` at EVERY fuel. Divergence is observable, so a
+      transform may not introduce it into a terminating or trapping source.
+
+    Traps other than a panic are compared by their stable class
+    (`SemError.code`), not by their diagnostic message; a panic is compared
+    by its whole normative outcome (amendment P). -/
+inductive Outcome where
+  | returns (result : List Value × MachineState)
+  | panics (msg : String) (site : Option PanicOutcomeSite)
+  | typeError
+  | unsupported (feature : UnsupportedFeature)
+  /-- A named model-capacity refusal, never a normal return or UB-top. -/
+  | outOfMemory
+  | ub
+  | diverges
+  /-- An unwinding escaped (amendment D, Part 2). Only the contextual
+      evaluator under `PanicStrategy.unwind` raises one, and its entry
+      (`evalFunctionInContext`) reports an escaping one as the panic its raise
+      recorded; the bare `stepN` this classification serves never produces
+      one. Kept as its own outcome so `ofRun` stays total and `none` stays
+      exactly `outOfFuel`. -/
+  | unwinds
+
+/-- The behaviour a single fuel-bounded run exhibits. `outOfFuel` at one fuel
+    is not a behaviour; divergence is `outOfFuel` at every fuel (`Behaves`). -/
+def Outcome.ofRun : Except SemError (List Value × MachineState) → Option Outcome
+  | .ok r => some (.returns r)
+  | .error (.ub _) => some .ub
+  | .error (.panic msg site) => some (.panics msg site)
+  | .error (.typeError _) => some .typeError
+  | .error (.unsupported f _) => some (.unsupported f)
+  | .error .outOfFuel => none
+  | .error (.outOfMemory _) => some .outOfMemory
+  | .error (.unwinding _ _) => some .unwinds
+
+/-- `Behaves cfg pc args s o`: `o` is in the behaviour set of the program
+    `cfg` entered at `pc` with `args` from state `s`. A terminating outcome
+    is exhibited at some fuel; `diverges` requires `outOfFuel` at every fuel.
+
+    `stepN` counts BLOCKS and is deterministic, so for fixed inputs the set
+    is determined by the least fuel at which the run stops, and it is never
+    empty (`behaves_nonempty`). The non-emptiness is what rules out the
+    vacuous refinement a terminating-outcomes-only definition admits: a
+    looping target would otherwise have no behaviour to check. -/
+def Behaves (cfg : CFG) (pc : BlockId) (args : List Value) (s : MachineState)
+    (o : Outcome) : Prop :=
+  (∃ fuel, Outcome.ofRun (Sem.run (stepN fuel cfg pc args) s) = some o) ∨
+  (o = .diverges ∧ ∀ fuel, Sem.run (stepN fuel cfg pc args) s = .error .outOfFuel)
+
+/-- **Behaviour refinement**, the transform-correctness notion.
+
+    For every program and inputs whose source run is UB-free at every fuel,
+    every behaviour of the transformed program is a behaviour of the source:
+    `beh (transform P) ⊆ beh P`. Consequences:
+
+    * a source that returns cannot be made to trap, diverge, or hit UB;
+    * a source that panics cannot be made to return (`assertElim_not_refines`)
+      or diverge (`panicToLoop_not_refines`);
+    * a terminating source cannot be made to diverge (`loop_not_refines`);
+    * a UB-free source cannot be given UB (`ub_introduction_not_refines`);
+    * a source with UB at some fuel constrains nothing (UB is top).
+
+    Unlike `semantics_preserving`, it is fuel-agnostic: a transform may change
+    the number of executed blocks.
+
+    Scope: like `semantics_preserving`, it is stated over `stepN`, the
+    intraprocedural evaluator, where a call is an `unsupported` behaviour. A
+    refinement proved here says nothing about interprocedural runs
+    (`stepNWithContext`); the inlining theorems below relate those directly.
+    The same notion with calls executed is `behaviour_refines_in`
+    (`TransformRefinementCtx.lean`), and `behaviour_refines_not_imp_refines_in`
+    there proves this one does not imply it. -/
+def behaviour_refines (transform : CFG → CFG) : Prop :=
+  ∀ cfg pc args s, ¬ Behaves cfg pc args s .ub →
+    ∀ o, Behaves (transform cfg) pc args s o → Behaves cfg pc args s o
 
 /-- Two instructions are equivalent if they produce the same result
     on every machine state. -/
@@ -226,6 +346,13 @@ private theorem p_pnl {α : Type} (x : α) : pnl (pure x : Sem α) := by
   simp only [Sem.run, StateT.run, pure, Except.pure] at hRun
   have h := Except.ok.inj hRun; subst h; exact ⟨rfl, rfl, rfl⟩
 
+-- bindFreshPair (the two-result binder, WS2.24): two fresh binds and a pure
+-- pair, each touching only locals/nextValueId.
+private theorem bfp_pnl (a b : Value) : pnl (Sem.bindFreshPair a b) := by
+  unfold Sem.bindFreshPair
+  exact bind_pnl _ _ (bf_pnl _) fun _ =>
+    bind_pnl _ _ (bf_pnl _) fun _ => p_pnl _
+
 -- throw: always errors, so preserves nonlocal vacuously.
 private theorem t_pnl {α : Type} (e : SemError) : pnl (throw e : Sem α) := by
   intro s result hRun
@@ -370,85 +497,6 @@ private theorem ite_throw_pnl {α : Type} {c : Prop} [Decidable c]
   | inl h => simp [h]; exact throwTypeError_pnl _
   | inr h => simp [h]; exact hm
 
-private theorem vectorBinOpDispatch_pnl (op : BinOp) (ty : Ty)
-    (lhs rhs : List Value) :
-    pnl (match ty.executableIntVectorWidth? with
-      | some (lanes, width) =>
-        if lhs.length != lanes || rhs.length != lanes then
-          Sem.throwTypeError "Vector BinOp: lane count does not match type"
-        else
-          match semVectorIntBinOp op width lhs rhs with
-          | .ok result => Sem.bindFresh (.vector result)
-          | .error e   => throw e
-      | none => Sem.throwUnsupported .vectorType
-          s!"Vector BinOp: unsupported vector type {repr ty}") := by
-  cases ty.executableIntVectorWidth? with
-  | none => exact throwUnsupported_pnl _ _
-  | some p =>
-    obtain ⟨lanes, width⟩ := p
-    refine ite_throw_pnl _ ?_
-    cases semVectorIntBinOp op width lhs rhs with
-    | ok result => exact bf_pnl _
-    | error e => exact t_pnl e
-
-private theorem vectorICmpDispatch_pnl (op : ICmpOp) (ty : Ty)
-    (lhs rhs : List Value) :
-    pnl (match ty.executableIntVectorWidth? with
-      | some (lanes, width) =>
-        if lhs.length != lanes || rhs.length != lanes then
-          Sem.throwTypeError "Vector ICmp: lane count does not match type"
-        else
-          match semVectorICmp op width lhs rhs with
-          | .ok result => Sem.bindFresh (.vector result)
-          | .error e   => throw e
-      | none => Sem.throwUnsupported .vectorType
-          s!"Vector ICmp: unsupported vector type {repr ty}") := by
-  cases ty.executableIntVectorWidth? with
-  | none => exact throwUnsupported_pnl _ _
-  | some p =>
-    obtain ⟨lanes, width⟩ := p
-    refine ite_throw_pnl _ ?_
-    cases semVectorICmp op width lhs rhs with
-    | ok result => exact bf_pnl _
-    | error e => exact t_pnl e
-
-private theorem vectorSelectValue_pnl (ty : Ty) (mask : List Value)
-    (thenVal elseVal : ValueId) :
-    pnl (match ty.executableVectorLanes? with
-      | some lanes =>
-        if mask.length != lanes then
-          Sem.throwTypeError "Vector Select: mask lane count does not match type"
-        else do
-          let thenV ← Sem.lookupValue thenVal
-          let elseV ← Sem.lookupValue elseVal
-          match thenV, elseV with
-          | .vector thenLanes, .vector elseLanes =>
-            let thenOk := ty.executableVectorPayloadMatches thenLanes
-            let elseOk := ty.executableVectorPayloadMatches elseLanes
-            if thenOk && elseOk then
-              match semVectorSelectLanes mask thenLanes elseLanes with
-              | .ok result => pure (Value.vector result)
-              | .error e   => throw e
-            else
-              Sem.throwTypeError "Vector Select: value lanes do not match vector type"
-          | _, _ => Sem.throwTypeError "Vector Select: vector mask with non-vector values"
-      | none => Sem.throwUnsupported .vectorType
-          s!"Vector Select: unsupported vector type {repr ty}") := by
-  cases ty.executableVectorLanes? with
-  | none => exact throwUnsupported_pnl _ _
-  | some lanes =>
-    refine ite_throw_pnl _ ?_
-    refine bind_pnl _ _ (lv_pnl thenVal) ?_; intro thenV
-    refine bind_pnl _ _ (lv_pnl elseVal) ?_; intro elseV
-    cases thenV <;> cases elseV <;> simp only [] <;>
-      first
-        | (refine ite_pnl ?_ ?_
-           · cases semVectorSelectLanes mask _ _ with
-             | ok result => exact p_pnl (Value.vector result)
-             | error e => exact t_pnl e
-           · exact throwTypeError_pnl _)
-        | exact throwTypeError_pnl _
-
 private theorem stepSelect_pnl (ty : Ty) (cond thenVal elseVal : ValueId) :
     pnl (stepInst (.Select ty cond thenVal elseVal)) := by
   unfold stepInst
@@ -465,22 +513,11 @@ private theorem stepSelect_pnl (ty : Ty) (cond thenVal elseVal : ValueId) :
     | true => exact bind_pnl _ _ (lv_pnl thenVal) tail
     | false => exact bind_pnl _ _ (lv_pnl elseVal) tail
   | vector mask =>
-    cases ty.executableVectorLanes? with
-    | none =>
-      exact bind_pnl _ _ (throwUnsupported_pnl _ _) tail
-    | some lanes =>
-      refine ite_pnl ?_ ?_
-      · exact bind_pnl _ _ (throwTypeError_pnl _) tail
-      · refine bind_pnl _ _ (lv_pnl thenVal) ?_; intro thenV
-        refine bind_pnl _ _ (lv_pnl elseVal) ?_; intro elseV
-        cases thenV <;> cases elseV <;> simp only [] <;>
-          first
-            | (refine ite_pnl ?_ ?_
-               · cases semVectorSelectLanes mask _ _ with
-                 | ok result => exact bind_pnl _ _ (p_pnl (Value.vector result)) tail
-                 | error e => exact bind_pnl _ _ (t_pnl e) tail
-               · exact bind_pnl _ _ (throwTypeError_pnl _) tail)
-            | exact bind_pnl _ _ (throwTypeError_pnl _) tail
+    refine bind_pnl _ _ (lv_pnl thenVal) ?_; intro thenV
+    refine bind_pnl _ _ (lv_pnl elseVal) ?_; intro elseV
+    cases semVectorSelectValues ty mask thenV elseV with
+    | ok result => exact bind_pnl _ _ (p_pnl result) tail
+    | error error => exact bind_pnl _ _ (t_pnl error) tail
   | nullPtr =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | int w v =>
@@ -489,9 +526,11 @@ private theorem stepSelect_pnl (ty : Ty) (cond thenVal elseVal : ValueId) :
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | ptr a =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
+  | array _ =>
+    exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | aggregate fields =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
-  | frame f =>
+  | frame lineage f =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | set xs =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
@@ -501,81 +540,170 @@ private theorem stepSelect_pnl (ty : Ty) (cond thenVal elseVal : ValueId) :
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | closure f caps =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
+  | fnDef sig f =>
+    exact bind_pnl _ _ (throwTypeError_pnl _) tail
+  | typedClosure cid f caps =>
+    exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | fatPtr d m =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | «partial» img =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
+  | uninit =>
+    exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | undef t =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
 
--- pnl for semBindSlot: lookupValue, lookupValue, match bindSlot, throw or bindFresh.
--- Success branch uses bf_pnl; both error branches are throw which is pnl vacuously.
+-- Frame lifetime state is disjoint from heap memory, permissions and ARC.
+private theorem setFrameState_pnl (openLineages : List Nat) (nextLineage : Nat) :
+    pnl (Sem.setFrameState openLineages nextLineage) := by
+  intro state result run
+  change Except.ok ((), { state with openFrameLineages := openLineages, nextFrameLineage := nextLineage }) = .ok result at run
+  cases run
+  exact ⟨rfl,rfl,rfl⟩
+
+private theorem frameHandle_pnl (frame : ValueId) (op : String) : pnl (Sem.frameHandle frame op) := by
+  unfold Sem.frameHandle
+  exact bind_pnl _ _ (lv_pnl frame) fun value =>
+    bind_pnl _ _ (rejectPartial_pnl value "frame handle use") fun _ => by
+      cases value <;> first | exact p_pnl _ | exact throwTypeError_pnl _
+
+private theorem semOpenFrame_pnl (definition : BindingFrameDef) : pnl (semOpenFrame definition) := by
+  unfold semOpenFrame
+  refine bind_pnl _ _ gs_pnl ?_
+  intro state
+  apply ite_pnl
+  · exact bind_pnl _ _ (setFrameState_pnl _ _) (fun _ => bf_pnl _)
+  · exact throwUB_pnl _
+
 private theorem semBindSlot_pnl (frameId : ValueId) (slot : Nat) (valueId : ValueId) :
     pnl (semBindSlot frameId slot valueId) := by
   unfold semBindSlot
-  exact bind_pnl _ _ (lv_pnl frameId) fun frameVal =>
-    bind_pnl _ _ (lv_pnl valueId) fun newVal => by
-      cases h : bindSlot frameVal slot newVal with
-      | some v => simp [h]; exact bf_pnl v
-      | none =>
-        simp [h]
-        cases frameVal <;>
-          first
-            | (unfold Sem.throwUB; exact t_pnl _)
-            | (unfold Sem.throwTypeError; exact t_pnl _)
+  refine bind_pnl _ _ (frameHandle_pnl _ _) ?_
+  rintro ⟨lineage,slots⟩
+  refine bind_pnl _ _ gs_pnl ?_
+  intro state
+  apply bool_ite_pnl
+  · refine bind_pnl _ _ (lv_pnl valueId) ?_
+    intro value
+    exact ite_pnl (bf_pnl _) (throwUB_pnl _)
+  · exact throwUB_pnl _
 
--- pnl for semLoadSlot lookup value match loadSlot throw bindFresh.
 private theorem semLoadSlot_pnl (frameId : ValueId) (slot : Nat) (ty : Ty) :
     pnl (semLoadSlot frameId slot ty) := by
   unfold semLoadSlot
-  exact bind_pnl _ _ (lv_pnl frameId) fun frameVal => by
-    cases h : loadSlot frameVal slot with
-    | some v => simp [h]; exact bf_pnl v
-    | none =>
-      simp [h]
-      cases frameVal <;>
-        first
-          | (unfold Sem.throwUB; exact t_pnl _)
-          | (unfold Sem.throwTypeError; exact t_pnl _)
+  refine bind_pnl _ _ (frameHandle_pnl _ _) ?_
+  rintro ⟨lineage,slots⟩
+  refine bind_pnl _ _ gs_pnl ?_
+  intro state
+  apply bool_ite_pnl
+  · cases found : (trustIrListGet? slots slot) with
+    | some value => simp only [found]; exact bf_pnl _
+    | none => simp only [found]; exact throwUB_pnl _
+  · exact throwUB_pnl _
 
 -- =================================================================
 -- pnl lemmas for pure non-terminator instructions (Phase 5)
 -- =================================================================
 
 -- Arithmetic: BinOp follows lookupValue, lookupValue, match types, bindFresh.
-private theorem semBinOp_pnl (op : BinOp) (ty : Ty) (lhsId rhsId : ValueId) :
-    pnl (semBinOp op ty lhsId rhsId) := by
-  unfold semBinOp
+private theorem semBinOpDeterministic_pnl (op : BinOp) (ty : Ty) (lhsId rhsId : ValueId) :
+    pnl (semBinOpDeterministic op ty lhsId rhsId) := by
+  unfold semBinOpDeterministic
   exact bind_pnl _ _ (lv_pnl lhsId) fun lhsVal =>
     bind_pnl _ _ (lv_pnl rhsId) fun rhsVal =>
     bind_pnl _ _ (rejectPartial_pnl lhsVal "BinOp") fun _ =>
     bind_pnl _ _ (rejectPartial_pnl rhsVal "BinOp") fun _ => by
-      cases lhsVal <;> cases rhsVal <;> simp only [] <;>
-        first
-          | exact vectorBinOpDispatch_pnl op ty _ _
-          | exact throwTypeError_pnl _
-          | (refine ite_throw_pnl _ ?_
-             cases semIntBinOp op _ _ _ with
-             | ok result  => exact bf_pnl _
-             | error e    => exact t_pnl e)
-          | (cases semFloatBinOp op _ _ with
-              | ok result  => exact bf_pnl _
-              | error e    => exact t_pnl e)
+      cases semBinOpValues op ty lhsVal rhsVal with
+      | ok result => exact bf_pnl result
+      | error error => exact t_pnl error
+
+private theorem semFloatMinMaxAt_pnl (op : BinOp) (ty : Ty) (lhs rhs : Float) :
+    pnl (semFloatMinMaxAt op ty lhs rhs) := by
+  intro before result run
+  obtain ⟨candidates, _, _, same⟩ := semFloatMinMaxAt_permitted run
+  have memory := congrArg MachineState.memory same
+  have permissions := congrArg MachineState.permissions same
+  have refCounts := congrArg MachineState.refCounts same
+  exact ⟨memory, permissions, refCounts⟩
+
+-- A do-notation guard distributes the continuation into both branches.
+private theorem guard_pnl {α : Type} (condition : Bool) (error : SemError)
+    {m : Sem α} (hm : pnl m) :
+    pnl (if condition then do
+      let _ ← (throw error : Sem PUnit)
+      m
+    else do
+      let _ ← (pure PUnit.unit : Sem PUnit)
+      m) := by
+  cases condition with
+  | false => exact hm
+  | true => intro before result run; cases run
+
+private theorem semFloatMinMaxScalarValue_pnl (op : BinOp) (ty : Ty) (lhs rhs : Value) :
+    pnl (semFloatMinMaxScalarValue op ty lhs rhs) := by
+  unfold semFloatMinMaxScalarValue
+  refine bind_pnl _ _ (rejectPartial_pnl lhs "BinOp") ?_; intro _
+  refine bind_pnl _ _ (rejectPartial_pnl rhs "BinOp") ?_; intro _
+  refine guard_pnl (!ty.isFloat) (.typeError "min/max requires a float type") ?_
+  cases lhs with
+  | float left =>
+    cases rhs with
+    | float right =>
+      exact bind_pnl _ _ (semFloatMinMaxAt_pnl op ty left right) (fun _ => p_pnl _)
+    | _ => exact throwTypeError_pnl _
+  | _ => exact throwTypeError_pnl _
+
+private theorem semFloatMinMaxLanes_pnl (op : BinOp) (ty : Ty)
+    (lhs rhs : List Value) : pnl (semFloatMinMaxLanes op ty lhs rhs) := by
+  induction lhs generalizing rhs with
+  | nil => cases rhs <;> first | exact p_pnl _ | exact throwTypeError_pnl _
+  | cons left lefts ih =>
+    cases rhs with
+    | nil => exact throwTypeError_pnl _
+    | cons right rights =>
+      exact bind_pnl _ _ (semFloatMinMaxScalarValue_pnl op ty left right) fun _ =>
+        bind_pnl _ _ (ih rights) fun _ => p_pnl _
+
+private theorem semFloatMinMaxValues_pnl (op : BinOp) (ty : Ty) (lhs rhs : Value) :
+    pnl (semFloatMinMaxValues op ty lhs rhs) := by
+  unfold semFloatMinMaxValues
+  refine bind_pnl _ _ (rejectPartial_pnl lhs "BinOp") ?_; intro _
+  refine bind_pnl _ _ (rejectPartial_pnl rhs "BinOp") ?_; intro _
+  cases ty with
+  | Vector count elemTy =>
+    refine guard_pnl (count == 0) (.unsupported .vectorShape "zero-lane min/max vector") ?_
+    refine guard_pnl (!elemTy.isFloat) (.typeError "min/max requires float vector lanes") ?_
+    cases lhs with
+    | vector left =>
+      cases rhs with
+      | vector right =>
+        refine guard_pnl (left.length != count || right.length != count)
+          (.typeError "min/max vector lane count does not match type") ?_
+        exact bind_pnl _ _ (semFloatMinMaxLanes_pnl op elemTy left right) (fun _ => p_pnl _)
+      | _ => exact throwTypeError_pnl _
+    | _ => exact throwTypeError_pnl _
+  | _ => exact semFloatMinMaxScalarValue_pnl op _ lhs rhs
+
+private theorem semFloatMinMax_pnl (op : BinOp) (ty : Ty) (lhsId rhsId : ValueId) :
+    pnl (semFloatMinMax op ty lhsId rhsId) := by
+  unfold semFloatMinMax
+  exact bind_pnl _ _ (lv_pnl lhsId) fun lhs =>
+    bind_pnl _ _ (lv_pnl rhsId) fun rhs =>
+    bind_pnl _ _ (semFloatMinMaxValues_pnl op ty lhs rhs) fun value => bf_pnl value
+
+private theorem semBinOp_pnl (op : BinOp) (ty : Ty) (lhsId rhsId : ValueId) :
+    pnl (semBinOp op ty lhsId rhsId) := by
+  exact ite_pnl (semFloatMinMax_pnl op ty lhsId rhsId)
+    (semBinOpDeterministic_pnl op ty lhsId rhsId)
 
 private theorem semUnOp_pnl (op : UnOp) (ty : Ty) (operandId : ValueId) :
     pnl (semUnOp op ty operandId) := by
   unfold semUnOp
   exact bind_pnl _ _ (lv_pnl operandId) fun operand =>
     bind_pnl _ _ (rejectPartial_pnl operand "UnOp") fun _ => by
-    cases operand <;> simp only [] <;>
-      first
-        | exact throwTypeError_pnl _
-        | (cases semIntUnOp op _ _ with
-            | ok result  => exact bf_pnl _
-            | error e    => exact t_pnl e)
-        | (cases semFloatUnOp op _ with
-            | ok result  => exact bf_pnl _
-            | error e    => exact t_pnl e)
+    cases semUnOpValue op ty operand with
+    | ok result => exact bf_pnl result
+    | error error => exact t_pnl error
 
 private theorem semOverflow_pnl (op : OverflowOp) (ty : Ty) (lhsId rhsId : ValueId) :
     pnl (semOverflow op ty lhsId rhsId) := by
@@ -589,24 +717,27 @@ private theorem semOverflow_pnl (op : OverflowOp) (ty : Ty) (lhsId rhsId : Value
           | exact throwTypeError_pnl _
           | (refine ite_throw_pnl _ ?_
              cases h : semOverflowOp op _ _ _ _ with
-             | ok p       => obtain ⟨result, flag⟩ := p; simp only []; exact bf_pnl _
+             | ok p       =>
+               obtain ⟨result, flag⟩ := p; simp only []
+               -- Two fresh binds (result, then flag) and a pure pair: each
+               -- step touches only locals/nextValueId (WS2.24 unpacked form).
+               exact bfp_pnl _ _
              | error e    => exact t_pnl e)
 
 -- Comparisons: ICmpInst, FCmpInst
 -- Shape: lookupValue then lookupValue then match operand types then bindFresh or throw.
 
-private theorem semICmpInst_pnl (op : ICmpOp) (ty : Ty) (lhsId rhsId : ValueId) :
-    pnl (semICmpInst op ty lhsId rhsId) := by
+private theorem semICmpInst_pnl (op : ICmpOp) (ty : Ty) (lhsId rhsId : ValueId)
+    (model : ByteModel := .le64) :
+    pnl (semICmpInst op ty lhsId rhsId model) := by
   unfold semICmpInst
   exact bind_pnl _ _ (lv_pnl lhsId) fun lhsVal =>
     bind_pnl _ _ (lv_pnl rhsId) fun rhsVal =>
     bind_pnl _ _ (rejectPartial_pnl lhsVal "ICmp") fun _ =>
     bind_pnl _ _ (rejectPartial_pnl rhsVal "ICmp") fun _ => by
-      cases lhsVal <;> cases rhsVal <;> simp only [] <;>
-        first
-          | exact vectorICmpDispatch_pnl op ty _ _
-          | exact throwTypeError_pnl _
-          | (refine ite_throw_pnl _ ?_; exact bf_pnl _)
+      cases semICmpValues op ty lhsVal rhsVal model with
+      | ok result => exact bf_pnl result
+      | error error => exact t_pnl error
 
 private theorem semFCmpInst_pnl (op : FCmpOp) (ty : Ty) (lhsId rhsId : ValueId) :
     pnl (semFCmpInst op ty lhsId rhsId) := by
@@ -615,10 +746,9 @@ private theorem semFCmpInst_pnl (op : FCmpOp) (ty : Ty) (lhsId rhsId : ValueId) 
     bind_pnl _ _ (lv_pnl rhsId) fun rhsVal =>
     bind_pnl _ _ (rejectPartial_pnl lhsVal "FCmp") fun _ =>
     bind_pnl _ _ (rejectPartial_pnl rhsVal "FCmp") fun _ => by
-      cases lhsVal <;> cases rhsVal <;> simp only [] <;>
-        first
-          | exact throwTypeError_pnl _
-          | exact bf_pnl _
+      cases semFCmpValues op ty lhsVal rhsVal with
+      | ok result => exact bf_pnl result
+      | error error => exact t_pnl error
 
 -- Cast: lookupValue, then per-op match on operand, optional getTyWidth, bindFresh/throw.
 -- The 12 cast variants each follow: either
@@ -650,14 +780,6 @@ private theorem match_width_guarded_pnl
   cases e with
   | ok w => exact bool_ite_pnl (cond w) (throwUB_pnl msg) (bf_pnl (f w))
   | error err => exact t_pnl err
-
--- Helper: pnl for the Bitcast int-to-dst branch: ite on (dstTy == .Ptr).
-private theorem bitcast_int_pnl (_w : Nat) (v : Int) (dstTy : Ty) :
-    pnl (if dstTy == .Ptr then Sem.bindFresh (.ptr v.toNat)
-         else match getTyWidth dstTy with
-              | .ok dstW  => Sem.bindFresh (.int dstW v)
-              | .error e  => throw e) := by
-  exact ite_pnl (bf_pnl _) (match_width_bindFresh_pnl _ _)
 
 -- Integer truncation has one representation-changing scalar boundary:
 -- destination Bool materializes the low bit as Value.bool.  Keep that branch
@@ -696,9 +818,58 @@ private theorem sext_bool_pnl (b : Bool) (dstTy : Ty) :
   | false => exact match_width_bindFresh_pnl _ _
   | true => exact match_width_bindFresh_pnl _ _
 
+/-- Close a `pnl` goal whose leaves are `bindFresh` / `throw` (in any of the
+    `Sem.throw*` spellings) under nested `if` / `match` layers — the shape of
+    the width-checked float casts (WS2.23), which thread `checkFloatAt` /
+    `roundFloatAt` / `roundIntToFloatAt` results through a `match`. -/
+-- The integer-to-address conversion: a pure value or UB.
+private theorem addrOfInt_pnl (op : String) (w : Nat) (v : Int) : pnl (Sem.addrOfInt op w v) := by
+  unfold Sem.addrOfInt
+  exact ite_pnl (p_pnl _) (throwUB_pnl _)
+
+private theorem bindPointerInteger_pnl (op : String) (dstTy : Ty) (address : Nat) :
+    pnl (Sem.bindPointerInteger op dstTy address .le64) := by
+  unfold Sem.bindPointerInteger
+  cases getTyWidth dstTy with
+  | ok width =>
+    simp only [pure_bind]
+    exact ite_pnl (bf_pnl _) (throwUB_pnl _)
+  | error error =>
+    exact bind_pnl _ _ (t_pnl error) (fun _ => ite_pnl (bf_pnl _) (throwUB_pnl _))
+
+private theorem bindPointerIntegerWithProvenance_pnl (op : String) (dstTy : Ty)
+    (address : Nat) (provenance : Option AllocId) :
+    pnl (Sem.bindPointerIntegerWithProvenance op dstTy address provenance .le64) := by
+  cases provenance with
+  | some allocation => exact bindPointerInteger_pnl op dstTy address
+  | none =>
+    unfold Sem.bindPointerIntegerWithProvenance
+    cases getTyWidth dstTy with
+    | ok width =>
+      simp only [pure_bind]
+      exact ite_pnl (bf_pnl _) (throwUB_pnl _)
+    | error error =>
+      exact bind_pnl _ _ (t_pnl error) (fun _ => ite_pnl (bf_pnl _) (throwUB_pnl _))
+
+local macro "pnl_leaves" : tactic =>
+  `(tactic| repeat (first
+      | exact bf_pnl _
+      | exact t_pnl _
+      | (unfold Sem.throwTypeError; exact t_pnl _)
+      | (unfold Sem.throwUnsupported; exact t_pnl _)
+      | exact throwUB_pnl _
+      | exact match_width_bindFresh_pnl _ _
+      | exact bindPointerInteger_pnl _ _ _
+      | exact bindPointerIntegerWithProvenance_pnl _ _ _ _
+      | exact match_width_guarded_pnl _ _ _ _
+      | (refine bind_pnl _ _ (addrOfInt_pnl _ _ _) ?_; intro _
+         refine bind_pnl _ _ gs_pnl ?_; intro _)
+      | split))
+
 -- All cast cases terminate in bindFresh or throw (both pnl).  We case on op
 -- to select the branch, then case on operand inside each branch.
 -- The Bitcast.int branch has a nested ite that needs explicit handling.
+set_option maxHeartbeats 2000000 in
 private theorem semCast_pnl (op : CastOp) (srcTy dstTy : Ty) (operandId : ValueId) :
     pnl (semCast op srcTy dstTy operandId) := by
   unfold semCast
@@ -709,14 +880,15 @@ private theorem semCast_pnl (op : CastOp) (srcTy dstTy : Ty) (operandId : ValueI
   -- operand` dispatch below discharges every cast arm.
   refine bind_pnl _ _ (rejectPartial_pnl operand "Cast") ?_; intro _
   cases op <;>
-    (cases operand <;>
+    (cases operand <;> simp only [] <;>
       first
         | (unfold Sem.throwTypeError; exact t_pnl _)
         | (unfold Sem.throwUnsupported; exact t_pnl _)
         | exact bf_pnl _
         | exact match_width_bindFresh_pnl _ _
         | exact match_width_guarded_pnl _ _ _ _
-        | (refine ite_pnl (bf_pnl _) ?_; exact match_width_bindFresh_pnl _ _))
+        | (refine ite_pnl (bf_pnl _) ?_; exact match_width_bindFresh_pnl _ _)
+        | (pnl_leaves; done))
 
 private theorem semPtrData_pnl (ptrTy : Ty) (ptrId : ValueId) :
     pnl (semPtrData ptrTy ptrId) := by
@@ -756,21 +928,20 @@ private theorem semPtrFromParts_pnl (ptrTy metadataTy : Ty)
     (dataId metadataId : ValueId) :
     pnl (semPtrFromParts ptrTy metadataTy dataId metadataId) := by
   unfold semPtrFromParts
+  refine bind_pnl _ _ (lv_pnl dataId) ?_; intro dataVal
+  refine bind_pnl _ _ (lv_pnl metadataId) ?_; intro metaVal
+  refine bind_pnl _ _ (rejectPartial_pnl dataVal "PtrFromParts data") ?_; intro _
+  refine bind_pnl _ _ (rejectPartial_pnl metaVal "PtrFromParts metadata") ?_; intro _
   split
   · refine bool_ite_pnl _ (throwTypeError_pnl _) ?_
-    refine bind_pnl _ _ (lv_pnl metadataId) ?_; intro metaVal
     refine bool_ite_pnl _ (throwTypeError_pnl _) ?_
-    refine bind_pnl _ _ (lv_pnl dataId) ?_; intro dataVal
     cases fatPtrFromPartsValue dataVal metaVal with
     | some v => exact bf_pnl v
     | none => exact throwTypeError_pnl _
   · refine bool_ite_pnl _ ?_ (throwTypeError_pnl _)
     refine bool_ite_pnl _ (throwTypeError_pnl _) ?_
-    refine bind_pnl _ _ (lv_pnl metadataId) ?_; intro metaVal
-    -- match metaVal with | .aggregate [] => (lookup data; match data) | _ => throw
     split
-    · refine bind_pnl _ _ (lv_pnl dataId) ?_; intro dataVal
-      split <;>
+    · split <;>
         first
           | exact bf_pnl _
           | (unfold Sem.throwTypeError; exact t_pnl _)
@@ -785,7 +956,10 @@ private theorem semExtractField_pnl (ty : Ty) (aggregateId : ValueId) (field : N
   exact bind_pnl _ _ (lv_pnl aggregateId) fun aggVal =>
     bind_pnl _ _ (rejectPartial_pnl aggVal "ExtractField") fun _ => by
     cases h : getField aggVal field with
-    | some v => simp [h]; exact bf_pnl v
+    | some v =>
+      simp [h]
+      -- Crystal lane (E3b): an unwritten lane faults (UB), every other lane binds.
+      exact ite_pnl (throwUB_pnl _) (bf_pnl v)
     | none =>
       simp [h]
       cases aggVal <;>
@@ -801,14 +975,52 @@ private theorem semInsertField_pnl (ty : Ty) (aggregateId : ValueId) (field : Na
     bind_pnl _ _ (lv_pnl valueId) fun newVal =>
     bind_pnl _ _ (rejectPartial_pnl aggVal "InsertField") fun _ =>
     bind_pnl _ _ (rejectPartial_pnl newVal "InsertField") fun _ => by
-      cases h : setField aggVal field newVal with
-      | some v => simp [h]; exact bf_pnl v
-      | none =>
-        simp [h]
-        cases aggVal <;>
-          first
-            | (unfold Sem.throwUB; exact t_pnl _)
-            | (unfold Sem.throwTypeError; exact t_pnl _)
+      split
+      · unfold Sem.throwUB; exact t_pnl _
+      · cases h : setField aggVal field newVal with
+        | some v => simp [h]; exact bf_pnl v
+        | none =>
+          simp [h]
+          cases aggVal <;>
+            first
+              | (unfold Sem.throwUB; exact t_pnl _)
+              | (unfold Sem.throwTypeError; exact t_pnl _)
+
+-- MakeAggregate (WS3.5): a structurally recursive lane lookup (lookupValue +
+-- rejectPartial per lane, pure at the end), then a match on (ty, variant) whose
+-- every arm is a throw or one bindFresh.
+private theorem lookupLanes_pnl (ids : List ValueId) : pnl (lookupLanes ids) := by
+  induction ids with
+  | nil => exact p_pnl _
+  | cons id rest ih =>
+    unfold lookupLanes
+    exact bind_pnl _ _ (lv_pnl id) fun v =>
+      bind_pnl _ _ (rejectPartial_pnl v "MakeAggregate") fun _ =>
+      bind_pnl _ _ ih fun _ => p_pnl _
+
+private theorem semMakeAggregate_pnl (ty : Ty) (variant : Option Nat)
+    (fieldIds : List ValueId) :
+    pnl (semMakeAggregate ty variant fieldIds) := by
+  unfold semMakeAggregate
+  exact bind_pnl _ _ (lookupLanes_pnl fieldIds) fun _ => by
+    split <;>
+      first
+        | exact throwUnsupported_pnl _ _
+        | exact throwTypeError_pnl _
+        | exact bf_pnl _
+        | (split <;> first | exact throwTypeError_pnl _ | exact bf_pnl _)
+
+-- ArraySplat (v50): one lookupValue + rejectPartial, then a match on the type
+-- whose arms are one bindFresh or a throw.
+private theorem semArraySplat_pnl (ty : Ty) (valueId : ValueId) :
+    pnl (semArraySplat ty valueId) := by
+  unfold semArraySplat
+  exact bind_pnl _ _ (lv_pnl valueId) fun v =>
+    bind_pnl _ _ (rejectPartial_pnl v "ArraySplat") fun _ => by
+      split <;>
+        first
+          | exact throwTypeError_pnl _
+          | exact bf_pnl _
 
 -- ExtractElement/InsertElement: similar but with an extra ValueId lookup for index,
 -- and a do-let binding of idx (via match on idxVal with ite for negativity check).
@@ -839,6 +1051,9 @@ private theorem match_option_agg_pnl (ov : Option Value) (aggVal : Value)
           | none =>
             match aggVal with
             | .aggregate _fields => Sem.throwUB ubMsg
+            -- WS3.17: a sequence is an element carrier too, so an
+            -- out-of-range index on one is UB, not a type error.
+            | .sequence _elems => Sem.throwUB ubMsg
             | _ => Sem.throwTypeError tyMsg) := by
   cases ov with
   | some v => exact bf_pnl v
@@ -861,7 +1076,8 @@ private theorem semExtractElement_tail_pnl (ty : Ty) (arrVal : Value) (idx : Nat
             | some v => Sem.bindFresh v
             | none =>
               match arrVal with
-              | .aggregate _ => Sem.throwUB "ExtractElement: index out of bounds"
+              | .array _ | .aggregate _ => Sem.throwUB "ExtractElement: index out of bounds"
+              | .sequence _ => Sem.throwUB "ExtractElement: index out of bounds"
               | _ => Sem.throwTypeError "ExtractElement: operand is not an aggregate or vector") := by
   cases arrVal with
   | int w n =>
@@ -876,6 +1092,12 @@ private theorem semExtractElement_tail_pnl (ty : Ty) (arrVal : Value) (idx : Nat
   | ptr a =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+  | array fields =>
+    cases h : getElement (Value.array fields) idx with
+    | some v => simpa [h] using bf_pnl v
+    | none =>
+      simpa [h, Sem.throwUB] using
+        (t_pnl (SemError.ub "ExtractElement: index out of bounds"))
   | aggregate fields =>
     cases h : getElement (Value.aggregate fields) idx with
     | some v => simpa [h] using bf_pnl v
@@ -886,25 +1108,39 @@ private theorem semExtractElement_tail_pnl (ty : Ty) (arrVal : Value) (idx : Nat
     cases h : getVectorElement ty (Value.vector lanes) idx with
     | ok v => simpa [h] using bf_pnl v
     | error e => simpa [h] using t_pnl e
-  | frame f =>
+  | frame lineage f =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | set xs =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | sequence xs =>
-    simpa [getElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+    -- WS3.17: `getElement` now reads a sequence, so this case splits exactly
+    -- like the aggregate one (bind on success, UB on an out-of-range index).
+    cases h : getElement (Value.sequence xs) idx with
+    | some v => simpa [h] using bf_pnl v
+    | none =>
+      simpa [h, Sem.throwUB] using
+        (t_pnl (SemError.ub "ExtractElement: index out of bounds"))
   | record fs =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | closure f caps =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+  | fnDef sig f =>
+    simpa [getElement, Sem.throwTypeError] using
+      (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+  | typedClosure cid f caps =>
+    simpa [getElement, Sem.throwTypeError] using
+      (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | fatPtr d m =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | «partial» img =>
+    simpa [getElement, Sem.throwTypeError] using
+      (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+  | uninit =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | undef t =>
@@ -916,46 +1152,15 @@ private theorem semExtractElement_tail_pnl (ty : Ty) (arrVal : Value) (idx : Nat
 
 private theorem semExtractElement_pnl (ty : Ty) (arrayId indexId : ValueId) :
     pnl (semExtractElement ty arrayId indexId) := by
-  unfold semExtractElement
+  unfold semExtractElement semExtractElementUsing
   refine bind_pnl _ _ (lv_pnl arrayId) ?_; intro arrVal
   refine bind_pnl _ _ (lv_pnl indexId) ?_; intro idxVal
-  -- The index binding   let idx <- match idxVal with | .int _ n => if n<0 then ... else pure n.toNat | _ => throw
-  -- compiles by pushing the tail (semExtractElement_tail_pnl arrVal) into each branch.
-  cases idxVal with
-  | int w n =>
-    -- Inner if n<0 then throwUB else pure n.toNat compiles with the
-    -- tail already pushed into each branch as let y from prod then jp y.
-    refine ite_pnl (c := n < 0) ?_ ?_
-    · exact bind_pnl _ _ (throwUB_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-    · exact bind_pnl _ _ (p_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | nullPtr =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | float f =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | bool b =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | ptr a =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | aggregate fields =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | vector lanes =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | frame f =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | set xs =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | sequence xs =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | record fs =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | closure f caps =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | fatPtr d m =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | «partial» img =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
-  | undef t =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semExtractElement_tail_pnl ty arrVal idx)
+  refine bind_pnl _ _ ?_ (fun idx => semExtractElement_tail_pnl ty arrVal idx)
+  refine bind_pnl _ _ (rejectPartial_pnl idxVal "ExtractElement index") ?_; intro _
+  cases idxVal <;> simp only [] <;>
+    first
+      | exact throwTypeError_pnl _
+      | exact ite_pnl (throwUB_pnl _) (p_pnl _)
 
 private theorem semInsertElement_tail_pnl (ty : Ty) (arrVal newVal : Value) (idx : Nat) :
     pnl (match arrVal with
@@ -963,410 +1168,189 @@ private theorem semInsertElement_tail_pnl (ty : Ty) (arrVal newVal : Value) (idx
             match setVectorElement ty arrVal idx newVal with
             | .ok v => Sem.bindFresh v
             | .error e => throw e
-          | _ =>
+          | _ => do
+            Sem.rejectPartial newVal "InsertElement"
             match setElement arrVal idx newVal with
             | some v => Sem.bindFresh v
             | none =>
               match arrVal with
-              | .aggregate _ => Sem.throwUB "InsertElement: index out of bounds"
+              | .array _ | .aggregate _ => Sem.throwUB "InsertElement: index out of bounds"
+              | .sequence _ => Sem.throwUB "InsertElement: index out of bounds"
               | _ => Sem.throwTypeError "InsertElement: operand is not an aggregate or vector") := by
   cases arrVal with
-  | int w n =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | float f =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | bool b =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | ptr a =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
+  | vector lanes =>
+    cases h : setVectorElement ty (Value.vector lanes) idx newVal with
+    | ok v => simpa [h] using bf_pnl v
+    | error e => simpa [h] using t_pnl e
+  | array fields =>
+    refine bind_pnl _ _ (rejectPartial_pnl newVal "InsertElement") ?_; intro _
+    cases h : setElement (Value.array fields) idx newVal with
+    | some v => simpa [h] using bf_pnl v
+    | none =>
+      simpa [h, Sem.throwUB] using
+        (t_pnl (SemError.ub "InsertElement: index out of bounds"))
   | aggregate fields =>
+    refine bind_pnl _ _ (rejectPartial_pnl newVal "InsertElement") ?_; intro _
     cases h : setElement (Value.aggregate fields) idx newVal with
     | some v => simpa [h] using bf_pnl v
     | none =>
       simpa [h, Sem.throwUB] using
         (t_pnl (SemError.ub "InsertElement: index out of bounds"))
-  | vector lanes =>
-    cases h : setVectorElement ty (Value.vector lanes) idx newVal with
-    | ok v => simpa [h] using bf_pnl v
-    | error e => simpa [h] using t_pnl e
-  | frame f =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | set xs =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
   | sequence xs =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | record fs =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | closure f caps =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | fatPtr d m =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | «partial» img =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | undef t =>
-    simpa [setElement, Sem.throwTypeError] using
-      (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
-  | nullPtr =>
+    -- WS3.17: `setElement` now writes a sequence (keeping the constructor),
+    -- so this case splits exactly like the aggregate one — after the same
+    -- poison inspection of the inserted element (roadmap WS2.10).
+    refine bind_pnl _ _ (rejectPartial_pnl newVal "InsertElement") ?_; intro _
+    cases h : setElement (Value.sequence xs) idx newVal with
+    | some v => simpa [h] using bf_pnl v
+    | none =>
+      simpa [h, Sem.throwUB] using
+        (t_pnl (SemError.ub "InsertElement: index out of bounds"))
+  | _ =>
+    refine bind_pnl _ _ (rejectPartial_pnl newVal "InsertElement") ?_; intro _
     simpa [setElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "InsertElement: operand is not an aggregate or vector"))
 
 private theorem semInsertElement_pnl (ty : Ty) (arrayId indexId valueId : ValueId) :
     pnl (semInsertElement ty arrayId indexId valueId) := by
-  unfold semInsertElement
+  unfold semInsertElement semInsertElementUsing
   refine bind_pnl _ _ (lv_pnl arrayId) ?_; intro arrVal
   refine bind_pnl _ _ (lv_pnl indexId) ?_; intro idxVal
   refine bind_pnl _ _ (lv_pnl valueId) ?_; intro newVal
-  cases idxVal with
-  | int w n =>
-    refine ite_pnl (c := n < 0) ?_ ?_
-    · exact bind_pnl _ _ (throwUB_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-    · exact bind_pnl _ _ (p_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | nullPtr =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | float f =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | bool b =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | ptr a =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | aggregate fields =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | vector lanes =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | frame f =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | set xs =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | sequence xs =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | record fs =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | closure f caps =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | fatPtr d m =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | «partial» img =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
-  | undef t =>
-    exact bind_pnl _ _ (throwTypeError_pnl _) (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
+  refine bind_pnl _ _ ?_ (fun idx => semInsertElement_tail_pnl ty arrVal newVal idx)
+  refine bind_pnl _ _ (rejectPartial_pnl idxVal "InsertElement index") ?_; intro _
+  cases idxVal <;> simp only [] <;>
+    first
+      | exact throwTypeError_pnl _
+      | exact ite_pnl (throwUB_pnl _) (p_pnl _)
 
--- Memory reads: semLoad.  The do-block  let addr := match ptrVal ...
--- compiles by pushing the continuation k into each match branch, so we must
--- prove the whole match is pnl, not just extract an address.  We split into
--- a tail lemma (the post-addr computation, pnl for any addr) and a case split
--- on ptrVal where each branch delivers an addr (or throws).
--- Step 3: after we know byteSize and s, handle the in-bounds check + readBytes + decode.
-private theorem semLoad_tail3_pnl (ty : Ty) (addr byteSize : Nat) (strict : Bool)
-    (align : Option Nat) (s : MachineState) : pnl (do
-    if !s.memory.isInBounds addr byteSize then
-      Sem.throwUB "Load: access is out of bounds"
-    if isMisaligned align addr then
-      Sem.throwUB "Load: unaligned access (address not aligned to declared alignment)"
-    match s.memory.readBytes addr byteSize with
-    | some bytes =>
-      match decodeValue ty bytes with
-      | some v => Sem.bindFresh v
-      | none   => Sem.throwTypeError "Load: failed to decode bytes"
-    | none =>
-      if !strict && isPartialLoadTy ty then
-        Sem.bindFresh (.partial (s.memory.readBytesMaybeUninit addr byteSize))
-      else
-        Sem.throwUB "Load: reading uninitialized memory") := by
-  -- The read + decode tail (after we have passed in-bounds). A fully-initialized
-  -- read decodes; an uninitialized read either transports a `.partial` value
-  -- (non-strict scalar) or is UB — both `pnl`.
-  have tail_read : pnl (match s.memory.readBytes addr byteSize with
-      | some bytes =>
-        match decodeValue ty bytes with
-        | some v => Sem.bindFresh v
-        | none   => Sem.throwTypeError "Load: failed to decode bytes"
-      | none =>
-        if !strict && isPartialLoadTy ty then
-          Sem.bindFresh (.partial (s.memory.readBytesMaybeUninit addr byteSize))
-        else
-          Sem.throwUB "Load: reading uninitialized memory") := by
-    cases h : s.memory.readBytes addr byteSize with
-    | some bs =>
-      simp only [h]
-      cases decodeValue ty bs with
-      | some v => exact bf_pnl v
-      | none   => unfold Sem.throwTypeError; exact t_pnl _
-    | none =>
-      simp only [h]
-      exact ite_pnl (bf_pnl _) (throwUB_pnl _)
-  -- The alignment gate wraps the read tail; UB or a no-op, both `pnl`.
-  have tail_afterBounds : pnl (do
-      if isMisaligned align addr then
-        Sem.throwUB "Load: unaligned access (address not aligned to declared alignment)"
+-- Memory reads: semLoad and semAtomicLoad. Every prefix only reads the state:
+-- the operand lookup, the byte size, the alignment check and the access check
+-- (`Sem.accessAddr`, which names the allocation the pointer was derived
+-- from); the tail reads and decodes bytes and binds one fresh value.
+private theorem accessAlign_pnl (op : String) (ty : Ty) (align : Option Nat) :
+    pnl (Sem.accessAlign op ty align) := by
+  unfold Sem.accessAlign Sem.declaredOrNaturalAlign
+  exact ite_pnl (p_pnl _) (throwTypeError_pnl _)
+
+private theorem expectPointer_pnl (op : String) (v : Value) :
+    pnl (Sem.expectPointer op v) := by
+  unfold Sem.expectPointer
+  split
+  · exact throwUB_pnl _
+  · exact ite_pnl (throwUB_pnl _) (throwUB_pnl _)
+  · exact p_pnl _
+  · exact throwTypeError_pnl _
+
+private theorem checkedAccess_pnl (op : String) (addr : Addr) (id : AllocId) (size align : Nat) :
+    pnl (Sem.checkedAccess op addr id size align) := by
+  unfold Sem.checkedAccess
+  simp only [Sem.checkTargetRange, pure_bind]
+  refine bind_pnl _ _ gs_pnl ?_; intro s
+  split
+  · exact throwUB_pnl _
+  · exact ite_pnl (throwUB_pnl _)
+      (ite_pnl (throwUB_pnl _) (ite_pnl (throwUB_pnl _) (p_pnl _)))
+
+private theorem accessAddr_pnl (op : String) (v : Value) (size align : Nat) :
+    pnl (Sem.accessAddr op v size align) := by
+  unfold Sem.accessAddr
+  refine bind_pnl _ _ (expectPointer_pnl _ _) ?_; intro ⟨addr, id⟩
+  exact checkedAccess_pnl _ _ _ _ _
+
+private theorem semLoadValueUsing_pnl (decode : Memory → List UInt8 → Except SemError Value)
+    (ty : Ty) (ptrVal : Value) (strict : Bool) (align : Option Nat) :
+    pnl (semLoadValueUsing decode ty ptrVal strict align) := by
+  unfold semLoadValueUsing
+  refine bind_pnl _ _ (rejectPartial_pnl ptrVal "Load") ?_; intro _
+  simp only [Ty.byteSizeFor, isPartialLoadTyFor]
+  refine bind_pnl _ _ (expectPointer_pnl _ _) ?_; intro ⟨ptrAddr, ptrAlloc⟩
+  -- The byte-size `match` carries the rest of the block in each arm.
+  have tail : ∀ byteSize, pnl (do
+      let alignment ← Sem.accessAlign "Load" ty align
+      let addr ← Sem.checkedAccess "Load" ptrAddr ptrAlloc byteSize alignment
+      let s ← Sem.getState
       match s.memory.readBytes addr byteSize with
       | some bytes =>
-        match decodeValue ty bytes with
-        | some v => Sem.bindFresh v
-        | none   => Sem.throwTypeError "Load: failed to decode bytes"
+        match decode s.memory bytes with
+        | .ok v    => pure v
+        | .error e => throw e
       | none =>
         if !strict && isPartialLoadTy ty then
-          Sem.bindFresh (.partial (s.memory.readBytesMaybeUninit addr byteSize))
+          pure (.partial (s.memory.readBytesMaybeUninit addr byteSize))
         else
           Sem.throwUB "Load: reading uninitialized memory") := by
-    refine ite_pnl (c := (isMisaligned align addr) = true) ?_ ?_
-    · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => tail_read)
-    · exact bind_pnl _ _ (p_pnl _) (fun _ => tail_read)
-  -- Now apply ite_pnl to the outer "if !isInBounds then throwUB".
-  refine ite_pnl (c := (!s.memory.isInBounds addr byteSize) = true) ?_ ?_
-  · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => tail_afterBounds)
-  · exact bind_pnl _ _ (p_pnl _) (fun _ => tail_afterBounds)
-
--- Step 2: after we know byteSize, bind getState and call tail3.
-private theorem semLoad_tail2_pnl (ty : Ty) (addr byteSize : Nat) (strict : Bool)
-    (align : Option Nat) : pnl (do
-    let s <- Sem.getState
-    if !s.memory.isInBounds addr byteSize then
-      Sem.throwUB "Load: access is out of bounds"
-    if isMisaligned align addr then
-      Sem.throwUB "Load: unaligned access (address not aligned to declared alignment)"
-    match s.memory.readBytes addr byteSize with
-    | some bytes =>
-      match decodeValue ty bytes with
-      | some v => Sem.bindFresh v
-      | none   => Sem.throwTypeError "Load: failed to decode bytes"
-    | none =>
-      if !strict && isPartialLoadTy ty then
-        Sem.bindFresh (.partial (s.memory.readBytesMaybeUninit addr byteSize))
-      else
-        Sem.throwUB "Load: reading uninitialized memory") := by
-  exact bind_pnl _ _ gs_pnl (fun s => semLoad_tail3_pnl ty addr byteSize strict align s)
-
-private theorem semLoad_tail_pnl (ty : Ty) (addr : Nat) (strict : Bool)
-    (align : Option Nat) : pnl (do
-    if addr == 0 then Sem.throwUB "Load: null pointer dereference"
-    let byteSize <- match ty.byteSize with
-      | some s => pure s
-      | none   => Sem.throwTypeError "Load: type has no byte size"
-    let s <- Sem.getState
-    if !s.memory.isInBounds addr byteSize then
-      Sem.throwUB "Load: access is out of bounds"
-    if isMisaligned align addr then
-      Sem.throwUB "Load: unaligned access (address not aligned to declared alignment)"
-    match s.memory.readBytes addr byteSize with
-    | some bytes =>
-      match decodeValue ty bytes with
-      | some v => Sem.bindFresh v
-      | none   => Sem.throwTypeError "Load: failed to decode bytes"
-    | none =>
-      if !strict && isPartialLoadTy ty then
-        Sem.bindFresh (.partial (s.memory.readBytesMaybeUninit addr byteSize))
-      else
-        Sem.throwUB "Load: reading uninitialized memory") := by
-  have after_null : pnl (do
-      let byteSize <- match ty.byteSize with
-        | some s => pure s
-        | none   => Sem.throwTypeError "Load: type has no byte size"
-      let s <- Sem.getState
-      if !s.memory.isInBounds addr byteSize then
-        Sem.throwUB "Load: access is out of bounds"
-      if isMisaligned align addr then
-        Sem.throwUB "Load: unaligned access (address not aligned to declared alignment)"
-      match s.memory.readBytes addr byteSize with
-      | some bytes =>
-        match decodeValue ty bytes with
-        | some v => Sem.bindFresh v
-        | none   => Sem.throwTypeError "Load: failed to decode bytes"
-      | none =>
-        if !strict && isPartialLoadTy ty then
-          Sem.bindFresh (.partial (s.memory.readBytesMaybeUninit addr byteSize))
-        else
-          Sem.throwUB "Load: reading uninitialized memory") := by
-    cases ty.byteSize with
+    intro byteSize
+    refine bind_pnl _ _ (accessAlign_pnl _ _ _) ?_; intro alignment
+    refine bind_pnl _ _ (checkedAccess_pnl _ _ _ _ _) ?_; intro addr
+    refine bind_pnl _ _ gs_pnl ?_; intro s
+    cases s.memory.readBytes addr byteSize with
     | some bs =>
-      exact bind_pnl _ _ (p_pnl bs) (fun bsz => semLoad_tail2_pnl ty addr bsz strict align)
-    | none    =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun bsz => semLoad_tail2_pnl ty addr bsz strict align)
-  refine ite_pnl (c := (addr == 0) = true) ?_ ?_
-  · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => after_null)
-  · exact bind_pnl _ _ (p_pnl _) (fun _ => after_null)
+      dsimp only
+      cases decode s.memory bs with
+      | ok v    => exact p_pnl v
+      | error e => exact t_pnl e
+    | none => exact ite_pnl (p_pnl _) (throwUB_pnl _)
+  cases ty.byteSize with
+  | some bs => exact bind_pnl _ _ (p_pnl bs) tail
+  | none    => exact bind_pnl _ _ (throwUnsupported_pnl _ _) tail
 
 private theorem semLoad_pnl (ty : Ty) (ptrId : ValueId) (strict : Bool)
-    (align : Option Nat) :
-    pnl (semLoad ty ptrId strict align) := by
-  unfold semLoad
-  refine bind_pnl _ _ (lv_pnl ptrId) ?_; intro ptrVal
-  cases ptrVal with
-  | ptr a =>
-    refine bind_pnl _ _ (p_pnl a) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | nullPtr =>
-    refine bind_pnl _ _ (throwUB_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | int w v =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | float f =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | bool b =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | aggregate fields =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | vector lanes =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | frame f =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | set xs =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | sequence xs =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | record fs =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | closure f caps =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | fatPtr d m =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | «partial» img =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
-  | undef t =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro addr; exact semLoad_tail_pnl ty addr strict align
+    (align : Option Nat) : pnl (semLoad ty ptrId strict align) := by
+  unfold semLoad semLoadUsing
+  refine bind_pnl _ _ (lv_pnl ptrId) ?_; intro pointer
+  exact bind_pnl _ _ (semLoadValueUsing_pnl _ _ _ _ _) (fun value => bf_pnl value)
 
 -- AtomicLoad: same structure as Load with an ordering-validity prefix.
-private theorem semAtomicLoad_tail3_pnl (ty : Ty) (addr byteSize : Nat) (s : MachineState) : pnl (do
-    if !s.memory.isInBounds addr byteSize then
-      Sem.throwUB "AtomicLoad: access is out of bounds"
-    let bytes <- match s.memory.readBytes addr byteSize with
-      | some bs => pure bs
-      | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-    match decodeValue ty bytes with
-    | some v => Sem.bindFresh v
-    | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
-  have tail_decode : forall bytes, pnl (match decodeValue ty bytes with
-    | some v => Sem.bindFresh v
-    | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
-    intro bytes
-    cases decodeValue ty bytes with
-    | some v => exact bf_pnl v
-    | none   => unfold Sem.throwTypeError; exact t_pnl _
-  have tail_read : pnl (do
-      let bytes <- match s.memory.readBytes addr byteSize with
-        | some bs => pure bs
-        | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-      match decodeValue ty bytes with
-      | some v => Sem.bindFresh v
-      | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
-    cases h : s.memory.readBytes addr byteSize with
-    | some bs => simp [h]; exact bind_pnl _ _ (p_pnl bs) tail_decode
-    | none    => simp [h]; exact bind_pnl _ _ (throwUB_pnl _) tail_decode
-  refine ite_pnl (c := (!s.memory.isInBounds addr byteSize) = true) ?_ ?_
-  · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => tail_read)
-  · exact bind_pnl _ _ (p_pnl _) (fun _ => tail_read)
-
-private theorem semAtomicLoad_tail2_pnl (ty : Ty) (addr byteSize : Nat) : pnl (do
-    let s <- Sem.getState
-    if !s.memory.isInBounds addr byteSize then
-      Sem.throwUB "AtomicLoad: access is out of bounds"
-    let bytes <- match s.memory.readBytes addr byteSize with
-      | some bs => pure bs
-      | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-    match decodeValue ty bytes with
-    | some v => Sem.bindFresh v
-    | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
-  exact bind_pnl _ _ gs_pnl (fun s => semAtomicLoad_tail3_pnl ty addr byteSize s)
-
-private theorem semAtomicLoad_tail_pnl (ty : Ty) (addr : Nat) : pnl (do
-    if addr == 0 then Sem.throwUB "AtomicLoad: null pointer dereference"
-    let byteSize <- match ty.byteSize with
-      | some s => pure s
-      | none   => Sem.throwTypeError "AtomicLoad: type has no byte size"
-    let s <- Sem.getState
-    if !s.memory.isInBounds addr byteSize then
-      Sem.throwUB "AtomicLoad: access is out of bounds"
-    let bytes <- match s.memory.readBytes addr byteSize with
-      | some bs => pure bs
-      | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-    match decodeValue ty bytes with
-    | some v => Sem.bindFresh v
-    | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
-  have after_null : pnl (do
-      let byteSize <- match ty.byteSize with
-        | some s => pure s
-        | none   => Sem.throwTypeError "AtomicLoad: type has no byte size"
-      let s <- Sem.getState
-      if !s.memory.isInBounds addr byteSize then
-        Sem.throwUB "AtomicLoad: access is out of bounds"
-      let bytes <- match s.memory.readBytes addr byteSize with
-        | some bs => pure bs
-        | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-      match decodeValue ty bytes with
-      | some v => Sem.bindFresh v
-      | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
-    cases ty.byteSize with
-    | some bs =>
-      exact bind_pnl _ _ (p_pnl bs) (fun bsz => semAtomicLoad_tail2_pnl ty addr bsz)
-    | none    =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun bsz => semAtomicLoad_tail2_pnl ty addr bsz)
-  refine ite_pnl (c := (addr == 0) = true) ?_ ?_
-  · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => after_null)
-  · exact bind_pnl _ _ (p_pnl _) (fun _ => after_null)
-
 private theorem semAtomicLoad_pnl (ty : Ty) (ptrId : ValueId) (ordering : MemOrdering) :
     pnl (semAtomicLoad ty ptrId ordering) := by
-  unfold semAtomicLoad
-  -- The body after the ordering check is the whole Load-like pipeline.
+  unfold semAtomicLoad semAtomicLoadUsing
   have body_pnl : pnl (do
       let ptrVal ← Sem.lookupValue ptrId
-      let addr ← match ptrVal with
-        | .ptr a    => pure a
-        | .nullPtr  => Sem.throwUB "AtomicLoad: null pointer dereference"
-        | _         => Sem.throwTypeError "AtomicLoad: operand is not a pointer"
-      if addr == 0 then Sem.throwUB "AtomicLoad: null pointer dereference"
+      Sem.rejectPartial ptrVal "AtomicLoad"
+      let (ptrAddr, ptrAlloc) ← Sem.expectPointer "AtomicLoad" ptrVal
       let byteSize ← match ty.byteSize with
         | some s => pure s
-        | none   => Sem.throwTypeError "AtomicLoad: type has no byte size"
+        | none   => Sem.throwUnsupported .layout "AtomicLoad: type has no byte size"
+      let alignment ← Sem.accessAlign "AtomicLoad" ty none
+      let addr ← Sem.checkedAccess "AtomicLoad" ptrAddr ptrAlloc byteSize alignment
       let s ← Sem.getState
-      if !s.memory.isInBounds addr byteSize then
-        Sem.throwUB "AtomicLoad: access is out of bounds"
       let bytes ← match s.memory.readBytes addr byteSize with
         | some bs => pure bs
         | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-      match decodeValue ty bytes with
-      | some v => Sem.bindFresh v
-      | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes") := by
+      match decodeValueAt s.memory ty bytes with
+      | .ok v    => Sem.bindFresh v
+      | .error e => throw e) := by
     refine bind_pnl _ _ (lv_pnl ptrId) ?_; intro ptrVal
-    cases ptrVal with
-    | ptr a =>
-      exact bind_pnl _ _ (p_pnl a) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | nullPtr =>
-      exact bind_pnl _ _ (throwUB_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | int w v =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | float f =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | bool b =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | aggregate fields =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | vector lanes =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | frame f =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | set xs =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | sequence xs =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | record fs =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | closure f caps =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | fatPtr d m =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | «partial» img =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
-    | undef t =>
-      exact bind_pnl _ _ (throwTypeError_pnl _) (fun addr => semAtomicLoad_tail_pnl ty addr)
+    refine bind_pnl _ _ (rejectPartial_pnl ptrVal "AtomicLoad") ?_; intro _
+    refine bind_pnl _ _ (expectPointer_pnl _ _) ?_; intro ⟨ptrAddr, ptrAlloc⟩
+    have tail : ∀ byteSize, pnl (do
+        let alignment ← Sem.accessAlign "AtomicLoad" ty none
+        let addr ← Sem.checkedAccess "AtomicLoad" ptrAddr ptrAlloc byteSize alignment
+        let s ← Sem.getState
+        let bytes ← match s.memory.readBytes addr byteSize with
+          | some bs => pure bs
+          | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
+        match decodeValueAt s.memory ty bytes with
+        | .ok v    => Sem.bindFresh v
+        | .error e => throw e) := by
+      intro byteSize
+      refine bind_pnl _ _ (accessAlign_pnl _ _ _) ?_; intro alignment
+      refine bind_pnl _ _ (checkedAccess_pnl _ _ _ _ _) ?_; intro addr
+      refine bind_pnl _ _ gs_pnl ?_; intro s
+      have tail_decode : forall bytes, pnl (match decodeValueAt s.memory ty bytes with
+        | .ok v    => Sem.bindFresh v
+        | .error e => throw e) := by
+        intro bytes
+        cases decodeValueAt s.memory ty bytes with
+        | ok v    => exact bf_pnl v
+        | error e => exact t_pnl e
+      cases s.memory.readBytes addr byteSize with
+      | some bs => exact bind_pnl _ _ (p_pnl bs) tail_decode
+      | none    => exact bind_pnl _ _ (throwUB_pnl _) tail_decode
+    cases ty.byteSize with
+    | some bs => exact bind_pnl _ _ (p_pnl bs) tail
+    | none    => exact bind_pnl _ _ (throwUnsupported_pnl _ _) tail
   refine ite_pnl (c := (!isValidLoadOrdering ordering) = true) ?_ ?_
   · exact bind_pnl _ _ (throwTypeError_pnl _) (fun _ => body_pnl)
   · exact bind_pnl _ _ (p_pnl _) (fun _ => body_pnl)
@@ -1380,149 +1364,88 @@ private theorem semAtomicLoad_pnl (ty : Ty) (ptrId : ValueId) (ordering : MemOrd
 -- lookupValue and throw are invoked per iteration, the loop preserves nonlocal state.
 -- We prove this via a forIn_pnl lemma.
 
--- Helper: forIn on a list preserves pnl when the body does.
--- Signature matches List.forIn with a ForInStep-returning body.
-private theorem forIn_list_pnl {α β : Type}
-    (xs : List α) (acc : β) (body : α -> β -> Sem (ForInStep β))
-    (hBody : forall x a, pnl (body x a)) :
-    pnl (forIn xs acc body) := by
-  induction xs generalizing acc with
-  | nil =>
-    simp [forIn, List.forIn]
-    exact p_pnl _
-  | cons x xs ih =>
-    simp only [forIn, List.forIn, List.forIn.loop]
-    exact bind_pnl _ _ (hBody x acc) fun step => by
-      cases step with
-      | yield b => exact ih b
-      | done b => exact p_pnl _
+-- Source-aware GEP reads declarations and memory but writes only its result
+-- SSA binding. The proof covers every layout query and pure integer reader.
+private theorem memoryExcept_pnl {α : Type} (result : Except SemError α) :
+    pnl (Sem.fromMemoryExcept result) := by
+  cases result with
+  | ok value => exact p_pnl value
+  | error error => exact t_pnl error
 
--- Helper: pnl for GEP body: a single step of the for loop. Given idxVal and
--- the current accumulator, the body either throws or returns yield (acc + off).
-private theorem gep_body_step_pnl (pointeeTy : Ty) (idxVal : Value) (totalOffset : Nat) :
-    pnl (match idxVal with
-          | .int _ idx =>
-            match gepByteOffset pointeeTy idx with
-            | .ok off => do
-              pure PUnit.unit
-              pure (ForInStep.yield (totalOffset + off))
-            | .error e => do
-              throw e
-              pure (ForInStep.yield totalOffset)
-          | _ => do
-            Sem.throwTypeError "GEP: index is not an integer"
-            pure (ForInStep.yield totalOffset)) := by
-  cases idxVal <;> simp only [] <;>
-    first
-      | (cases gepByteOffset pointeeTy _ with
-          | ok off   => exact bind_pnl _ _ (p_pnl _) fun _ => p_pnl _
-          | error e  => exact bind_pnl _ _ (t_pnl e) fun _ => p_pnl _)
-      | (exact bind_pnl _ _ (throwTypeError_pnl _) fun _ => p_pnl _)
+private theorem semGEPAddress_pnl (base : Value) (delta : Nat) (model : ByteModel) :
+    pnl (semGEPAddress base delta model) := by
+  unfold semGEPAddress
+  refine bind_pnl _ _ (rejectPartial_pnl base "GEP") ?_
+  intro _
+  cases base <;> try exact throwTypeError_pnl _
+  case nullPtr => exact throwUB_pnl _
+  case ptr address provenance =>
+    cases provenance with
+    | none =>
+      refine bind_pnl _ _ (memoryExcept_pnl _) ?_
+      intro result
+      split
+      · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => p_pnl _)
+      · exact bind_pnl _ _ (p_pnl _) (fun _ => p_pnl _)
+    | some id =>
+      refine bind_pnl _ _ gs_pnl ?_
+      intro state
+      cases hl : state.memory.lookup id with
+      | none => intro s result run; cases run
+      | some allocation =>
+        refine bind_pnl _ _ (p_pnl allocation) ?_; intro allocation
+        dsimp only
+        split
+        · intro s result run; cases run
+        · refine bind_pnl _ _ (p_pnl _) ?_; intro _
+          refine bind_pnl _ _ (memoryExcept_pnl _) ?_; intro _
+          split
+          · exact bind_pnl _ _ (throwUB_pnl _) (fun _ => p_pnl _)
+          · exact bind_pnl _ _ (p_pnl _) (fun _ => p_pnl _)
 
--- Tail for GEP after addr is bound: the forIn loop plus final bindFresh.
--- All loop iterations only lookupValue and throw or pure-yield, so the whole
--- tail preserves nonlocal state.
-private theorem semGEP_tail_pnl (pointeeTy : Ty) (baseAddr : Nat) (indexIds : List ValueId) :
-    pnl (do
-      let totalOffset <- forIn indexIds (0 : Nat)
-        (fun idxId totalOffset => do
-          let idxVal <- Sem.lookupValue idxId
-          match idxVal with
-          | .int _ idx =>
-            match gepByteOffset pointeeTy idx with
-            | .ok off => do
-              pure PUnit.unit
-              pure (ForInStep.yield (totalOffset + off))
-            | .error e => do
-              throw e
-              pure (ForInStep.yield totalOffset)
-          | _ => do
-            Sem.throwTypeError "GEP: index is not an integer"
-            pure (ForInStep.yield totalOffset))
-      Sem.bindFresh (.ptr (baseAddr + totalOffset))) := by
-  refine bind_pnl _ _ ?_ ?_
-  · exact forIn_list_pnl indexIds 0 _
-      (fun idxId totalOffset =>
-        bind_pnl _ _ (lv_pnl idxId) fun idxVal =>
-          gep_body_step_pnl pointeeTy idxVal totalOffset)
-  intro totalOffset
-  exact bf_pnl _
+private theorem semGEPValuesUsing_pnl {key : Type} (layoutOf : MemoryLayoutQuery)
+    (reader : key → Value → Except SemError Int) (ty : Ty) (base : Value)
+    (indices : List (key × Value)) (model : ByteModel) :
+    pnl (semGEPValuesUsing layoutOf reader ty base indices model) := by
+  unfold semGEPValuesUsing
+  exact bind_pnl _ _ (memoryExcept_pnl _) (fun delta => semGEPAddress_pnl base delta model)
+
+private theorem mapM_list_pnl {α β : Type} (xs : List α) (f : α → Sem β)
+    (h : ∀ x, pnl (f x)) : pnl (xs.mapM f) := by
+  have loop : ∀ (ys : List α) (acc : List β), pnl (List.mapM.loop f ys acc) := by
+    intro ys
+    induction ys with
+    | nil => intro acc; exact p_pnl acc.reverse
+    | cons x ys ih =>
+      intro acc
+      exact bind_pnl _ _ (h x) (fun y => ih (y :: acc))
+  exact loop xs []
 
 private theorem semGEP_pnl (pointeeTy : Ty) (baseId : ValueId) (indexIds : List ValueId) :
     pnl (semGEP pointeeTy baseId indexIds) := by
-  unfold semGEP
-  refine bind_pnl _ _ (lv_pnl baseId) ?_; intro baseVal
-  -- Compiled form: match baseVal with | ptr a => do let y := pure a; __do_jp y | ... | _ => throw
-  cases baseVal with
-  | ptr a =>
-    refine bind_pnl _ _ (p_pnl a) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | nullPtr =>
-    refine bind_pnl _ _ (throwUB_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | int w v =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | float f =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | bool b =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | aggregate fields =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | vector lanes =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | frame f =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | set xs =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | sequence xs =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | record fs =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | closure f caps =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | fatPtr d m =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | «partial» img =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
-  | undef t =>
-    refine bind_pnl _ _ (throwTypeError_pnl _) ?_; intro baseAddr
-    exact semGEP_tail_pnl pointeeTy baseAddr indexIds
+  unfold semGEP semGEPUsing
+  refine bind_pnl _ _ (lv_pnl baseId) ?_; intro base
+  refine bind_pnl _ _ ?_ ?_
+  · exact mapM_list_pnl indexIds _ (fun id =>
+      bind_pnl _ _ (lv_pnl id) (fun _ => p_pnl _))
+  intro inputs
+  exact bind_pnl _ _ (semGEPValuesUsing_pnl _ _ _ _ _ _) (fun _ => bf_pnl _)
 
 -- IsUnique: lookupValue ptr, then getAllocIdFromPtrARC (reads state only),
--- then requireArcRef (reads state only), then getState, then pure arithmetic, bindFresh.
--- Both getAllocIdFromPtrARC and requireArcRef only read state via getState + match + throw.
-
--- Helper: pnl for matching on Option Allocation with pure on some / throwUB on none.
--- The allocations.find? call produces an Option Allocation; we don't care about the
--- concrete predicate inside find?.
-private theorem match_option_alloc_pnl (oAlloc : Option Allocation) (msg : String) :
-    pnl (match oAlloc with
-          | some alloc => pure alloc.id
-          | none => Sem.throwUB msg) := by
-  cases oAlloc with
-  | some alloc => exact p_pnl _
-  | none       => unfold Sem.throwUB; exact t_pnl _
+-- then requireArcRef and requireObjectBase (read state only), then getState,
+-- then pure arithmetic, bindFresh. All three checks only read state via
+-- getState + match + throw.
 
 private theorem getAllocIdFromPtrARC_pnl (ptrVal : Value) : pnl (getAllocIdFromPtrARC ptrVal) := by
   unfold getAllocIdFromPtrARC
   refine bind_pnl _ _ gs_pnl ?_; intro s
-  cases ptrVal <;> simp only [] <;>
-    first
-      | exact match_option_alloc_pnl _ _
-      | (unfold Sem.throwUB; exact t_pnl _)
-      | (unfold Sem.throwTypeError; exact t_pnl _)
+  split
+  · split
+    · exact ite_pnl (p_pnl _) (throwUB_pnl _)
+    · exact throwUB_pnl _
+  · exact ite_pnl (throwUB_pnl _) (throwUB_pnl _)
+  · exact throwUB_pnl _
+  · exact throwTypeError_pnl _
 
 private theorem requireArcRef_pnl (allocId : AllocId) : pnl (requireArcRef allocId) := by
   unfold requireArcRef
@@ -1535,12 +1458,21 @@ private theorem requireArcRef_pnl (allocId : AllocId) : pnl (requireArcRef alloc
         | exact p_pnl _
         | exact throwUB_pnl _
 
+private theorem requireObjectBase_pnl (op : String) (ptrVal : Value) (allocId : AllocId) :
+    pnl (requireObjectBase op ptrVal allocId) := by
+  unfold requireObjectBase
+  refine bind_pnl _ _ gs_pnl ?_; intro s
+  split
+  · exact ite_pnl (p_pnl _) (throwUB_pnl _)
+  · exact throwUB_pnl _
+
 private theorem semIsUnique_pnl (ptrId : ValueId) : pnl (semIsUnique ptrId) := by
   unfold semIsUnique
   exact bind_pnl _ _ (lv_pnl ptrId) fun ptrVal =>
     bind_pnl _ _ (getAllocIdFromPtrARC_pnl ptrVal) fun allocId =>
       bind_pnl _ _ (requireArcRef_pnl allocId) fun _ =>
-        bind_pnl _ _ gs_pnl fun s => bf_pnl _
+        bind_pnl _ _ (requireObjectBase_pnl "IsUnique" ptrVal allocId) fun _ =>
+          bind_pnl _ _ gs_pnl fun s => bf_pnl _
 
 private theorem semSeqMapAddK_pnl (ty : Ty) (seqId : ValueId) (k : Nat) :
     pnl (semSeqMapAddK ty seqId k) := by
@@ -1581,7 +1513,8 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
   -- Unreachable).
   -- The remaining pure non-terminator instructions are:
   --   BinOp, UnOp, Overflow, ICmp, FCmp, Cast, Load (non-volatile), GEP,
-  --   ExtractField, InsertField, ExtractElement, InsertElement,
+  --   ExtractField, InsertField, MakeAggregate, ArraySplat, ExtractElement,
+  --   InsertElement,
   --   Const, NullPtr, Undef, Assume, Copy, Select, IsUnique
   -- Each of these only calls Sem.lookupValue and Sem.bindFresh, which
   -- modify only locals and nextValueId, preserving memory/permissions/refCounts.
@@ -1611,6 +1544,9 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
   | CoroSuspend => simp [Inst.hasSideEffects, Inst.isTerminator] at hPure
   | Invoke => simp [Inst.hasSideEffects, Inst.isTerminator] at hPure
   | Resume => simp [Inst.hasSideEffects, Inst.isTerminator] at hPure
+  | AssertInvoke => simp [Inst.hasSideEffects, Inst.isTerminator] at hPure
+  | DropInvoke => simp [Inst.hasSideEffects, Inst.isTerminator] at hPure
+  | InvokeIndirect => simp [Inst.hasSideEffects, Inst.isTerminator] at hPure
   -- LandingPad is observable (the unwinder's transfer target): hasSideEffects
   -- = true, so it is NOT DCE-eligible and this case is discharged by
   -- contradiction, mirroring Rust has_observable_effects.
@@ -1637,9 +1573,9 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
     simp only [stepInst] at hOk
     exact pnl_to_sel h_pnl s result hOk
   | Overflow op ty lhs rhs =>
-    have h_pnl : pnl (do let vid ← semOverflow op ty lhs rhs
-                         pure (InstrResult.value (some vid))) :=
-      sem_value_pnl (semOverflow_pnl op ty lhs rhs)
+    have h_pnl : pnl (do let ids ← semOverflow op ty lhs rhs
+                         pure (InstrResult.values [ids.1, ids.2])) :=
+      bind_pnl _ _ (semOverflow_pnl op ty lhs rhs) (fun _ => p_pnl _)
     simp only [stepInst] at hOk
     exact pnl_to_sel h_pnl s result hOk
   | ICmp op ty lhs rhs =>
@@ -1663,16 +1599,28 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
     exact pnl_to_sel h_pnl s result hOk
   -- Constants: just bindFresh (no reads)
   | Const ty val =>
-    -- Const: match val to produce a Value, then bindFresh
-    simp only [stepInst, Sem.run, StateT.run, Sem.bindFresh,
+    -- Symbols and checked conversion failures refuse before binding;
+    -- successful conversion only allocates a fresh local.
+    by_cases hSym : val.hasSymbolAddr = true
+    · simp only [stepInst, if_pos hSym, Sem.throwUnsupported, Sem.run, StateT.run,
+                 throw, throwThe, MonadExceptOf.throw, StateT.lift, bind, Except.bind] at hOk
+      cases hOk
+    cases hChecked : constValueAtChecked ty val with
+    | error error =>
+      simp only [stepInst, if_neg hSym, hChecked, Sem.run, StateT.run,
+                 throw, throwThe, MonadExceptOf.throw, StateT.lift, bind,
+                 Except.bind] at hOk
+      cases hOk
+    | ok value =>
+      simp only [stepInst, if_neg hSym, hChecked, Sem.run, StateT.run, Sem.bindFresh,
                Sem.getState, Sem.setState, StateT.get, StateT.set,
                MachineState.bindValue, bind, StateT.bind, Except.bind,
                pure, StateT.pure, Except.ok.injEq] at hOk
-    constructor
-    · cases hOk; rfl
-    constructor
-    · cases hOk; rfl
-    · cases hOk; rfl
+      constructor
+      · cases hOk; rfl
+      constructor
+      · cases hOk; rfl
+      · cases hOk; rfl
   | NullPtr =>
     -- NullPtr: stepInst = do let vid <- Sem.bindFresh .nullPtr; pure (.value (some vid))
     -- bindFresh only modifies locals and nextValueId.
@@ -1768,6 +1716,22 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
       sem_value_pnl (semInsertField_pnl ty aggregate field value)
     simp only [stepInst] at hOk
     exact pnl_to_sel h_pnl s result hOk
+  | MakeClosure ty func captures =>
+    simp only [stepInst, Sem.throwUnsupported, Sem.run, StateT.run,
+               throw, throwThe, MonadExceptOf.throw, StateT.lift, bind, Except.bind] at hOk
+    cases hOk
+  | MakeAggregate ty variant fields =>
+    have h_pnl : pnl (do let vid ← semMakeAggregate ty variant fields
+                         pure (InstrResult.value (some vid))) :=
+      sem_value_pnl (semMakeAggregate_pnl ty variant fields)
+    simp only [stepInst] at hOk
+    exact pnl_to_sel h_pnl s result hOk
+  | ArraySplat ty value =>
+    have h_pnl : pnl (do let vid ← semArraySplat ty value
+                         pure (InstrResult.value (some vid))) :=
+      sem_value_pnl (semArraySplat_pnl ty value)
+    simp only [stepInst] at hOk
+    exact pnl_to_sel h_pnl s result hOk
   | ExtractElement ty array index =>
     have h_pnl : pnl (do let vid ← semExtractElement ty array index
                          pure (InstrResult.value (some vid))) :=
@@ -1800,20 +1764,14 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
       sem_value_pnl (semIsUnique_pnl ptr)
     simp only [stepInst] at hOk
     exact pnl_to_sel h_pnl s result hOk
-  -- Binding frames (TrustIr#32): OpenFrame/BindSlot/LoadSlot are pure SSA
-  -- register updates; CloseFrame is nominally side-effecting (DCE marker).
+  -- Frame operations preserve heap/permission/ARC state; OpenFrame also
+  -- updates its separate monotone lineage state. CloseFrame is side-effecting.
   | OpenFrame def_ =>
-    -- semOpenFrame: bindFresh (initFrame slots)
-    -- Only bindFresh modifies state; follows the NullPtr/Undef pattern.
-    simp only [stepInst, semOpenFrame, Sem.run, StateT.run, Sem.bindFresh,
-               Sem.getState, Sem.setState, StateT.get, StateT.set,
-               MachineState.bindValue, bind, StateT.bind, Except.bind,
-               pure, StateT.pure, Except.ok.injEq] at hOk
-    constructor
-    · cases hOk; rfl
-    constructor
-    · cases hOk; rfl
-    · cases hOk; rfl
+    have h_pnl : pnl (do let vid ← semOpenFrame def_
+                         pure (InstrResult.value (some vid))) :=
+      sem_value_pnl (semOpenFrame_pnl def_)
+    simp only [stepInst] at hOk
+    exact pnl_to_sel h_pnl s result hOk
   | BindSlot frame slot value =>
     -- semBindSlot: lookupValue frame → lookupValue value → pure bindSlot →
     -- bindFresh. All pure reads + single bindFresh (or throw on failure).
@@ -1836,6 +1794,20 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
     simp [Inst.hasSideEffects] at hPure
   -- Dealloc frees an allocation; always side-effecting.
   | Dealloc ptr =>
+    simp [Inst.hasSideEffects] at hPure
+  -- The bulk ops write memory; always side-effecting (WS3.20).
+  | MemCopy dst src bytes overlap =>
+    simp [Inst.hasSideEffects] at hPure
+  | MemSet dst byte bytes =>
+    simp [Inst.hasSideEffects] at hPure
+  -- Drop runs a destructor: it frees and can run arbitrary user code, so it is
+  -- observable and never DCE-eligible. Discharged by contradiction with hPure,
+  -- exactly as Dealloc is.
+  | Drop ty ptr =>
+    simp [Inst.hasSideEffects] at hPure
+  | CallCannotUnwind callee args =>
+    simp [Inst.hasSideEffects] at hPure
+  | CallIndirectCannotUnwind callee sig args conv =>
     simp [Inst.hasSideEffects] at hPure
   -- DialectOp is conservatively side-effecting until lowered (TrustIr#54).
   | DialectOp op =>
@@ -1920,6 +1892,29 @@ private theorem sem_run_bind_eq {a b : Type} (ma : Sem a) (f : a -> Sem b)
   | ok val => rfl
   | error e => rfl
 
+/-- A failed assert never succeeds, whatever its kind and site: it computes
+    its panic message (reading the kind's operands), resolves its site's
+    location (amendment P), and then panics (plan item P). -/
+theorem semAssertFail_run_not_ok {α : Type} (k : AssertKind) (site : Option PanicSite)
+    (s : MachineState) (r : α × MachineState) :
+    Sem.run (semAssertFail k site : Sem α) s ≠ .ok r := by
+  intro h
+  unfold semAssertFail at h
+  rw [sem_run_bind_eq] at h
+  cases hm : Sem.run (assertFailMessage k) s with
+  | error e => rw [hm] at h; cases h
+  | ok v =>
+    rw [hm] at h
+    obtain ⟨msg, s1⟩ := v
+    cases site with
+    | none => cases h
+    | some st =>
+      dsimp only at h
+      rw [sem_run_bind_eq] at h
+      cases hl : Sem.run (resolvePanicLocation st.location) s1 with
+      | error e => rw [hl] at h; cases h
+      | ok w => rw [hl] at h; cases h
+
 /-- Helper: stepN preservation under block transform for a specific CFG.
     If every block in cfg is preserved by transform, then stepN on
     the pointwise-transformed CFG produces the same result.
@@ -1943,7 +1938,7 @@ private theorem stepN_block_transform_aux
   induction fuel generalizing pc args s with
   | zero =>
     simp only [stepN] at hOk
-    exact Except.noConfusion hOk
+    cases hOk
   | succ n ih =>
     simp only [stepN] at hOk |-
     cases hCfg : cfg pc with
@@ -1970,6 +1965,7 @@ private theorem stepN_block_transform_aux
         | CallReq fid callArgs => exact hOk
         | CallIndirectReq addr fid callArgs => exact hOk
         | InvokeReq fid callArgs nd nargs ud => exact hOk
+        | InvokeIndirectReq addr sig callArgs nd nargs ud => exact hOk
         | SeqMapReq fid elems => exact hOk
 
 /-- Lifting: if a block transform is preserving for all blocks in ALL CFGs,
@@ -2040,6 +2036,7 @@ theorem restoreFrame_state_equiv (s : MachineState) (frame : StackFrame)
     `stepNWithContext_bodyCall_eq_runCallReq_bind`, `CallProps.lean`) — so this
     theorem is anchored to `stepNWithContext`, not to a transcription.
 
+    Typed ABI metadata is explicitly excluded until transport semantics exist.
     Honest scope: this is inlining correctness UP TO THE FRAME DISCIPLINE —
     the callee body runs in its own SSA id space (fresh empty-locals frame),
     exactly as the operational model prescribes.  The stronger splice form
@@ -2054,13 +2051,16 @@ theorem inlining_preserving
     (ctx : EvalContext) (fuel callDepth : Nat)
     (calleeId : FuncId) (callee : EvalFunction) (callArgs : List Value)
     (s sEnd : MachineState) (retVals : List Value)
-    (hFn : ctx.functions calleeId = some callee) :
+    (hFn : ctx.functions calleeId = some callee)
+    (hAbi : callee.body.abi = none) :
     Sem.run (runCallReq ctx fuel callDepth calleeId callArgs) s
         = .ok (retVals, sEnd)
       ↔ callArgs.length = callee.body.paramTys.length ∧
+        callArgs.any Value.isPoison = false ∧
         retVals.length = callee.body.returnTys.length ∧
+        retVals.any Value.isPoison = false ∧
         ∃ sCalleeEnd,
-          Sem.run (stepNWithContext ctx fuel callDepth
+          Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth
               callee.cfg callee.entryBlock callArgs)
             { s with locals := ValueMap.empty, nextValueId := 0 }
             = .ok (retVals, sCalleeEnd) ∧
@@ -2069,10 +2069,1091 @@ theorem inlining_preserving
   · exact runCallReq_ok_decomp ctx fuel callDepth calleeId callee callArgs
       s sEnd retVals hFn
   · intro h
-    obtain ⟨hArity, hRet, sCalleeEnd, hInline, hEnd⟩ := h
+    obtain ⟨hArity, hArgsClean, hRet, hRetClean, sCalleeEnd, hInline, hEnd⟩ := h
     subst hEnd
     exact runCallReq_ok_of_inline ctx fuel callDepth calleeId callee callArgs
-      s sCalleeEnd retVals hFn hArity hRet hInline
+      s sCalleeEnd retVals hFn hAbi hArity hRet hArgsClean hRetClean hInline
+
+-- =================================================================
+-- Behaviour refinement: theorems (WS8.15)
+-- =================================================================
+
+/-!
+## Behaviour refinement
+
+What holds under `behaviour_refines`:
+
+* `id_refines`, `compose_refines` — the analogues of `id_transform_preserving`
+  and `compose_preserving`.
+* `block_transform_lifts_to_cfg_refines` — the analogue of
+  `block_transform_lifts_to_cfg`, under the exact-on-non-UB block hypothesis
+  `block_transform_refines`.
+* `constant_fold_refines` — the constant-fold instance.
+* `unreachableToReturn_refines` — a UB-exploiting rewrite (`Unreachable` to
+  `Return []`) is admitted: UB is top.
+* `inlining_error_transfer` / `inlining_error_cases` — the trap half of
+  `inlining_preserving` (which is itself an iff over returning runs).
+
+What does NOT hold under it:
+
+* `block_transform_lifts_to_cfg` with its `.ok`-only block hypothesis
+  (`block_transform_lifts_to_cfg_not_refines`).
+* `semantics_preserving` and `semantics_preserving_weak` do not imply it
+  (`semantics_preserving_not_imp_refines`,
+  `semantics_preserving_weak_not_imp_refines`). Three transforms separate
+  them: trap-to-return (`assertElim`), trap-to-divergence (`panicToLoop`) and
+  divergence-to-return (`divToRet`, the `core-arch-0916-a/24` shape).
+* The splice form of inlining is not stated under either notion (Future work
+  item 4).
+* Nothing here constrains a body whose calls are executed: a transform that
+  retargets a call is a `behaviour_refines` transform and is refused by the
+  in-context notion (`TransformRefinementCtx.lean`:
+  `callRetarget_refines`, `callRetarget_not_refines_in`). That module states
+  `behaviour_refines_in` over `stepNWithContext`, re-proves the UB-top rewrite
+  and the trap-removal refusal there, and gives the frame-discipline inlining
+  theorem at the behaviour level (`inlining_behaves_iff`).
+-/
+
+/-- A single fuel-bounded run never exhibits `diverges` by itself. -/
+theorem Outcome.ofRun_ne_diverges (r : Except SemError (List Value × MachineState)) :
+    Outcome.ofRun r ≠ some .diverges := by
+  cases r with
+  | ok v => simp [Outcome.ofRun]
+  | error e => cases e <;> simp [Outcome.ofRun]
+
+/-- The only run with no behaviour of its own is `outOfFuel`. -/
+theorem Outcome.ofRun_eq_none_iff (r : Except SemError (List Value × MachineState)) :
+    Outcome.ofRun r = none ↔ r = .error .outOfFuel := by
+  cases r with
+  | ok v => simp [Outcome.ofRun]
+  | error e => cases e <;> simp [Outcome.ofRun]
+
+/-- Every program has at least one behaviour from every input: either some
+    fuel stops the run, or it runs out of fuel at every fuel and so diverges.
+    This is the property a terminating-outcomes-only definition lacks. -/
+theorem behaves_nonempty (cfg : CFG) (pc : BlockId) (args : List Value)
+    (s : MachineState) : ∃ o, Behaves cfg pc args s o := by
+  by_cases hDiv : ∀ fuel, Sem.run (stepN fuel cfg pc args) s = .error .outOfFuel
+  · exact ⟨.diverges, Or.inr ⟨rfl, hDiv⟩⟩
+  · have ⟨fuel, hFuel⟩ := Classical.not_forall.mp hDiv
+    cases hO : Outcome.ofRun (Sem.run (stepN fuel cfg pc args) s) with
+    | none => exact absurd ((Outcome.ofRun_eq_none_iff _).mp hO) hFuel
+    | some o => exact ⟨o, Or.inl ⟨fuel, hO⟩⟩
+
+/-- The UB-freeness premise of `behaviour_refines`, spelled as in the
+    roadmap: no fuel gives the source `.error (.ub _)`. -/
+theorem not_behaves_ub_iff (cfg : CFG) (pc : BlockId) (args : List Value)
+    (s : MachineState) :
+    ¬ Behaves cfg pc args s .ub ↔
+      ∀ fuel msg, Sem.run (stepN fuel cfg pc args) s ≠ .error (.ub msg) := by
+  constructor
+  · intro h fuel msg hRun
+    exact h (Or.inl ⟨fuel, by rw [hRun]; rfl⟩)
+  · intro h hB
+    rcases hB with ⟨fuel, hO⟩ | ⟨hEq, _⟩
+    · cases hR : Sem.run (stepN fuel cfg pc args) s with
+      | ok v => rw [hR] at hO; simp [Outcome.ofRun] at hO
+      | error e =>
+        rw [hR] at hO
+        cases e with
+        | ub msg => exact h fuel msg hR
+        | _ => simp [Outcome.ofRun] at hO
+    · cases hEq
+
+/-- Programs whose runs agree at every fuel have the same behaviours. -/
+theorem behaves_congr (cfg1 cfg2 : CFG) (pc : BlockId) (args : List Value)
+    (s : MachineState)
+    (hEq : ∀ fuel, Sem.run (stepN fuel cfg1 pc args) s
+      = Sem.run (stepN fuel cfg2 pc args) s) (o : Outcome) :
+    Behaves cfg1 pc args s o → Behaves cfg2 pc args s o := by
+  intro h
+  rcases h with ⟨fuel, hO⟩ | ⟨hO, hDiv⟩
+  · exact Or.inl ⟨fuel, by rw [← hEq]; exact hO⟩
+  · exact Or.inr ⟨hO, fun fuel => by rw [← hEq]; exact hDiv fuel⟩
+
+/-- The identity transform is a behaviour refinement (the analogue of
+    `id_transform_preserving`). -/
+theorem id_refines : behaviour_refines (fun cfg => cfg) := by
+  intro cfg pc args s _ o h
+  exact h
+
+/-- Behaviour refinement composes (the analogue of `compose_preserving`).
+    The UB-freeness of the intermediate program `t1 cfg` is not assumed: it
+    follows from `h1`, because a UB behaviour of `t1 cfg` would be a UB
+    behaviour of the UB-free source. -/
+theorem compose_refines (t1 t2 : CFG → CFG)
+    (h1 : behaviour_refines t1) (h2 : behaviour_refines t2) :
+    behaviour_refines (fun cfg => t2 (t1 cfg)) := by
+  intro cfg pc args s hNoUB o h
+  have hNoUB1 : ¬ Behaves (t1 cfg) pc args s .ub :=
+    fun hUB => hNoUB (h1 cfg pc args s hNoUB .ub hUB)
+  exact h1 cfg pc args s hNoUB o (h2 (t1 cfg) pc args s hNoUB1 o h)
+
+-- -----------------------------------------------------------------
+-- Behaviour refinement: block-level lifting
+-- -----------------------------------------------------------------
+
+/-- A block transform refines on `cfg` when, for every block of `cfg` and
+    every run of that block that is not UB, the transformed block's run is
+    EXACTLY the source block's run (returns, traps and state alike). This
+    replaces the `.ok`-only `block_transform_preserving`, which does not lift
+    to `behaviour_refines` (`block_transform_lifts_to_cfg_not_refines`). -/
+def block_transform_refines (transform : BasicBlock → BasicBlock) (cfg : CFG) : Prop :=
+  ∀ bid, match cfg bid with
+    | none => True
+    | some block =>
+      ∀ args s, (∀ msg, Sem.run (stepBlock block args) s ≠ .error (.ub msg)) →
+        Sem.run (stepBlock (transform block) args) s = Sem.run (stepBlock block args) s
+
+/-- Helper: at a fuel where the source run is not UB, the pointwise
+    transformed CFG runs exactly like the source. Every block the source
+    executes before stopping is then not UB either, so `hBlock` applies at
+    each step. -/
+private theorem stepN_block_refines_aux
+    (transform : BasicBlock → BasicBlock) (fuel : Nat)
+    (cfg : CFG) (pc : BlockId) (args : List Value) (s : MachineState)
+    (hBlock : block_transform_refines transform cfg)
+    (hNoUB : ∀ msg, Sem.run (stepN fuel cfg pc args) s ≠ .error (.ub msg)) :
+    Sem.run (stepN fuel (fun bid => (cfg bid).map transform) pc args) s
+      = Sem.run (stepN fuel cfg pc args) s := by
+  induction fuel generalizing pc args s with
+  | zero => rfl
+  | succ n ih =>
+    simp only [stepN] at hNoUB ⊢
+    cases hCfg : cfg pc with
+    | none => simp only [hCfg, Option.map]
+    | some block =>
+      simp only [hCfg, Option.map] at hNoUB ⊢
+      rw [sem_run_bind_eq] at hNoUB ⊢
+      rw [sem_run_bind_eq]
+      have hBP := hBlock pc
+      simp only [hCfg] at hBP
+      have hBlockNoUB : ∀ msg, Sem.run (stepBlock block args) s ≠ .error (.ub msg) := by
+        intro msg hSB
+        rw [hSB] at hNoUB
+        exact hNoUB msg rfl
+      rw [hBP args s hBlockNoUB]
+      cases hSB : Sem.run (stepBlock block args) s with
+      | error e => rfl
+      | ok val =>
+        obtain ⟨sr, s'⟩ := val
+        rw [hSB] at hNoUB
+        simp only at hNoUB ⊢
+        cases sr with
+        | Continue nextPc nextArgs => exact ih nextPc nextArgs s' hNoUB
+        | _ => rfl
+
+/-- **Lifting under behaviour refinement** (the refinement analogue of
+    `block_transform_lifts_to_cfg`): a block transform that refines on every
+    CFG lifts to a CFG transform that is a behaviour refinement. -/
+theorem block_transform_lifts_to_cfg_refines (transform : BasicBlock → BasicBlock)
+    (hBlock : ∀ c : CFG, block_transform_refines transform c) :
+    behaviour_refines (fun cfg bid => (cfg bid).map transform) := by
+  intro cfg pc args s hNoUB o h
+  have hNoUB' := (not_behaves_ub_iff cfg pc args s).mp hNoUB
+  exact behaves_congr _ _ pc args s
+    (fun fuel => stepN_block_refines_aux transform fuel cfg pc args s
+      (hBlock cfg) (hNoUB' fuel)) o h
+
+-- -----------------------------------------------------------------
+-- Behaviour refinement: the constant-fold instance
+-- -----------------------------------------------------------------
+
+/-- Rewrite every body instruction of a block with `g`. -/
+def mapBody (g : Inst → Inst) (block : BasicBlock) : BasicBlock :=
+  { block with body := block.body.map g }
+
+/-- `for` over a mapped list is `for` over the list with the rewrite folded
+    into the loop body. -/
+private theorem forIn_map_eq {m : Type → Type} [Monad m] {α β : Type}
+    (l : List α) (g : α → α) (b : β) (F : α → β → m (ForInStep β)) :
+    forIn (l.map g) b F = forIn l b (fun a => F (g a)) := by
+  induction l generalizing b with
+  | nil => rfl
+  | cons a as ih =>
+    simp only [List.map_cons, List.forIn_cons]
+    congr 1
+    funext step
+    cases step with
+    | done b' => rfl
+    | yield b' => exact ih b'
+
+/-- Rewriting body instructions by an `inst_equiv`-preserving `g` leaves a
+    block's step unchanged, on every input and outcome. -/
+theorem stepBlock_mapBody (g : Inst → Inst) (hg : ∀ i, inst_equiv i (g i))
+    (block : BasicBlock) (args : List Value) :
+    stepBlock (mapBody g block) args = stepBlock block args := by
+  have hstep : ∀ i, stepInst (g i) = stepInst i := fun i => funext fun s => (hg i s).symm
+  simp only [stepBlock, mapBody]
+  rw [forIn_map_eq]
+  simp only [hstep]
+
+/-- Any `inst_equiv`-justified body rewrite is a behaviour refinement. -/
+theorem mapBody_refines (g : Inst → Inst) (hg : ∀ i, inst_equiv i (g i)) :
+    behaviour_refines (fun cfg bid => (cfg bid).map (mapBody g)) := by
+  apply block_transform_lifts_to_cfg_refines
+  intro c bid
+  cases c bid with
+  | none => trivial
+  | some block =>
+    intro args s _
+    rw [stepBlock_mapBody g hg]
+
+open Classical in
+/-- The constant-fold rewrite: every occurrence of `BinOp op ty lhs rhs`
+    becomes `Const ty constResult`. (`Inst` has no decidable equality, so
+    the test is classical; the transform is a proof object, not code.) -/
+noncomputable def foldBinOp (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
+    (constResult : Constant) (i : Inst) : Inst :=
+  if i = .BinOp op ty lhs rhs then .Const ty constResult else i
+
+/-- **Positive instance: constant folding is a behaviour refinement.** The
+    instruction-level `constant_fold_binop` justification, lifted through
+    `block_transform_lifts_to_cfg_refines`. -/
+theorem constant_fold_refines (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
+    (constResult : Constant)
+    (hFold : inst_equiv (.BinOp op ty lhs rhs) (.Const ty constResult)) :
+    behaviour_refines
+      (fun cfg bid => (cfg bid).map (mapBody (foldBinOp op ty lhs rhs constResult))) := by
+  apply mapBody_refines
+  intro i
+  unfold foldBinOp
+  by_cases h : i = .BinOp op ty lhs rhs
+  · rw [if_pos h, h]
+    exact constant_fold_binop op ty lhs rhs constResult hFold
+  · rw [if_neg h]
+    exact inst_equiv_refl i
+
+-- -----------------------------------------------------------------
+-- Counter-models: what the `.ok`-only notions accept
+-- -----------------------------------------------------------------
+
+/-- Recognise an `Assert`. -/
+def Inst.isAssert : Inst → Bool
+  | .Assert _ _ _ => true
+  | _ => false
+
+/-- Delete every `Assert` from a block body. -/
+def dropAsserts (block : BasicBlock) : BasicBlock :=
+  { block with body := block.body.filter (fun i => !i.isAssert) }
+
+/-- `assertElim`: delete every `Assert` in the program. Under panic=abort a
+    failing assertion is a DEFINED trap, so this changes observable
+    behaviour. -/
+def assertElim (cfg : CFG) : CFG := fun bid => (cfg bid).map dropAsserts
+
+/-- Filtering out loop elements whose step always succeeds as a no-op
+    keeps a successful `for` run successful with the same result. -/
+private theorem forIn_filter_ok {F : Inst → PUnit → Sem (ForInStep PUnit)}
+    (p : Inst → Bool)
+    (hF : ∀ a s r, p a = false → Sem.run (F a PUnit.unit) s = .ok r →
+      r = (ForInStep.yield PUnit.unit, s))
+    (l : List Inst) (s : MachineState) (r : PUnit × MachineState)
+    (h : Sem.run (forIn l PUnit.unit F) s = .ok r) :
+    Sem.run (forIn (l.filter p) PUnit.unit F) s = .ok r := by
+  induction l generalizing s with
+  | nil => exact h
+  | cons a as ih =>
+    rw [List.forIn_cons, sem_run_bind_eq] at h
+    rw [List.filter_cons]
+    cases hp : p a with
+    | true =>
+      simp only [if_pos]
+      rw [List.forIn_cons, sem_run_bind_eq]
+      cases hFa : Sem.run (F a PUnit.unit) s with
+      | error e => rw [hFa] at h; cases h
+      | ok v =>
+        rw [hFa] at h
+        obtain ⟨step, s1⟩ := v
+        cases step with
+        | done b => exact h
+        | yield b => exact ih s1 h
+    | false =>
+      simp only [Bool.false_eq_true, if_false]
+      cases hFa : Sem.run (F a PUnit.unit) s with
+      | error e => rw [hFa] at h; cases h
+      | ok v =>
+        rw [hFa] at h
+        have hv := hF a s v hp hFa
+        subst hv
+        exact ih s h
+
+/-- A successful `Assert` leaves the state unchanged and its condition was
+    `true`, whatever its kind. -/
+theorem stepInst_assert_ok (c : ValueId) (k : AssertKind) (site : Option PanicSite)
+    (s : MachineState) (r : InstrResult × MachineState)
+    (hr : Sem.run (stepInst (.Assert c k site)) s = .ok r) :
+    r = (.value none, s) ∧ s.lookupValue c = some (.bool true) := by
+  simp only [stepInst, sem_run_bind_eq] at hr
+  cases hv : s.lookupValue c with
+  | none =>
+    have hL : Sem.run (Sem.lookupValue c) s = .error (.typeError s!"undefined SSA value: {repr c}") := by
+      simp only [Sem.run, Sem.lookupValue, Sem.getState, StateT.run, StateT.get,
+        bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure, hv]
+      rfl
+    rw [hL] at hr; cases hr
+  | some v =>
+    have hL : Sem.run (Sem.lookupValue c) s = .ok (v, s) := by
+      simp only [Sem.run, Sem.lookupValue, Sem.getState, StateT.run, StateT.get,
+        bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure, hv]
+    rw [hL] at hr
+    simp only [sem_run_bind_eq] at hr
+    cases v with
+    | «partial» bs => cases hr
+    | bool b =>
+      cases b with
+      | true => cases hr; exact ⟨rfl, rfl⟩
+      | false =>
+        exact absurd (show Sem.run (semAssertFail k site : Sem InstrResult) s = .ok r from hr)
+          (semAssertFail_run_not_ok k site s r)
+    | _ => cases hr
+
+/-- A successful assertion is a no-op, so deleting assertions preserves
+    every SUCCESSFUL block run (the `.ok`-only block notion). -/
+theorem dropAsserts_block_preserving (c : CFG) :
+    block_transform_preserving dropAsserts c := by
+  intro bid
+  cases c bid with
+  | none => trivial
+  | some block =>
+    intro args s result h
+    simp only [stepBlock, dropAsserts] at h ⊢
+    rw [sem_run_bind_eq] at h ⊢
+    cases hP : Sem.run (bindBlockParams block.params args) s with
+    | error e => rw [hP] at h; cases h
+    | ok v =>
+      rw [hP] at h
+      obtain ⟨u, s1⟩ := v
+      simp only at h ⊢
+      rw [sem_run_bind_eq] at h ⊢
+      cases hB : Sem.run (forIn block.body PUnit.unit _) s1 with
+      | error e => rw [hB] at h; cases h
+      | ok w =>
+        rw [hB] at h
+        rw [forIn_filter_ok _ _ block.body s1 w hB]
+        exact h
+        intro a s r hp hr
+        cases a <;> simp [Inst.isAssert] at hp
+        rename_i c k site
+        simp only [sem_run_bind_eq] at hr
+        cases hS : Sem.run (stepInst (.Assert c k site)) s with
+        | error e => rw [hS] at hr; cases hr
+        | ok v =>
+          obtain ⟨hv, _⟩ := stepInst_assert_ok c k site s v hS
+          subst hv
+          rw [hS] at hr
+          cases hr; rfl
+
+/-- **Mutation control: the old notion accepts assertion deletion.** Fuel
+    counts blocks, so deleting an `Assert` inside a block keeps the fuel,
+    and `semantics_preserving` holds. -/
+theorem assertElim_semantics_preserving : semantics_preserving assertElim :=
+  block_transform_lifts_to_cfg dropAsserts (fun _ => none) dropAsserts_block_preserving
+
+/-- Counter-model source for `assertElim`: block 0 asserts its `Bool`
+    parameter and returns. Entered with `false`, it panics. -/
+def failingAssertCFG : CFG := fun bid =>
+  if bid = ⟨0⟩ then
+    some { params := [(⟨0⟩, .Bool)], body := [.Assert ⟨0⟩ .Unspecified none], terminator := .Return [] }
+  else none
+
+/-- The source panics at every positive fuel. -/
+theorem failingAssertCFG_panics (n : Nat) (s : MachineState) :
+    Sem.run (stepN (n + 1) failingAssertCFG ⟨0⟩ [.bool false]) s
+      = .error (.panic "assertion failed" none) := rfl
+
+/-- The asserts-deleted target returns. -/
+theorem assertElim_failingAssertCFG_returns :
+    ∃ r, Sem.run (stepN 1 (assertElim failingAssertCFG) ⟨0⟩ [.bool false])
+      MachineState.empty = .ok r := ⟨_, rfl⟩
+
+/-- Zero fuel is `outOfFuel`. -/
+theorem stepN_zero_run (cfg : CFG) (pc : BlockId) (args : List Value) (s : MachineState) :
+    Sem.run (stepN 0 cfg pc args) s = .error .outOfFuel := rfl
+
+/-- A program that panics at every positive fuel has exactly one behaviour,
+    that panic. -/
+theorem behaves_of_always_panics (cfg : CFG) (pc : BlockId) (args : List Value)
+    (s : MachineState) (msg : String) (site : Option PanicOutcomeSite)
+    (hPanic : ∀ n, Sem.run (stepN (n + 1) cfg pc args) s = .error (.panic msg site))
+    (o : Outcome) (h : Behaves cfg pc args s o) : o = .panics msg site := by
+  rcases h with ⟨fuel, hO⟩ | ⟨_, hDiv⟩
+  · cases fuel with
+    | zero => rw [stepN_zero_run] at hO; simp [Outcome.ofRun] at hO
+    | succ n => rw [hPanic n] at hO; simp [Outcome.ofRun] at hO; exact hO.symm
+  · have := hDiv 1
+    rw [hPanic 0] at this
+    cases this
+
+/-- **Negative twin: assertion deletion is NOT a behaviour refinement.** The
+    source `failingAssertCFG` panics; the target returns. -/
+theorem assertElim_not_refines : ¬ behaviour_refines assertElim := by
+  intro h
+  have hNoUB : ¬ Behaves failingAssertCFG ⟨0⟩ [.bool false] MachineState.empty .ub := by
+    intro hB
+    have := behaves_of_always_panics _ _ _ _ _ _
+      (fun n => failingAssertCFG_panics n MachineState.empty) _ hB
+    cases this
+  obtain ⟨r, hr⟩ := assertElim_failingAssertCFG_returns
+  have hSrc := h failingAssertCFG ⟨0⟩ [.bool false] MachineState.empty hNoUB
+    (.returns r) (Or.inl ⟨1, by rw [hr]; rfl⟩)
+  have := behaves_of_always_panics _ _ _ _ _ _
+    (fun n => failingAssertCFG_panics n MachineState.empty) _ hSrc
+  cases this
+
+/-- `block_transform_lifts_to_cfg` does NOT hold under `behaviour_refines`:
+    its `.ok`-only block hypothesis admits `dropAsserts`, whose lifting is not
+    a refinement. Use `block_transform_lifts_to_cfg_refines`. -/
+theorem block_transform_lifts_to_cfg_not_refines :
+    ¬ (∀ transform : BasicBlock → BasicBlock,
+        (∀ c : CFG, block_transform_preserving transform c) →
+        behaviour_refines (fun cfg bid => (cfg bid).map transform)) :=
+  fun hLift => assertElim_not_refines (hLift dropAsserts dropAsserts_block_preserving)
+
+/-- A self-loop: block 0 branches to itself. -/
+def loopCFG : CFG := fun bid =>
+  if bid = ⟨0⟩ then some { params := [], body := [], terminator := .Br ⟨0⟩ [] } else none
+
+/-- `loopCFG` runs out of fuel at every fuel, from every state. -/
+theorem loopCFG_diverges (fuel : Nat) (s : MachineState) :
+    Sem.run (stepN fuel loopCFG ⟨0⟩ []) s = .error .outOfFuel := by
+  induction fuel generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    have hStep : ∃ s', Sem.run (stepN (n + 1) loopCFG ⟨0⟩ []) s
+        = Sem.run (stepN n loopCFG ⟨0⟩ []) s' := ⟨_, rfl⟩
+    obtain ⟨s', hs'⟩ := hStep
+    rw [hs']
+    exact ih s'
+
+/-- A terminating, UB-free source: block 0 returns. -/
+def returnCFG : CFG := fun bid =>
+  if bid = ⟨0⟩ then some { params := [], body := [], terminator := .Return [] } else none
+
+/-- `returnCFG` returns at every positive fuel. -/
+theorem returnCFG_returns (n : Nat) (s : MachineState) :
+    ∃ r, Sem.run (stepN (n + 1) returnCFG ⟨0⟩ []) s = .ok r := ⟨_, rfl⟩
+
+/-- **Mutation control: divergence is an observable behaviour.** Replacing a
+    terminating source with a self-loop is not a refinement. A definition
+    weakened back to "every TERMINATING target outcome is a source outcome"
+    would accept this transform vacuously, because the loop never
+    terminates. -/
+theorem loop_not_refines : ¬ behaviour_refines (fun _ => loopCFG) := by
+  intro h
+  have hNoUB : ¬ Behaves returnCFG ⟨0⟩ [] MachineState.empty .ub := by
+    rw [not_behaves_ub_iff]
+    intro fuel msg hRun
+    cases fuel with
+    | zero => rw [stepN_zero_run] at hRun; cases hRun
+    | succ n =>
+      obtain ⟨r, hr⟩ := returnCFG_returns n MachineState.empty
+      rw [hr] at hRun; cases hRun
+  have hSrc := h returnCFG ⟨0⟩ [] MachineState.empty hNoUB .diverges
+    (Or.inr ⟨rfl, fun fuel => loopCFG_diverges fuel MachineState.empty⟩)
+  rcases hSrc with ⟨fuel, hO⟩ | ⟨_, hDiv⟩
+  · exact Outcome.ofRun_ne_diverges _ hO
+  · obtain ⟨r, hr⟩ := returnCFG_returns 0 MachineState.empty
+    rw [hDiv 1] at hr
+    cases hr
+
+/-- A successful `for` over `l1 ++ l2`, whose steps always yield, splits
+    into a successful run over `l1` followed by one over `l2`. -/
+private theorem forIn_append_split {F : Inst → PUnit → Sem (ForInStep PUnit)}
+    (hF : ∀ a s r, Sem.run (F a PUnit.unit) s = .ok r → r.1 = ForInStep.yield PUnit.unit)
+    (l1 l2 : List Inst) (s : MachineState) (r : PUnit × MachineState)
+    (h : Sem.run (forIn (l1 ++ l2) PUnit.unit F) s = .ok r) :
+    ∃ s1, Sem.run (forIn l1 PUnit.unit F) s = .ok (PUnit.unit, s1) ∧
+      Sem.run (forIn l2 PUnit.unit F) s1 = .ok r := by
+  induction l1 generalizing s with
+  | nil => exact ⟨s, rfl, h⟩
+  | cons a as ih =>
+    rw [List.cons_append, List.forIn_cons, sem_run_bind_eq] at h
+    cases hFa : Sem.run (F a PUnit.unit) s with
+    | error e => rw [hFa] at h; cases h
+    | ok v =>
+      rw [hFa] at h
+      obtain ⟨step, s'⟩ := v
+      have hy : step = ForInStep.yield PUnit.unit := hF a s _ hFa
+      subst hy
+      obtain ⟨s1, h1, h2⟩ := ih s' h
+      refine ⟨s1, ?_, h2⟩
+      rw [List.forIn_cons, sem_run_bind_eq, hFa]
+      exact h1
+
+/-- `Sem.lookupValue` of a bound value succeeds without changing state. -/
+theorem lookupValue_run_some (c : ValueId) (s : MachineState) (v : Value)
+    (hv : s.lookupValue c = some v) : Sem.run (Sem.lookupValue c) s = .ok (v, s) := by
+  simp only [Sem.run, Sem.lookupValue, Sem.getState, StateT.run, StateT.get,
+    bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure, hv]
+
+/-- A `CondBr` whose condition is `true` steps exactly like a `Br` to its
+    then-edge. -/
+theorem condBr_run_eq_br (c : ValueId) (target : BlockId) (targetArgs : List ValueId)
+    (elseTarget : BlockId) (elseArgs : List ValueId) (s : MachineState)
+    (hc : s.lookupValue c = some (.bool true)) :
+    Sem.run (stepInst (.CondBr c target targetArgs elseTarget elseArgs)) s
+      = Sem.run (stepInst (.Br target targetArgs)) s := by
+  simp only [stepInst, semCondBr, semBr, sem_run_bind_eq, lookupValue_run_some c s _ hc]
+  rfl
+
+/-- Turn a trailing `Assert c` before a `Br target args` into the branch
+    condition: `CondBr c target args bid params`. The failing edge re-enters
+    the block itself with its own parameters, so a failing assertion becomes
+    a self-loop instead of a panic. Other blocks are unchanged. -/
+def panicToLoopBlock (bid : BlockId) (block : BasicBlock) : BasicBlock :=
+  match block.body.reverse, block.terminator with
+  | .Assert c _ _ :: rpre, .Br target targetArgs =>
+    { block with
+      body := rpre.reverse
+      terminator := .CondBr c target targetArgs bid (block.params.map Prod.fst) }
+  | _, _ => block
+
+/-- `panicToLoop`: apply `panicToLoopBlock` at every block. -/
+def panicToLoop (cfg : CFG) : CFG := fun bid => (cfg bid).map (panicToLoopBlock bid)
+
+/-- On every SUCCESSFUL run the assertion held, so the `CondBr` takes the
+    then-edge exactly as the `Br` did. -/
+theorem panicToLoopBlock_preserving (bid : BlockId) (block : BasicBlock)
+    (args : List Value) (s : MachineState) (result : StepResult × MachineState)
+    (h : Sem.run (stepBlock block args) s = .ok result) :
+    Sem.run (stepBlock (panicToLoopBlock bid block) args) s = .ok result := by
+  unfold panicToLoopBlock
+  split
+  · rename_i c k site rpre target targetArgs hRev hTerm
+    have hBody : block.body = rpre.reverse ++ [.Assert c k site] := by
+      rw [← List.reverse_reverse block.body, hRev, List.reverse_cons]
+    simp only [stepBlock] at h ⊢
+    rw [hBody, hTerm] at h
+    rw [sem_run_bind_eq] at h ⊢
+    cases hP : Sem.run (bindBlockParams block.params args) s with
+    | error e => rw [hP] at h; cases h
+    | ok v =>
+      rw [hP] at h
+      obtain ⟨u, s1⟩ := v
+      simp only at h ⊢
+      rw [sem_run_bind_eq] at h ⊢
+      cases hB : Sem.run (forIn (rpre.reverse ++ [.Assert c k site]) PUnit.unit _) s1 with
+      | error e => rw [hB] at h; cases h
+      | ok w =>
+        rw [hB] at h
+        obtain ⟨s2, h1, h2⟩ := forIn_append_split (by
+          intro a st r hr
+          rw [sem_run_bind_eq] at hr
+          cases hI : Sem.run (stepInst a) st with
+          | error e => rw [hI] at hr; cases hr
+          | ok v =>
+            rw [hI] at hr
+            obtain ⟨ir, st'⟩ := v
+            cases ir with
+            | value x => cases hr; rfl
+            | values xs => cases hr; rfl
+            | terminator sr => cases sr <;> cases hr)
+          rpre.reverse [.Assert c k site] s1 w hB
+        rw [List.forIn_cons, sem_run_bind_eq] at h2
+        simp only [sem_run_bind_eq] at h2
+        cases hA : Sem.run (stepInst (.Assert c k site)) s2 with
+        | error e => rw [hA] at h2; cases h2
+        | ok ir =>
+          obtain ⟨hIr, hc⟩ := stepInst_assert_ok c k site s2 ir hA
+          subst hIr
+          rw [hA] at h2
+          cases h2
+          rw [h1]
+          simp only at h ⊢
+          rw [sem_run_bind_eq] at h ⊢
+          rw [condBr_run_eq_br c target targetArgs bid _ s2 hc]
+          exact h
+  · exact h
+
+/-- The `stepN_block_transform_aux` induction for a block transform that
+    may depend on the block's id. -/
+private theorem stepN_blockAt_transform_aux
+    (transform : BlockId → BasicBlock → BasicBlock) (fuel : Nat)
+    (cfg : CFG) (pc : BlockId) (args : List Value) (s : MachineState)
+    (result : List Value × MachineState)
+    (hBlock : ∀ bid block args s r, cfg bid = some block →
+      Sem.run (stepBlock block args) s = .ok r →
+      Sem.run (stepBlock (transform bid block) args) s = .ok r)
+    (hOk : Sem.run (stepN fuel cfg pc args) s = .ok result) :
+    Sem.run (stepN fuel (fun bid => (cfg bid).map (transform bid)) pc args) s
+      = .ok result := by
+  induction fuel generalizing pc args s with
+  | zero => cases hOk
+  | succ n ih =>
+    simp only [stepN] at hOk ⊢
+    cases hCfg : cfg pc with
+    | none =>
+      simp only [hCfg, Option.map] at hOk ⊢
+      exact hOk
+    | some block =>
+      simp only [hCfg, Option.map] at hOk ⊢
+      rw [sem_run_bind_eq] at hOk ⊢
+      cases hSB : Sem.run (stepBlock block args) s with
+      | error e => rw [hSB] at hOk; cases hOk
+      | ok val =>
+        rw [hSB] at hOk
+        rw [hBlock pc block args s val hCfg hSB]
+        obtain ⟨sr, s'⟩ := val
+        simp only at hOk ⊢
+        cases sr with
+        | Continue nextPc nextArgs => exact ih nextPc nextArgs s' hOk
+        | _ => exact hOk
+
+/-- Equal-fuel preservation implies the weak form. -/
+theorem semantics_preserving_weak_of_preserving (t : CFG → CFG)
+    (h : semantics_preserving t) : semantics_preserving_weak t := by
+  intro cfg pc args s result ⟨fuel, hOk⟩
+  exact ⟨fuel, h cfg pc args s fuel result hOk⟩
+
+/-- `panicToLoop` preserves every returning run at equal fuel. (The rewrite
+    stays inside the block, so the strong form holds as well as the weak
+    one.) -/
+theorem panicToLoop_semantics_preserving : semantics_preserving panicToLoop := by
+  intro cfg pc args s fuel result hOk
+  exact stepN_blockAt_transform_aux panicToLoopBlock fuel cfg pc args s result
+    (fun bid block args s r _ h => panicToLoopBlock_preserving bid block args s r h) hOk
+
+/-- **Mutation control: the old weak notion accepts `panicToLoop`.** It says
+    nothing once the source panics. -/
+theorem panicToLoop_semantics_preserving_weak : semantics_preserving_weak panicToLoop :=
+  semantics_preserving_weak_of_preserving panicToLoop panicToLoop_semantics_preserving
+
+/-- Counter-model source for `panicToLoop`: block 0 asserts its `Bool`
+    parameter and branches to block 1, which returns. Entered with `false`,
+    it panics. -/
+def failingAssertBrCFG : CFG := fun bid =>
+  if bid = ⟨0⟩ then
+    some { params := [(⟨0⟩, .Bool)], body := [.Assert ⟨0⟩ .Unspecified none], terminator := .Br ⟨1⟩ [] }
+  else if bid = ⟨1⟩ then
+    some { params := [], body := [], terminator := .Return [] }
+  else none
+
+/-- The source panics at every positive fuel. -/
+theorem failingAssertBrCFG_panics (n : Nat) (s : MachineState) :
+    Sem.run (stepN (n + 1) failingAssertBrCFG ⟨0⟩ [.bool false]) s
+      = .error (.panic "assertion failed" none) := rfl
+
+/-- The `panicToLoop` target diverges: the failing edge re-enters block 0
+    with `false` forever. -/
+theorem panicToLoop_failingAssertBrCFG_diverges (fuel : Nat) (s : MachineState) :
+    Sem.run (stepN fuel (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false]) s
+      = .error .outOfFuel := by
+  induction fuel generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    have hStep : ∃ s', Sem.run (stepN (n + 1) (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false]) s
+        = Sem.run (stepN n (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false]) s' := ⟨_, rfl⟩
+    obtain ⟨s', hs'⟩ := hStep
+    rw [hs']
+    exact ih s'
+
+/-- **Mutation control: `panicToLoop` is NOT a behaviour refinement.** The
+    source panics and the target diverges. This pins the divergence clause
+    on its own: the source never returns, so no `.ok`-only notion can see the
+    difference. -/
+theorem panicToLoop_not_refines : ¬ behaviour_refines panicToLoop := by
+  intro h
+  have hPanic := fun n => failingAssertBrCFG_panics n MachineState.empty
+  have hNoUB : ¬ Behaves failingAssertBrCFG ⟨0⟩ [.bool false] MachineState.empty .ub := by
+    intro hB
+    cases behaves_of_always_panics _ _ _ _ _ _ hPanic _ hB
+  have hSrc := h failingAssertBrCFG ⟨0⟩ [.bool false] MachineState.empty hNoUB .diverges
+    (Or.inr ⟨rfl, fun fuel => panicToLoop_failingAssertBrCFG_diverges fuel MachineState.empty⟩)
+  cases behaves_of_always_panics _ _ _ _ _ _ hPanic _ hSrc
+
+
+/-- Block 0 is `Unreachable`: UB at every positive fuel. -/
+def unreachableCFG : CFG := fun bid =>
+  if bid = ⟨0⟩ then some { params := [], body := [], terminator := .Unreachable } else none
+
+/-- `unreachableCFG` is UB at every positive fuel. -/
+theorem unreachableCFG_ub (n : Nat) (s : MachineState) :
+    Sem.run (stepN (n + 1) unreachableCFG ⟨0⟩ []) s = .error (.ub "reached unreachable") := rfl
+
+/-- **Mutation control: UB is an outcome of the target too.** Replacing a
+    UB-free source with UB is not a refinement. A definition that dropped
+    `ub` from the target's behaviours would accept it, because a UB run has
+    no other behaviour. -/
+theorem ub_introduction_not_refines : ¬ behaviour_refines (fun _ => unreachableCFG) := by
+  intro h
+  have hNoUB : ¬ Behaves returnCFG ⟨0⟩ [] MachineState.empty .ub := by
+    rw [not_behaves_ub_iff]
+    intro fuel msg hRun
+    cases fuel with
+    | zero => rw [stepN_zero_run] at hRun; cases hRun
+    | succ n =>
+      obtain ⟨r, hr⟩ := returnCFG_returns n MachineState.empty
+      rw [hr] at hRun; cases hRun
+  exact hNoUB (h returnCFG ⟨0⟩ [] MachineState.empty hNoUB .ub
+    (Or.inl ⟨1, by rw [unreachableCFG_ub 0]; rfl⟩))
+
+/-- **Inlining under behaviour refinement, trap half.** Every non-return
+    outcome of the callee body run inline (UB, panic, type error,
+    unsupported, out of fuel) is the Call's outcome too, verbatim. Together
+    with `inlining_preserving` (the return half), the frame-discipline form
+    transfers every behaviour of the inline run to the Call. The arguments
+    must be poison-free: poison may not cross a call boundary (roadmap
+    WS2.10), so a poison argument is the Call's own UB, not the body's. -/
+theorem inlining_error_transfer
+    (ctx : EvalContext) (fuel callDepth : Nat)
+    (calleeId : FuncId) (callee : EvalFunction) (callArgs : List Value)
+    (s : MachineState) (e : SemError)
+    (hFn : ctx.functions calleeId = some callee)
+    (hAbi : callee.body.abi = none)
+    (hArity : callArgs.length = callee.body.paramTys.length)
+    (hArgsClean : callArgs.any Value.isPoison = false)
+    (hInline : Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth
+          callee.cfg callee.entryBlock callArgs)
+        { s with locals := ValueMap.empty, nextValueId := 0 } = .error e) :
+    Sem.run (runCallReq ctx fuel callDepth calleeId callArgs) s = .error e := by
+  have hget : ∀ st : MachineState, Sem.run Sem.getState st = .ok (st, st) :=
+    fun _ => rfl
+  have hset : ∀ st st' : MachineState, Sem.run (Sem.setState st') st = .ok ((), st') :=
+    fun _ _ => rfl
+  unfold runCallReq
+  simp only [hFn, hAbi, requireUntypedAbi_none, checkCallArity_ok callArgs callee.body.paramTys hArity,
+    Sem.run_bind, Sem.run_pure, hget, hset, Except.bind,
+    Sem.rejectPoisonValues_run_ok callArgs _ s hArgsClean, hInline]
+
+/-- The converse of `inlining_error_transfer`: a failing Call (on poison-free
+    arguments) either failed in the callee body with the same error, or the
+    body returned with the wrong number of values or with a poison value
+    (roadmap WS2.10), which the Call refuses. The Call adds no other
+    outcome when the callee has no typed ABI descriptor. -/
+theorem inlining_error_cases
+    (ctx : EvalContext) (fuel callDepth : Nat)
+    (calleeId : FuncId) (callee : EvalFunction) (callArgs : List Value)
+    (s : MachineState) (e : SemError)
+    (hFn : ctx.functions calleeId = some callee)
+    (hAbi : callee.body.abi = none)
+    (hArity : callArgs.length = callee.body.paramTys.length)
+    (hArgsClean : callArgs.any Value.isPoison = false)
+    (hCall : Sem.run (runCallReq ctx fuel callDepth calleeId callArgs) s = .error e) :
+    Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth callee.cfg callee.entryBlock callArgs)
+        { s with locals := ValueMap.empty, nextValueId := 0 } = .error e ∨
+    ∃ retVals sCalleeEnd,
+      Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth callee.cfg callee.entryBlock callArgs)
+          { s with locals := ValueMap.empty, nextValueId := 0 } = .ok (retVals, sCalleeEnd) ∧
+      (retVals.length ≠ callee.body.returnTys.length ∨
+        retVals.any Value.isPoison = true) := by
+  cases hIn : Sem.run (stepNWithContext (ctx.forFunction callee) fuel callDepth callee.cfg callee.entryBlock callArgs)
+      { s with locals := ValueMap.empty, nextValueId := 0 } with
+  | error e' =>
+    left
+    rw [inlining_error_transfer ctx fuel callDepth calleeId callee callArgs s e' hFn hAbi hArity
+      hArgsClean hIn] at hCall
+    exact congrArg Except.error (Except.error.inj hCall)
+  | ok v =>
+    right
+    obtain ⟨retVals, sCalleeEnd⟩ := v
+    refine ⟨retVals, sCalleeEnd, rfl, ?_⟩
+    by_cases hRet : retVals.length = callee.body.returnTys.length
+    · right
+      cases hp : retVals.any Value.isPoison with
+      | true => rfl
+      | false =>
+        rw [runCallReq_ok_of_inline ctx fuel callDepth calleeId callee callArgs s sCalleeEnd
+          retVals hFn hAbi hArity hRet hArgsClean hp hIn] at hCall
+        cases hCall
+    · exact Or.inl hRet
+
+
+/-- The `.ok`-only notion does not imply behaviour refinement. -/
+theorem semantics_preserving_not_imp_refines :
+    ¬ (∀ t, semantics_preserving t → behaviour_refines t) :=
+  fun h => assertElim_not_refines (h assertElim assertElim_semantics_preserving)
+
+/-- Nor does the weak `.ok`-only notion. -/
+theorem semantics_preserving_weak_not_imp_refines :
+    ¬ (∀ t, semantics_preserving_weak t → behaviour_refines t) :=
+  fun h => panicToLoop_not_refines (h panicToLoop panicToLoop_semantics_preserving_weak)
+
+-- -----------------------------------------------------------------
+-- Review counter-models (WS8.15 adversarial review)
+-- -----------------------------------------------------------------
+
+/-- `loopCFG` never returns, from ANY entry block, arguments or state: a
+    missing block and an arity mismatch are type errors, and block 0 with no
+    arguments loops (`loopCFG_diverges`). -/
+theorem loopCFG_never_returns (fuel : Nat) (pc : BlockId) (args : List Value)
+    (s : MachineState) (r : List Value × MachineState) :
+    Sem.run (stepN fuel loopCFG pc args) s ≠ .ok r := by
+  cases args with
+  | nil =>
+    by_cases hpc : pc = ⟨0⟩
+    · subst hpc
+      rw [loopCFG_diverges fuel s]
+      intro impossible; cases impossible
+    · cases fuel with
+      | zero => intro impossible; cases impossible
+      | succ n =>
+        have hNone : loopCFG pc = none := by simp [loopCFG, hpc]
+        simp only [stepN, hNone]
+        intro impossible; cases impossible
+  | cons a as =>
+    cases fuel with
+    | zero => intro impossible; cases impossible
+    | succ n =>
+      by_cases hpc : pc = ⟨0⟩
+      · subst hpc
+        intro impossible; cases impossible
+      · have hNone : loopCFG pc = none := by simp [loopCFG, hpc]
+        simp only [stepN, hNone]
+        intro impossible; cases impossible
+
+open Classical in
+/-- `divToRet`: a program that never returns, from any input, is replaced by
+    `returnCFG`; every other program is kept. This is the counter-model of
+    roadmap row `core-arch-0916-a/24`: turning a divergent source into a
+    returning target. -/
+noncomputable def divToRet (cfg : CFG) : CFG :=
+  if ∀ fuel pc args s r, Sem.run (stepN fuel cfg pc args) s ≠ .ok r then returnCFG else cfg
+
+/-- **Counter-model: the `.ok`-only notion accepts divergence-to-return.** It
+    holds vacuously on every rewritten program, because such a program never
+    returns. -/
+theorem divToRet_semantics_preserving : semantics_preserving divToRet := by
+  intro cfg pc args s fuel result hOk
+  by_cases hc : ∀ fuel pc args s r, Sem.run (stepN fuel cfg pc args) s ≠ .ok r
+  · exact absurd hOk (hc fuel pc args s result)
+  · simp only [divToRet, if_neg hc]
+    exact hOk
+
+/-- **Counter-model: divergence-to-return is NOT a behaviour refinement.** The
+    UB-free, diverging source `loopCFG` becomes `returnCFG`, which returns.
+    This catches a definition that treats a diverging source as licensing
+    every target behaviour (as if divergence were UB). -/
+theorem divToRet_not_refines : ¬ behaviour_refines divToRet := by
+  intro h
+  have hRew : divToRet loopCFG = returnCFG := by
+    simp only [divToRet]
+    rw [if_pos (fun fuel pc args s r => loopCFG_never_returns fuel pc args s r)]
+  have hNoUB : ¬ Behaves loopCFG ⟨0⟩ [] MachineState.empty .ub := by
+    rw [not_behaves_ub_iff]
+    intro fuel msg hRun
+    rw [loopCFG_diverges fuel MachineState.empty] at hRun
+    cases hRun
+  obtain ⟨r, hr⟩ := returnCFG_returns 0 MachineState.empty
+  have hSrc := h loopCFG ⟨0⟩ [] MachineState.empty hNoUB (.returns r)
+    (Or.inl ⟨1, by rw [hRew, hr]; rfl⟩)
+  rcases hSrc with ⟨fuel, hO⟩ | ⟨hEq, _⟩
+  · rw [loopCFG_diverges fuel MachineState.empty] at hO
+    cases hO
+  · cases hEq
+
+/-- **Counter-model: trap classes are distinguished.** Replacing a panicking
+    source with the empty CFG (a type error: undefined block) is not a
+    refinement. A definition that collapsed every trap into one class would
+    accept it. -/
+theorem trapClass_not_refines : ¬ behaviour_refines (fun _ _ => none) := by
+  intro h
+  have hPanic := fun n => failingAssertCFG_panics n MachineState.empty
+  have hNoUB : ¬ Behaves failingAssertCFG ⟨0⟩ [.bool false] MachineState.empty .ub := by
+    intro hB
+    cases behaves_of_always_panics _ _ _ _ _ _ hPanic _ hB
+  have hSrc := h failingAssertCFG ⟨0⟩ [.bool false] MachineState.empty hNoUB .typeError
+    (Or.inl ⟨1, rfl⟩)
+  cases behaves_of_always_panics _ _ _ _ _ _ hPanic _ hSrc
+
+/-- Rewrite an `Unreachable` terminator into `Return []`. -/
+def unreachableToReturnBlock (block : BasicBlock) : BasicBlock :=
+  match block.terminator with
+  | .Unreachable => { block with terminator := .Return [] }
+  | _ => block
+
+/-- `unreachableToReturn`: rewrite every `Unreachable` terminator into
+    `Return []`. Reaching `Unreachable` is UB, so this exploits UB. -/
+def unreachableToReturn (cfg : CFG) : CFG := fun bid => (cfg bid).map unreachableToReturnBlock
+
+/-- A block's run under `unreachableToReturnBlock` either equals the source
+    run, or the source reached `Unreachable` (`Stuck`) and the target returns
+    `[]` from the same state. -/
+theorem stepBlock_unreachableToReturn (block : BasicBlock) (args : List Value)
+    (s : MachineState) :
+    Sem.run (stepBlock (unreachableToReturnBlock block) args) s
+        = Sem.run (stepBlock block args) s ∨
+      ∃ s2, Sem.run (stepBlock block args) s = .ok (.Stuck, s2) ∧
+        Sem.run (stepBlock (unreachableToReturnBlock block) args) s = .ok (.Ret [], s2) := by
+  unfold unreachableToReturnBlock
+  split
+  · rename_i hT
+    simp only [stepBlock]
+    rw [sem_run_bind_eq, sem_run_bind_eq]
+    cases hP : Sem.run (bindBlockParams block.params args) s with
+    | error e => left; rfl
+    | ok v =>
+      obtain ⟨u, s1⟩ := v
+      simp only
+      rw [sem_run_bind_eq, sem_run_bind_eq]
+      cases hB : Sem.run (forIn block.body PUnit.unit _) s1 with
+      | error e => left; rfl
+      | ok w =>
+        obtain ⟨u2, s2⟩ := w
+        right
+        refine ⟨s2, ?_, ?_⟩
+        · simp only [hT]
+          rfl
+        · rfl
+  · left; rfl
+
+/-- At a fuel where the source is not UB, the `unreachableToReturn` target
+    runs exactly like the source: a UB-free run never reaches `Unreachable`. -/
+private theorem stepN_unreachableToReturn_aux (fuel : Nat)
+    (cfg : CFG) (pc : BlockId) (args : List Value) (s : MachineState)
+    (hNoUB : ∀ msg, Sem.run (stepN fuel cfg pc args) s ≠ .error (.ub msg)) :
+    Sem.run (stepN fuel (unreachableToReturn cfg) pc args) s
+      = Sem.run (stepN fuel cfg pc args) s := by
+  induction fuel generalizing pc args s with
+  | zero => rfl
+  | succ n ih =>
+    simp only [stepN, unreachableToReturn] at hNoUB ⊢
+    cases hCfg : cfg pc with
+    | none => simp only [hCfg, Option.map]
+    | some block =>
+      simp only [hCfg, Option.map] at hNoUB ⊢
+      rw [sem_run_bind_eq] at hNoUB ⊢
+      rw [sem_run_bind_eq]
+      rcases stepBlock_unreachableToReturn block args s with hEq | ⟨s2, hSrc, _⟩
+      · rw [hEq]
+        cases hSB : Sem.run (stepBlock block args) s with
+        | error e => rfl
+        | ok val =>
+          obtain ⟨sr, s'⟩ := val
+          rw [hSB] at hNoUB
+          simp only at hNoUB ⊢
+          cases sr with
+          | Continue nextPc nextArgs => exact ih nextPc nextArgs s' hNoUB
+          | _ => rfl
+      · rw [hSrc] at hNoUB
+        exact absurd rfl (hNoUB "reached unreachable")
+
+/-- **Positive: UB is top.** Rewriting `Unreachable` into a return is a
+    behaviour refinement: the rewrite changes only runs that are UB, and a UB
+    source licenses every target behaviour. This is the ruling for the
+    `core-arch-0916-b/46` "UB-to-return" shape: it is ADMITTED by design, while
+    trap-to-return (`assertElim_not_refines`) and divergence-to-return
+    (`divToRet_not_refines`) are refused. A definition that dropped the
+    UB-freeness premise would refuse this legitimate transform. -/
+theorem unreachableToReturn_refines : behaviour_refines unreachableToReturn := by
+  intro cfg pc args s hNoUB o h
+  have hNoUB' := (not_behaves_ub_iff cfg pc args s).mp hNoUB
+  exact behaves_congr _ _ pc args s
+    (fun fuel => stepN_unreachableToReturn_aux fuel cfg pc args s (hNoUB' fuel)) o h
+
+/-- The rewrite is not vacuous: the UB source `unreachableCFG` becomes a
+    returning program. -/
+theorem unreachableToReturn_unreachableCFG_returns :
+    ∃ r, Sem.run (stepN 1 (unreachableToReturn unreachableCFG) ⟨0⟩ [])
+      MachineState.empty = .ok r := ⟨_, rfl⟩
+
+-- =================================================================
+-- Amendment P: the panic site (wire v54, SPEC_RATIFICATIONS §19.1)
+-- =================================================================
+
+/-- **Elision soundness.** A `true` check steps identically whatever its kind
+    and site: the operands, the location and the entry are read only on
+    failure, so a proof that the check passes licenses its removal whatever
+    panic it would have been. -/
+theorem assert_true_step_independent_of_kind_and_site (c : ValueId) (k k' : AssertKind)
+    (site site' : Option PanicSite) (s : MachineState)
+    (hc : s.lookupValue c = some (.bool true)) :
+    Sem.run (stepInst (.Assert c k site)) s = Sem.run (stepInst (.Assert c k' site')) s := by
+  simp only [stepInst, sem_run_bind_eq, lookupValue_run_some c s _ hc] <;> rfl
+
+/-- **`AssertInvoke` is a sited `Assert` followed by `Br`** under stepping
+    (the panic=abort projection): a passing check continues to its normal
+    edge exactly as `Br normalDest normalArgs` does, a failing one is the
+    sited panic, and the unwind edge is never taken. -/
+theorem assertInvoke_is_sited_assert_then_br (c : ValueId) (k : AssertKind)
+    (site : PanicSite) (nd : BlockId) (na : List ValueId) (ud : BlockId)
+    (s : MachineState) :
+    Sem.run (stepInst (.AssertInvoke c k site nd na ud)) s
+      = Sem.run (stepInst (.Assert c k (some site)) >>= fun _ => stepInst (.Br nd na)) s := by
+  rw [sem_run_bind_eq (stepInst (.Assert c k (some site)))]
+  simp only [stepInst]
+  rw [sem_run_bind_eq, sem_run_bind_eq]
+  cases hL : Sem.run (Sem.lookupValue c) s with
+  | error e => rfl
+  | ok v =>
+    obtain ⟨x, s1⟩ := v
+    dsimp only
+    rw [sem_run_bind_eq, sem_run_bind_eq]
+    cases hR : Sem.run (Sem.rejectPartial x "Assert") s1 with
+    | error e => rfl
+    | ok w =>
+      obtain ⟨u, s2⟩ := w
+      dsimp only
+      cases x with
+      | bool b =>
+        cases b with
+        | true => rfl
+        | false =>
+          cases hF : Sem.run (semAssertFail k (some site) : Sem InstrResult) s2 with
+          | ok r => exact absurd hF (semAssertFail_run_not_ok k (some site) s2 r)
+          | error e => rfl
+      | _ => rfl
+
+/-- Retarget every sited `Assert`'s entry to `entry'`: a transform that keeps
+    every check and its kind and changes only WHICH entry a failure calls. -/
+def retargetSitesBlock (entry' : FuncId) (block : BasicBlock) : BasicBlock :=
+  { block with body := block.body.map fun i => match i with
+      | .Assert c k (some site) => .Assert c k (some { site with entry := entry' })
+      | i => i }
+
+/-- `siteRewrite`: retarget every panic site to function 1. -/
+def siteRewrite (cfg : CFG) : CFG := fun bid => (cfg bid).map (retargetSitesBlock ⟨1⟩)
+
+/-- Counter-model source for `siteRewrite`: block 0 asserts its `Bool`
+    parameter with the site (entry 0, location global 0) and returns.
+    Entered with `false`, it panics with that site. -/
+def failingSitedAssertCFG : CFG := fun bid =>
+  if bid = ⟨0⟩ then
+    some { params := [(⟨0⟩, .Bool)],
+           body := [.Assert ⟨0⟩ .Unspecified (some ⟨⟨0⟩, .global ⟨0⟩⟩)],
+           terminator := .Return [] }
+  else none
+
+/-- The source panics at every positive fuel, naming entry 0. -/
+theorem failingSitedAssertCFG_panics (n : Nat) (s : MachineState) :
+    Sem.run (stepN (n + 1) failingSitedAssertCFG ⟨0⟩ [.bool false]) s
+      = .error (.panic "assertion failed" (some ⟨⟨0⟩, .global ⟨0⟩ 0⟩)) := rfl
+
+/-- The rewritten target panics at every positive fuel, naming entry 1. -/
+theorem siteRewrite_failingSitedAssertCFG_panics (n : Nat) (s : MachineState) :
+    Sem.run (stepN (n + 1) (siteRewrite failingSitedAssertCFG) ⟨0⟩ [.bool false]) s
+      = .error (.panic "assertion failed" (some ⟨⟨1⟩, .global ⟨0⟩ 0⟩)) := rfl
+
+/-- **Rewriting a failing assert's site is not a behaviour refinement.** The
+    check, its kind and its message are unchanged; only the entry differs,
+    and the panic outcome names it. -/
+theorem siteRewrite_not_refines : ¬ behaviour_refines siteRewrite := by
+  intro h
+  have hPanic := fun n => failingSitedAssertCFG_panics n MachineState.empty
+  have hNoUB : ¬ Behaves failingSitedAssertCFG ⟨0⟩ [.bool false] MachineState.empty .ub := by
+    intro hB
+    cases behaves_of_always_panics _ _ _ _ _ _ hPanic _ hB
+  have hSrc := h failingSitedAssertCFG ⟨0⟩ [.bool false] MachineState.empty hNoUB
+    (.panics "assertion failed" (some ⟨⟨1⟩, .global ⟨0⟩ 0⟩)) (Or.inl ⟨1, rfl⟩)
+  have := behaves_of_always_panics _ _ _ _ _ _ hPanic _ hSrc
+  simp at this
+
+/-- The site-free projection of a run: the pre-amendment-P panic outcome,
+    which carried no site. -/
+def eraseSite : Except SemError (List Value × MachineState) →
+    Except SemError (List Value × MachineState)
+  | .error (.panic msg _) => .error (.panic msg none)
+  | r => r
+
+/-- **Mutation control: a site-free panic outcome cannot see the rewrite.**
+    Erasing the site, the source and the rewritten target run identically, so
+    `siteRewrite_not_refines` rests on the outcome naming the site. -/
+theorem siteRewrite_invisible_without_sites (n : Nat) (s : MachineState) :
+    eraseSite (Sem.run (stepN (n + 1) failingSitedAssertCFG ⟨0⟩ [.bool false]) s)
+      = eraseSite (Sem.run (stepN (n + 1) (siteRewrite failingSitedAssertCFG) ⟨0⟩
+          [.bool false]) s) := by
+  rw [failingSitedAssertCFG_panics, siteRewrite_failingSitedAssertCFG_panics]
+  rfl
 
 -- =================================================================
 -- Future work
@@ -2100,9 +3181,28 @@ theorem inlining_preserving
    `inlining_preserving` above proves the frame-discipline form (Call ≡
    inline execution of the callee body on a fresh frame).  The residual is
    the splice form — rewriting the caller's CFG to contain the callee's
-   blocks so they execute in the caller's SSA id space.  That requires a
+   blocks so they execute in the caller's SSA id space. The caller's source
+   type table must also be extended or rederived for those new declarations;
+   installing the callee's table does not model a caller-CFG splice. That requires a
    value-id/block-id renaming function and a `stepInst`-equivariance lemma
-   under renaming (per instruction), which the model does not yet have.
+   under renaming (per instruction), which the model does not yet have.  The
+   renaming is dynamic as well as static: a callee frame starts with empty
+   locals and `nextValueId := 0`, and `bindFresh` numbers results from that
+   counter, so a spliced body would number them from the caller's counter.
+   The behaviour-level statement the splice form must refine is
+   `inlining_behaves_iff` (`TransformRefinementCtx.lean`).
+
+5. **Function-table transforms:**
+   `program_refines` (`TransformRefinementCtx.lean`) is stated for a context
+   transform, but lifting a CFG transform over every function of the context
+   is not proved. Constant lowering is now total and uses only the target
+   model and definition tables; `constValueAtWithDefs_mapFunctionCFGs` and
+   `stepInstWithContext_const_withFunctions` prove function-table independence
+   for the complete constant result and instruction state transition. The
+   contextual-instruction result is now extended to every instruction by
+   `stepInstWithContext_mapFunctionCFGs`, including closure header checks.
+   The remaining lift needs recursive callee-body and control-flow preservation;
+   local instruction equality alone grants no whole-program refinement.
 -/
 
 end TrustIr

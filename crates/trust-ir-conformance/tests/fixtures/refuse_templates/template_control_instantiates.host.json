@@ -1,0 +1,31 @@
+{
+  "structs": [],
+  "enums": [],
+  "types": [],
+  "arguments": [
+    {
+      "Type": "U32"
+    }
+  ],
+  "holes": [],
+  "header": {
+    "symbol": "drop_u32",
+    "linkage": "Internal",
+    "visibility": "Default",
+    "calling_conv": "Rust",
+    "attrs": {
+      "readonly": false,
+      "readnone": false,
+      "inlinehint": false,
+      "cold": false,
+      "params": [],
+      "naked": false,
+      "target_features": []
+    },
+    "display_path": "drop::u32",
+    "body_gate": "Ungated"
+  },
+  "destructors": [],
+  "tuple_layouts": [],
+  "tamper": false
+}

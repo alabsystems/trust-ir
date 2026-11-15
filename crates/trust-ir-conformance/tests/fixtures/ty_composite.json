@@ -157,12 +157,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [
@@ -287,7 +295,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_SEQ",
@@ -307,7 +318,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_ARRAY",
@@ -330,7 +344,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_SET",
@@ -353,7 +370,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_REC",
@@ -379,7 +399,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_CLOSURE",
@@ -404,7 +427,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_FNDEF",
@@ -417,7 +443,10 @@
       },
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     },
     {
       "name": "G_PHANTOM",
@@ -426,7 +455,10 @@
       "initializer": "PhantomData",
       "linkage": "Internal",
       "tls": null,
-      "align": null
+      "align": null,
+      "section": null,
+      "visibility": "Default",
+      "retained": false
     }
   ],
   "func_types": [
@@ -518,5 +550,12 @@
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

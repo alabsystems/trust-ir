@@ -1,0 +1,50 @@
+{
+  "structs": [
+    {
+      "id": 100,
+      "name": "Unsized",
+      "fields": [
+        {
+          "name": "x",
+          "ty": {
+            "Struct": 100
+          },
+          "offset": null
+        }
+      ],
+      "size": null,
+      "align": null,
+      "repr": "Rust"
+    }
+  ],
+  "enums": [],
+  "types": [],
+  "arguments": [
+    {
+      "Type": {
+        "Struct": 100
+      }
+    }
+  ],
+  "holes": [],
+  "header": {
+    "symbol": "identity_u64",
+    "linkage": "Internal",
+    "visibility": "Default",
+    "calling_conv": "Rust",
+    "attrs": {
+      "readonly": false,
+      "readnone": false,
+      "inlinehint": false,
+      "cold": false,
+      "params": [],
+      "naked": false,
+      "target_features": []
+    },
+    "display_path": "identity::u64",
+    "body_gate": "Ungated"
+  },
+  "destructors": [],
+  "tuple_layouts": [],
+  "tamper": false
+}

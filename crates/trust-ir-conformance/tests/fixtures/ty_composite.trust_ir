@@ -1,7 +1,7 @@
 ; TrustIr text format v1
 module "ty_composite"
 
-struct @Point { i32, f64 } size=16 align=8 id=0
+struct @Point { a: i32 @0, b: f64 @8 } size=16 align=8 id=0
 
 enum @Maybe { Some(i64), None } id=0
 

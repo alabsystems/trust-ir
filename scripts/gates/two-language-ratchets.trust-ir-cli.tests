@@ -1,0 +1,6 @@
+# Gate 11 (CLI half): the two-language rows that execute the real `trust-ir`
+# binary (CARGO_BIN_EXE_trust-ir), checked against the same RATCHETS.tsv
+# (target `cli`). Gate 3 also runs every trust-ir-cli test, but only when the
+# CLI binary builds; gate 11 runs these rows unconditionally, as WS8.6 names.
+two_language_cli  # WS8.6: linked-run and CLI-linker rows (cli rows)
+cli_dependencies  # Actual-module rooted census preserves source IDs and refuses unresolved references without claiming validation

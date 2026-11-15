@@ -18,29 +18,28 @@
 //! cleanly, a real soundness guard has regressed.
 //!
 //! TOOLCHAIN: like `real_lowering_acceptance.rs`, the lowering reads
-//! `tcx.thir_body` via `rustc_private`, so it MUST run under the trust stage1
-//! rustc with the matching `DYLD_LIBRARY_PATH`. The test discovers the stage1
-//! root from the `RUSTC` env var (set by the build recipe) or the canonical build
-//! path; if NO stage1 toolchain is found it SKIPS LOUDLY rather than failing
-//! spuriously. Whenever the toolchain IS present, an assertion failure here is a
-//! hard test failure (a genuine soundness gate).
+//! `tcx.thir_body` via `rustc_private`, so it MUST run under the ABI-matching
+//! Trust compiler (`RUSTC`, else `trustc` on PATH) with its sysroot's
+//! `rustc_driver` (`support::trust_toolchain`). If that compiler is missing or
+//! mismatched the test FAILS: it used to SKIP (and pass), which left this
+//! soundness gate green over nothing on the installed toolchain.
 
 #![feature(rustc_private)]
 
 use std::path::Path;
 
 mod support;
-use support::{artifact_only_driver_command, find_stage1_root};
+use support::{artifact_only_driver_command, trust_toolchain, TrustToolchain};
 
 /// Run the built frontend binary on the NEGATIVE fixture with `--target-fn name`
-/// under the stage1 toolchain. Returns combined stdout+stderr.
-fn run_target_fn(stage1: &Path, name: &str) -> String {
+/// under the linked Trust toolchain. Returns combined stdout+stderr.
+fn run_target_fn(toolchain: &TrustToolchain, name: &str) -> String {
     let bin = env!("CARGO_BIN_EXE_trust_ir_frontend");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("negative_corpus.rs");
-    let mut cmd = artifact_only_driver_command(bin, stage1);
+    let mut cmd = artifact_only_driver_command(bin, toolchain);
     cmd.arg(&fixture);
     cmd.arg("--target-fn");
     cmd.arg(name);
@@ -62,21 +61,11 @@ struct NegShape {
 /// The success markers the driver prints ONLY when a fn lowered cleanly. If ANY
 /// appears for a fixture fn, a soundness guard has regressed (the unsound shape
 /// silently lowered).
-const SUCCESS_MARKERS: &[&str] =
-    &["DIFFERENTIAL", "ALL MATCH", "emitted "];
+const SUCCESS_MARKERS: &[&str] = &["DIFFERENTIAL", "ALL MATCH", "emitted "];
 
 #[test]
 fn negative_corpus_every_unsound_shape_bails_loudly() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP negative_lowering: no stage1 rustc toolchain found \
-             (set RUSTC=<stage1>/bin/rustc, or place it at \
-             $HOME/trust/build/aarch64-apple-darwin/stage1). \
-             This is the fail-loud SOUNDNESS-guard regression gate; it is being \
-             skipped only because the rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     // One entry per UNSOUND shape. Each MUST bail with `LOWERING FAILED`, and the
     // bail message must contain `bail_substr` (the signature of its SPECIFIC
@@ -110,7 +99,8 @@ fn negative_corpus_every_unsound_shape_bails_loudly() {
             // (HeapAlloc + tag Store) but bails loud on the tuple field, the still-
             // unsupported construction-side aggregate case.
             target_fn: "neg_construct_variant",
-            guard: "lower_enum_variant_construction (inline-aggregate payload CONSTRUCTION — deferred)",
+            guard:
+                "lower_enum_variant_construction (inline-aggregate payload CONSTRUCTION — deferred)",
             bail_substr: "an inline-aggregate (tuple/array/struct) payload has no",
         },
         NegShape {
@@ -148,7 +138,7 @@ fn negative_corpus_every_unsound_shape_bails_loudly() {
 
     let mut bailed = 0usize;
     for shape in &shapes {
-        let out = run_target_fn(&stage1, shape.target_fn);
+        let out = run_target_fn(&toolchain, shape.target_fn);
 
         // The driver MUST have found the target fn (else the test proves nothing).
         assert!(

@@ -7,11 +7,8 @@
 -- Reference: designs/2026-04-19-binding-frames-lean-semantics.md
 -- Issue:     TrustIr#32 (companion to #30 R4; ty supremacy)
 --
--- Binding frames are typed heterogeneous records used to lower
--- quantifier constructs (bounded iteration over sets/sequences). The
--- four instructions in this file are SSA-pure with one exception: we
--- mark CloseFrame as side-effecting for DCE purposes, mirroring Rust
--- has_side_effects. The denotation itself is a no-op.
+-- Each snapshot retains its runtime lineage. Closing any handle closes
+-- every snapshot of that lineage, while functional slot updates stay local.
 
 import TrustIr.Inst
 import TrustIr.Semantics.Monad
@@ -19,30 +16,13 @@ import TrustIr.Semantics.Monad
 namespace TrustIr
 
 /-!
-# Binding-frame Semantics
+# Binding-frame semantics
 
-## Overview
-
-A binding frame is a typed heterogeneous record whose slots are
-addressed by natural-number index. Frame values live in SSA registers
-(not memory), and updates are functional: each BindSlot returns a
-fresh frame handle.
-
-## Value representation
-
-Frame values use the Value.frame constructor (List Value). Slot k is
-the k-th element of the list. The constructor is nominally distinct
-from Value.aggregate even though both carry List Value -- this prevents
-aggregates from flowing into frame-only instructions (and vice versa)
-at the step-relation layer, mirroring the Rust-side validation that
-forbids Store of a BindingFrame to memory.
-
-## Scope discipline
-
-The dominator-LIFO nesting of OpenFrame / CloseFrame is a Rust-side
-validation property. In the denotation, CloseFrame is a no-op: the SSA
-value remains reachable (looking it up after CloseFrame is ill-formed
-IR, caught by validation, not by the semantics).
+OpenFrame allocates a fresh lineage and a poison-initialized slot snapshot.
+BindSlot returns a new snapshot with the same lineage. LoadSlot reads that
+handle's own snapshot. CloseFrame removes the lineage from the open table.
+Copy, select and branch argument transport retain the identity in Value.frame.
+The monotone lineage counter is independent of SSA ids and survives calls.
 -/
 
 -- =================================================================
@@ -54,82 +34,85 @@ IR, caught by validation, not by the semantics).
     frame or the slot index is out of bounds. -/
 def bindSlot (v : Value) (slot : Nat) (newVal : Value) : Option Value :=
   match v with
-  | .frame slots =>
-    if slot < slots.length then some (.frame (slots.set slot newVal))
+  | .frame lineage slots =>
+    if slot < slots.length then some (.frame lineage (slots.set slot newVal))
     else none
   | _ => none
 
 /-- Read slot slot from a binding frame. Returns none if the value is
-    not a frame or the slot is out of bounds (via List.get?). -/
+    not a frame or the slot is out of bounds (via optional list indexing). -/
 def loadSlot (v : Value) (slot : Nat) : Option Value :=
   match v with
-  | .frame slots => slots.get? slot
+  | .frame _ slots => trustIrListGet? slots slot
   | _ => none
 
 /-- Build the initial frame for an OpenFrame: every slot is set to
     Value.undef with the slot's declared type. -/
-def initFrame (slots : List BindingSlot) : Value :=
-  .frame (slots.map (fun s => Value.undef s.ty))
+def initFrame (lineage : Nat) (slots : List BindingSlot) : Value :=
+  .frame lineage (slots.map (fun s => Value.undef s.ty))
 
 -- =================================================================
 -- Instruction semantics
 -- =================================================================
 
-/-- Evaluate an OpenFrame instruction.
-    Allocates a fresh frame handle; each slot initialised to
-    Value.undef at its declared Ty. This mirrors LLVM-style undef
-    semantics: a LoadSlot before a BindSlot yields undef rather than a
-    type error.
+/-- Update only the runtime frame table and counter. -/
+def Sem.setFrameState (openLineages : List Nat) (nextLineage : Nat) : Sem Unit := do
+  let state ← Sem.getState
+  Sem.setState { state with openFrameLineages := openLineages, nextFrameLineage := nextLineage }
 
-    Mirrors Rust Inst::OpenFrame. -/
+/-- Handle inspection rejects poison before attempting frame classification. -/
+def Sem.frameHandle (frameId : ValueId) (op : String) : Sem (Nat × List Value) := do
+  let value ← Sem.lookupValue frameId
+  Sem.rejectPartial value "frame handle use"
+  match value with
+  | .frame lineage slots => pure (lineage, slots)
+  | _ => Sem.throwTypeError s!"{op}: operand is not a frame"
+
+/-- Runtime frame-lineage width. The exponent remains a computation in compiled code, as `Sem.addrBits`
+does for pointer casts. Folding the literal `2^64` into a closed bignum stores
+uninitialized MPZ padding in Lean 4.8 `.olean` files. The named exponent is
+definitionally 64; the checked UInt64 allocation bound is unchanged. -/
+@[simp, noinline] def Sem.frameLineageBits : Nat := 64
+
+/-- Mint a lineage before binding its initial snapshot. Match Rust's checked
+UInt64 increment: the maximum counter value cannot be allocated. -/
 def semOpenFrame (def_ : BindingFrameDef) : Sem ValueId := do
-  Sem.bindFresh (initFrame def_.slots)
+  let state ← Sem.getState
+  if state.nextFrameLineage < 2 ^ Sem.frameLineageBits - 1 then
+    Sem.setFrameState (state.nextFrameLineage :: state.openFrameLineages) (state.nextFrameLineage+1)
+    Sem.bindFresh (initFrame state.nextFrameLineage def_.slots)
+  else Sem.throwUB "OpenFrame: frame id overflow"
 
-/-- Evaluate a BindSlot instruction.
-    Functional update: returns a fresh frame handle whose chosen slot
-    has been replaced by the new value. The input handle is still
-    valid (SSA form).
+/-- Check liveness before reading the value operand, then make a functional
+snapshot in the same lineage. The original snapshot remains unchanged. -/
+def semBindSlot (frameId : ValueId) (slot : Nat) (valueId : ValueId) : Sem ValueId := do
+  let (lineage, slots) ← Sem.frameHandle frameId "BindSlot"
+  let state ← Sem.getState
+  if state.openFrameLineages.contains lineage then
+    let value ← Sem.lookupValue valueId
+    if slot < slots.length then Sem.bindFresh (.frame lineage (slots.set slot value))
+    else Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots"
+  else Sem.throwUB "BindSlot: frame is not open"
 
-    Errors:
-    - UB if the slot is out of bounds for the frame.
-    - TypeError if the operand is not a frame. -/
-def semBindSlot (frameId : ValueId) (slot : Nat) (valueId : ValueId)
-    : Sem ValueId := do
-  let frameVal ← Sem.lookupValue frameId
-  let newVal   ← Sem.lookupValue valueId
-  match bindSlot frameVal slot newVal with
-  | some v => Sem.bindFresh v
-  | none =>
-    match frameVal with
-    | .frame _ => Sem.throwUB "BindSlot: slot out of bounds"
-    | _        => Sem.throwTypeError "BindSlot: operand is not a frame"
+/-- Liveness applies to the snapshot's lineage; an unbound slot still returns
+its original poison. Declared slot typing remains a validation premise. -/
+def semLoadSlot (frameId : ValueId) (slot : Nat) (_ty : Ty) : Sem ValueId := do
+  let (lineage, slots) ← Sem.frameHandle frameId "LoadSlot"
+  let state ← Sem.getState
+  if state.openFrameLineages.contains lineage then
+    match trustIrListGet? slots slot with
+    | some value => Sem.bindFresh value
+    | none => Sem.throwUB s!"LoadSlot: slot {slot} out of range for frame of {slots.length} slots"
+  else Sem.throwUB "LoadSlot: frame is not open"
 
-/-- Evaluate a LoadSlot instruction.
-    Reads the chosen slot and rebinds the result to a fresh SSA value.
-    The expected-type parameter _ty is ignored at the denotation
-    level -- validation has already matched it against the slot's
-    declared type (like semExtractField's _ty parameter).
-
-    Errors:
-    - UB if the slot is out of bounds.
-    - TypeError if the operand is not a frame. -/
-def semLoadSlot (frameId : ValueId) (slot : Nat) (_ty : Ty)
-    : Sem ValueId := do
-  let frameVal ← Sem.lookupValue frameId
-  match loadSlot frameVal slot with
-  | some v => Sem.bindFresh v
-  | none =>
-    match frameVal with
-    | .frame _ => Sem.throwUB "LoadSlot: slot out of bounds"
-    | _        => Sem.throwTypeError "LoadSlot: operand is not a frame"
-
-/-- Evaluate a CloseFrame instruction.
-    No runtime effect on the machine state: scope discipline (dominator
-    LIFO nesting) lives in Rust-side validation. The corresponding
-    Rust has_side_effects = true flag is a DCE marker, not a runtime
-    discipline. -/
-def semCloseFrame (_frameId : ValueId) : Sem Unit := do
-  pure ()
+/-- Closing either an old or a new snapshot closes the entire lineage.
+Repeated close is UB, including a second close through a different alias. -/
+def semCloseFrame (frameId : ValueId) : Sem Unit := do
+  let (lineage, _) ← Sem.frameHandle frameId "CloseFrame"
+  let state ← Sem.getState
+  if state.openFrameLineages.contains lineage then
+    Sem.setFrameState (state.openFrameLineages.filter (fun id => id != lineage)) state.nextFrameLineage
+  else Sem.throwUB "CloseFrame: frame is not open (double close)"
 
 -- =================================================================
 -- Predicates (for theorem statements)
@@ -138,19 +121,19 @@ def semCloseFrame (_frameId : ValueId) : Sem Unit := do
 /-- Predicate: a value is a frame with at least n slots. -/
 def hasSlots (v : Value) (n : Nat) : Prop :=
   match v with
-  | .frame slots => slots.length >= n
+  | .frame _ slots => slots.length >= n
   | _ => False
 
 /-- Predicate: a value is a frame (any number of slots). -/
 def isFrame (v : Value) : Prop :=
   match v with
-  | .frame _ => True
+  | .frame _ _ => True
   | _ => False
 
 /-- Predicate: BindSlot is safe on this frame at this slot. -/
 def bindSlotSafe (v : Value) (slot : Nat) : Prop :=
   match v with
-  | .frame slots => slot < slots.length
+  | .frame _ slots => slot < slots.length
   | _ => False
 
 end TrustIr

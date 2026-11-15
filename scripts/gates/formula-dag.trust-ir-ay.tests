@@ -1,0 +1,4 @@
+# Beside gate 9 (`formula-dag`, trust-ir-ay half): ay proves every sharing
+# text equal to its tree text.
+formula_dag_ay  # (not (= TREE SHARED)) is UNSAT for every variant's witness (bound) and random shared formulas, and for bindings hoisted across binders; decided verdicts agree; capture and swapped bindings are refuted; define-fun sorts are never guessed
+formula_datatype_symbols  # shared datatype and reserved/digit-prefixed symbol text parses and has paired SAT/UNSAT controls

@@ -7,6 +7,12 @@ repository.workspace = true
 authors.workspace = true
 description = "Benchmark fixture: emits a TrustIr module for the raft workload"
 
+[[bin]]
+name = "raft-fixture"
+path = "src/main.rs"
+# No unit tests: skip building an empty test harness for it.
+test = false
+
 [dependencies]
 trust-ir = { path = "../../crates/trust-ir", features = ["binary"] }
 trust-ir-build = { path = "../../crates/trust-ir-build" }

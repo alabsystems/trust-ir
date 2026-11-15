@@ -1,0 +1,8 @@
+; TrustIr text format v1
+module "single_inhabited_enums"
+
+enum @NominalVoid {  } id=0
+
+enum @Selected0 { Value(u32) = 7, Absent(enum.0) = 23 } layout(single inhabited=0 size=4 align=4 offsets=[[0], []]) id=1
+
+enum @Selected1 { Absent(enum.0) = 7, Value(u32) = 23 } layout(single inhabited=1 size=4 align=4 offsets=[[], [0]]) id=2

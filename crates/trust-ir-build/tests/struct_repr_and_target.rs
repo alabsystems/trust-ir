@@ -28,6 +28,7 @@ fn module_with_struct(fields: Vec<FieldDef>, repr: StructRepr) -> Module {
         size: None,
         align: None,
         repr,
+        origin: None,
     });
     m
 }
@@ -79,6 +80,7 @@ fn module_with_zst_companion(companion_size: Option<u64>) -> Module {
         size: companion_size,
         align: Some(1),
         repr: StructRepr::Rust,
+        origin: None,
     });
     // struct 1: the transparent wrapper — one real field plus the ZST companion.
     m.add_struct(StructDef {
@@ -91,6 +93,7 @@ fn module_with_zst_companion(companion_size: Option<u64>) -> Module {
         size: Some(8),
         align: Some(8),
         repr: StructRepr::Transparent,
+        origin: None,
     });
     m
 }
@@ -117,6 +120,7 @@ fn transparent_counts_an_overaligned_zst_as_nontrivial() {
         size: Some(0),
         align: Some(8),
         repr: StructRepr::Rust,
+        origin: None,
     });
     m.add_struct(StructDef {
         id: StructId::new(1),
@@ -128,6 +132,7 @@ fn transparent_counts_an_overaligned_zst_as_nontrivial() {
         size: Some(8),
         align: Some(8),
         repr: StructRepr::Transparent,
+        origin: None,
     });
 
     assert!(has(&m, |e| matches!(
@@ -149,6 +154,7 @@ fn transparent_accepts_one_overaligned_zst_as_its_sole_nontrivial_field() {
         size: Some(0),
         align: Some(8),
         repr: StructRepr::Rust,
+        origin: None,
     });
     m.add_struct(StructDef {
         id: StructId::new(1),
@@ -160,6 +166,7 @@ fn transparent_accepts_one_overaligned_zst_as_its_sole_nontrivial_field() {
         size: Some(0),
         align: Some(8),
         repr: StructRepr::Transparent,
+        origin: None,
     });
 
     assert!(!has(&m, |e| matches!(
@@ -353,6 +360,7 @@ fn module_with_layout(
         size,
         align,
         repr: StructRepr::C,
+        origin: None,
     });
     if pin_target {
         m.target_info = Some(pinned_target());
@@ -532,16 +540,34 @@ fn target_pinned_non_zst_field_at_size_rejected() {
 }
 
 #[test]
-fn layout_inconsistency_not_flagged_without_target() {
-    // The SAME inconsistent layout (align 3) is left untouched without a pinned
-    // target — target-independent IR may carry partial/placeholder layouts.
+fn layout_inconsistency_flagged_without_target() {
+    // WS2.3 (F-031): the SAME inconsistent layout (align 3) is refused without
+    // a pinned target too. The former premise — "target-independent IR may
+    // carry placeholder layouts" — is withdrawn: `Module::ty_layout_shape` and
+    // the interpreter already treat a declared layout as normative in a
+    // target-free module (canonical reference layout), so the validator must.
     let m = module_with_layout(vec![field("a", Ty::I32)], Some(12), Some(3), false);
+    assert!(m.target_info.is_none());
     assert!(
-        !has(&m, |e| matches!(
+        has(&m, |e| matches!(
+            e,
+            ValidationError::StructLayoutInconsistent {
+                struct_id: 0,
+                reason: "align must be a non-zero power of two"
+            }
+        )),
+        "declared layout consistency is enforced with or without a target: {:?}",
+        validate_module(&m)
+    );
+    // Mutation control: an ABSENT layout stays unflagged without a target.
+    let absent = module_with_layout(vec![field("a", Ty::I32)], None, None, false);
+    assert!(
+        !has(&absent, |e| matches!(
             e,
             ValidationError::StructLayoutInconsistent { .. }
         )),
-        "layout consistency is only enforced under a pinned target"
+        "absent layout fields are not inconsistent: {:?}",
+        validate_module(&absent)
     );
 }
 
@@ -576,19 +602,23 @@ fn module_with_extern_decl(repr: StructRepr, params: Vec<Ty>, returns: Vec<Ty>) 
         size: None,
         align: None,
         repr,
+        origin: None,
     });
     m.add_func_type(FuncTy {
         params,
         returns,
+        abi: None,
         is_vararg: false,
-    });
+    })
+    .expect("Module::add_func_type: test fixture");
     // Function::new is a bodyless External declaration (an FFI import).
-    m.add_function(Function::new(
+    m.try_add_function(Function::new(
         FuncId::new(0),
         "imported",
         FuncTyId::new(0),
         BlockId::new(0),
-    ));
+    ))
+    .expect("Module::try_add_function: test fixture");
     m
 }
 
@@ -674,12 +704,15 @@ fn body_bearing_function_with_rust_repr_struct_param_is_not_an_ffi_boundary() {
         size: None,
         align: None,
         repr: StructRepr::Rust,
+        origin: None,
     });
     m.add_func_type(FuncTy {
         params: vec![Ty::Struct(StructId::new(0))],
         returns: vec![],
+        abi: None,
         is_vararg: false,
-    });
+    })
+    .expect("Module::add_func_type: test fixture");
     let mut func = Function::new(
         FuncId::new(0),
         "internal_fn",
@@ -697,7 +730,8 @@ fn body_bearing_function_with_rust_repr_struct_param_is_not_an_ffi_boundary() {
         trust_ir::inst::Inst::Return { values: vec![] },
     ));
     func.blocks.push(block);
-    m.add_function(func);
+    m.try_add_function(func)
+        .expect("Module::try_add_function: test fixture");
 
     assert!(
         !has(&m, |e| matches!(
@@ -721,15 +755,18 @@ fn module_with_plain_extern_decl() -> Module {
     m.add_func_type(FuncTy {
         params: vec![],
         returns: vec![],
+        abi: None,
         is_vararg: false,
-    });
+    })
+    .expect("Module::add_func_type: test fixture");
     // Function::new is a bodyless External declaration (an FFI import).
-    m.add_function(Function::new(
+    m.try_add_function(Function::new(
         FuncId::new(0),
         "imported",
         FuncTyId::new(0),
         BlockId::new(0),
-    ));
+    ))
+    .expect("Module::try_add_function: test fixture");
     m
 }
 
@@ -768,8 +805,10 @@ fn module_with_cross_conv_call(pin_target: bool) -> Module {
     m.add_func_type(FuncTy {
         params: vec![],
         returns: vec![],
+        abi: None,
         is_vararg: false,
-    });
+    })
+    .expect("Module::add_func_type: test fixture");
 
     let mut callee = Function::new(FuncId::new(0), "c_side", FuncTyId::new(0), BlockId::new(0));
     callee.calling_conv = trust_ir::CallingConv::C;
@@ -778,7 +817,8 @@ fn module_with_cross_conv_call(pin_target: bool) -> Module {
         trust_ir::inst::Inst::Return { values: vec![] },
     ));
     callee.blocks.push(cb);
-    m.add_function(callee);
+    m.try_add_function(callee)
+        .expect("Module::try_add_function: test fixture");
 
     let mut caller = Function::new(
         FuncId::new(1),
@@ -797,7 +837,8 @@ fn module_with_cross_conv_call(pin_target: bool) -> Module {
         trust_ir::inst::Inst::Return { values: vec![] },
     ));
     caller.blocks.push(rb);
-    m.add_function(caller);
+    m.try_add_function(caller)
+        .expect("Module::try_add_function: test fixture");
 
     if pin_target {
         m.target_info = Some(pinned_target());
@@ -919,11 +960,14 @@ fn cross_conv_indirect_call_without_target_info_rejected() {
     // A CallIndirect whose declared edge convention differs from the enclosing
     // function's is an FFI boundary even with no static callee in sight.
     let mut m = Module::new("cross_conv_indirect");
-    let sig = m.add_func_type(FuncTy {
-        params: vec![],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let sig = m
+        .add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut caller = Function::new(FuncId::new(0), "rust_side", sig, BlockId::new(0));
     caller.calling_conv = trust_ir::CallingConv::Rust;
     let mut block = trust_ir::Block::new(BlockId::new(0));
@@ -942,7 +986,8 @@ fn cross_conv_indirect_call_without_target_info_rejected() {
         trust_ir::inst::Inst::Return { values: vec![] },
     ));
     caller.blocks.push(block);
-    m.add_function(caller);
+    m.try_add_function(caller)
+        .expect("Module::try_add_function: test fixture");
 
     assert!(m.requires_target_info());
     assert!(has(&m, |e| matches!(
@@ -988,6 +1033,7 @@ fn module_with_repr(
         size,
         align,
         repr,
+        origin: None,
     });
     m.target_info = Some(pinned_target());
     m
@@ -1122,6 +1168,16 @@ fn an_invalid_packed_clamp_produces_one_error_not_a_cascade() {
             "packed({bad}) must not ALSO produce a derived alignment error: {:?}",
             validate_module(&m)
         );
+        // WS2.3: nor a derived "declared layout is incoherent" report from the
+        // layout authority, which refuses the same malformed clamp.
+        assert!(
+            !has(&m, |e| matches!(
+                e,
+                ValidationError::StructLayoutInconsistent { .. }
+            )),
+            "packed({bad}) must not ALSO produce a derived layout error: {:?}",
+            validate_module(&m)
+        );
     }
 }
 
@@ -1139,10 +1195,12 @@ fn an_absent_offset_is_never_flagged_as_misaligned() {
     assert!(!has(&m, misaligned), "{:?}", validate_module(&m));
 }
 
-/// Same gating as every other rule in this pass: target-independent IR may carry
-/// partial or placeholder layouts, so the rule is silent without a pinned target.
+/// WS2.3 (F-031): same scope as every other rule in this pass — with or without
+/// a pinned target. A target-free module is judged against the canonical
+/// reference layout, exactly as `Module::ty_layout_shape` and the interpreter
+/// judge it; "target-independent IR may carry placeholder layouts" is withdrawn.
 #[test]
-fn misaligned_offset_not_flagged_without_target() {
+fn misaligned_offset_flagged_without_target() {
     let mut m = module_with_layout(
         vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 3)],
         Some(16),
@@ -1150,5 +1208,75 @@ fn misaligned_offset_not_flagged_without_target() {
         false,
     );
     m.target_info = None;
-    assert!(!has(&m, misaligned), "{:?}", validate_module(&m));
+    assert!(has(&m, misaligned), "{:?}", validate_module(&m));
+    // ACCEPT CONTROL: `b` at its natural offset validates target-free too.
+    let mut ok = module_with_layout(
+        vec![field_at("a", Ty::U8, 0), field_at("b", Ty::U64, 8)],
+        Some(16),
+        Some(8),
+        false,
+    );
+    ok.target_info = None;
+    assert!(!has(&ok, misaligned), "{:?}", validate_module(&ok));
+}
+
+/// The struct field-overlap rule (WS2.3) reports one error for a struct when
+/// SOME pair of its sized, placed fields overlaps — the verdict of testing
+/// every pair, now a sort-and-sweep — however the overlapping pair is
+/// placed among disjoint, zero-sized, unplaced and unsized fields.
+#[test]
+fn the_field_overlap_rule_is_one_report_for_some_overlapping_pair() {
+    let placed = |name: &str, ty: Ty, offset: u64| FieldDef {
+        name: name.into(),
+        ty,
+        offset: Some(offset),
+    };
+    let with_fields = |fields: Vec<FieldDef>| {
+        let mut m = Module::new("overlap");
+        m.add_struct(StructDef {
+            id: StructId::new(0),
+            name: "S".into(),
+            fields,
+            size: Some(16),
+            align: Some(8),
+            repr: StructRepr::C,
+            origin: None,
+        });
+        m
+    };
+    let overlap_reports = |m: &Module| {
+        validate_module(m)
+            .into_iter()
+            .filter(|error| {
+                matches!(
+                    error,
+                    ValidationError::StructLayoutInconsistent { reason, .. }
+                        if *reason == trust_ir_build::validate::STRUCT_FIELDS_OVERLAP_REASON
+                )
+            })
+            .count()
+    };
+    // Disjoint in reverse order, a ZST sitting inside a field, an unplaced
+    // ZST, and a field with no layout: no overlap.
+    let disjoint = vec![
+        placed("d", Ty::U64, 8),
+        placed("c", Ty::U32, 4),
+        placed("z", Ty::Unit, 5),
+        field("u", Ty::Unit),
+        placed("x", Ty::Struct(StructId::new(9)), 0),
+        placed("a", Ty::U16, 0),
+        placed("b", Ty::U8, 2),
+    ];
+    assert_eq!(overlap_reports(&with_fields(disjoint.clone())), 0);
+    // The same fields plus one late byte inside `c`: one report, however
+    // many pairs overlap.
+    for extra in [
+        placed("o", Ty::U8, 6),
+        placed("o", Ty::U64, 0),
+        placed("o", Ty::U16, 3),
+    ] {
+        let mut fields = disjoint.clone();
+        fields.push(extra.clone());
+        assert_eq!(overlap_reports(&with_fields(fields)), 1, "{extra:?}");
+    }
 }

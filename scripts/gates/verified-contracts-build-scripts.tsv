@@ -1,0 +1,29 @@
+# The build scripts gate 13's verdicts rest on (scripts/verified_contracts.py,
+# THE BUILD-SCRIPT PREMISE).
+#
+# `targo trust check` runs every build script of the lane's unit graph outside
+# the proof channel: uncontained, as the same uid (Trust blocker B5; the
+# premise is P-CORESIDENT). The report states each execution as a
+# `build-execution-scope` row, "proof is conditional on this exact execution
+# unit's correctness". Every law gate 13 proves, and every mutant it refutes,
+# therefore rests on the scripts below.
+#
+# The gate holds the build-script executions of every JUDGED run (base and
+# mutants) EQUAL to these rows and prints them; the rule is stated once, as
+# THE BUILD-SCRIPT PREMISE in scripts/verified_contracts.py.
+#
+# Columns (TAB-separated; one header line):
+#   package  the Cargo package name.
+#   source   the package id's source as the report spells it; `path` for a
+#            path package (never its local path).
+#   version  the exact version; `workspace` for a path package at the root's
+#            [workspace.package] version, so a version bump does not move it.
+#   does     what the script does, read from its build.rs (a review note).
+#
+# A new row is a new uncontained executable under the gate's verdicts: read
+# the script before adding it. scripts/tests/test_verified_contracts.py holds
+# every registry row to Cargo.lock and every path row to a member's build.rs.
+package	source	version	does
+generic-array	registry+https://github.com/rust-lang/crates.io-index	0.14.7	runs `$RUSTC --verbose --version` (version_check) and prints cfg relaxed_coherence on rustc >= 1.41
+libc	registry+https://github.com/rust-lang/crates.io-index	0.2.189	runs `$RUSTC --version` (through RUSTC_WRAPPER when set) and `emcc -dumpversion` on every target (absent emcc: no cfg), `freebsd-version` only under LIBC_CI; prints rustc-cfg / check-cfg directives from those, the target cfg env and the LIBC_UNSTABLE_* settings
+trust-ir	path	workspace	crates/trust-ir/build.rs: prints rustc-env directives (the BUILD_IDENTITY label, sha and attestation), from ALAB_BUILD_GIT_* or by running `git` in the crate's own checkout

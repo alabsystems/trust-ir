@@ -32,7 +32,8 @@
 //! let sum = function.v4_i32_add(lhs, rhs);
 //! function.ret(vec![sum]);
 //! function.build();
-//! let _module = module.build();
+//! let _module = module.build()?;
+//! # Ok::<(), trust_ir_build::BuildError>(())
 //! ```
 
 use trust_ir::constant::Constant;
@@ -554,7 +555,7 @@ mod tests {
             let sel = fb.v4_i32_mask_select(mask, sum, a);
             fb.ret(vec![sel]);
             fb.build();
-            mb.build()
+            mb.build().expect("ModuleBuilder::build: test fixture")
         };
         let build_with_core = || {
             let mut mb = ModuleBuilder::new("m");
@@ -569,7 +570,7 @@ mod tests {
             let sel = fb.select(Ty::v4_i32(), mask, sum, a);
             fb.ret(vec![sel]);
             fb.build();
-            mb.build()
+            mb.build().expect("ModuleBuilder::build: test fixture")
         };
         assert_eq!(build_with_demo(), build_with_core());
     }
@@ -588,7 +589,7 @@ mod tests {
         assert!(fb.vector_extract_lane(Ty::v4_i32(), splat, 4).is_err());
         fb.ret(vec![splat]);
         fb.build();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
         let ops: Vec<_> = module.functions[0].blocks[0]
             .body
             .iter()

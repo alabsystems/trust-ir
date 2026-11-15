@@ -6,30 +6,33 @@ exposes it.
 
 ## Build and test
 
-Use a current stable Rust toolchain. TrustIr's 0.x line does not yet promise a minimum
+Use the Trust toolchain (`targo`, `trustc`, `targo tippy`, `targo fmt`) from
+[Trust](https://github.com/alabsystems/trust).
+`targo --unverified` builds and tests without a proof claim; `targo trust
+check` is the verified lane. TrustIr's 0.x line does not yet promise a minimum
 supported Rust version.
 
 Start with the narrowest crate or test that covers the change:
 
 ```bash
-cargo test --locked -p trust-ir
-cargo test --locked -p trust-ir-build
-cargo test --locked -p trust-ir-cli
-cargo test --locked -p trust-ir-conformance --test conformance
+targo --unverified test --locked -p trust-ir
+targo --unverified test --locked -p trust-ir-build
+targo --unverified test --locked -p trust-ir-cli
+targo --unverified test --locked -p trust-ir-conformance --test conformance
 ```
 
-Before requesting review for a workspace-wide change, run the public release
-shape:
+Before requesting review for a workspace-wide change, run the whole
+workspace:
 
 ```bash
-cargo check --locked --workspace --all-targets --all-features
-cargo test --locked --workspace --no-fail-fast
+targo --unverified check --locked --workspace --all-targets --all-features
+targo --unverified test --locked --workspace --no-fail-fast
 ```
 
 The `frontend/` crate is intentionally outside the workspace. It uses
-`rustc_private` and needs a compiler-internal toolchain built from a compatible
-Trust/Rust tree; a stock Rust installation is sufficient for the exported
-workspace but not for that driver. Changes to the Lean model should also run:
+`rustc_private`, which the Trust toolchain's sysroot provides: build and test it
+with `targo --unverified test --locked --manifest-path frontend/Cargo.toml`.
+Changes to the Lean model should also run:
 
 ```bash
 (cd lean/trust_ir-semantics && lake build)
@@ -49,6 +52,19 @@ An IR-schema change should update every affected:
 - byte-golden conformance fixture and migration behavior;
 - Lean name-parity or semantic surface;
 - producer/consumer contract and public format documentation.
+
+A new binary format version, a new tag in a wire enum, or a new `trust_ir.*.vN`
+digest domain needs a row in `wire-allocations.toml`, added in the same change
+as the code (`python3 scripts/wire_alloc.py reserve …`, then mark the row
+`landed`; the file's header explains the rows). Wire versions land in number
+order, so if an earlier reservation is still open, take the lowest open number
+(`wire_alloc.py takeover`). The `binary::wire_census` tests and
+`wire_alloc.py check` are executed tests and source scans, not proofs: they
+fail a version constant in `binary.rs`, a tag byte of any wire enum the codec
+source spells, or a version-suffixed identity string (`<name>.vN`,
+`<name>-vN`) in non-test sources, that has no row. The registry's header says
+where each of those scans stops. Name test and fixture files after the
+feature, never the version number.
 
 A proof-authority change must include a negative case. Unsupported, stale,
 forged, dangling, misbound, or faith-stamped evidence must fail at the exact

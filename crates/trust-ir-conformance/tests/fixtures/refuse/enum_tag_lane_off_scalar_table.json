@@ -1,0 +1,131 @@
+{
+  "name": "refuse_enum_tag_lane",
+  "functions": [
+    {
+      "id": 0,
+      "name": "id",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [
+            [
+              0,
+              "I32"
+            ]
+          ],
+          "body": [
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    0
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [
+    {
+      "id": 0,
+      "name": "E",
+      "variants": [
+        {
+          "name": "A",
+          "fields": [],
+          "field_names": []
+        },
+        {
+          "name": "B",
+          "fields": [],
+          "field_names": []
+        }
+      ],
+      "discriminants": [],
+      "repr": "U32",
+      "layout": {
+        "encoding": {
+          "Direct": {
+            "tag_offset": 4
+          }
+        },
+        "size": 8,
+        "align": 4,
+        "variant_field_offsets": [
+          [],
+          []
+        ]
+      }
+    }
+  ],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [
+        "I32"
+      ],
+      "returns": [
+        "I32"
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": {
+    "triple": "i686-unknown-linux-gnu",
+    "pointer_size": 4,
+    "endianness": "Little",
+    "abi": null,
+    "struct_passing": "NativeC"
+  },
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

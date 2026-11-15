@@ -1,0 +1,39 @@
+# Gate 8: the conformance byte-goldens (the cross-repo wire contract) and the
+# codec / interpreter guards that ride with them. Run with
+# `-- --skip native_request_bundle` (ci-self-verify.sh runs that group).
+conformance
+call_unwind_boundary  # typed boundary compatibility, ownership and no-EH model refusals
+back_compat
+build_determinism
+mixed_producer
+module_roundtrip_fuzz
+interpret_differential
+icmp_meaning  # the ONE bit-vector statement of ICmp (trust_ir::bv_meaning) against the reference interpreter over every x86-64 vector-compare cell: every <16 x i8> byte pair, sampled wider; spec carrier vs mask_to_bits
+sniff_format  # WS4.9: format sniffing for producer file names
+names_not_numbers  # no NEW test/fixture file name may spell a wire version (wire-allocations.toml)
+import_identity  # WS4.10: portable V3 module identity, ModuleImport.scheme (v44), crit.unex03 port, files-are-debug-only tripwire
+pointer_constant_formats  # WS3.8: non-null pointer constants round-trip all four formats at the v38 header (no wire change)
+aggregate_padding_load  # WS2.14: whole-aggregate Load ignores padding; typed Store writes it uninit
+interpret_host_calls  # WS2.12: host-call hook; a bodyless declaration is UnsupportedCall, never MissingBlock
+text_losses  # WS4.2: text refuses what it cannot carry (F-065 ported rows: verify.c08.L1/L2, b7.text.flip.*)
+undef_poison  # WS2.10: Undef is poison in the interpreter (transport ok, inspection UB, non-scalar fails closed)
+lowering_subset  # WS2.9: subset v3 doc-lockstep + fixture exemption gate (two-sided)
+bridge_subset_agreement  # WS2.9: bridge vs mirror verdict-identical (Dealloc, Transmute floats, condition 5)
+interpret_host_models  # WS2.13: reference host models of the pinned Nat and Clean RC runtimes (F-035 model half)
+abi_surface  # WS3.10/WS3.11/WS3.12/WS3.14(b): the v45 ABI surface (function symbol attrs, per-argument ABI facts, calling conventions, 128-bit enum tags)
+inlined_scope_chain  # WS4.19: ScopeData.inlined_at chain through text/JSON/MessagePack; binary refuses by name (InlinedScopeChainUnencodable) until its wire batch; diff debug lane (F-082 rows debug-info-inlining-chain, OMET-06 flipped)
+global_text_attrs  # WS4.5 global subset: section, visibility and retention survive text with exact binary identity
+interpret_f16  # WS2.15: binary16 executes (bit-exact edge table, exact-oracle differential, codec round trip)
+interpret_varargs  # WS2.15: a variadic declaration is a host call with every argument; a variadic definition is refused by name
+wasm32_reference_execution  # WS2.16: wasm32 reference execution (pointer-width byte model; i686 named refusal; wrap/GEP/stride mutation controls; subset-refused) — F-036 32-bit cells
+module_completeness  # WS5.3b: Module.completeness claim through text/JSON/MessagePack; binary refuses by name (CompletenessClaimUnencodable) until its wire batch; None is never Complete (F-090 crit.unex06 port)
+producer_rule_census  # KIND 1 (2026-09-24): the v41 producer rule over the byte-frozen goldens — 8 known non-conforming v41+ producers pinned exactly; a new one fails here
+refuse_corpus  # KIND 4 (2026-09-24): the must-refuse corpus goldens (tests/fixtures/refuse/) — byte-pinned wire artifacts a consumer must refuse, each run against the entry point that refuses it
+union_carrier  # WS3.18: unions on the byte-overlap carrier — MemCopy moves keep uninit bytes, byval/sret call edges, padding stays padding (F-050, F-030)
+text_proof_surface  # WS4.4: text carries the proof surface (summaries, bindings, assurance, kernel recheck, v41 kinds); b2.uf02, b3.uf05, spec-surface-0709/06, a.rust.contracts.carry_experiment.text, design-0827/text-format-summary-loss
+template_goldens  # amendment S: level-S template goldens (tests/fixtures/templates/) byte-pinned in four formats; every carrier variant exercised
+template_refuse_corpus  # amendment S: the level-S must-refuse corpus (tests/fixtures/refuse_templates/) — every TemplateError / TemplateViolation / InstantiateError variant, scripted hosts as data, one accepted control
+nominal_identity_wire  # WS3.9: review — forged origin tags, v38 projection refusal by name, awkward key spellings in every format, incoherent closure rows refused by every reader
+diff_authority_metadata  # WS4.13: per-field diff of authority/ABI/linkage metadata (F-073 b1.gap.diff_blind_* ports), moved from crates/trust-ir/tests (no gate ran it)
+diff_fields  # WS4.13: proof-channel fingerprints (bindings/site/assurance/kernel_recheck), files count, result arity; renumbered twin; stable_digest mutation control; scout-emit.F2 port
+closure_storage  # Checked closure targets, original capture allocations, changed bytes/layout/target refusals and nominal frame formats

@@ -27,7 +27,7 @@ fn identity_module() -> Module {
     function.switch_to_block(entry);
     function.ret(vec![value]);
     function.build();
-    builder.build()
+    builder.build().expect("ModuleBuilder::build: test fixture")
 }
 
 fn kernel_identity_fixture() -> (Module, ProofLineageManifest) {

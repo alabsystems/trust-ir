@@ -1461,6 +1461,7 @@ pub fn give_back_recheck_directive_in(
             .iter()
             .map(|s| (*s).to_string())
             .collect(),
+        binding: None,
     })
 }
 
@@ -1532,12 +1533,16 @@ fn inst_variant_name(inst: &Inst) -> &'static str {
         Inst::Switch { .. } => "Switch",
         Inst::Call { .. } => "Call",
         Inst::CallIndirect { .. } => "CallIndirect",
+        Inst::CallCannotUnwind { .. } => "CallCannotUnwind",
+        Inst::CallIndirectCannotUnwind { .. } => "CallIndirectCannotUnwind",
         Inst::Unreachable => "Unreachable",
         Inst::Assume { .. } => "Assume",
         Inst::Assert { .. } => "Assert",
         Inst::Alloca { .. } => "Alloca",
         Inst::HeapAlloc { .. } => "HeapAlloc",
         Inst::Dealloc { .. } => "Dealloc",
+        Inst::MemCopy { .. } => "MemCopy",
+        Inst::MemSet { .. } => "MemSet",
         Inst::GEP { .. } => "GEP",
         Inst::AtomicLoad { .. } => "AtomicLoad",
         Inst::AtomicStore { .. } => "AtomicStore",
@@ -1564,16 +1569,11 @@ fn has_back_edge(func: &Function) -> bool {
         .collect();
     for (i, block) in func.blocks.iter().enumerate() {
         for node in &block.body {
-            let succ: &[trust_ir::BlockId] = match &node.inst {
-                Inst::Br { target, .. } => &[*target],
-                Inst::CondBr {
-                    then_target,
-                    else_target,
-                    ..
-                } => &[*then_target, *else_target],
-                _ => &[],
-            };
-            for t in succ {
+            // Every edge, from the exhaustive accessor (amendment D §1.3):
+            // the old walk saw only `Br` / `CondBr`, so a `Switch` or invoke
+            // back edge read as loop-free (fail-open for M1).
+            for edge in node.inst.successor_edges() {
+                let t = edge.target;
                 if let Some(&j) = pos.get(&t.index())
                     && j <= i
                 {
@@ -2561,6 +2561,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn has_back_edge_sees_switch_and_invoke_back_edges() {
+        // Amendment D §1.3: the probe reads every edge from the exhaustive
+        // accessor. It once listed only `Br` / `CondBr`, so a back edge on a
+        // `Switch` arm or an invoke's normal edge read as loop-free. (The M1
+        // whitelist declines both instructions before this probe runs, so
+        // the probe itself is pinned here.)
+        let switch_back = |back_on_default: bool| {
+            let mut func = Function::new(FuncId::new(4), "sw", trust_ir::FuncTyId::new(0), bid(0));
+            let mut b0 = Block::new(bid(0));
+            b0.body.push(InstrNode::new(Inst::Br {
+                target: bid(1),
+                args: vec![],
+            }));
+            let mut b1 = Block::new(bid(1));
+            b1.params.push((v(0), Ty::I32));
+            let (default, case) = if back_on_default {
+                (bid(0), bid(2))
+            } else {
+                (bid(2), bid(0))
+            };
+            b1.body.push(InstrNode::new(Inst::Switch {
+                value: v(0),
+                default,
+                default_args: vec![],
+                cases: vec![trust_ir::SwitchCase {
+                    value: Constant::Int(0),
+                    target: case,
+                    args: vec![],
+                }],
+                exhaustive_enum_unreachable: false,
+            }));
+            let mut b2 = Block::new(bid(2));
+            b2.body
+                .push(InstrNode::new(Inst::Return { values: vec![] }));
+            func.blocks.extend([b0, b1, b2]);
+            func
+        };
+        assert!(
+            has_back_edge(&switch_back(true)),
+            "switch default back edge"
+        );
+        assert!(has_back_edge(&switch_back(false)), "switch case back edge");
+
+        let mut func = Function::new(FuncId::new(5), "inv", trust_ir::FuncTyId::new(0), bid(0));
+        let mut b0 = Block::new(bid(0));
+        b0.body.push(InstrNode::new(Inst::Br {
+            target: bid(1),
+            args: vec![],
+        }));
+        let mut b1 = Block::new(bid(1));
+        b1.body.push(InstrNode::new(Inst::Invoke {
+            callee: FuncId::new(5),
+            args: vec![],
+            normal_dest: bid(0),
+            normal_args: vec![],
+            unwind_dest: bid(2),
+        }));
+        let mut b2 = Block::new(bid(2));
+        b2.body.push(InstrNode::new(Inst::Unreachable));
+        func.blocks.extend([b0, b1, b2]);
+        assert!(has_back_edge(&func), "invoke normal-edge back edge");
+    }
+
     /// `fn f(x: &mut i32, c: bool) { if c { *x += 1 } }` — the canonical conditional
     /// mutation diamond (entry `CondBr` → mutate block → join).
     fn cond_incr_function() -> Function {
@@ -3391,20 +3455,26 @@ mod tests {
     /// and the pointee guard resolve.
     fn seq_map_gen_module() -> Module {
         let mut m = Module::new("seq-map-gen");
-        let i32_id = m.add_type(Ty::I32);
+        let i32_id = m.add_type(Ty::I32).expect("Module::add_type: test fixture");
         assert_eq!(i32_id.index(), 0);
         let seq_ty = Ty::Sequence(i32_id);
-        let loop_ft = m.add_func_type(trust_ir::FuncTy {
-            params: vec![Ty::RefMut(Box::new(seq_ty))],
-            returns: vec![],
-            is_vararg: false,
-        });
+        let loop_ft = m
+            .add_func_type(trust_ir::FuncTy {
+                params: vec![Ty::RefMut(Box::new(seq_ty))],
+                returns: vec![],
+                abi: None,
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
         assert_eq!(loop_ft.index(), 0);
-        let elem_ft = m.add_func_type(trust_ir::FuncTy {
-            params: vec![Ty::RefMut(Box::new(Ty::I32))],
-            returns: vec![],
-            is_vararg: false,
-        });
+        let elem_ft = m
+            .add_func_type(trust_ir::FuncTy {
+                params: vec![Ty::RefMut(Box::new(Ty::I32))],
+                returns: vec![],
+                abi: None,
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
         assert_eq!(elem_ft.index(), 1);
         m.functions.push(seq_map_gen_loop_function(30, 31, 0));
         m.functions.push(incr_elem_function(31));
@@ -3558,7 +3628,9 @@ mod tests {
     fn seq_map_gen_pointee_mismatch_fails_closed() {
         // Seq<bool> place against fn(&mut i32): the pointee guard rejects.
         let mut m = seq_map_gen_module();
-        let bool_id = m.add_type(Ty::Bool);
+        let bool_id = m
+            .add_type(Ty::Bool)
+            .expect("Module::add_type: test fixture");
         let loop_fn = seq_map_gen_loop_function(30, 31, bool_id.index());
         m.functions[0] = loop_fn.clone();
         let view = match elaborate_give_back_in(&loop_fn, &m) {

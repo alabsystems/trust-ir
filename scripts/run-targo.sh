@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Resolve and invoke the Trust-owned Targo frontend for internal Rust gates.
-# Compilation commands use Targo's explicit compatibility lane. Formatting is
-# non-compiling and therefore runs without `--unverified`. There is
-# intentionally no fallback to upstream Cargo.
+# Compilation commands use Targo's explicit compatibility lane. Formatting and
+# dependency resolution do not compile and make no verification claim; Targo
+# rejects the compilation-only `--unverified` flag for those commands. Lints run
+# through `targo tippy` (Trust's clippy), which takes no lane flag. There is
+# intentionally no fallback to upstream Cargo: the resolved binary must answer
+# `targo --unverified --version`, which upstream Cargo named `targo` rejects.
 set -euo pipefail
 
 fail() {
@@ -19,7 +22,10 @@ resolve_targo() {
     elif command -v targo >/dev/null 2>&1; then
         candidate="$(command -v targo)"
     elif command -v rustup >/dev/null 2>&1; then
-        candidate="$(rustup which --toolchain trust targo 2>/dev/null || true)"
+        # A failed resolver's stdout is not an executable selection. Preserve
+        # the unavailable diagnostic below, but never execute a printed path
+        # from a rustup invocation that itself failed.
+        candidate="$(rustup which --toolchain trust targo 2>/dev/null)" || candidate=""
     fi
 
     [[ -n "$candidate" ]] || fail \
@@ -27,6 +33,8 @@ resolve_targo() {
     [[ -x "$candidate" ]] || fail "TRUST_TARGO_BIN is not executable: $candidate"
     [[ "${candidate##*/}" == "targo" ]] || fail \
         "TRUST_TARGO_BIN must point to a binary named targo, not ${candidate##*/}"
+    "$candidate" --unverified --version >/dev/null 2>&1 || fail \
+        "$candidate is not Trust's targo: \`targo --unverified --version\` failed (upstream Cargo under that name rejects the flag)"
     printf '%s\n' "$candidate"
 }
 
@@ -35,10 +43,14 @@ resolve_targo() {
 TARGO_BIN="$(resolve_targo)"
 command_name="$1"
 case "$command_name" in
-    fmt)
+    fmt|generate-lockfile|metadata|update)
         exec "$TARGO_BIN" "$@"
         ;;
-    bench|build|check|clippy|doc|fix|run|rustc|rustdoc|test)
+    clippy|tippy)
+        shift
+        exec "$TARGO_BIN" tippy "$@"
+        ;;
+    bench|build|check|doc|fix|run|rustc|rustdoc|test)
         exec "$TARGO_BIN" --unverified "$@"
         ;;
     *)

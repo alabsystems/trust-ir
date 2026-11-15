@@ -1,0 +1,1078 @@
+{
+ "exit": 1,
+ "output_lines": [
+  "   = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "    = note: native full verifier evidence `vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0`: native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence",
+  "Summary: 24 proved, 0 failed, 0 runtime-checked, 0 assumed, 0 mandated, 0 contract-panic, 18 inconclusive (42 total)",
+  "Publication boundary: 41 obligation(s) passed the compiler, 24 published, 17 WITHHELD for want of clean-kernel or publishable native proof evidence (0 relabelled unknown (visible in --json with the reason); 17 deleted as a redundant alias (identity disclosed separately; no proof credit)). See docs/TCB.md \"The publication boundary\".",
+  "Compiler requests omitted from the published proof rows: 17 (diagnostics only; not discharged by this report)",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_reflexive_unbounded obligation=obligation:trust_ir_laws__laws__coverage_reflexive_unbounded:postcondition:0 kind=postcond claim_sha256=d664f22a0f19e94e22c8baad58bdfc034b2d99d775891bbf29bf338dd3d6541e",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_reflexive_unwind obligation=obligation:trust_ir_laws__laws__coverage_reflexive_unwind:postcondition:0 kind=postcond claim_sha256=b000204868c2a5150c39279aed712c2d38953da5d6461b961d0d809a1595ac10",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_reflexive_model obligation=obligation:trust_ir_laws__laws__coverage_reflexive_model:postcondition:0 kind=postcond claim_sha256=7aa89924906a1ecb7e20efaaecc5164839b48d64561a44f62ad2abc1ded62a26",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_unbounded obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_unbounded:postcondition:0 kind=postcond claim_sha256=5ac26633d96c2ece8923e3b453ead3f277859adcb4f2b95dd3bd9be9c72f9e2e",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_unwind obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_unwind:postcondition:0 kind=postcond claim_sha256=0e7893bef606bd6104b8d8c24831f5d15b1bb11a9a03e5844a8307f97e97143a",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_model obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_model:postcondition:0 kind=postcond claim_sha256=9a8426a7dbb959c66822e448d211946f9a419a5205b03bc7b25005e3df7edbe8",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unwind_is_magnitude_order obligation=obligation:trust_ir_laws__laws__coverage_unwind_is_magnitude_order:postcondition:0 kind=postcond claim_sha256=8cbffe2d95b35c5fed42da360079dbc87ccd57056255fed7a7afabe88ff8b65d",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_model_is_magnitude_order obligation=obligation:trust_ir_laws__laws__coverage_model_is_magnitude_order:postcondition:0 kind=postcond claim_sha256=4f914519c1b019999f91552529f61fdab9ef2e190d813a0d53c554a0dbb09fbd",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unwind_never_supplies_model obligation=obligation:trust_ir_laws__laws__coverage_unwind_never_supplies_model:postcondition:0 kind=postcond claim_sha256=4869d599e20fdab52d164b528f17591619e8188963c79dad2888ad24c1b59d00",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_model_never_supplies_unwind obligation=obligation:trust_ir_laws__laws__coverage_model_never_supplies_unwind:postcondition:0 kind=postcond claim_sha256=33899ca4f0f2d561d153e1abd8baefd95de951d7dc42ab0991669b5f428b6725",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unwind obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unwind:postcondition:0 kind=postcond claim_sha256=6ac5c40a76d752e2bbc17418e6b94864b12db2ff6fe7fb0d09e15a7d50b71555",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_model obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_never_supplies_model:postcondition:0 kind=postcond claim_sha256=56bf2b4a3793a525fa0759eade09771e37b8ebe5460ae7d9dcc114d028cfc45b",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::u64_ge_is_transitive obligation=obligation:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:0 kind=postcond claim_sha256=b09d946c4a0eb53cab5fb80202480bb7e2f4abe2696b99b40206fd85f2c46449",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_gated_admitted_under_any_policy obligation=obligation:trust_ir_laws__laws__license_gated_admitted_under_any_policy:postcondition:0 kind=postcond claim_sha256=40ddb0b88bb003cff34f37ef0a76e199a176a7fde27ce90bf7f7a8191f7bf305",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_ungated_refused_under_any_policy obligation=obligation:trust_ir_laws__laws__license_ungated_refused_under_any_policy:postcondition:0 kind=postcond claim_sha256=d33bc2604f22f78288bb4231384b146630285076a74e8be11b275aed8a9cbc5a",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_absent_refused_under_refuse obligation=obligation:trust_ir_laws__laws__license_absent_refused_under_refuse:postcondition:0 kind=postcond claim_sha256=b736d7221bc81632fb515464c7cc5b1a9f661133a351ea452d820e9725499343",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"fc0efa18ca98ba914eeba3af168da123a0975850331c9fe9b54d71433bc62961\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_absent_admitted_under_permit obligation=obligation:trust_ir_laws__laws__license_absent_admitted_under_permit:postcondition:0 kind=postcond claim_sha256=163ecaa0b041eb62e15060513111214a59aa4d8f5c8e9379d0d9f926c64e99b3",
+  "Coverage: 38/38 eligible function bodies verified (complete)",
+  "Result: FAIL",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_model_never_supplies_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unbounded_supplies_unrecorded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_any, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_model, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_unrecorded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_unwind, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_never_supplies_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown)",
+  "    [postcondition] postcondition UNKNOWN (trust-full-verifier: `#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unwind_never_supplies_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown)"
+ ],
+ "provenance": {
+  "date": "2026-09-29",
+  "flips": [
+   "coverage_unbounded_supplies_unrecorded",
+   "coverage_unrecorded_demand_met_by_unbounded",
+   "coverage_unrecorded_demand_met_by_unwind",
+   "coverage_unrecorded_demand_met_by_model",
+   "coverage_unrecorded_demand_met_by_unrecorded",
+   "coverage_unrecorded_demand_met_by_any",
+   "coverage_unwind_never_supplies_unbounded",
+   "coverage_model_never_supplies_unbounded",
+   "coverage_unrecorded_never_supplies_unbounded"
+  ],
+  "gate": "scripts/verified_contracts.py (gate 13), a real kept run (--keep)",
+  "regenerate": "scripts/tests/fixtures/verified_lane/refresh.py",
+  "run": "mutant coverage-unbounded-demand-met-by-anything",
+  "toolchain": "rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0) | commit-hash: 321aaeda75478038420d97830f14724c33c8dc39 | host: aarch64-apple-darwin | trust: 0.1.0",
+  "tree": "f913733d0cae9aec53928a566358941c9c78bd50"
+ },
+ "report": {
+  "cargo_proof_inventory": {
+   "completed": {
+    "primary_roots": [
+     {
+      "semantics": {
+       "unit_rustflags": [
+        "-Z",
+        "trust-verify-level=2",
+        "-Z",
+        "trust-verify-timeout-ms=5000",
+        "-Z",
+        "trust-verify-function-budget-ms=3000",
+        "-Z",
+        "trust-verify-memory-ceiling-bytes=3221225472"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  "functions": [
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::GateShape as core::clone::Clone>::clone",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::GateShape as core::cmp::Eq>::assert_fields_are_eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::GateShape as core::cmp::PartialEq>::eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::clone::Clone>::clone",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::cmp::Eq>::assert_fields_are_eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::cmp::PartialEq>::eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::default::Default>::default",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::GateShape::name",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__GateShape__name:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::GateShape::of",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__GateShape__of:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::UnlicensedBodyPolicy::name",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__UnlicensedBodyPolicy__name:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::coverage_supports",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__coverage_supports:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_model_is_magnitude_order",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_model_is_magnitude_order:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_model_never_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_model_never_supplies_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_model_never_supplies_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_model_never_supplies_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_reflexive_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_reflexive_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_reflexive_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_reflexive_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_reflexive_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_reflexive_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_unrecorded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unbounded_supplies_unrecorded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_any",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_any, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_model, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unrecorded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_unrecorded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_demand_met_by_unwind, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unrecorded_never_supplies_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unwind_is_magnitude_order",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unwind_is_magnitude_order:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unwind_never_supplies_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unwind_never_supplies_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unwind_never_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "obligation:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: source-clause catalog marker awaits sealed private body authorities",
+       "status": "unknown"
+      },
+      "solver": "trust-exact-source-clause-discharge",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unknown; constructed typed trust_mc ChcVc from trust-verifier-api data: obligation=trust_ir-native-trust_mc-request-1-proof-1, function=coverage_unwind_never_supplies_unbounded, kind=Assertion, relations=1, clauses=1; native trust_mc typed CHC/PDR full-verification runner selected PdrProof for obligation trust_ir-native-trust_mc-request-1-proof-1; native trust_mc typed CHC/PDR full-verification runner refuted obligation trust_ir-native-trust_mc-request-1-proof-1; refusing to emit proof evidence; direct SMT confirmed a satisfiable typed query fact; refuted obligation via acyclic error derivation before PDR; native trust_mc typed CHC/PDR solver refuted the encoded VC; refutation demoted to unknown: the submitted ChcVc has no positive producer fidelity attestation; fresh solver-level replay proves only the encoded request, not correspondence to the source obligation. A refutation of an over-approximating encoding is a refutation of the ENCODING, not of the program \u2014 a satisfying model may assign a value the program can never produce \u2014 so it is not evidence even when its conclusion happens to be true. The obligation is UNPROVED, not disproved: this row reports a capability gap in the CHC construction (no loop transition relation is emitted), not a defect in the code; exact direct typed CHC formula was not proved by its standalone query; refusing to replace that result with a whole-function native TrustIr transport proof whose translated proof unit does not contain that formula; native trust_mc TrustIr CHC/PDR direct typed input consumed: request_id=1, proof_ids=[1], lineage_roots=[0], function_id=0, native_id=trust_ir-native-trust_mc-request-1-proof-1, translation_diagnostics=0; primary owner trust-mc@0.9.0 produced rejected evidence trust-mc:trust-contracts:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:rustc-crate:ff4f3eb23c92dde0:vc:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0 for \"Postcondition\": primary evidence was unknown",
+       "status": "unknown"
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Inconclusive"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_absent_admitted_under_permit",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_absent_admitted_under_permit:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_absent_refused_under_refuse",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_absent_refused_under_refuse:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_gated_admitted_under_any_policy",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_gated_admitted_under_any_policy:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_ungated_refused_under_any_policy",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_ungated_refused_under_any_policy:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::u64_ge_is_transitive",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:1",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:2",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::license_admits_body",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__license_admits_body:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   }
+  ],
+  "verification_gate": {
+   "conditional_on_assumption_rows": false,
+   "conditional_on_dependency_entries": true,
+   "conditional_on_runtime_checks": false,
+   "conditional_on_unknown_rows": false,
+   "conditional_on_visitation_entries": false,
+   "counts": {
+    "assumed": 0,
+    "contract_panics": 0,
+    "failed": 0,
+    "mandated": 0,
+    "proved": 24,
+    "runtime_checked": 0,
+    "total": 42,
+    "unknown": 18
+   },
+   "coverage": {
+    "coverage_complete": true,
+    "eligible": 38,
+    "processed": 38
+   },
+   "decision": "fail",
+   "exit_code": 1,
+   "lane": "strict",
+   "verification_level": "L2"
+  }
+ },
+ "rss_bound_bytes": 737525760
+}

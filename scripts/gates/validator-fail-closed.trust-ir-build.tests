@@ -1,0 +1,89 @@
+# Gate 9: the closed validator holes (fail-closed arms), notably "Discharged
+# obligation requires a ground certificate" (the anti-faith-stamp rule).
+validation_holes
+proof_obligation_source_identity
+linked_import_authentication  # WS8.14: closure walk over the interposability refusals
+lineage_authority  # WS1.4: kernel-tier lineage authority (all-or-nothing Certified set)
+tv_callee_binding  # WS1.4: a certified clean_backend_tv caller is bound to the callee it calls
+function_symbol_identity  # ratification 1.1: the link symbol is the only def identity; found untested by the enforcement-link gate
+contract_clause_binding  # WS1.1: clause binding checks sort, place and IR type
+extern_weak_declarations  # WS3.15: bodyless ExternalWeak imports, nullable-address refusals
+handle_types  # WS2.1: a CoroSuspend yield cannot retype a ptr into a handle (F-028); WS3.1: one registry through config/codegen/authority/linked lanes
+coro_suspend_signature  # WS2.1: CoroSuspend yield/frame held to the signature like Return
+g5_contract_clause_bindings  # WS1.2: summary clause bindings typed against the IR
+enum_lane_access  # WS2.2: enum ExtractField/InsertField lane rule (audit c06), tag lane read-only
+builder_doors  # WS4.12: builder doors grant nothing; annotate_last never widens to Function::proofs
+coverage_assurance  # WS1.11: coverage bound re-derived beyond TrustMc BMC (CHC/PDR, WP FullHeap)
+coverage_establishment  # consumer-derived coverage requires kernel claims or rechecked results, never producer rows
+local_inheritance  # WS1.6: same-module inheritance admitted only with the cross-crate restatement check
+struct_repr_and_target  # WS2.3: declared struct layout coherence, pinned or target-free
+dialect_types  # WS2.20: a pointer-like CallIndirect cannot originate a dialect value; codegen refuses unknown dialect namespaces (F-046)
+g3_codegen_license  # WS8.7: c05 (a, b) unbound codegen license ratchets
+by_value_struct_cycle_robustness  # WS2.4: by-value aggregate cycles refused (InlineAggregateCycle, F-045)
+spec_linked_formula  # WS1.10: Linked spec surface fails closed (typed vars, SMT-LIB2 invariants), positive certifying fixture
+spec_module_semantics  # WS1.10: shared spec structure pass the S3 rule rides with
+spec_anchor_function  # WS1.10: typed anchor/projection targets of the positive Linked fixture
+pointer_constants  # WS3.8: non-null &T / &str / &[T] constants admitted only over one module-defined global (F-049)
+numerics_policy  # WS2.23: F32 cross-engine table (interpreter bits == Lean FloatFixtures f32_table_*), float memory round trips
+nat_kernel_surface  # WS3.2: pinned Nat row = the Clean kernel's native Nat surface (F-052); b5 pin-table GAP rows flipped
+rc_runtime_pins  # WS3.21: the Clean RC runtime triple is a pinned table in all three symbol spellings (F-061)
+per_clause_proved  # WS1.3: proved is per-clause (formula equality); backed_by cites a grounded row stating a restated clause
+enum_tag_lane_alignment  # WS2.22: enum tag-lane alignment comes from the target, refused off the canonical scalar table
+sequence_element_ops  # WS3.17: ExtractElement/InsertElement over Ty::Sequence validate (element TyId, unsigned index), refused for codegen (F-051); b6.sequence.no_validated_element_read flipped
+fast1_proof_ref  # WS1.9: Termination backs Terminates, Ownership backs DataRaceFree and the borrow claims; MemorySafety still cannot back DataRaceFree
+custom_obligation_namespaces  # WS1.9: trust.protocol / trust.facet pinned byte-exact; every other namespace refused by name (F-023, F-025)
+closure_application_by_value  # WS3.13: closure application is by value (FnOnce-shaped); the Ty::Closure codegen refusal is unchanged (F-055)
+make_aggregate  # WS3.5: MakeAggregate lane rules (InvalidMakeAggregate, exact lane typing, refinement consumption), Const-seed twin stays refused
+inlined_scope_validation  # WS4.19: InvalidInlinedScope (root inlined, nameless callee) and SpanFileIndexOutOfRange on a chain link call site (F-082)
+certificate_binding  # WS1.12: a CleanCic certificate is bound to its environment, statement and callees; lineage v8 is symbol-keyed
+gate_evidence  # WS6.7 / WS1.12(c): a present GateEvidence must hold (TV row scoped to the function, body digest recomputes); the evidence policy refuses an evidence-free bound license
+bulk_memory_ops  # WS3.20: exact Usize/U64 count, U8 fill, pointer-like dst/src, ctlz f32 refused, sealed handle slot refused (F-057)
+bool_lane_bitcast_refusal  # F-161: validate_function and validate_module both refuse a bool-lane Bitcast/Transmute (CastLayoutUnsupported, one spelling) in both directions, as the interpreter does
+release_entry_points  # WS3.22: Dealloc cannot state a free — G18-1 kept, release entry points named once, double drop faults under a keyed host (F-060)
+tv_fragment_widening  # WS1.15: kernel-TV fragment S1..S5 (Bool/Select/Switch/enum tag/signed/udiv/bitwise/shifts/ZExt-Trunc), twins kernel-refused, out-of-fragment shapes refused by name
+source_value_equation  # Actual-source value equation API: complete module, independent scalar reader, exact external source mapping, strict CIC audit/admission
+source_value_equation_producer  # Actual Clean module/proof DATA replay and operator/literal/parameter/source/unrelated-body tampering; no body license
+scoped_application_substitution  # Actual conditional Nat/Except result, introduced curried applications, full scoped wire replay, wrong-result and ownership/capture/budget refusals
+one_nat_carrier  # WS3.4: one Nat carrier across producers — a handle-bearing module may not spell a pinned runtime structurally (F-047 carrier seam)
+spec_carrier_validation  # WS4.14: v47 typed spec carrier — spec-variable places refused on summaries/obligations, spec backref resolution, CleanTheorem witness minted only by kernel replay (F-014)
+harness_inputs  # WS2.11: harness inputs are entry parameters (ratified); havoc markers placement-checked (HavocMarkerMisplaced), Assume false is AssumeViolated (F-034)
+char_constant_range  # WS2.17 review: the Char Unicode-scalar range rule fires on EVERY constant leaf, not only a top-level declared Char (subset v4 condition 6 rests on it)
+authority_hygiene  # WS1.8: certificate/status/site/evidence consistency, codegen claim policy, Trusted attribution (F-018, F-022)
+module_completeness_validation  # WS5.3b: UnloweredRowNamesDefinition / DuplicateUnloweredRow / EmptyPartialClaim, linked ImportIncomplete (call-only edge exempt)
+core_execution_byte_replay  # actual-module byte execution and whole-world replay, including wrong endpoint controls
+core_execution_atomic_replay  # measured atomic-wrapper shape, representation-derived execution and complete terminal-world replay
+core_execution_u64_shift  # opt-in actual full64 scalar shifts: derived answers, independent scoped/DAG replay, fetched whole-world and endpoint/owner refusals
+core_execution_u64_shift_in_range  # input-only canonical/range proofs derive actual all-amount values and bounds; independent universal/DAG and genuine negative replay
+core_execution_u64_add  # input-only full64 wrapping Add derives actual value and output bound; independent universal/DAG and crossing/mutation controls
+core_execution_wrapped_add_replay  # original ir_wrap 64 Add: input-only raw equality/bound, strict/DAG replay, actual ordered two-result overflow and complete terminal world
+core_execution_u64_unsigned_compare  # input-only Ult/Ule/Ugt/Uge, actual fetched operands/PC/world/root retirement, strict rooted/DAG replay and false mutants
+dealloc_codegen_refusal  # G18-1 re-decided 2026-09-27: every Dealloc refused for codegen, whatever its provenance
+struct_passing_policy  # §17 (2026-09-27): AlwaysMemory refuses every by-value aggregate slot; one shared slot predicate
+array_splat  # v50: ArraySplat constant-time validation (InvalidArraySplat), the §3.1 uniform-array rule both ways (NonCanonicalUniformArray), interpreter at 2^30..2^40 elements (sparse allocations, persistent arrays)
+interpreter_memory_scaling  # v50: the reference interpreter's host memory does not grow with values — doubling MemCopy, a copy DAG loaded whole, punned loads of stored splats, MemSet vectors, InsertElement chains; scaling assertions under a counting allocator that aborts a regression early
+island_theorem  # WS1.13: clean_island anchor — a lean.theorem row certified in its island (defeq to the grounded formula, symbol bridge to a source-bound TV); F-008 island source check; twins refused by name (F-012)
+clean_backend_tv_fragment5  # SPEC "released by Release, never by Dealloc" clause 4: a Fragment-5 (boxed Nat, () -> Ptr) certificate is refused by name; the not-minted shape validates
+wire_image_refusal  # D1a: every digest-keyed entry refuses a module the writer cannot encode by name (Ty::Error, counts), via the writer in check mode
+switch_case_range  # SPEC §3.3: a switch case at an integer/char selector is a constant of its type, refused exactly as its Inst::Const twin (switch u8 [-1] and switch i8 [255] are one ConstTypeMismatch)
+signature_abi  # Typed callable descriptor census, including unused function-pointer signatures and contradictory function claims
+drop_glue  # amendment D (§20): drop-glue rows (InvalidDropGlue T1-T7), one spelling of a drop (NonCanonicalDrop S1-S3), the Ptr operand, unresolved drops refused for codegen, DropInvoke's unwind discipline
+unwind_twins  # amendment D Part 2 (§21): InvokeIndirect takes CallIndirect's call checks and Invoke's edges (results on the normal edge only, rule (a) for every unwinding twin), the unwind surface, the closure-callee codegen refusal
+template_validation  # amendment S: T1-T9 positive and negative (T6 = level-R validation of the skolem instance)
+template_instantiate  # amendment S: instantiate is checked — contracts, append-only host edits, drop rewrite (R1/R2), merge by symbol, output validation, instance digest
+nominal_type_origin  # WS3.9: v58 TypeOrigin key splits or refuses, never admits (TypeOriginConflict: in-module duplicate, linked L12)
+closure_layout  # WS3.13: v58 Module.closure_layouts coherence (TupleLayoutInconsistent, Module.closure_layouts reason), codegen refusal lifted only for a declared coherent frame
+closure_storage_merge  # Stored closure identity: exact remapped target, physical frame and nominal origin survive ordinary module merge
+module_merge  # WS4.11: library merge_into — full-equality dedup, nominal types never unified by name, exhaustive remap (F-069)
+param_pointee_place  # DG-63 (v62): ParamPointeeEntry reads only a &T / &mut T pointee, typed against T, on every role and kind; every other parameter type refused by name on summaries and obligations; the WS5.5 *x-as-Param mutation refused; spec carriers refuse it
+effect_summary_validation  # WS1.14: v59 typed effect summaries — a defined body against its summary (EffectSummaryViolated), the declaration rule under validate_linked_module, WorldPre/WorldPost legality and the legacy World refused on proved (F-013)
+abi_lane_count  # WS3.11: the pair rule's ABI lane count = its rules without the 16-level cut-off (kept as the oracle) on random type graphs; a pair under 10^5 newtypes is a pair (one pass, 256 KiB stack); a by-value cycle has no count from any entry point; chains 17-300 deep of newtype / ((), x) / Untagged / Niche wrappers over eight bottoms = a second (cycle-reachability + memoized) oracle
+codegen_lowerability_layout_work  # the codegen-lowerability pass asks one LayoutTable (codegen_lowerability_errors_in): N closure applications over an N-deep capture chain lay it out once, O(N) table work, 10^5 on a 256 KiB stack
+make_closure  # Runtime closure construction: live capture identity, signature/table/type refusals and versioned transports
+
+# Opt-in source-value-operational: bytev1_clean_uint32_runtime (qualified explicitly; not a zero-test default gate claim)
+single_inhabited_enum  # Wire65 selected payload, nominal empty type retention, no inactive storage/value authority, observed parity/refusals
+source_bound_calls  # closed genuine same-island defined-callee source composition; old parametric TV unchanged
+tensor_contract  # the tensor region (PKG-U13a): InvalidTensorType at every type occurrence (a float element by name), TensorContract static rules 1-4 (InvalidTensorContract), codegen refusal (UnlowerableForCodegen)
+tensor_map_reduce_view  # PKG-U13c: TensorMap/TensorReduce/TensorView against hand loops, their UB by message, rules M1-M5/R1-R3/V1-V6 refused by name (InvalidTensorMap/Reduce/View) on both validation paths, codegen refusal (UnlowerableForCodegen)
+tensor_gather_scatter  # PKG-U13d: TensorGather/TensorScatter against hand loops (row-major-last write at a repeated coordinate), out-of-range coordinates and extents mismatches UB by message in the interpreter and SemR's semr_eval, rules G1-G3/S1-S3 refused by name (InvalidTensorGather/Scatter) on both validation paths, the BoundsCheck site row, codegen refusal (UnlowerableForCodegen)
+tensor_weight_blobs  # PKG-U13e: content-addressed weight blobs: identical bytes stored once (builder, binary image, merge), blob table B1/B2 refused by name (InvalidBlobTable), MissingBlob, constant rules C1-C4 (InvalidTensorBlob) at 64- and 32-bit pointer width, float element refused by its type, every integer element and shape read little-endian by the interpreter (TypeError on each malformed shape), body digest reads the digest never the bytes, codec round trip, codegen refusal (UnlowerableForCodegen)

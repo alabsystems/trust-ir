@@ -1,0 +1,13 @@
+; TrustIr template text format v1
+template "core::convert::identity"
+param $0 type
+; TrustIr text format v1
+module "core"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = ($0) -> ($0)
+
+fn @"!template_body"(functy.0) {
+bb0(%0: $0):
+    ret %0
+}

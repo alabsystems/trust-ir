@@ -6,3 +6,7 @@ This product is licensed under the Apache License, Version 2.0. See LICENSE.
 Third-party project influences and dependency notes are documented in
 THIRD_PARTY.md. That file is an attribution aid, not a generated software bill
 of materials.
+
+SemR includes a translated operator slice from the MiniRust project at revision
+e8666821f7ee06282199e126a623679f8df85a36. Upstream license texts and provenance
+are retained in LICENSES/MiniRust-* and LICENSES/MiniRust.json; see THIRD_PARTY.md.

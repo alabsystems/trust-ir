@@ -1,0 +1,236 @@
+# ValidationError / BinaryError variants NO must-refuse corpus row exhibits.
+#
+# EXACT and DECREASE-ONLY: `refuse_corpus.rs` derives the variant lists from
+# the enum sources, asserts this file is exactly (all variants) minus (variants
+# a manifest row exhibits), and, against the merge-base with origin/main, that
+# the set only SHRANK. So a NEW variant cannot land without a corpus row: it is
+# absent here (the exactness check fails) and cannot be added (the shrink
+# check fails). Delete a line when its variant gains a row.
+#
+# class:
+#   structural   refused by plain `validate_module` on every lane; a consumer
+#                that validates never meets it (gate 9 evidence; the
+#                enforcement-links V census counts the ones no test names)
+#   lane:<name>  refused only at a lane the corpus does not drive yet (the
+#                linked import walk, the bundle lane, a dialect-schema
+#                registry, the bound-certificate knob, a substituted handle
+#                registry); a row needs a sidecar the manifest has no column for
+#   unencodable  the writer refuses to produce bytes: no wire artifact exists
+#   unreachable  measured dead: no input can produce it, the code refuses
+#                earlier by construction
+#
+# variant	class	reason
+EmptyFunction	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidSpecAnchorFunction	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidSpecProjectionFunction	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BlankModuleName	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidSpecStructure	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SpecLinkedFormulaUnparsed	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SpecLinkedVariableUnparsed	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidBodyGate	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidDisplayPath	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidFunctionSection	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidAbiSlotFact	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ContradictoryFunctionVisibility	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ReservedSpecModuleName	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DanglingExternRef	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateFunctionSymbol	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UnloweredRowNamesDefinition	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateUnloweredRow	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+EmptyPartialClaim	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ImportTableNotInterned	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ImportIdentityConflict	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+AmbiguousImportedSymbol	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+ImportUnavailable	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+ImportedModuleInvalid	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+ImportIncomplete	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+ImportCycle	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+ImportClosureTooDeep	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+ExternInheritanceRestatementMismatch	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+RustAbiVararg	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BlockMissingTerminator	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateBlockId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidValueName	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidScopeTree	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidInstructionScope	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidInlinedScope	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateValueDef	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UseBeforeDef	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BinOpTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BinOpRequiresInteger	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BinOpRequiresFloat	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BinOpRequiresBool	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ICmpRequiresIntegerOrPtr	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+FCmpRequiresFloat	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CastIncompatible	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CastLayoutUnsupported	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PointerMetadataTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CondBrRequiresBool	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PredicateRequiresBool	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SelectConditionTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidVectorType	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidModuleVectorType	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidVectorDialectOp	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidDialectSchema	lane:validate_module_with_dialect_schemas	refused only under a caller-supplied DialectSchemaRegistry; the pinned entry points carry none
+InvalidVectorElementOp	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BranchTargetNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateSwitchCase	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UnreachableBlock	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BranchArgCountMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ReturnTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ReturnArityMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallArgCountMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallArgTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CalleeNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SeqMapFwdNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SeqMapTypeNotSequence	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SeqMapFwdSignatureMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+GlobalNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallIndirectSigNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallIndirectArgCountMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallIndirectArgTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallIndirectClosureSigMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallIndirectClosureTargetMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InstrResultArityMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ConstTypeReferenceNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateStructId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateFuncId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingFrameIdReused	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingFrameNotOpen	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingSlotOutOfRange	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingSlotTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingBindTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingFrameUnclosed	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BindingFrameUnopened	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ConflictingMemoryRoles	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ConflictingFunctionMemoryRoles	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ClosurePureWithStatefulCapture	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+FunctionPureWithStatefulClosureSignature	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ClosureTypeNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ClosureCaptureArityMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ClosureCaptureTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InheritedProofCalleeNotFound	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InheritedProofNotDischarged	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InheritedProofCalleeScopeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+LocalInheritanceRestatementMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CertificateBindingMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UnboundCertificate	lane:with_bound_certificates	refused only under ValidationConfig::with_bound_certificates(true), and a row needs a genuine kernel certificate minted in-process
+DuplicateObligationContent	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofContextOnNonCallNode	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofContextUnknownObligation	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofContextAssumeNotAuthoritative	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofContextAssumeScopeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofContextEstablishScopeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofRefUnresolved	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofRefWithoutClaim	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofRefKindMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofRefScopeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofRefSiteMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ValueRangeInverted	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+KnownBitsContradiction	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CertifiedCleanCicLineageMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+GroundCertificateStatusInconsistent	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+TrustedWithoutJustification	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ObligationSiteKindMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+EvidenceKindMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CertifiedCleanCicKernelRecheckFailed	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+OperandNotPointer	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+GepIndexNotInteger	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+OperandNotInteger	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+OperandTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+FieldAccessInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+IllegalAtomicOrdering	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BranchArgTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UseBeforeDefInBlock	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+MidBlockTerminator	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+MissingTerminator	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+MisplacedLandingPad	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ExhaustiveSwitchDefaultReachable	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ExhaustiveSwitchCasesIncomplete	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+FuncAttrClaimViolated	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BorrowMutThroughSharedRef	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+EndBorrowOfNonBorrow	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CastOperandTypeMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CastWidthDirectionInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+EntryParamsMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DanglingTypeReference	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicateProofObligationId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidProofObligationSourceTextId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ProofObligationSourceRangeFileOutOfRange	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ObligationSiteFunctionMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ObligationSiteOutOfRange	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidObligationBinding	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UnresolvedObligationSpecRef	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ObligationFunctionScopeUnresolved	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidProofObligationSourceRange	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidPublicObligationId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PublicObligationDigestNotSha256	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PublicObligationDigestZero	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DuplicatePublicObligationId	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DischargedWithoutCertificate	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DanglingProofCertificate	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+SpanFileIndexOutOfRange	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+TransparentReprFieldCount	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PackedReprInvalidAlign	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+AccessAlignInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+GlobalAlignInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+WrappingConflictsWithNoOverflow	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+TargetPointerSizeInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+TargetTripleEmpty	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+TargetScalarLayoutUnavailable	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+BranchWeightsMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HavocMarkerMisplaced	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DanglingDiagnosticObligation	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InlineAggregateCycle	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+StructLayoutInconsistent	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+FfiStructReprUnpinned	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+TargetInfoRequired	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallEdgeConvMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+CallEdgeSignatureMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+ParamAbiAttrInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PredicateTableMalformed	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PredicateTableNotInterned	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+DanglingPredicateRef	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RefinementTypeInvalid	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidHandleType	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleEntryPointSignatureMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleEntryPointDefinedLocally	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleEntryPointShadowedByGlobal	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleEntryPointAddressTaken	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RcEntryPointSignatureMismatch	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RcEntryPointDefinedLocally	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RcEntryPointShadowedByGlobal	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RcEntryPointAddressTaken	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+WeakDeclarationAddressNotNullable	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleForeignDeclaration	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidHandleUse	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleRuntimeSpelledStructurally	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+HandleLaneNiche	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+UninhabitedVariantConstructed	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+InvalidMakeAggregate	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+PointerConstantRefused	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RefinementNotImplied	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+RefinementContradicted	structural	refused by plain validate_module; gate-9 evidence, counted by the enforcement-links V census
+NativeBundleNotForThisModule	lane:validate_module_with_bundle	refused only by the bundle-bearing entry point, which needs a NativeVerificationBundle sidecar the manifest has no column for
+ModuleHasNoWireIdentity	lane:digest_keyed_entry_points	the module has no wire identity (a construct ahead of its wire tag): the writer refuses it, so no wire artifact can carry the row
+CoverageAssuranceRequestUnknown	lane:validate_module_with_bundle	refused only by the bundle-bearing entry point, which needs a NativeVerificationBundle sidecar the manifest has no column for
+CoverageAssuranceObligationNotRequested	lane:validate_module_with_bundle	refused only by the bundle-bearing entry point, which needs a NativeVerificationBundle sidecar the manifest has no column for
+CoverageAssuranceBoundMismatch	lane:validate_module_with_bundle	refused only by the bundle-bearing entry point, which needs a NativeVerificationBundle sidecar the manifest has no column for
+ImportCoverageBelowClaim	lane:validate_linked_module	refused only by the linked import walk, which needs a root plus dependency PAIR and a resolver; one wire artifact carries no dependency
+Unencodable	unencodable	writer-side: the binary writer refuses to produce bytes for Ty::Error, so no blob exists for a reader to refuse
+TupleLayoutInconsistent	structural	refused by plain validate_module for a hand-built or serde-decoded module only: the binary reader refuses every incoherent or target-less tuple table, and every v58 closure layout table (reported under this variant with a `Module.closure_layouts: ` reason), itself (InvalidData, row blob_tuple_layout_incoherent), so no wire artifact reaches this variant
+UnexpectedEof	unreachable	every read runs reserve_checked first, which reports a short input as TooLarge, so the read_exact that would report EOF never sees one (measured: a 10-byte blob is TooLarge; row blob_truncated)
+CoverageAttestationSchemaUnsupported	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageAttestationRowDuplicate	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageSolvedBundleMissing	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageSolvedBundleInvalid	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageSolvedBundleDigestMismatch	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageEvidenceMissing	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageEvidenceDigestMismatch	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageResultArtifactUnresolved	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageResultReplayInvalid	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageModeStrengthMismatch	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageSubjectCodeDrift	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageClaimDrift	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageContradicted	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)
+CoverageRowExceedsEstablished	lane:coverage_establishment_report	refused only by the coverage-establishment report (crates/trust-ir-build/src/coverage.rs), which needs a NativeVerificationBundle, a sealed NativeCoverageAttestation and a NativeCoverageResultReplay implementation the manifest has no column for; classed at the allowlist's first landing, when origin/main brought the lane in beside it (355a9e9d)

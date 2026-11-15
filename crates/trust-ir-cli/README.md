@@ -9,7 +9,7 @@ without writing a throwaway Rust harness for each operation.
 ## Installation
 
 ```sh
-cargo build -p trust-ir-cli --release
+targo --unverified build -p trust-ir-cli --release
 # Binary at target/release/trust-ir
 ```
 
@@ -61,6 +61,27 @@ trust-ir validate ./build/broken.tmbc
 #   [0] BlockMissingTerminator(0)
 ```
 
+**Allocation-size advisory.** `validate` also reports, on stderr, every
+`Alloca` / `HeapAlloc` whose byte size is not provably within the largest
+object the module's target can hold — `isize::MAX` bytes at its pointer width;
+there is no other threshold — on every target, inside or outside the
+canonical scalar-alignment table. An allocation every execution of which asks
+for more prints as a `warning:` (it can never succeed); one whose size no bound
+keeps within the line, or whose element type has no byte size, prints as a
+`note:` line, every one of them. Silence is not a statement that an allocation
+is small: only defined executions are judged (a zero or negative count is
+undefined behaviour at the allocation, so an unchecked `i64` count of bytes,
+at most `i64::MAX`, is within a 64-bit line), and a count narrower than the
+pointer is bounded by its type (`u32` elements of `u64`, up to 32 GiB, are not
+reported). The advisory never changes the exit code. `trust_ir::alloc_bound`
+documents the analysis.
+
+```sh
+trust-ir validate ./build/alloc.trust_ir
+# note: 1 allocation whose size no bound keeps within the target's largest object (advisory):
+#   alloca of `i64` in `f` bb0: no bound proves its size within the target's 9223372036854775807-byte object limit; bound the count (`if n <= MAX`), mask it (`n & MASK`) or narrow it (advisory)
+```
+
 ### `trust-ir dump <path>`
 
 Reads a module in any supported format and pretty-prints it in the canonical
@@ -102,7 +123,6 @@ bit ops) or trap stubs that fail with the extern's name when reached.
 | `--entry <name>` | `program` | Entry function name. |
 | `--fuel <n>` | `1000000000` | Interpreter fuel (instruction budget). |
 | `--max-call-depth <n>` | `4096` | Maximum interpreted call depth. |
-| `--mem-budget <bytes>` | `268435456` | Interpreter memory budget. |
 | `--validate` | off | Also validate the linked image before executing. |
 
 ```sh
@@ -143,6 +163,28 @@ nonblank projection (L2). Exits 0 only for a certifying `Linked` report.
 | `--harness-manifest <PATH>` | JSON manifest listing the real `#[kani::proof]` harnesses. Enables L1 proof-name resolution: every `SpecProof`'s `proof_name` must resolve to an entry here. |
 | `--require-manifest` | Require a manifest even for `DesignOnly` proof bindings. `Linked` bindings already require one by default. |
 | `--allow-unverified-proofs` | Analyze `Linked` proof bindings without a manifest. The result is explicitly non-certifying and exits nonzero even when no obligation violation is found. Conflicts with the two flags above. |
+
+### `trust-ir --version` / `trust-ir version [--json]`
+
+`--version` (`-V`) prints the build identity,
+`trust-ir <MAJOR.MINOR.0>+<source>`. `<source>` is `g<12-hex>` (packaging set
+`ALAB_BUILD_GIT_SHA` and attested a clean tree with
+`ALAB_BUILD_GIT_DIRTY=0`; the `TRUST_BUILD_GIT_*` spelling is refused because
+verified Targo scrubs `TRUST_*` from build scripts), `g<12-hex>.dirty`, `g<12-hex>.local` (read by
+`git` from the crate's own checkout; the working tree is not attested), or
+`unknown`. It is never a guessed sha. `--version --verbose`, or the `version`
+subcommand, adds the full sha and its attestation, the wire version and
+readable range, and the module-identity digest domain. `version --json` emits
+the same facts as JSON. All of it comes from `trust_ir::BUILD_IDENTITY`,
+which is resolved by `crates/trust-ir/build.rs`.
+
+```sh
+trust-ir --version --verbose
+# trust-ir 0.14.0+g0123456789ab
+# source 0123456789ab (packaged; working tree attested clean)
+# wire v46; reads v23..=v25, v29..=v46 (v26..=v28 refused: ambiguous lineage)
+# module identity domain trust_ir.module.v3
+```
 
 ## Design notes
 

@@ -104,6 +104,7 @@ def runInsts : List Inst → Sem Unit
     let r ← stepInst i
     match r with
     | .value _       => runInsts rest
+    | .values _      => runInsts rest
     | .terminator _  =>
       Sem.throwTypeError "dialect lowering emitted a terminator"
 

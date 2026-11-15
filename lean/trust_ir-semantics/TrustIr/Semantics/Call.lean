@@ -14,6 +14,7 @@
 import TrustIr.Inst
 import TrustIr.Semantics.Monad
 import TrustIr.Semantics.Control
+import TrustIr.Semantics.Arith
 
 namespace TrustIr
 
@@ -86,6 +87,8 @@ def CallStack.empty : CallStack := []
 structure FuncBody where
   paramTys  : List Ty
   returnTys : List Ty
+  abi : Option SignatureAbi := none
+  isVararg : Bool := false
   deriving Repr
 
 /-- Function table: maps FuncId to function metadata. -/
@@ -122,6 +125,7 @@ def saveFrame (s : MachineState) (dest : Option ValueId) : StackFrame :=
   , returnDest       := dest
   , savedNextValueId := s.nextValueId }
 
+trustIrDenseMatch
 /-- Restore the caller's context from a StackFrame, binding the
     return value to the returnDest if present. -/
 def restoreFrame (s : MachineState) (frame : StackFrame) (retVals : List Value)
@@ -171,7 +175,7 @@ def semCallIndirect (funcTable : FuncTable) (funcPtrTable : FuncPtrTable)
   -- Resolve the function pointer value
   let calleeVal ← Sem.lookupValue calleeValId
   let addr ← match calleeVal with
-    | .ptr a   => pure a
+    | .ptr a _ => pure a
     | .nullPtr => Sem.throwUB "CallIndirect: null function pointer"
     | _        => Sem.throwTypeError "CallIndirect: callee is not a pointer"
   -- Resolve pointer to FuncId
@@ -189,15 +193,38 @@ def semCallIndirect (funcTable : FuncTable) (funcPtrTable : FuncPtrTable)
 -- Switch semantics
 -- =================================================================
 
-/-- Match a switch value against a list of cases.
-    Returns the first matching case target and args, or none. -/
+/-- Does a switch scrutinee equal one case constant? Mirrors the reference
+    interpreter's `constant_to_value(&value.ty, case) == value`
+    (crates/trust-ir/src/interpret.rs `Inst::Switch`), which converts the case
+    AT THE SCRUTINEE'S TYPE: both sides are compared as residues at the
+    scrutinee's width, so a signed scrutinee's negative case (`switch i8
+    [-1: ..]`) matches its residue (`255`) whatever produced the scrutinee — a
+    parameter, an operation or a constant. (Before the residue rule a constant
+    scrutinee bound the raw literal and matched, while a parameter or an
+    operation result carried the residue and took the default.)
+
+    The `u128` arm (WS2.18 review): a canonical `Constant::U128` (a value
+    above `i128::MAX`) is how Rust spells a large `U128` case, and the
+    interpreter converts it at the scrutinee's `U128` type and compares. Without
+    this arm the Lean scan fell through to `false` and took the DEFAULT edge on
+    a scrutinee the interpreter sends to the case — a silent disagreement on
+    which block runs. Only a width-128 scrutinee can equal one (the
+    interpreter's `(Ty::U128, Constant::U128)` arm is the only one). -/
+def switchCaseMatches (switchVal : Value) (c : Constant) : Bool :=
+  match switchVal, c with
+  | .int w v,  .int cv   => truncateUnsigned v w == truncateUnsigned cv w
+  | .int w v,  .u128 cv  => w == 128 && v == Int.ofNat cv
+  | .bool b,   .bool cb  => b == cb
+  | _, _                 => false
+
+/-- The case the reference interpreter's IN-ORDER case scan stops at: the first
+    case that matches the scrutinee, or the first case it cannot convert at all
+    because it holds a link-time `symbolAddr` (WS2.18 review — `semSwitch`
+    refuses that one fail-closed instead of skipping it, as the interpreter's
+    `constant_to_value` does). `none` = no case stops the scan: default edge. -/
 def matchSwitchCase (switchVal : Value) (cases : List SwitchCase)
     : Option SwitchCase :=
-  cases.find? fun sc =>
-    match switchVal, sc.value with
-    | .int _w v, .int cv    => v == cv
-    | .bool b,   .bool cb   => b == cb
-    | _, _                  => false
+  cases.find? fun sc => sc.value.hasSymbolAddr || switchCaseMatches switchVal sc.value
 
 /-- Evaluate a Switch instruction.
     Matches the value against cases, branching to the first match
@@ -212,9 +239,17 @@ def semSwitch (valueId : ValueId) (default_ : BlockId)
   -- guard `matchSwitchCase` would silently fall through to the default edge).
   Sem.rejectPartial val "Switch"
   match matchSwitchCase val cases with
-  | some sc => do
-    let args ← sc.args.mapM Sem.lookupValue
-    pure (.Continue sc.target args)
+  | some sc =>
+    -- A case holding a link-time address has no compile-time value to
+    -- compare against: the scan that REACHES it fails closed (WS2.18
+    -- review), exactly as the interpreter's in-order `constant_to_value`
+    -- refuses it — never silently skipped to a later case or the default.
+    if sc.value.hasSymbolAddr then
+      Sem.throwUnsupported .linkTimeAddress
+        "Switch: a case holds a link-time symbol address"
+    else do
+      let args ← sc.args.mapM Sem.lookupValue
+      pure (.Continue sc.target args)
   | none => do
     let args ← defaultArgIds.mapM Sem.lookupValue
     pure (.Continue default_ args)
@@ -232,3 +267,5 @@ def isTopLevel (stack : CallStack) : Prop :=
   stack.length = 0
 
 end TrustIr
+
+#trustIrAxiomsExact TrustIr.restoreFrame == []

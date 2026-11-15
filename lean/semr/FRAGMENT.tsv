@@ -1,0 +1,50 @@
+# SemR's fragment of trust-ir level R (Trust proven-core RM4): the Rust `Inst`
+# variants whose semantics is SemR's (`lean/semr/SemR.lean`), each beside the
+# SemR `Inst` constructor that decodes and runs it. From RM4 the parity gate for
+# these variants is SemR: `crates/trust-ir/tests/lean_schema_parity.rs`
+# (`inst_parity_reads_semr_for_its_fragment`) holds the names to SemR.lean, and
+# `crates/trust-ir-conformance/tests/lean_exec_differential.rs`
+# (`semr_parity_gate_*`) holds the semantics: over every SemR differential's
+# runs, every variant here is executed (`semr_eval --executed`) by an agreeing
+# SemR/interpreter run, and one disagreement fails the gate. Every
+# other variant keeps the old gate (a constructor in lean/trust_ir-semantics).
+# A sub-feature SemR refuses by name (`unsupported <feature>`, e.g. a float
+# operand) stays refused; the fragment is the instruction, not every type.
+# Quoted-only model constructors are accounted for separately in
+# QUOTED_MODEL.tsv. They remain decoder-refused and earn no credit here.
+#
+# rust-variant	semr-constructor
+BinOp	binop
+UnOp	unop
+Overflow	overflow
+ICmp	icmp
+Const	const
+Copy	copy
+Select	select
+ExtractField	extractField
+InsertField	insertField
+OpenFrame	openFrame
+BindSlot	bindSlot
+LoadSlot	loadSlot
+CloseFrame	closeFrame
+NullPtr	nullPtr
+Unreachable	unreachable
+Assert	assert
+Assume	assume
+Call	call
+Br	br
+CondBr	condBr
+Cast	cast
+Switch	switch
+Return	ret
+Alloca	alloca
+Load	load
+Store	store
+GEP	gep
+Dealloc	dealloc
+TensorContract	tensorContract
+TensorMap	tensorMap
+TensorReduce	tensorReduce
+TensorView	tensorView
+TensorGather	tensorGather
+TensorScatter	tensorScatter

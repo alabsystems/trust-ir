@@ -7,8 +7,8 @@
 --
 -- Reference: designs/2026-04-16-trust_ir-semantics-lean-architecture.md, Section 6 Phase 4
 --
--- Aggregate values (structs, arrays, tuples) are represented as
--- `Value.aggregate (List Value)`.  Field/element access is by index.
+-- Struct/tuple products retain Value.aggregate; arrays use compact
+-- Value.array trees. Field and element access remain distinct operations.
 
 import TrustIr.Inst
 import TrustIr.Semantics.Arith
@@ -22,7 +22,7 @@ namespace TrustIr
 ## Overview
 
 TrustIr aggregates (structs, arrays, tuples) are represented uniformly
-as `Value.aggregate (List Value)`.  The instruction set provides
+as field products or compact `Value.array` values.  The instruction set provides
 four operations:
 
 1. **ExtractField**: get a field from a struct aggregate by index
@@ -45,18 +45,19 @@ The distinction is in the instruction used:
 
 Both produce bounds-checking errors for out-of-range indices.
 
-## StructInit
+## MakeAggregate (StructInit)
 
-TrustIr does not have an explicit StructInit instruction.  Struct
-construction is done by composing InsertField operations on an
-initial `undef` aggregate, or by the Const instruction with an
-aggregate constant.  This module provides a helper `buildAggregate`
-for constructing aggregates from a list of values.
+Since WS3.5 `MakeAggregate` is the explicit register-level constructor:
+`semMakeAggregate` looks up its lanes and binds `buildAggregate lanes`
+for a struct / tuple / array (enum and record construction are an honest
+partial, see there). Before it, struct construction was done by composing
+InsertField operations on an initial `undef` aggregate, or by the Const
+instruction with an aggregate constant; both spellings remain.
 
 ## Design note
 
-The aggregate semantics are pure functions on the `Value.aggregate`
-representation.  No memory access is involved -- aggregate values
+The aggregate semantics are pure functions on field products and compact
+array values.  No memory access is involved -- aggregate values
 live in SSA registers.  Memory-backed aggregates are handled by
 Load/Store with byte encoding in `Memory.lean`.
 -/
@@ -65,103 +66,132 @@ Load/Store with byte encoding in `Memory.lean`.
 -- Aggregate helpers (pure functions)
 -- =================================================================
 
-/-- Get a field from an aggregate by static index.
+/-- Get a field from an aggregate or named record by static index.
     Returns none if the index is out of bounds or the value is not
-    an aggregate. -/
+    an aggregate/record. Record labels remain attached to the container. -/
 def getField (v : Value) (field : Nat) : Option Value :=
   match v with
-  | .aggregate fields => fields.get? field
+  | .aggregate fields => trustIrListGet? fields field
+  | .record fields => (trustIrListGet? fields field).map Prod.snd
   | _ => none
 
-/-- Set a field in an aggregate by static index.
+/-- Set a field in an aggregate or named record by static index.
     Returns none if the index is out of bounds or the value is not
-    an aggregate. -/
+    an aggregate/record. A record update preserves its declaration labels and
+    field order, changing only the selected value. -/
 def setField (v : Value) (field : Nat) (newVal : Value) : Option Value :=
   match v with
   | .aggregate fields =>
     if field < fields.length then
       some (.aggregate (fields.set field newVal))
     else none
+  | .record fields =>
+    match trustIrListGet? fields field with
+    | some (name, _) => some (.record (fields.set field (name, newVal)))
+    | none => none
   | _ => none
 
-/-- Get an element from an aggregate by dynamic index. -/
+/-- Get an element from an aggregate or a sequence by dynamic index.
+
+    WS3.17 (F-051): the `.sequence` arm mirrors the reference interpreter,
+    whose `eval_extract_element` reads `Vector | Array | Sequence | Aggregate`
+    payloads alike (crates/trust-ir/src/interpret.rs). Until this arm existed
+    the Lean model TYPE-ERRORED on a sequence read that the Rust engine
+    executed, so the two engines disagreed on a construct both the format and
+    `lowering-target-subset.md` admit. -/
 def getElement (v : Value) (index : Nat) : Option Value :=
   match v with
-  | .aggregate elems => elems.get? index
+  | .array elems => elems.get? index
+  | .aggregate elems => trustIrListGet? elems index
+  | .sequence elems => trustIrListGet? elems index
   | _ => none
 
-/-- Set an element in an aggregate by dynamic index. -/
+/-- Set an element in an aggregate or a sequence by dynamic index. The result
+    keeps the operand's OWN constructor — a sequence write yields a sequence,
+    never an aggregate — so the nominal distinctness the step relation relies
+    on (see `Value`) survives the update. -/
 def setElement (v : Value) (index : Nat) (newVal : Value) : Option Value :=
   match v with
+  | .array elems => (elems.set? index newVal).map Value.array
   | .aggregate elems =>
     if index < elems.length then
       some (.aggregate (elems.set index newVal))
     else none
+  | .sequence elems =>
+    if index < elems.length then
+      some (.sequence (elems.set index newVal))
+    else none
   | _ => none
 
 /-- Runtime payload check for vector ExtractElement, whose declared type is
-    the lane result type.  The executable subset is bounded to v4i32, v2i64,
-    and the logical bool masks v16bool / v8bool / v4bool / v2bool. The bool lane
-    counts match `Ty.executableVectorPayloadMatches` (Arith.lean) and the
-    `vector.mask_to_bits` dialect contract (which accepts <16/8/4/2 x bool>), so
-    the dialect's `mask_to_bits` lowering — a per-lane `ExtractElement .Bool`
-    chain — is executable at every mask shape the dialect admits. -/
+    the lane result type.  The executable subset is the integer lanes of
+    `Ty.executableIntLane?` (Arith.lean, the one statement of the integer
+    shapes: the lane types of the x86-64 vector-compare cells, signed and
+    unsigned) and the logical bool masks v16bool / v8bool / v4bool / v2bool.
+    The bool lane counts match the `vector.mask_to_bits` dialect contract
+    (which accepts <16/8/4/2 x bool>), so the dialect's `mask_to_bits`
+    lowering — a per-lane `ExtractElement .Bool` chain — is executable at every
+    mask shape the dialect admits. (Until 2026-09-30 this check, the lane-value
+    check and the payload check each listed their own integer shapes, and they
+    drifted twice: the i8 / i16 rows were missing here while the payload check
+    admitted those shapes, and every check omitted the unsigned lane types.) -/
 def Ty.executableVectorLanePayloadMatches (elemTy : Ty)
     (lanes : List Value) : _root_.Bool :=
-  match elemTy with
-  | .I32 => lanes.length == 4 && lanes.all (Value.isIntWidth 32)
-  | .I64 => lanes.length == 2 && lanes.all (Value.isIntWidth 64)
-  | .Bool =>
-    (lanes.length == 16 || lanes.length == 8 || lanes.length == 4 || lanes.length == 2)
-      && lanes.all Value.isBool
-  | _ => false
+  match elemTy.executableIntLane? with
+  | some (n, width) => lanes.length == n && lanes.all (Value.isIntWidth width)
+  | none =>
+    match elemTy with
+    | .Bool =>
+      (lanes.length == 16 || lanes.length == 8 || lanes.length == 4 || lanes.length == 2)
+        && lanes.all Value.isBool
+    | _ => false
 
-/-- Runtime lane-value check for vector InsertElement. -/
+/-- Runtime lane-value check for vector InsertElement: a lane of
+    `Ty.executableIntLane?`'s width, or a bool. -/
 def Ty.executableVectorLaneValueMatches (elemTy : Ty)
     (v : Value) : _root_.Bool :=
-  match elemTy with
-  | .I32 => Value.isIntWidth 32 v
-  | .I64 => Value.isIntWidth 64 v
-  | .Bool => Value.isBool v
-  | _ => false
+  match elemTy.executableIntLane? with
+  | some (_, width) => Value.isIntWidth width v
+  | none =>
+    match elemTy with
+    | .Bool => Value.isBool v
+    | _ => false
 
-/-- Get a vector lane from the bounded executable vector subset. -/
+/-- Extract only the selected lane of an admitted scalar vector. The
+    instruction carries the result lane type, not a declared vector census;
+    bounds therefore use the actual list. Unselected lanes are not inspected.
+    The backend-shaped `executable*` classifiers above stay unchanged. -/
 def getVectorElement (elemTy : Ty) (v : Value) (index : Nat)
     : Except SemError Value :=
   match v with
   | .vector lanes =>
-    if elemTy.executableVectorLanePayloadMatches lanes then
-      match lanes.get? index with
-      | some lane => .ok lane
-      | none => .error (.ub "ExtractElement: vector index out of bounds")
-    else
-      .error (.unsupported .vectorShape
-        "ExtractElement: unsupported vector shape or lane type mismatch")
+    if !elemTy.semanticVectorLane || lanes.isEmpty then
+      .error (.unsupported .vectorShape "ExtractElement: unadmitted or empty vector")
+    else do
+      let lane ← match trustIrListGet? lanes index with
+        | some lane => pure lane
+        | none => throw (.ub "ExtractElement: vector index out of bounds")
+      checkVectorLaneType elemTy true lane
+      pure lane
   | _ => .error (.typeError "ExtractElement: operand is not a vector")
 
-/-- Set a vector lane in the bounded executable vector subset.
+/-- Set a lane of any positive admitted scalar-vector shape.
     InsertElement declares the vector result/source type, so the lane type is
     derived from `Ty.Vector lanes elemTy`. -/
 def setVectorElement (vectorTy : Ty) (v : Value) (index : Nat)
     (newVal : Value) : Except SemError Value :=
   match v with
-  | .vector lanes =>
-    if vectorTy.executableVectorPayloadMatches lanes then
-      match vectorTy with
-      | .Vector _ elemTy =>
-        if elemTy.executableVectorLaneValueMatches newVal then
-          if index < lanes.length then
-            .ok (.vector (lanes.set index newVal))
-          else
-            .error (.ub "InsertElement: vector index out of bounds")
-        else
-          .error (.typeError "InsertElement: lane value does not match vector type")
-      | _ =>
-        .error (.unsupported .vectorShape
-          "InsertElement: unsupported vector shape or lane type mismatch")
-    else
-      .error (.unsupported .vectorShape
-        "InsertElement: unsupported vector shape or lane type mismatch")
+  | .vector lanes => do
+    match vectorTy with
+    | .Vector count elemTy =>
+      checkVectorShape count elemTy lanes
+      checkVectorLaneType elemTy false newVal
+      let previous ← match trustIrListGet? lanes index with
+        | some lane => pure lane
+        | none => throw (.ub "InsertElement: vector index out of bounds")
+      checkVectorLaneType elemTy true previous
+      pure (.vector (lanes.set index newVal))
+    | _ => throw (.typeError "InsertElement: declared type is not a vector")
   | _ => .error (.typeError "InsertElement: operand is not a vector")
 
 /-- Build an aggregate value from a list of values.
@@ -192,10 +222,19 @@ def semExtractField (_ty : Ty) (aggregateId : ValueId) (field : Nat)
   -- Projecting a field inspects the aggregate: a poison operand is UB.
   Sem.rejectPartial aggVal "ExtractField"
   match getField aggVal field with
-  | some v => Sem.bindFresh v
+  | some v =>
+    -- Crystal lane (E3b): reading an UNWRITTEN lane (`.uninit`) is undefined behaviour,
+    -- exactly the Rust reference interpreter's `eval_extract_field`, which faults on that
+    -- lane and on no other; every other lane binds as before. (The lane spelled this
+    -- `Sem.rejectPartial v`, which on main would ALSO fault a `.undef` lane -- main's WS2.10
+    -- made `.undef` poison there -- while the interpreter transports it.)
+    if v.isUninit then
+      Sem.throwUB "ExtractField: read of an unwritten aggregate lane (uninit)"
+    else
+      Sem.bindFresh v
   | none   =>
     match aggVal with
-    | .aggregate _ =>
+    | .aggregate _ | .record _ =>
       Sem.throwUB "ExtractField: field index out of bounds"
     | _ =>
       Sem.throwTypeError "ExtractField: operand is not an aggregate"
@@ -210,22 +249,150 @@ def semExtractField (_ty : Ty) (aggregateId : ValueId) (field : Nat)
     This is a non-destructive update: the original aggregate is
     not modified (SSA form).
 
+    Lane 0 of an ENUM value is its discriminant (the `[tag, fields..]` value
+    model). Rewriting it would leave the old variant's payload under the new
+    tag, so it throws UB — the mirror of the Rust validator's
+    `FieldAccessInvalid` "insert_field cannot rewrite an enum discriminant" and
+    of the reference interpreter's `UndefinedBehavior` (roadmap WS2.2 item 2).
+    A variant is constructed whole with `Const`.
+
+    NOT mirrored (B3 depth ledger): the lane TYPE. `MachineState` carries no
+    `EnumDef` table and there is no value-against-type conformance predicate,
+    so neither this nor `semExtractField` checks that the lane has the declared
+    type, for any aggregate kind. A lane beyond the ACTIVE variant's arity is
+    already UB, because the flat `.aggregate` has `1 + |fields(active)|`
+    elements.
+
     Mirrors Rust `Inst::InsertField`. -/
-def semInsertField (_ty : Ty) (aggregateId : ValueId) (field : Nat)
+def semInsertField (ty : Ty) (aggregateId : ValueId) (field : Nat)
     (valueId : ValueId) : Sem ValueId := do
   let aggVal ← Sem.lookupValue aggregateId
   let newFieldVal ← Sem.lookupValue valueId
   -- Both the aggregate and the inserted value are inspected: poison is UB.
   Sem.rejectPartial aggVal "InsertField"
   Sem.rejectPartial newFieldVal "InsertField"
-  match setField aggVal field newFieldVal with
-  | some v => Sem.bindFresh v
-  | none   =>
-    match aggVal with
-    | .aggregate _ =>
-      Sem.throwUB "InsertField: field index out of bounds"
-    | _ =>
-      Sem.throwTypeError "InsertField: operand is not an aggregate"
+  -- `InsertField`'s `ty` is the AGGREGATE (result) type (Rust `inst.rs`,
+  -- `Inst::InsertField`), so an enum write sees `.Enum _`.
+  match ty, field with
+  | .Enum _, 0 =>
+    Sem.throwUB "InsertField: cannot rewrite an enum discriminant (lane 0); construct the variant with Const"
+  | _, _ =>
+    match setField aggVal field newFieldVal with
+    | some v => Sem.bindFresh v
+    | none   =>
+      match aggVal with
+      | .aggregate _ | .record _ =>
+        Sem.throwUB "InsertField: field index out of bounds"
+      | _ =>
+        Sem.throwTypeError "InsertField: operand is not an aggregate"
+
+-- =================================================================
+-- MakeAggregate semantics (WS3.5)
+-- =================================================================
+
+/-- The aggregate types whose `MakeAggregate` the executable model BUILDS as
+    a plain `Value.aggregate` of its lanes: structs and tuples. Arrays use
+    their own compact element-addressable carrier. Enum and
+    record construction are the honest partial named in `semMakeAggregate`;
+    everything else is not a type the instruction builds at all. -/
+def Ty.fieldAggregate : Ty → _root_.Bool
+  | .Struct _  => true
+  | .Tuple _   => true
+  | _          => false
+
+/-- Look up every lane operand in order, rejecting poison at each: the result
+    of a `MakeAggregate` is documented as FULLY initialised, so it may not be
+    assembled out of an uninitialised part (the Rust reference interpreter's
+    `reject_partial` per lane). Structurally recursive rather than `mapM` so
+    the nonlocal-state proof (`TransformCorrectness`) decomposes by
+    induction on the lane list. -/
+def lookupLanes : List ValueId → Sem (List Value)
+  | [] => pure []
+  | id :: rest => do
+    let v ← Sem.lookupValue id
+    Sem.rejectPartial v "MakeAggregate"
+    let vs ← lookupLanes rest
+    pure (v :: vs)
+
+/-- Evaluate a MakeAggregate instruction: a fresh aggregate VALUE out of
+    register lanes.
+
+    For a struct / tuple / array (`variant = none`) the result is
+    `buildAggregate lanes` — byte-for-byte the value `Const` would produce
+    for the same lanes, so `ExtractField` reads it identically
+    (`extract_make_aggregate`, `Proofs/AggregateProps.lean`).
+
+    HONEST PARTIAL (B3 depth ledger): the machine state carries no module
+    definition tables, so
+    * an ENUM construction cannot compute its tag lane
+      (`discriminants[variant]` at the canonical tag repr), and
+    * a RECORD construction cannot name its lanes (`Value.record` is
+      field-name keyed),
+    and both fail closed as `unsupported.enum_def_table` rather than
+    fabricate a tag or a name. The Rust reference interpreter resolves both
+    through the module. A `variant` on a non-enum, or its absence on an enum,
+    is a type error, exactly as `validate_module` refuses it
+    (`InvalidMakeAggregate`), and so is any type the instruction does not
+    build (a scalar, `Vector`, `FatPtr`, `Closure`, `Sequence`, `Set`, …).
+
+    NOT mirrored (same ledger line as `semInsertField`): the lane TYPES and
+    the lane COUNT against the definition — there is no value-against-type
+    conformance predicate here.
+
+    Mirrors Rust `Inst::MakeAggregate`. -/
+def semMakeAggregate (ty : Ty) (variant : Option Nat) (fieldIds : List ValueId)
+    : Sem ValueId := do
+  let lanes ← lookupLanes fieldIds
+  match ty, variant with
+  | .Enum _, some _ =>
+    Sem.throwUnsupported .enumDefTable
+      "MakeAggregate: enum construction needs the module's discriminant table, which the executable model does not carry"
+  | .Enum _, none =>
+    Sem.throwTypeError "MakeAggregate: an enum construction needs a variant index"
+  | .Record _, none =>
+    Sem.throwUnsupported .enumDefTable
+      "MakeAggregate: record construction needs the module's record definition (field names), which the executable model does not carry"
+  | _, some _ =>
+    Sem.throwTypeError "MakeAggregate: a variant index is only meaningful for an enum"
+  | .Struct _, none => Sem.bindFresh (buildAggregate lanes)
+  | .Tuple _, none => Sem.bindFresh (buildAggregate lanes)
+  | .Array _ count, none =>
+    if lanes.length != count then
+      Sem.throwTypeError "MakeAggregate: array lane count does not match its type"
+    else Sem.bindFresh (.array (CompactArray.Packed.ofArray lanes.toArray))
+  -- Vectors keep InsertElement, fat pointers PtrFromParts; closures,
+  -- sequences, sets, dialects, handles and every scalar have no lane rule
+  -- (mirrors the validator's `InvalidMakeAggregate`).
+  | _, none =>
+    Sem.throwTypeError "MakeAggregate: not a type make_aggregate builds (struct, tuple, record, array or enum)"
+
+-- =================================================================
+-- ArraySplat semantics (v50)
+-- =================================================================
+
+/-- Evaluate an ArraySplat instruction: `n` copies of one register value,
+    the array `[v; n]` of type `ty = Array e n`.
+
+    The element is embedded in every lane, which INSPECTS it (a poison
+    element is refused, as `MakeAggregate` refuses a poison lane and
+    `semInsertElement` a poison element). The result is
+    one compact uniform `Value.array`, so
+    `ExtractElement` reads `v` at every in-bounds index
+    (`extract_array_splat`, Proofs/AggregateProps.lean). A type that is not an
+    array is a type error, as `validate_module` refuses it
+    (`InvalidArraySplat`).
+
+    The contextual step checks the operand's exact original declaration against
+    the element type. Bare stepping lacks that table. The validator separately
+    enforces register canonicality (`n ≥ 1`).
+
+    Mirrors Rust `Inst::ArraySplat`. -/
+def semArraySplat (ty : Ty) (valueId : ValueId) : Sem ValueId := do
+  let v ← Sem.lookupValue valueId
+  Sem.rejectPartial v "ArraySplat"
+  match ty with
+  | .Array _ n => Sem.bindFresh (.array (CompactArray.Packed.uniform n v))
+  | _ => Sem.throwTypeError "ArraySplat: not an array type"
 
 -- =================================================================
 -- ExtractElement semantics
@@ -238,15 +405,11 @@ def semInsertField (_ty : Ty) (aggregateId : ValueId) (field : Nat)
     a runtime safety check.
 
     Mirrors Rust `Inst::ExtractElement`. -/
-def semExtractElement (ty : Ty) (arrayId indexId : ValueId)
-    : Sem ValueId := do
+def semExtractElementUsing (indexOf : Value → Sem Nat)
+    (ty : Ty) (arrayId indexId : ValueId) : Sem ValueId := do
   let arrVal ← Sem.lookupValue arrayId
   let idxVal ← Sem.lookupValue indexId
-  let idx ← match idxVal with
-    | .int _ n =>
-      if n < 0 then Sem.throwUB "ExtractElement: negative index"
-      else pure n.toNat
-    | _ => Sem.throwTypeError "ExtractElement: index is not an integer"
+  let idx ← indexOf idxVal
   match arrVal with
   | .vector _ =>
     match getVectorElement ty arrVal idx with
@@ -257,10 +420,25 @@ def semExtractElement (ty : Ty) (arrayId indexId : ValueId)
     | some v => Sem.bindFresh v
     | none   =>
       match arrVal with
-      | .aggregate _ =>
+      | .array _ | .aggregate _ =>
+        Sem.throwUB "ExtractElement: index out of bounds"
+      -- WS3.17: an out-of-range SEQUENCE read is run-time UB, exactly as for
+      -- an aggregate — not a type error. The reference interpreter answers
+      -- `UndefinedBehavior "element {i} is out of bounds"` here.
+      | .sequence _ =>
         Sem.throwUB "ExtractElement: index out of bounds"
       | _ =>
         Sem.throwTypeError "ExtractElement: operand is not an aggregate or vector"
+
+/-- The historical bare helper has no source declarations; contextual
+    execution supplies the declared integer reader to `semExtractElementUsing`. -/
+def semExtractElement (ty : Ty) (arrayId indexId : ValueId) : Sem ValueId :=
+  semExtractElementUsing (fun idxVal => do
+    Sem.rejectPartial idxVal "ExtractElement index"
+    match idxVal with
+    | .int _ n =>
+      if n < 0 then Sem.throwUB "ExtractElement: negative index" else pure n.toNat
+    | _ => Sem.throwTypeError "ExtractElement: index is not an integer") ty arrayId indexId
 
 -- =================================================================
 -- InsertElement semantics
@@ -273,30 +451,45 @@ def semExtractElement (ty : Ty) (arrayId indexId : ValueId)
     modified (SSA form).
 
     Mirrors Rust `Inst::InsertElement`. -/
-def semInsertElement (ty : Ty) (arrayId indexId valueId : ValueId)
-    : Sem ValueId := do
+def semInsertElementUsing (indexOf : Value → Sem Nat)
+    (ty : Ty) (arrayId indexId valueId : ValueId) : Sem ValueId := do
   let arrVal ← Sem.lookupValue arrayId
   let idxVal ← Sem.lookupValue indexId
   let newElemVal ← Sem.lookupValue valueId
-  let idx ← match idxVal with
-    | .int _ n =>
-      if n < 0 then Sem.throwUB "InsertElement: negative index"
-      else pure n.toNat
-    | _ => Sem.throwTypeError "InsertElement: index is not an integer"
+  let idx ← indexOf idxVal
   match arrVal with
   | .vector _ =>
+    -- A vector lane is checked by `setVectorElement`, which refuses any
+    -- value that is not a lane of the declared type (poison included).
     match setVectorElement ty arrVal idx newElemVal with
     | .ok v => Sem.bindFresh v
     | .error e => throw e
-  | _ =>
+  | _ => do
+    -- Embedding an element INSPECTS it, exactly as `semInsertField` does: a
+    -- poison element inside a defined array would carry poison past every
+    -- top-level check (a call/return boundary sees only the array). Mirror
+    -- of interpret.rs `eval_insert_element` (roadmap WS2.10 review).
+    Sem.rejectPartial newElemVal "InsertElement"
     match setElement arrVal idx newElemVal with
     | some v => Sem.bindFresh v
     | none   =>
       match arrVal with
-      | .aggregate _ =>
+      | .array _ | .aggregate _ =>
+        Sem.throwUB "InsertElement: index out of bounds"
+      -- WS3.17: as for the read, an out-of-range sequence WRITE is UB.
+      | .sequence _ =>
         Sem.throwUB "InsertElement: index out of bounds"
       | _ =>
         Sem.throwTypeError "InsertElement: operand is not an aggregate or vector"
+
+/-- Bare insertion retains its untyped index contract. -/
+def semInsertElement (ty : Ty) (arrayId indexId valueId : ValueId) : Sem ValueId :=
+  semInsertElementUsing (fun idxVal => do
+    Sem.rejectPartial idxVal "InsertElement index"
+    match idxVal with
+    | .int _ n =>
+      if n < 0 then Sem.throwUB "InsertElement: negative index" else pure n.toNat
+    | _ => Sem.throwTypeError "InsertElement: index is not an integer") ty arrayId indexId valueId
 
 -- =================================================================
 -- Aggregate predicates (for theorem statements)
@@ -434,7 +627,7 @@ mutual
     shapes it delegates to Value.ofConstantList and
     Value.ofConstantFieldList. -/
 def Value.ofConstant : Constant → Value
-  | .int n        => .int 64 n               -- default width; Step rules
+  | .int n        => Value.intAt 64 n        -- default width; Step rules
                                               -- refine via explicit width
                                               -- from the Const instruction
   | .float f      => .float f
@@ -451,6 +644,30 @@ def Value.ofConstant : Constant → Value
     .record (Value.ofConstantFieldList fs)
   | .closure fn caps =>
     .closure fn (Value.ofConstantList caps)
+  -- WS2.18 carriers, each mirroring interpret.rs `constant_to_value`:
+  -- a canonical U128 is only faithful at width 128 (it exceeds i128::MAX);
+  | .u128 n       => .int 128 (Int.ofNat n)
+  -- a byte payload is a `[u8; N]` array of 8-bit lanes;
+  | .bytes data _ => .array (CompactArray.Packed.ofArray (data.map (fun b => .int 8 (Int.ofNat b.toNat))).toArray)
+  -- Array literals retain their own compact carrier.
+  | .array cs     => .array (CompactArray.Packed.ofArray (Value.ofConstantList cs).toArray)
+  -- a function item is a bare, capture-free closure (cf. `ReifyFnPointer`,
+  -- Semantics/Cast.lean, and `ClosureTy.bare`);
+  | .fnDef fn     => .closure fn []
+  -- PhantomData is the canonical constant spelling of the unit value
+  -- (`unitValue`, Semantics/Memory.lean);
+  | .phantomData  => .aggregate []
+  -- UNREACHABLE FROM EVALUATION: a link-time address has no compile-time
+  -- value, and every constant entry point refuses it first
+  -- (`Constant.hasSymbolAddr` → `unsupported.link_time_address`). The arm
+  -- exists only because this function is total; nothing reads it as a value.
+  | .symbolAddr _ _ => .undef .Ptr
+  -- Crystal lane (E3b): an unwritten struct/tuple lane is no value; its runtime
+  -- image is `.uninit`, which `InsertField` replaces and `ExtractField` faults on.
+  | .uninit       => .uninit
+  -- v50: `len` copies of the one lowered element — the reference
+  -- interpreter's `ArrayValue::splat` (one uniform node).
+  | .splat c n     => .array (CompactArray.Packed.uniform n (Value.ofConstant c))
 
 /-- Pointwise lowering of a constant list. -/
 def Value.ofConstantList : List Constant → List Value
@@ -498,7 +715,7 @@ in the R3 rubric (section 3.5).
 def Value.eqBasic : Value → Value → Option Bool
   | .int w1 n1, .int w2 n2 => some (decide (w1 = w2 ∧ n1 = n2))
   | .bool a, .bool b       => some (decide (a = b))
-  | .ptr a, .ptr b         => some (decide (a = b))
+  | .ptr a p, .ptr b q     => some (decide (a = b) && decide (p = q))
   | .nullPtr, .nullPtr     => some true
   | .undef _, .undef _     => some false   -- undef is never provably equal
   | .float _, .float _     => none         -- float equality is coarse
@@ -594,6 +811,60 @@ def seqMapNotList : List Value → Except SemError (List Value)
     | .error e  => .error e
   | _ :: _ => .error (.typeError "seq_map_not requires a sequence of booleans")
 
+/-- Both give-back element maps preserve LENGTH: they rebuild the list
+    position by position, so a successful map has exactly as many elements as
+    its input.
+
+    This is the half of the WS3.17 `seq_len_map` rule that is provable before
+    the `SeqLen` instruction exists (WS3.17 (b), a wire-lane item): element `i`
+    of a mapped sequence is readable exactly when element `i` of the input is,
+    which is what makes the newly-admitted `ExtractElement` over a
+    `SeqMapAddK` result well-defined. -/
+theorem seqMapAddKList_length (k : Nat) :
+    ∀ {l l' : List Value}, seqMapAddKList k l = .ok l' → l'.length = l.length := by
+  intro l
+  induction l with
+  | nil =>
+    intro l' h
+    rw [seqMapAddKList] at h
+    rw [← Except.ok.inj h]
+  | cons a rest ih =>
+    intro l' h
+    match a with
+    | .int w i =>
+      rw [seqMapAddKList] at h
+      split at h
+      · next rest' hr =>
+        rw [← Except.ok.inj h]
+        simp [ih hr]
+      · next => exact absurd h (by simp)
+    | .float _ | .bool _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _
+    | .set _ | .sequence _ | .record _ | .closure _ _ | .fnDef _ _ | .typedClosure _ _ _ | .fatPtr _ _ _
+    | .partial _ | .undef _ | .nullPtr => exact absurd h (by simp [seqMapAddKList])
+
+/-- `SeqMapNot` preserves length for the same reason. -/
+theorem seqMapNotList_length :
+    ∀ {l l' : List Value}, seqMapNotList l = .ok l' → l'.length = l.length := by
+  intro l
+  induction l with
+  | nil =>
+    intro l' h
+    rw [seqMapNotList] at h
+    rw [← Except.ok.inj h]
+  | cons a rest ih =>
+    intro l' h
+    match a with
+    | .bool b =>
+      rw [seqMapNotList] at h
+      split at h
+      · next rest' hr =>
+        rw [← Except.ok.inj h]
+        simp [ih hr]
+      · next => exact absurd h (by simp)
+    | .int _ _ | .float _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _
+    | .set _ | .sequence _ | .record _ | .closure _ _ | .fnDef _ _ | .typedClosure _ _ _ | .fatPtr _ _ _
+    | .partial _ | .undef _ | .nullPtr => exact absurd h (by simp [seqMapNotList])
+
 /-- Evaluate a SeqMapAddK instruction: a new sequence with every element
     incremented by `k` (wrapping at the element width). -/
 def semSeqMapAddK (_ty : Ty) (seqId : ValueId) (k : Nat) : Sem ValueId := do
@@ -627,13 +898,13 @@ def recordGet (v : Value) (name : String) : Option Value :=
 /-- The target function id of a Value-level closure. -/
 def closureFunc (v : Value) : Option FuncId :=
   match v with
-  | .closure fn _ => some fn
+  | .closure fn _ | .typedClosure _ fn _ => some fn
   | _ => none
 
 /-- The captured-environment list of a Value-level closure. -/
 def closureCaptures (v : Value) : Option (List Value) :=
   match v with
-  | .closure _ caps => some caps
+  | .closure _ caps | .typedClosure _ _ caps => some caps
   | _ => none
 
 -- =================================================================
@@ -668,7 +939,9 @@ theorem setIntersection_right_empty (xs : List Value) :
   -- filter keeps nothing.
   have hfilter :
       (xs.filter (fun x => (setContains (.set []) x).getD false)) = [] := by
-    apply List.filter_eq_nil.mpr
+    first
+    | apply List.filter_eq_nil.mpr
+    | apply List.filter_eq_nil_iff.mpr
     intro x _
     simp [setContains]
   simp [setIntersection, hfilter]

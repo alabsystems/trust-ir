@@ -100,12 +100,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [],
@@ -139,7 +147,8 @@
       "description": "synthesized from function-level annotation(s) [terminates] on `ay_chc_batch_eval`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 1,
@@ -148,7 +157,8 @@
       "description": "synthesized from function-level annotation(s) [no_panic] on `ay_chc_batch_eval`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 2,
@@ -157,7 +167,8 @@
       "description": "synthesized from function-level annotation(s) [no_undef] on `ay_chc_batch_eval`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     }
   ],
   "proof_certificates": [],
@@ -165,5 +176,12 @@
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

@@ -146,12 +146,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [],
@@ -179,7 +187,8 @@
       "description": "synthesized from function-level annotation(s) [in_bounds] on `carrier`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 1,
@@ -188,7 +197,8 @@
       "description": "synthesized from function-level annotation(s) [not_null, valid_borrow, unique_borrow, shared_borrow, valid_dealloc, no_alias, aligned(16), no_undef] on `carrier`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 2,
@@ -197,7 +207,8 @@
       "description": "synthesized from function-level annotation(s) [no_overflow, no_wrap, div_nonzero, shift_in_range] on `carrier`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 3,
@@ -206,7 +217,8 @@
       "description": "synthesized from function-level annotation(s) [terminates] on `carrier`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 4,
@@ -215,7 +227,8 @@
       "description": "synthesized from function-level annotation(s) [data_race_free] on `carrier`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 5,
@@ -224,7 +237,8 @@
       "description": "synthesized from function-level annotation(s) [no_panic] on `carrier`",
       "formula": null,
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 6,
@@ -238,7 +252,8 @@
         "sort": "Bool"
       },
       "function": 0,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 7,
@@ -247,7 +262,8 @@
       "description": "Precondition/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 8,
@@ -256,7 +272,8 @@
       "description": "Precondition/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 9,
@@ -265,7 +282,8 @@
       "description": "Precondition/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 10,
@@ -274,7 +292,8 @@
       "description": "Postcondition/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 11,
@@ -283,7 +302,8 @@
       "description": "Postcondition/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 12,
@@ -292,7 +312,8 @@
       "description": "Postcondition/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 13,
@@ -301,7 +322,8 @@
       "description": "Postcondition/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 14,
@@ -310,7 +332,8 @@
       "description": "LoopInvariant/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 15,
@@ -319,7 +342,8 @@
       "description": "LoopInvariant/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 16,
@@ -328,7 +352,8 @@
       "description": "LoopInvariant/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 17,
@@ -337,7 +362,8 @@
       "description": "LoopInvariant/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 18,
@@ -346,7 +372,8 @@
       "description": "TypeInvariant/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 19,
@@ -355,7 +382,8 @@
       "description": "TypeInvariant/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 20,
@@ -364,7 +392,8 @@
       "description": "TypeInvariant/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 21,
@@ -373,7 +402,8 @@
       "description": "TypeInvariant/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 22,
@@ -382,7 +412,8 @@
       "description": "RefinementType/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 23,
@@ -391,7 +422,8 @@
       "description": "RefinementType/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 24,
@@ -400,7 +432,8 @@
       "description": "RefinementType/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 25,
@@ -409,7 +442,8 @@
       "description": "RefinementType/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 26,
@@ -418,7 +452,8 @@
       "description": "TranslationValidation/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 27,
@@ -427,7 +462,8 @@
       "description": "TranslationValidation/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 28,
@@ -436,7 +472,8 @@
       "description": "TranslationValidation/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 29,
@@ -445,7 +482,8 @@
       "description": "TranslationValidation/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 30,
@@ -454,7 +492,8 @@
       "description": "MemorySafety/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 31,
@@ -463,7 +502,8 @@
       "description": "MemorySafety/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 32,
@@ -472,7 +512,8 @@
       "description": "MemorySafety/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 33,
@@ -481,7 +522,8 @@
       "description": "MemorySafety/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 34,
@@ -490,7 +532,8 @@
       "description": "PanicFreedom/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 35,
@@ -499,7 +542,8 @@
       "description": "PanicFreedom/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 36,
@@ -508,7 +552,8 @@
       "description": "PanicFreedom/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 37,
@@ -517,7 +562,8 @@
       "description": "PanicFreedom/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 38,
@@ -526,7 +572,8 @@
       "description": "TemporalSafety/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 39,
@@ -535,7 +582,8 @@
       "description": "TemporalSafety/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 40,
@@ -544,7 +592,8 @@
       "description": "TemporalSafety/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 41,
@@ -553,7 +602,8 @@
       "description": "TemporalSafety/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 42,
@@ -562,7 +612,8 @@
       "description": "Liveness/Pending",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 43,
@@ -571,7 +622,8 @@
       "description": "Liveness/Discharged",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 44,
@@ -580,7 +632,8 @@
       "description": "Liveness/Failed",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     },
     {
       "id": 45,
@@ -589,7 +642,8 @@
       "description": "Liveness/Trusted",
       "formula": null,
       "function": null,
-      "source": null
+      "source": null,
+      "site": null
     }
   ],
   "proof_certificates": [
@@ -684,7 +738,8 @@
       "evidence": {
         "InheritedFromCallee": {
           "callee": 0,
-          "obligation": 0
+          "obligation": 0,
+          "external": null
         }
       }
     }
@@ -693,5 +748,12 @@
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

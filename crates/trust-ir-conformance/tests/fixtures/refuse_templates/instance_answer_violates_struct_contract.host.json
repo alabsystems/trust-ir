@@ -1,0 +1,87 @@
+{
+  "structs": [
+    {
+      "id": 100,
+      "name": "RawVec<u32>",
+      "fields": [
+        {
+          "name": "f0",
+          "ty": "Ptr",
+          "offset": 0
+        },
+        {
+          "name": "f1",
+          "ty": "Usize",
+          "offset": 8
+        }
+      ],
+      "size": 16,
+      "align": 8,
+      "repr": "Rust"
+    },
+    {
+      "id": 101,
+      "name": "Vec<u32>",
+      "fields": [
+        {
+          "name": "f1",
+          "ty": "Usize",
+          "offset": 16
+        },
+        {
+          "name": "f0",
+          "ty": {
+            "Struct": 100
+          },
+          "offset": 0
+        }
+      ],
+      "size": 24,
+      "align": 8,
+      "repr": "Rust"
+    }
+  ],
+  "enums": [],
+  "types": [],
+  "arguments": [
+    {
+      "Type": "U32"
+    }
+  ],
+  "holes": [
+    {
+      "Answer": {
+        "Type": {
+          "Struct": 101
+        }
+      }
+    },
+    {
+      "Answer": {
+        "Type": {
+          "Struct": 100
+        }
+      }
+    }
+  ],
+  "header": {
+    "symbol": "vec_len_u32",
+    "linkage": "Internal",
+    "visibility": "Default",
+    "calling_conv": "Rust",
+    "attrs": {
+      "readonly": false,
+      "readnone": false,
+      "inlinehint": false,
+      "cold": false,
+      "params": [],
+      "naked": false,
+      "target_features": []
+    },
+    "display_path": "vec::len::u32",
+    "body_gate": "Ungated"
+  },
+  "destructors": [],
+  "tuple_layouts": [],
+  "tamper": false
+}

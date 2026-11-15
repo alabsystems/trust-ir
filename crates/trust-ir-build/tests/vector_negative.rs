@@ -28,7 +28,7 @@ fn validate_rejects_vector_select_scalar_bool_condition() {
     fb.ret(vec![selected]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -60,7 +60,7 @@ fn validate_rejects_vector_select_mismatched_lane_counts() {
     fb.ret(vec![selected]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -91,7 +91,7 @@ fn validate_rejects_icmp_result_mismatch() {
     fb.ret(vec![cmp]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -119,7 +119,7 @@ fn validate_rejects_vector_binop_mismatched_lanes() {
     fb.ret(vec![add]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -147,7 +147,7 @@ fn validate_rejects_malformed_extract_element() {
     fb.ret(vec![extract]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -174,7 +174,7 @@ fn validate_rejects_extract_element_non_integer_index() {
     fb.ret(vec![extract]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -201,7 +201,7 @@ fn validate_rejects_extract_element_out_of_range_constant() {
     fb.ret(vec![extract]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -229,7 +229,7 @@ fn validate_rejects_insert_element_scalar_mismatch() {
     fb.ret(vec![insert]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -253,9 +253,12 @@ fn validate_rejects_zero_lane_vector() {
         linkage: trust_ir::Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -279,9 +282,12 @@ fn validate_rejects_nested_vector() {
         linkage: trust_ir::Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -311,9 +317,12 @@ fn validate_rejects_vector_constant_wrong_lane_count() {
         linkage: trust_ir::Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -344,9 +353,12 @@ fn validate_rejects_vector_constant_array_payload() {
         linkage: trust_ir::Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -376,7 +388,7 @@ fn validate_rejects_unknown_gpu_dialect_op() {
     fb.ret(vec![]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(

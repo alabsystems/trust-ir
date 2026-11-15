@@ -88,8 +88,9 @@ theorem mem_intRangeList {lo hi n : Int} (h1 : lo ≤ n) (h2 : n ≤ hi) :
   rw [if_neg (by omega : ¬ lo > hi)]
   apply mem_intRangeFrom h1
   have hnonneg : (0 : Int) ≤ hi - lo := by omega
-  rw [Int.ofNat_add, Int.toNat_of_nonneg hnonneg]
-  omega
+  first
+  | rw [Int.ofNat_add, Int.toNat_of_nonneg hnonneg]; omega
+  | rw [Int.natCast_add, Int.toNat_of_nonneg hnonneg]; omega
 
 /-- `membersContainInterval` is sound: every integer of the interval really is
     in the extension. -/
@@ -156,7 +157,7 @@ theorem intBoundsOf_sound {l : List Constant} {lo hi : Int} (h : intBoundsOf l =
 /-- An integer constant's denotation pins the value. -/
 theorem constInt_denote {c : Constant} {k : Int} (hk : constInt c = some k)
     {v : Value} (hv : constDenote m c v) : ∃ w, v = .int w k := by
-  cases c <;> simp only [constInt] at hk
+  cases c <;> simp only [constInt] at hk <;> try contradiction
   case int n => cases hk; exact hv
 
 theorem membersIntBounds_sound {items : List Constant} {lo hi : Int}
@@ -233,7 +234,7 @@ theorem intersectBounds_sound : ∀ (bs : List (Int × Int)) (lo hi n : Int),
     | nil =>
       simp only [intersectBounds, Option.some.injEq, Prod.mk.injEq] at h
       obtain ⟨rfl, rfl⟩ := h
-      exact hall (blo, bhi) (List.mem_cons_self _ _)
+      exact hall (blo, bhi) ((trustIrListMemConsSelf _ _))
     | cons c rest' =>
       simp only [intersectBounds] at h
       cases hr : intersectBounds (c :: rest') with
@@ -243,7 +244,7 @@ theorem intersectBounds_sound : ∀ (bs : List (Int × Int)) (lo hi n : Int),
         rw [hr] at h
         simp only [Option.some.injEq, Prod.mk.injEq] at h
         obtain ⟨rfl, rfl⟩ := h
-        have hb := hall (blo, bhi) (List.mem_cons_self _ _)
+        have hb := hall (blo, bhi) ((trustIrListMemConsSelf _ _))
         have hrest := ih lo' hi' n hr (fun x hx => hall x (List.mem_cons_of_mem _ hx))
         exact ⟨by omega, by omega⟩
 
@@ -297,7 +298,7 @@ theorem filterSomeBounds_mem_inv (f : Pred → Option (Int × Int)) :
       rw [hf] at hb
       simp only [filterSomeBounds, List.mem_cons] at hb
       rcases hb with rfl | hb'
-      · exact ⟨p, List.mem_cons_self _ _, hf⟩
+      · exact ⟨p, (trustIrListMemConsSelf _ _), hf⟩
       · obtain ⟨q, hq, hqf⟩ := ih b hb'
         exact ⟨q, List.mem_cons_of_mem _ hq, hqf⟩
 
@@ -307,7 +308,7 @@ theorem filterSomeBounds_nonempty (f : Pred → Option (Int × Int)) {cs : List 
   cases hl : filterSomeBounds (cs.map f) with
   | nil => rw [hl] at h; exact absurd h (by simp [intersectBounds])
   | cons b rest =>
-    have : b ∈ filterSomeBounds (cs.map f) := by rw [hl]; exact List.mem_cons_self _ _
+    have : b ∈ filterSomeBounds (cs.map f) := by rw [hl]; exact (trustIrListMemConsSelf _ _)
     obtain ⟨p, hp, hpf⟩ := filterSomeBounds_mem_inv f cs b this
     exact ⟨p, hp, b, hpf⟩
 
@@ -324,10 +325,12 @@ theorem sequenceBounds_mem (f : Pred → Option (Int × Int)) :
     | none => rw [hf] at h; exact absurd h (by simp [sequenceBounds])
     | some x =>
       rw [hf] at h
-      simp only [sequenceBounds, Option.map_eq_some'] at h
+      first
+      | simp only [sequenceBounds, Option.map_eq_some'] at h
+      | simp only [sequenceBounds, Option.map_eq_some_iff] at h
       obtain ⟨bs', hbs', rfl⟩ := h
       rcases List.mem_cons.mp hq with rfl | hq'
-      · exact ⟨x, List.mem_cons_self _ _, hf⟩
+      · exact ⟨x, (trustIrListMemConsSelf _ _), hf⟩
       · obtain ⟨b, hb, hbf⟩ := ih bs' hbs' q hq'
         exact ⟨b, List.mem_cons_of_mem _ hb, hbf⟩
 
@@ -348,11 +351,11 @@ theorem mem_insertByKey (x : Constant) : ∀ {l : List Constant} {c : Constant},
     · unfold insertByKey
       split
       · split
-        · exact List.mem_cons_self _ _
+        · exact (trustIrListMemConsSelf _ _)
         · split
-          · exact List.mem_cons_of_mem _ (List.mem_cons_self _ _)
-          · exact List.mem_cons_self _ _
-      · exact List.mem_cons_of_mem _ (List.mem_cons_self _ _)
+          · exact List.mem_cons_of_mem _ ((trustIrListMemConsSelf _ _))
+          · exact (trustIrListMemConsSelf _ _)
+      · exact List.mem_cons_of_mem _ ((trustIrListMemConsSelf _ _))
     · unfold insertByKey
       split
       · split
@@ -372,21 +375,21 @@ theorem key_mem_insertByKey (x : Constant) : ∀ (l : List Constant),
     | none =>
       refine ⟨x, ?_, hkx⟩
       simp only [insertByKey, hkx]
-      exact List.mem_cons_self _ _
+      exact (trustIrListMemConsSelf _ _)
     | some kx =>
       cases hkd : constantKey d with
       | none =>
         refine ⟨x, ?_, hkx⟩
         simp only [insertByKey, hkx, hkd]
-        exact List.mem_cons_self _ _
+        exact (trustIrListMemConsSelf _ _)
       | some kd =>
         simp only [insertByKey, hkx, hkd]
         by_cases hEq : kx = kd
         · rw [if_pos (by simp [hEq])]
-          exact ⟨d, List.mem_cons_self _ _, by simpa [hkd, hkx] using congrArg some hEq.symm⟩
+          exact ⟨d, (trustIrListMemConsSelf _ _), by simpa [hkd, hkx] using congrArg some hEq.symm⟩
         · rw [if_neg (by simp [hEq])]
           by_cases hlt : keyLt kx kd = true
-          · rw [if_pos hlt]; exact ⟨x, List.mem_cons_self _ _, hkx⟩
+          · rw [if_pos hlt]; exact ⟨x, (trustIrListMemConsSelf _ _), hkx⟩
           · rw [if_neg hlt]
             obtain ⟨e, he, hek⟩ := ih
             exact ⟨e, List.mem_cons_of_mem _ he, hek.trans hkx⟩
@@ -412,7 +415,7 @@ theorem mem_append_left {xs ys : List Constant} {c : Constant} (hc : c ∈ xs) :
   | cons x rest ih =>
     change c ∈ x :: (rest ++ ys)
     rcases List.mem_cons.mp hc with rfl | hc'
-    · exact List.mem_cons_self _ _
+    · exact (trustIrListMemConsSelf _ _)
     · exact List.mem_cons_of_mem _ (ih hc')
 
 theorem mem_append_right {xs ys : List Constant} {c : Constant} (hc : c ∈ ys) :
@@ -455,7 +458,7 @@ theorem denoteAll_iff (U : UnivTable) (m : Constant → Value → Prop) (cs : Li
       · exact hp
       · exact ih.mp hrest q hq'
     · intro h
-      exact ⟨h p (List.mem_cons_self _ _),
+      exact ⟨h p ((trustIrListMemConsSelf _ _)),
              ih.mpr fun q hq => h q (List.mem_cons_of_mem _ hq)⟩
 
 theorem denoteAny_iff (U : UnivTable) (m : Constant → Value → Prop) (cs : List Pred) (v : Value) :
@@ -466,7 +469,7 @@ theorem denoteAny_iff (U : UnivTable) (m : Constant → Value → Prop) (cs : Li
     rw [Pred.denoteAny.eq_2]
     constructor
     · rintro (hp | hrest)
-      · exact ⟨p, List.mem_cons_self _ _, hp⟩
+      · exact ⟨p, (trustIrListMemConsSelf _ _), hp⟩
       · obtain ⟨q, hq, hqv⟩ := ih.mp hrest
         exact ⟨q, List.mem_cons_of_mem _ hq, hqv⟩
     · rintro ⟨q, hq, hqv⟩
@@ -632,8 +635,8 @@ theorem intervalBoundFuel_sound (U : UnivTable) (m : Constant → Value → Prop
             simp only [hc] at hv
             obtain ⟨w, n, rfl, hn0, hnk⟩ := hv
             split at h
-            case inl hk => exact absurd h (by simp [hk])
-            case inr hk =>
+            next hk => exact absurd h (by simp [hk])
+            next hk =>
               have hp : some (0, (k : Int) - 1) = some (lo, hi) := by simpa [hk] using h
               have hp' : (0, (k : Int) - 1) = (lo, hi) := Option.some.inj hp
               have hlo := congrArg Prod.fst hp'
@@ -701,12 +704,24 @@ consumption rule does rests on exactly this: if it were false, a convention
 mismatch would pass validation silently, which is the miscompile class the
 typed value model exists to close. -/
 
+-- Name the existing Boolean conditions outside the proof context, so their
+-- generated matchers do not capture branch-dependent proof hypotheses.
+private abbrev impliesLeftConj (U : UnivTable) (fuel : Nat) (a b : Pred) : Bool :=
+  match a with
+  | .Conj cs => cs.any (fun c => Pred.impliesFuel U fuel c b)
+  | _ => false
+
+private abbrev impliesRightDisj (U : UnivTable) (fuel : Nat) (a b : Pred) : Bool :=
+  match b with
+  | .Disj cs => cs.any (fun c => Pred.impliesFuel U fuel a c)
+  | _ => false
+
 theorem impliesFuel_sound (U : UnivTable) (m : Constant → Value → Prop) :
     ∀ (fuel : Nat) (a b : Pred), Pred.impliesFuel U fuel a b = true →
       ∀ v : Value, Pred.denote U m a v → Pred.denote U m b v := by
   intro fuel
   induction fuel with
-  | zero => intro a b h; exact absurd h (by simp [Pred.impliesFuel])
+  | zero => intro a b h; change false = true at h; cases h
   | succ fuel ih =>
     intro srcPred dstPred h v hav
     unfold Pred.impliesFuel at h
@@ -724,44 +739,45 @@ theorem impliesFuel_sound (U : UnivTable) (m : Constant → Value → Prop) :
     case _ => exact absurd h (by simp)
     case _ =>
       -- The general case, in `impliesFuel`'s own order.
-      split at h
-      -- 1. Structural equality.
-      next heq => exact (Pred.beq_eq heq) ▸ hav
-      next _ =>
-        split at h
+      -- Split the semantic condition itself, without asking `split` to
+      -- choose a reducible matcher inside the Boolean equality implementation.
+      by_cases heq : Pred.beq srcPred dstPred = true
+      · exact (Pred.beq_eq heq) ▸ hav
+      · rw [if_neg heq] at h
+        by_cases hconj : impliesLeftConj U fuel srcPred dstPred = true
         -- 2. Conjunction on the LEFT: some conjunct already entails the target.
-        next hconj =>
+        ·
           cases srcPred with
           | Conj cs =>
             rw [Pred.denote.eq_6] at hav
-            obtain ⟨c, hc, hcb⟩ := List.any_eq_true.mp (by simpa using hconj)
+            obtain ⟨c, hc, hcb⟩ := List.any_eq_true.mp (by simpa only [impliesLeftConj] using hconj)
             exact ih c dstPred hcb v ((denoteAll_iff U m cs v).mp hav c hc)
-          | _ => exact absurd hconj (by simp)
-        next _ =>
-          split at h
+          | _ => exact absurd hconj (by simp [impliesLeftConj])
+        · erw [if_neg hconj] at h
+          by_cases hdisj : impliesRightDisj U fuel srcPred dstPred = true
           -- 3. Disjunction on the RIGHT: one arm suffices.
-          next hdisj =>
+          ·
             cases dstPred with
             | Disj cs =>
               rw [Pred.denote.eq_7]
-              obtain ⟨c, hc, hac⟩ := List.any_eq_true.mp (by simpa using hdisj)
+              obtain ⟨c, hc, hac⟩ := List.any_eq_true.mp (by simpa only [impliesRightDisj] using hdisj)
               exact (denoteAny_iff U m cs v).mpr ⟨c, hc, ih srcPred c hac v hav⟩
-            | _ => exact absurd hdisj (by simp)
-          next _ =>
+            | _ => exact absurd hdisj (by simp [impliesRightDisj])
+          · erw [if_neg hdisj] at h
             split at h
             -- 4. Conjunction on the RIGHT: every conjunct is entailed.
-            case h_1 =>
+            next =>
               rw [Pred.denote.eq_6]
               refine (denoteAll_iff U m _ v).mpr fun c hc => ?_
               exact ih srcPred c (List.all_eq_true.mp h c hc) v hav
-            case h_2 =>
+            next =>
               split at h
               -- 5. Disjunction on the LEFT: every arm entails the target.
-              case h_1 =>
+              next =>
                 rw [Pred.denote.eq_7] at hav
                 obtain ⟨c, hc, hcv⟩ := (denoteAny_iff U m _ v).mp hav
                 exact ih c dstPred (List.all_eq_true.mp h c hc) v hcv
-              case h_2 =>
+              next =>
                 -- 6. The shape-directed arms, on `b`.
                 cases dstPred with
                 -- 6a. THE CONVENTION RULE.
@@ -899,7 +915,7 @@ theorem index_never_implies_member (U : UnivTable) (fuel : Nat) (ua ub : UnivId)
   cases fuel with
   | zero => exact ⟨rfl, rfl⟩
   | succ n =>
-    constructor <;> simp [Pred.impliesFuel, Pred.beq]
+    constructor <;> unfold Pred.impliesFuel <;> simp [Pred.beq]
 
 /-! ## The join is an upper bound -/
 

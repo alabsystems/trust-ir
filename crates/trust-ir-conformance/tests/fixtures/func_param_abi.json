@@ -50,7 +50,8 @@
             "noalias": true,
             "readonly": false,
             "byval": false,
-            "sret": true
+            "sret": true,
+            "ext": "None"
           },
           {
             "dereferenceable": 16,
@@ -58,14 +59,23 @@
             "align": 8,
             "noalias": false,
             "readonly": true,
-            "byval": true
+            "byval": true,
+            "sret": false,
+            "ext": "None"
           }
-        ]
+        ],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [
@@ -116,5 +126,12 @@
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

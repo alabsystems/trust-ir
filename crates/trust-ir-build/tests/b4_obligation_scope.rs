@@ -32,7 +32,7 @@ fn two_fn_module() -> Module {
         fb.ret(vec![z]);
         fb.build();
     }
-    mb.build()
+    mb.build().expect("ModuleBuilder::build: test fixture")
 }
 
 /// O0 is owned by fn#1 and grounded; the caller inherits it naming the WRONG
@@ -61,6 +61,7 @@ fn inheriting_from_wrong_callee_is_rejected() {
         obligation: ProofId::new(0),
         prover: "audit".into(),
         evidence: ProofEvidence::Trusted("ground".into()),
+        assurance: None,
     });
     m.proof_certificates.push(ProofCertificate {
         obligation: ProofId::new(1),
@@ -68,7 +69,9 @@ fn inheriting_from_wrong_callee_is_rejected() {
         evidence: ProofEvidence::InheritedFromCallee {
             callee: FuncId::new(0), // WRONG: O0 is owned by fn#1
             obligation: ProofId::new(0),
+            external: None,
         },
+        assurance: None,
     });
 
     let errs = validate_module(&m);
@@ -104,6 +107,7 @@ fn inheriting_from_correct_callee_is_accepted() {
         obligation: ProofId::new(0),
         prover: "audit".into(),
         evidence: ProofEvidence::Trusted("ground".into()),
+        assurance: None,
     });
     m.proof_certificates.push(ProofCertificate {
         obligation: ProofId::new(1),
@@ -111,7 +115,9 @@ fn inheriting_from_correct_callee_is_accepted() {
         evidence: ProofEvidence::InheritedFromCallee {
             callee: FuncId::new(1), // correct owner
             obligation: ProofId::new(0),
+            external: None,
         },
+        assurance: None,
     });
 
     let errs = validate_module(&m);

@@ -13,14 +13,19 @@
 //! | Category | Function | TrustIr type |
 //! |----------|----------|-----------|
 //! | Types | `ty_to_sort` | `Ty` -> `Sort` |
-//! | Binary ops | `encode_binop` | `BinOp` (13 integer variants) |
+//! | Binary ops | `encode_binop` | `BinOp` (integer, rotate, bool, and float variants; `FRem` as exact `fmod`; FMin/FMax/FCopySign refused) |
 //! | Comparisons | `encode_icmp` | `ICmpOp` (10 variants) |
-//! | Unary ops | `encode_unop` | `UnOp` (Not, Neg; CtPop unsupported) |
-//! | Casts | `encode_cast` | `CastOp` (Trunc, ZExt, SExt) |
+//! | Unary ops | `encode_unop` | integer `UnOp`, plus FNeg/FAbs |
+//! | Casts | `encode_cast` | integer resize, FP conversion, saturating FP-to-integer, pointer/integer and same-sort bitcasts |
 //! | Overflow | `encode_overflow_check` | `OverflowOp` (3 variants) |
 //! | Borrows | `BorrowModel` | Borrow/BorrowMut/EndBorrow |
 //! | ARC | `ArcModel` | Retain/Release/IsUnique |
 //! | Proofs | `verify_proof_obligation` | `ProofAnnotation` |
+
+// Production code cannot allow a method `clippy.toml` disallows: under the
+// linter a `#[allow(clippy::disallowed_methods)]` outside a `cfg(test)` item is
+// E0453. Test modules keep their own inner allow.
+#![cfg_attr(not(test), forbid(clippy::disallowed_methods))]
 
 use ay::{
     ArraySort, BitVecSort, DatatypeConstructor, DatatypeField, DatatypeSort, Logic, Solver, Sort,
@@ -30,14 +35,16 @@ use ay::{
 pub mod bvblast;
 pub use bvblast::{
     BVBLAST_ALLOWED_KINDS, BVBLAST_CERT_SCHEMA, BVBLAST_PROVER, BvBlastAttachError,
-    BvBlastAttachOutcome, BvBlastAuthority, BvBlastCertPayload, BvBlastCertificate, ProveError,
-    attach_bvblast_evidence, certify_obligation, prove, to_bv_expr,
+    BvBlastAttachOutcome, BvBlastAuthority, BvBlastCertPayload, BvBlastCertificate,
+    BvBlastPayloadError, ProveError, attach_bvblast_evidence, certify_obligation, prove,
+    to_bv_expr,
 };
 
 pub mod vc;
 pub use vc::{
-    FunctionVc, VcApplyError, VcCondition, VcObligationOutcome, VcSource, VcVerdict,
-    apply_vc_outcomes, generate_function_vc, model_counterexample, verify_function,
+    Counterexample, FunctionVc, VcApplyError, VcCondition, VcObligationOutcome, VcSource,
+    VcVerdict, WitnessUnavailable, apply_vc_outcomes, generate_function_vc, model_counterexample,
+    verify_function,
 };
 
 use trust_ir::inst::{BinOp, CastOp, FCmpOp, ICmpOp, OverflowOp, UnOp};
@@ -46,7 +53,7 @@ use trust_ir::ty::Ty;
 use trust_ir::value::{FuncId, ProofId, ValueId};
 
 /// Errors from ay encoding operations.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AYError {
     /// The TrustIr type has no ay sort representation (e.g., Void, Struct).
     UnsupportedType(Ty),
@@ -73,6 +80,19 @@ impl core::fmt::Display for AYError {
             }
             AYError::MemoryError(msg) => write!(f, "memory model error: {}", msg),
         }
+    }
+}
+
+impl std::error::Error for AYError {}
+
+/// Every fallible ay call (`Solver::try_*`) maps its refusal here, so a sort
+/// mismatch, an out-of-range width or a solver-side failure on a
+/// module-derived term is a typed error of THIS adapter, never a panic
+/// inside ay. On a fact it removes the fact (hypotheses only weaken); on a
+/// goal it leaves the condition unproved — never `Proved`.
+impl From<ay::SolverError> for AYError {
+    fn from(error: ay::SolverError) -> Self {
+        AYError::SolverError(error.to_string())
     }
 }
 
@@ -151,18 +171,37 @@ pub fn ty_to_sort(ty: &Ty) -> Result<Sort, AYError> {
             if *lanes == 0 {
                 return Err(AYError::UnsupportedType(ty.clone()));
             }
-            let elem_bits = match ty_to_sort(elem)? {
-                Sort::BitVec(bv) => bv.width,
-                Sort::FloatingPoint(eb, sb) => eb + sb,
-                _ => return Err(AYError::UnsupportedType(ty.clone())),
-            };
-            Ok(Sort::BitVec(BitVecSort {
-                width: elem_bits * lanes,
-            }))
+            let elem_bits = sort_bit_width(&ty_to_sort(elem)?)
+                .ok_or_else(|| AYError::UnsupportedType(ty.clone()))?;
+            // A lane count whose concatenated width does not fit a `u32`
+            // bit-vector width has no model: refuse it, never wrap it.
+            let width = elem_bits
+                .checked_mul(*lanes)
+                .ok_or_else(|| AYError::UnsupportedType(ty.clone()))?;
+            Ok(Sort::BitVec(BitVecSort { width }))
         }
         // Never type (diverging) has no values -- cannot be represented.
         // Func types are not first-class values in BV encoding.
         _ => Err(AYError::UnsupportedType(ty.clone())),
+    }
+}
+
+/// Total bit width of a bit-vector or floating-point sort: the vector's width,
+/// or `eb + sb` (exponent plus significand bits, the IEEE storage width) for a
+/// float. `None` for any other sort.
+///
+/// The ONE width rule for the concatenated-lane and byte-addressable models
+/// ([`ty_to_sort`]'s vector arm, [`encode_vector_binop`], and the
+/// whole-function VC's `bit_width`). The float sum is CHECKED: every float sort
+/// [`ty_to_sort`] produces is one of three closed pairs ((5, 11), (8, 24),
+/// (11, 53)), but `Sort::FloatingPoint` is ay's open SMT-LIB sort, whose
+/// `(eb, sb)` may legitimately be anything, so a pair whose sum overflows `u32`
+/// is `None` rather than a wrapped width.
+pub(crate) fn sort_bit_width(sort: &Sort) -> Option<u32> {
+    match sort {
+        Sort::BitVec(bv) => Some(bv.width),
+        Sort::FloatingPoint(eb, sb) => eb.checked_add(*sb),
+        _ => None,
     }
 }
 
@@ -233,7 +272,7 @@ pub fn bind_value(
     ty: &Ty,
 ) -> Result<Term, AYError> {
     let sort = ay_sort(ty)?;
-    Ok(solver.declare_const(&ay_symbol(func, value), sort))
+    Ok(solver.try_declare_const(&ay_symbol(func, value), sort)?)
 }
 
 /// The operand roles [`verify_proof_obligation`] expects for `annotation`,
@@ -275,89 +314,415 @@ pub fn annotation_operand_roles(
 /// Get the round-nearest-even rounding mode term.
 ///
 /// IEEE 754 default rounding mode used for most FP operations.
-fn rne(solver: &mut Solver) -> Term {
-    solver.fp_rounding_mode("RNE")
+fn rne(solver: &mut Solver) -> Result<Term, AYError> {
+    Ok(solver.try_fp_rounding_mode("RNE")?)
+}
+
+/// Integer conversion discards the fractional part, unlike FP arithmetic.
+fn rtz(solver: &mut Solver) -> Result<Term, AYError> {
+    Ok(solver.try_fp_rounding_mode("RTZ")?)
+}
+
+/// Rust's saturating float casts: NaN -> zero, otherwise truncate and clamp.
+/// Widening to binary64 is exact for every IR float width and lets bounds up
+/// to 2^128 remain finite even when the source is binary16. Bounds are exact
+/// powers of two, never rounded integer maxima such as i64::MAX as f64.
+fn encode_saturating_fp_cast(
+    solver: &mut Solver,
+    operand: Term,
+    dst_width: u32,
+    signed: bool,
+) -> Result<Term, AYError> {
+    if dst_width == 0 || dst_width > 128 {
+        return Err(AYError::UnsupportedOp(format!(
+            "saturating float cast to width {dst_width}"
+        )));
+    }
+    match solver.try_term_sort(operand)? {
+        Sort::FloatingPoint(5, 11) | Sort::FloatingPoint(8, 24) | Sort::FloatingPoint(11, 53) => {}
+        _ => {
+            return Err(AYError::UnsupportedOp(
+                "saturating cast operand is not an IR float".into(),
+            ));
+        }
+    }
+    let nearest = rne(solver)?;
+    let wide = solver.try_fp_to_fp(nearest, operand, 11, 53)?;
+    let zero = solver.try_bv_const_u64(0, dst_width)?;
+    let (minimum, maximum) = if signed {
+        let one = solver.try_bv_const_u64(1, dst_width)?;
+        let shift = solver.try_bv_const_u64(u64::from(dst_width - 1), dst_width)?;
+        let min = solver.try_bvshl(one, shift)?;
+        (min, solver.try_bvnot(min)?)
+    } else {
+        (zero, solver.try_bvnot(zero)?)
+    };
+    let exponent = dst_width - u32::from(signed);
+    let upper_bits = (u64::from(exponent) + 1023) << 52;
+    let upper = solver.try_fp_const_from_bits(upper_bits, 11, 53)?;
+    let lower = if signed {
+        solver.try_fp_neg(upper)?
+    } else {
+        solver.try_fp_const_from_bits(0, 11, 53)?
+    };
+    let too_low = solver.try_fp_lt(wide, lower)?;
+    let too_high = solver.try_fp_ge(wide, upper)?;
+    let is_nan = solver.try_fp_is_nan(wide)?;
+    let truncate = rtz(solver)?;
+    let value = if signed {
+        solver.try_fp_to_sbv(truncate, wide, dst_width)?
+    } else {
+        solver.try_fp_to_ubv(truncate, wide, dst_width)?
+    };
+    let upper_clamped = solver.try_ite(too_high, maximum, value)?;
+    let clamped = solver.try_ite(too_low, minimum, upper_clamped)?;
+    Ok(solver.try_ite(is_nan, zero, clamped)?)
 }
 
 /// Encode a TrustIr `BinOp` as a ay operation.
 ///
-/// Supports all 23 BinOp variants:
-/// - 13 integer variants (Add through AShr) use bitvector operations
+/// - 13 integer variants (Add through AShr) use bitvector operations, and the
+///   WS3.20 rotates (RotL/RotR) exact bitvector rotations
 /// - 3 boolean connectives (BAnd/BOr/BXor) reuse the bitwise BV ops, exact on
 ///   the 0/1 carrier
-/// - 7 float variants (FAdd through FMax) use FP operations with RNE rounding
+/// - FAdd/FSub/FMul/FDiv use the IEEE FP operations with RNE rounding
+/// - FRem is the truncating C `fmod` (trust-ir's semantics of record), encoded
+///   EXACTLY by [`encode_frem_fmod`] -- not SMT-LIB `fp.rem`, which is the
+///   round-to-nearest IEEE remainder (`fp.rem(5, 3) = -1`, `5.0 % 3.0 = 2.0`)
+/// - FMin/FMax/FCopySign are refused by name ([`AYError::UnsupportedOp`]):
+///   no SMT-LIB FP operation has their trust-ir semantics
 pub fn encode_binop(solver: &mut Solver, op: BinOp, lhs: Term, rhs: Term) -> Result<Term, AYError> {
     match op {
-        BinOp::Add => Ok(solver.bvadd(lhs, rhs)),
-        BinOp::Sub => Ok(solver.bvsub(lhs, rhs)),
-        BinOp::Mul => Ok(solver.bvmul(lhs, rhs)),
-        BinOp::UDiv => Ok(solver.bvudiv(lhs, rhs)),
-        BinOp::SDiv => Ok(solver.bvsdiv(lhs, rhs)),
-        BinOp::URem => Ok(solver.bvurem(lhs, rhs)),
-        BinOp::SRem => Ok(solver.bvsrem(lhs, rhs)),
-        BinOp::And => Ok(solver.bvand(lhs, rhs)),
-        BinOp::Or => Ok(solver.bvor(lhs, rhs)),
-        BinOp::Xor => Ok(solver.bvxor(lhs, rhs)),
-        BinOp::Shl => Ok(solver.bvshl(lhs, rhs)),
-        BinOp::LShr => Ok(solver.bvlshr(lhs, rhs)),
-        BinOp::AShr => Ok(solver.bvashr(lhs, rhs)),
+        BinOp::Add => Ok(solver.try_bvadd(lhs, rhs)?),
+        BinOp::Sub => Ok(solver.try_bvsub(lhs, rhs)?),
+        BinOp::Mul => Ok(solver.try_bvmul(lhs, rhs)?),
+        BinOp::UDiv => Ok(solver.try_bvudiv(lhs, rhs)?),
+        BinOp::SDiv => Ok(solver.try_bvsdiv(lhs, rhs)?),
+        BinOp::URem => Ok(solver.try_bvurem(lhs, rhs)?),
+        BinOp::SRem => Ok(solver.try_bvsrem(lhs, rhs)?),
+        BinOp::And => Ok(solver.try_bvand(lhs, rhs)?),
+        BinOp::Or => Ok(solver.try_bvor(lhs, rhs)?),
+        BinOp::Xor => Ok(solver.try_bvxor(lhs, rhs)?),
+        BinOp::Shl => Ok(solver.try_bvshl(lhs, rhs)?),
+        BinOp::LShr => Ok(solver.try_bvlshr(lhs, rhs)?),
+        BinOp::AShr => Ok(solver.try_bvashr(lhs, rhs)?),
         // Boolean connectives. The operands are the bool 0/1 carrier, encoded
         // here as bitvectors like every other scalar, and on 0/1 the bitwise BV
         // ops agree pointwise with the logical ones -- the same encoding
         // `AYBridge.lean`'s `encodeBinOp` uses, kept identical so the solver and
         // the Lean bridge cannot disagree about the same opcode.
-        BinOp::BAnd => Ok(solver.bvand(lhs, rhs)),
-        BinOp::BOr => Ok(solver.bvor(lhs, rhs)),
-        BinOp::BXor => Ok(solver.bvxor(lhs, rhs)),
+        BinOp::BAnd => Ok(solver.try_bvand(lhs, rhs)?),
+        BinOp::BOr => Ok(solver.try_bvor(lhs, rhs)?),
+        BinOp::BXor => Ok(solver.try_bvxor(lhs, rhs)?),
         BinOp::FAdd => {
-            let rm = rne(solver);
-            Ok(solver.fp_add(rm, lhs, rhs))
+            let rm = rne(solver)?;
+            Ok(solver.try_fp_add(rm, lhs, rhs)?)
         }
         BinOp::FSub => {
-            let rm = rne(solver);
-            Ok(solver.fp_sub(rm, lhs, rhs))
+            let rm = rne(solver)?;
+            Ok(solver.try_fp_sub(rm, lhs, rhs)?)
         }
         BinOp::FMul => {
-            let rm = rne(solver);
-            Ok(solver.fp_mul(rm, lhs, rhs))
+            let rm = rne(solver)?;
+            Ok(solver.try_fp_mul(rm, lhs, rhs)?)
         }
         BinOp::FDiv => {
-            let rm = rne(solver);
-            Ok(solver.fp_div(rm, lhs, rhs))
+            let rm = rne(solver)?;
+            Ok(solver.try_fp_div(rm, lhs, rhs)?)
         }
-        BinOp::FRem => {
-            // fp.rem does not take a rounding mode
-            Ok(solver.fp_rem(lhs, rhs))
-        }
+        // C `fmod` / Rust `%`, NOT SMT-LIB `fp.rem` (the IEEE remainder):
+        // `fp.rem` plus an exact one-step correction. See `encode_frem_fmod`.
+        BinOp::FRem => encode_frem_fmod(solver, lhs, rhs),
         // FMin/FMax are NaN-propagating-away minimum/maximum (not IEEE fp.min/
         // fp.max). They are unsupported in this in-process encoder, like FSqrt
         // and the round family; trust-cg's CLI proof path (trust-cg-verify
         // SmtExpr) models them directly with ite/fp.lt/fp.isNaN.
         BinOp::FMin => Err(AYError::UnsupportedOp("fmin".to_string())),
         BinOp::FMax => Err(AYError::UnsupportedOp("fmax".to_string())),
+        // WS3.20 rotates: exact bit-vector encodings, TOTAL like the
+        // interpreter and Lean (`rotate_at_width` / `rotlWidth`): the amount
+        // is reduced modulo the width, then `(x << n) | (x >> (w - n))`. When
+        // `n = 0` the right shift is by `w`, which SMT-LIB defines as 0, so
+        // the identity case needs no special arm.
+        BinOp::RotL => encode_rotate(solver, lhs, rhs, true),
+        BinOp::RotR => encode_rotate(solver, lhs, rhs, false),
+        // `FCopySign` is left unsupported here on purpose: SMT-LIB's FP theory
+        // has ONE NaN with no sign, so `fp.isNegative` cannot see the sign bit
+        // the reference interpreter copies from a NaN `rhs` (the Lean model
+        // refuses that case by name). Encoding it with `fp.isNegative` would
+        // silently disagree with both engines on exactly that input; refusing
+        // by name is the fail-closed choice, as for `FMin`/`FMax`.
+        BinOp::FCopySign => Err(AYError::UnsupportedOp("fcopysign".to_string())),
     }
+}
+
+/// `FRem` exactly as trust-ir defines it: C `fmod` / LLVM `frem` / Rust `%`,
+/// the TRUNCATING remainder `x - trunc(x / y) * y`, which has the dividend's
+/// sign (docs/ub-numerics-policy.md §2; interpreter `lhs % rhs`; Lean
+/// `floatFRem`, `Semantics/Arith.lean`).
+///
+/// SMT-LIB `fp.rem` is a different function, the IEEE 754 remainder
+/// `x - n * y` with `n = roundTiesToEven(x / y)`. For example
+/// `fp.rem(5, 3) = -1`, while `5.0 % 3.0 = 2.0`. Lowering `FRem` to `fp.rem`
+/// alone proved the false `5 % 3 < 0` and refuted the true
+/// `x >= 0 => x % 3 >= 0` (TRUST-IR-AY-FREM-1). The encoding is
+///
+/// ```text
+/// r    = fp.rem(x, y)
+/// fmod = ite(!isZero(r) && !isNaN(r) && isNegative(r) != isNegative(x),
+///            fp.add(RNE, r, ite(isNegative(x), -|y|, |y|)),
+///            r)
+/// ```
+///
+/// **Why this is `fmod` (finite `x`, finite nonzero `y`).** Both functions
+/// are odd in `x`: negating `x` negates the quotient, and round-to-nearest-even
+/// and truncation are both symmetric about zero. Both are even in `y`:
+/// negating `y` negates `n`, so `n * y` is unchanged. A zero result takes the
+/// sign of `x` in both. Write `a = |x|`, `b = |y|`, and `s` for the sign of
+/// `x`. Then `fmod(x, y) = s * fmod(a, b)` and `fp.rem(x, y) = s * rem(a, b)`.
+/// Let `t = floor(a / b)`, so `fmod(a, b) = a - t * b`, which lies in
+/// `[0, b)`. Round-to-nearest picks `n = t` or `n = t + 1`; a tie lands on
+/// either one, depending on parity.
+///
+/// * If `n = t`, then `rem(a, b) = fmod(a, b) >= 0`. `r` is zero or has the
+///   sign of `x`, and it is already `fmod`.
+/// * If `n = t + 1`, then `rem(a, b) = fmod(a, b) - b`, which lies in
+///   `[-b/2, 0)`. It is nonzero, has the opposite sign to `a`, and
+///   `fmod(a, b) = rem(a, b) + b`.
+///
+/// So "`r` is nonzero, not NaN, and of the opposite sign to `x`" is exactly
+/// the `n = t + 1` case. In that case
+/// `fmod(x, y) = s * (rem(a, b) + b) = r + copysign(|y|, x)`. `copysign` is
+/// spelled with `isNegative(x)`, which is sound here because `x` is not NaN
+/// whenever `r` is not NaN.
+///
+/// **Why the add is EXACT.** Its real-valued sum is `fmod(x, y)`, which is a
+/// float, so RNE (or any rounding mode) returns it unrounded. Proof that it
+/// is a float: let `Q` be the smaller of the two operands' quanta (the weight
+/// of the last significand bit, at the subnormal exponent for a subnormal).
+/// `a` and `b` are integer multiples of `Q`, and so is `a - t * b`. Also
+/// `fmod(a, b) <= a` and `fmod(a, b) < b`. Divide by `Q`: the result is at
+/// most the integral significand of whichever operand has quantum `Q`, and
+/// that significand is below `2^p`. A multiple of `Q`, at or above the
+/// format's least quantum, with fewer than `p` significant bits is
+/// representable. The sum lies in `s * [b/2, b)`, so it is nonzero and no
+/// signed-zero rounding question arises.
+///
+/// **Special operands** never take the corrected branch, and `fp.rem` already
+/// agrees with `fmod` on them (ay's `fp_rem_exact` documents the same table):
+///
+/// * `x` or `y` NaN, `x` infinite, or `y` zero: both give NaN. The guard
+///   excludes a NaN `r`. NaN payload and sign are not pinned by the policy,
+///   and SMT-LIB has a single NaN anyway.
+/// * `y` infinite and `x` finite: `fp.rem(x, ±inf) = x = fmod(x, ±inf)`. `r`
+///   has the sign of `x`, so the branch is not taken.
+/// * `x` zero and `y` nonzero, not NaN: both return `x`, keeping its zero
+///   sign. Excluded by `isZero(r)`.
+/// * An exact multiple: both give a zero with the sign of `x`, for example
+///   `-6.0 % 3.0 = -0.0`. Excluded by `isZero(r)`.
+///
+/// `crates/trust-ir-ay/tests/frem_fmod.rs` holds every case bit for bit to
+/// the reference interpreter.
+fn encode_frem_fmod(solver: &mut Solver, x: Term, y: Term) -> Result<Term, AYError> {
+    let r = solver.try_fp_rem(x, y)?;
+    let r_zero = solver.try_fp_is_zero(r)?;
+    let r_nan = solver.try_fp_is_nan(r)?;
+    let r_unadjusted = solver.try_or(r_zero, r_nan)?;
+    let r_ordinary = solver.try_not(r_unadjusted)?;
+    let r_negative = solver.try_fp_is_negative(r)?;
+    let x_negative = solver.try_fp_is_negative(x)?;
+    let sign_differs = solver.try_xor(r_negative, x_negative)?;
+    let overshot = solver.try_and(r_ordinary, sign_differs)?;
+    // copysign(|y|, x)
+    let y_magnitude = solver.try_fp_abs(y)?;
+    let y_magnitude_negated = solver.try_fp_neg(y_magnitude)?;
+    let step = solver.try_ite(x_negative, y_magnitude_negated, y_magnitude)?;
+    let rm = rne(solver)?;
+    let corrected = solver.try_fp_add(rm, r, step)?;
+    Ok(solver.try_ite(overshot, corrected, r)?)
+}
+
+/// The low `dst_width` bits of `operand` (`trunc` / narrowing `ptrtoint`).
+/// A zero-width result has no top bit: refused by name, never computed as
+/// `0 - 1` (r11 review L8: a debug panic, and a wrapped `u32::MAX` in
+/// release that only ay's own range check then caught).
+fn low_bits(solver: &mut Solver, operand: Term, dst_width: u32, op: &str) -> Result<Term, AYError> {
+    let top = dst_width
+        .checked_sub(1)
+        .ok_or_else(|| AYError::UnsupportedOp(format!("{op} to a zero-width integer")))?;
+    Ok(solver.try_bvextract(operand, top, 0)?)
+}
+
+/// The bit width of a bit-vector term, or a `SortMismatch` for anything else.
+/// A handle `solver` did not issue is ay's typed `InvalidTermHandle` (via
+/// `try_term_sort`), never a panic (r11 review M1).
+fn bitvec_width_of(solver: &Solver, term: Term, op: &'static str) -> Result<u32, AYError> {
+    solver
+        .try_term_sort(term)?
+        .bitvec_width()
+        .ok_or_else(|| AYError::UnsupportedOp(format!("{op}: operand is not a bit-vector")))
+}
+
+/// `rotl` / `rotr` by a TERM amount (WS3.20). See `encode_binop`.
+fn encode_rotate(solver: &mut Solver, lhs: Term, rhs: Term, left: bool) -> Result<Term, AYError> {
+    let op = if left { "rotl" } else { "rotr" };
+    let width = bitvec_width_of(solver, lhs, op)?;
+    let w = solver.try_bv_const_u64(u64::from(width), width)?;
+    let n = solver.try_bvurem(rhs, w)?;
+    let w_minus_n = solver.try_bvsub(w, n)?;
+    let (hi, lo) = if left {
+        (
+            solver.try_bvshl(lhs, n)?,
+            solver.try_bvlshr(lhs, w_minus_n)?,
+        )
+    } else {
+        (
+            solver.try_bvlshr(lhs, n)?,
+            solver.try_bvshl(lhs, w_minus_n)?,
+        )
+    };
+    Ok(solver.try_bvor(hi, lo)?)
+}
+
+/// `ctlz` (WS3.20): a chain of `ite`s over the bits, low to high, so the
+/// HIGHEST set bit wins: `w - 1 - index(highest set bit)`, and `w` when no
+/// bit is set — the same total definition as the interpreter and Lean.
+fn encode_ctlz(solver: &mut Solver, x: Term) -> Result<Term, AYError> {
+    let width = bitvec_width_of(solver, x, "ctlz")?;
+    let one = solver.try_bv_const_u64(1, 1)?;
+    let mut acc = solver.try_bv_const_u64(u64::from(width), width)?;
+    for i in 0..width {
+        let bit = solver.try_bvextract(x, i, i)?;
+        let set = solver.try_eq(bit, one)?;
+        let count = solver.try_bv_const_u64(u64::from(width - 1 - i), width)?;
+        acc = solver.try_ite(set, count, acc)?;
+    }
+    Ok(acc)
+}
+
+/// `cttz` (WS3.20): the same chain high to low, so the LOWEST set bit wins;
+/// `w` when no bit is set.
+fn encode_cttz(solver: &mut Solver, x: Term) -> Result<Term, AYError> {
+    let width = bitvec_width_of(solver, x, "cttz")?;
+    let one = solver.try_bv_const_u64(1, 1)?;
+    let mut acc = solver.try_bv_const_u64(u64::from(width), width)?;
+    for i in (0..width).rev() {
+        let bit = solver.try_bvextract(x, i, i)?;
+        let set = solver.try_eq(bit, one)?;
+        let count = solver.try_bv_const_u64(u64::from(i), width)?;
+        acc = solver.try_ite(set, count, acc)?;
+    }
+    Ok(acc)
+}
+
+/// Count a nonempty interval in a balanced tree. Each subtotal has exactly
+/// enough bits to hold the interval length, so addition cannot wrap. Widen
+/// only at the parent, keeping the formula small even for wide integers.
+fn encode_ctpop_interval(solver: &mut Solver, x: Term, lo: u32, len: u32) -> Result<Term, AYError> {
+    if len == 1 {
+        return Ok(solver.try_bvextract(x, lo, lo)?);
+    }
+    let left_len = len / 2;
+    let left = encode_ctpop_interval(solver, x, lo, left_len)?;
+    let right = encode_ctpop_interval(solver, x, lo + left_len, len - left_len)?;
+    let bits = u32::BITS - len.leading_zeros();
+    let left_bits = u32::BITS - left_len.leading_zeros();
+    let right_bits = u32::BITS - (len - left_len).leading_zeros();
+    let left = if bits > left_bits {
+        solver.try_bvzeroext(left, bits - left_bits)?
+    } else {
+        left
+    };
+    let right = if bits > right_bits {
+        solver.try_bvzeroext(right, bits - right_bits)?
+    } else {
+        right
+    };
+    Ok(solver.try_bvadd(left, right)?)
+}
+
+fn encode_ctpop(solver: &mut Solver, x: Term) -> Result<Term, AYError> {
+    let width = bitvec_width_of(solver, x, "ctpop")?;
+    if width == 0 {
+        return Err(AYError::UnsupportedOp(
+            "ctpop of a zero-width bit-vector".into(),
+        ));
+    }
+    let count = encode_ctpop_interval(solver, x, 0, width)?;
+    let bits = u32::BITS - width.leading_zeros();
+    if width > bits {
+        Ok(solver.try_bvzeroext(count, width - bits)?)
+    } else {
+        Ok(count)
+    }
+}
+
+/// `bswap` (WS3.20): the bytes re-concatenated in reverse order (`bvconcat`
+/// puts its first argument on the HIGH side, so byte 0 ends up on top).
+/// Every TrustIr integer width is a whole number of bytes; a width that is
+/// not is refused rather than guessed.
+fn encode_bswap(solver: &mut Solver, x: Term) -> Result<Term, AYError> {
+    let width = bitvec_width_of(solver, x, "bswap")?;
+    if width % 8 != 0 {
+        return Err(AYError::UnsupportedOp(format!(
+            "bswap at width {width} (not a whole number of bytes)"
+        )));
+    }
+    let mut acc: Option<Term> = None;
+    for byte in 0..width / 8 {
+        let lane = solver.try_bvextract(x, byte * 8 + 7, byte * 8)?;
+        acc = Some(match acc {
+            None => lane,
+            Some(acc) => solver.try_bvconcat(acc, lane)?,
+        });
+    }
+    acc.ok_or_else(|| AYError::UnsupportedOp("bswap at width 0".to_string()))
+}
+
+/// `bitreverse` (WS3.20): the bits re-concatenated in reverse order.
+fn encode_bitreverse(solver: &mut Solver, x: Term) -> Result<Term, AYError> {
+    let width = bitvec_width_of(solver, x, "bitreverse")?;
+    let mut acc: Option<Term> = None;
+    for i in 0..width {
+        let bit = solver.try_bvextract(x, i, i)?;
+        acc = Some(match acc {
+            None => bit,
+            Some(acc) => solver.try_bvconcat(acc, bit)?,
+        });
+    }
+    acc.ok_or_else(|| AYError::UnsupportedOp("bitreverse at width 0".to_string()))
 }
 
 /// Encode a TrustIr `ICmpOp` as a ay bitvector comparison.
 ///
-/// All 10 integer comparison operations are supported.
-/// Returns a 1-bit bitvector (Bool sort) in ay.
-pub fn encode_icmp(solver: &mut Solver, op: ICmpOp, lhs: Term, rhs: Term) -> Term {
-    match op {
-        ICmpOp::Eq => solver.eq(lhs, rhs),
-        ICmpOp::Ne => {
-            let eq = solver.eq(lhs, rhs);
-            solver.not(eq)
-        }
-        ICmpOp::Ult => solver.bvult(lhs, rhs),
-        ICmpOp::Ule => solver.bvule(lhs, rhs),
-        ICmpOp::Ugt => solver.bvugt(lhs, rhs),
-        ICmpOp::Uge => solver.bvuge(lhs, rhs),
-        ICmpOp::Slt => solver.bvslt(lhs, rhs),
-        ICmpOp::Sle => solver.bvsle(lhs, rhs),
-        ICmpOp::Sgt => solver.bvsgt(lhs, rhs),
-        ICmpOp::Sge => solver.bvsge(lhs, rhs),
+/// All 10 integer comparison operations require equally wide bit-vector operands.
+/// Returns an SMT Bool; schema Bool values use a separate BV1 carrier.
+pub fn encode_icmp(solver: &mut Solver, op: ICmpOp, lhs: Term, rhs: Term) -> Result<Term, AYError> {
+    // Equality is polymorphic in SMT. The IR integer comparison contract is
+    // not: accepting two floating terms here would silently compare values
+    // instead of their integer images (notably SMT's single NaN value).
+    let lhs_width = bitvec_width_of(solver, lhs, "icmp")?;
+    let rhs_width = bitvec_width_of(solver, rhs, "icmp")?;
+    if lhs_width != rhs_width {
+        return Err(AYError::UnsupportedOp(format!(
+            "icmp requires equal bit-vector widths ({lhs_width} != {rhs_width})"
+        )));
     }
+    Ok(match op {
+        ICmpOp::Eq => solver.try_eq(lhs, rhs)?,
+        ICmpOp::Ne => {
+            let eq = solver.try_eq(lhs, rhs)?;
+            solver.try_not(eq)?
+        }
+        ICmpOp::Ult => solver.try_bvult(lhs, rhs)?,
+        ICmpOp::Ule => solver.try_bvule(lhs, rhs)?,
+        ICmpOp::Ugt => solver.try_bvugt(lhs, rhs)?,
+        ICmpOp::Uge => solver.try_bvuge(lhs, rhs)?,
+        ICmpOp::Slt => solver.try_bvslt(lhs, rhs)?,
+        ICmpOp::Sle => solver.try_bvsle(lhs, rhs)?,
+        ICmpOp::Sgt => solver.try_bvsgt(lhs, rhs)?,
+        ICmpOp::Sge => solver.try_bvsge(lhs, rhs)?,
+    })
 }
 
 /// Encode a TrustIr `UnOp` as a ay unary operation.
@@ -365,29 +730,37 @@ pub fn encode_icmp(solver: &mut Solver, op: ICmpOp, lhs: Term, rhs: Term) -> Ter
 /// - `Not` -> `bvnot` (bitwise complement)
 /// - `Neg` -> `bvneg` (two's complement negation)
 /// - `FNeg` -> `fp.neg` (floating-point negation)
-/// - `CtPop` -> unsupported until ay exposes a bitvector popcount operator
+/// - `CtPop` -> exact balanced bit-count tree, widened to the operand width
 pub fn encode_unop(solver: &mut Solver, op: UnOp, operand: Term) -> Result<Term, AYError> {
     match op {
-        UnOp::Not => Ok(solver.bvnot(operand)),
-        UnOp::Neg => Ok(solver.bvneg(operand)),
-        UnOp::FNeg => Ok(solver.fp_neg(operand)),
-        UnOp::FAbs => Ok(solver.fp_abs(operand)),
+        UnOp::Not => Ok(solver.try_bvnot(operand)?),
+        UnOp::Neg => Ok(solver.try_bvneg(operand)?),
+        UnOp::FNeg => Ok(solver.try_fp_neg(operand)?),
+        UnOp::FAbs => Ok(solver.try_fp_abs(operand)?),
         UnOp::FSqrt => Err(AYError::UnsupportedOp("fsqrt".to_string())),
         UnOp::FFloor => Err(AYError::UnsupportedOp("ffloor".to_string())),
         UnOp::FCeil => Err(AYError::UnsupportedOp("fceil".to_string())),
         UnOp::FTrunc => Err(AYError::UnsupportedOp("ftrunc".to_string())),
-        UnOp::CtPop => Err(AYError::UnsupportedOp("ctpop".to_string())),
+        UnOp::CtPop => encode_ctpop(solver, operand),
+        // WS3.20 bit intrinsics: exact bit-vector encodings (see each helper).
+        UnOp::CtLz => encode_ctlz(solver, operand),
+        UnOp::CtTz => encode_cttz(solver, operand),
+        UnOp::BSwap => encode_bswap(solver, operand),
+        UnOp::BitReverse => encode_bitreverse(solver, operand),
     }
 }
 
-/// Encode a TrustIr `CastOp` as a ay bitvector resize operation.
+/// Encode a TrustIr cast using typed AY bitvector and floating-point terms.
 ///
 /// - `Trunc` -> `bvextract` (extract low bits)
 /// - `ZExt` -> `bvzeroext` (zero-extend)
 /// - `SExt` -> `bvsignext` (sign-extend)
 ///
-/// Other cast ops (float conversions, pointer casts, bitcast) are unsupported
-/// in the BV encoding.
+/// Float-to-integer conversion uses RTZ; integer-to-float and float narrowing
+/// use RNE. Saturating conversion handles NaN and range limits explicitly.
+/// Raw float-to-integer terms cover defined inputs only: their construction
+/// does not establish the IR's finite/range precondition. Reification,
+/// transmute and pointer-to-pointer casts remain structured refusals.
 pub fn encode_cast(
     solver: &mut Solver,
     op: CastOp,
@@ -404,7 +777,7 @@ pub fn encode_cast(
                 )));
             }
             // Extract bits [dst_width-1:0]
-            Ok(solver.bvextract(operand, dst_width - 1, 0))
+            low_bits(solver, operand, dst_width, "trunc")
         }
         CastOp::ZExt => {
             if dst_width <= src_width {
@@ -414,7 +787,7 @@ pub fn encode_cast(
                 )));
             }
             let extend_by = dst_width - src_width;
-            Ok(solver.bvzeroext(operand, extend_by))
+            Ok(solver.try_bvzeroext(operand, extend_by)?)
         }
         CastOp::SExt => {
             if dst_width <= src_width {
@@ -424,41 +797,41 @@ pub fn encode_cast(
                 )));
             }
             let extend_by = dst_width - src_width;
-            Ok(solver.bvsignext(operand, extend_by))
+            Ok(solver.try_bvsignext(operand, extend_by)?)
         }
         CastOp::FPToUI => {
-            // FP -> unsigned bitvector
-            let rm = rne(solver);
-            Ok(solver.fp_to_ubv(rm, operand, dst_width))
+            // Defined inputs truncate toward zero. Out-of-range / NaN inputs
+            // remain outside the IR's raw-cast domain (not saturation).
+            let rm = rtz(solver)?;
+            Ok(solver.try_fp_to_ubv(rm, operand, dst_width)?)
         }
         CastOp::FPToSI => {
-            // FP -> signed bitvector
-            let rm = rne(solver);
-            Ok(solver.fp_to_sbv(rm, operand, dst_width))
+            let rm = rtz(solver)?;
+            Ok(solver.try_fp_to_sbv(rm, operand, dst_width)?)
         }
         CastOp::UIToFP => {
             // Unsigned bitvector -> FP. dst_width encodes eb+sb.
-            let rm = rne(solver);
+            let rm = rne(solver)?;
             let (eb, sb) = fp_sort_from_total_width(dst_width)?;
-            Ok(solver.bv_to_fp_unsigned(rm, operand, eb, sb))
+            Ok(solver.try_bv_to_fp_unsigned(rm, operand, eb, sb)?)
         }
         CastOp::SIToFP => {
             // Signed bitvector -> FP. Uses bv_to_fp (signed interpretation).
-            let rm = rne(solver);
+            let rm = rne(solver)?;
             let (eb, sb) = fp_sort_from_total_width(dst_width)?;
-            Ok(solver.bv_to_fp(rm, operand, eb, sb))
+            Ok(solver.try_bv_to_fp(rm, operand, eb, sb)?)
         }
         CastOp::FPTrunc => {
             // FP -> narrower FP (e.g., f64 -> f32)
-            let rm = rne(solver);
+            let rm = rne(solver)?;
             let (eb, sb) = fp_sort_from_total_width(dst_width)?;
-            Ok(solver.fp_to_fp(rm, operand, eb, sb))
+            Ok(solver.try_fp_to_fp(rm, operand, eb, sb)?)
         }
         CastOp::FPExt => {
             // FP -> wider FP (e.g., f32 -> f64)
-            let rm = rne(solver);
+            let rm = rne(solver)?;
             let (eb, sb) = fp_sort_from_total_width(dst_width)?;
-            Ok(solver.fp_to_fp(rm, operand, eb, sb))
+            Ok(solver.try_fp_to_fp(rm, operand, eb, sb)?)
         }
         CastOp::PtrToInt => {
             // Pointer is BitVec(64) in our encoding. Target is integer BitVec(dst_width).
@@ -468,11 +841,11 @@ pub fn encode_cast(
                 Ok(operand)
             } else if dst_width < 64 {
                 // Narrowing: extract low bits
-                Ok(solver.bvextract(operand, dst_width - 1, 0))
+                low_bits(solver, operand, dst_width, "ptrtoint")
             } else {
                 // Widening: zero-extend
                 let extend_by = dst_width - 64;
-                Ok(solver.bvzeroext(operand, extend_by))
+                Ok(solver.try_bvzeroext(operand, extend_by)?)
             }
         }
         CastOp::IntToPtr => {
@@ -483,20 +856,27 @@ pub fn encode_cast(
             } else if src_width < 64 {
                 // Narrower integer: zero-extend to 64
                 let extend_by = 64 - src_width;
-                Ok(solver.bvzeroext(operand, extend_by))
+                Ok(solver.try_bvzeroext(operand, extend_by)?)
             } else {
                 // Wider integer: truncate to 64 (extract low 64 bits)
-                Ok(solver.bvextract(operand, 63, 0))
+                Ok(solver.try_bvextract(operand, 63, 0)?)
             }
         }
         CastOp::Bitcast => {
             // Same-width reinterpretation. In bitvector encoding, both source
             // and destination types map to BitVec of the same width, so this
-            // is the identity operation.
+            // is the identity operation. An IEEE floating image requires a
+            // separate encoding; returning an FP term would erase that image.
             if src_width != dst_width {
                 return Err(AYError::UnsupportedOp(format!(
                     "bitcast requires src_width ({}) == dst_width ({})",
                     src_width, dst_width
+                )));
+            }
+            let actual_width = bitvec_width_of(solver, operand, "bitcast")?;
+            if actual_width != src_width {
+                return Err(AYError::UnsupportedOp(format!(
+                    "bitcast operand width ({actual_width}) differs from declared source ({src_width})"
                 )));
             }
             Ok(operand)
@@ -506,17 +886,8 @@ pub fn encode_cast(
                 "{op} is proof-grade classified but unsupported by BV encoding"
             )))
         }
-        CastOp::FPToSISat | CastOp::FPToUISat => {
-            // Saturating float→int (Rust `f as iN`/`uN`): NaN→0 and clamp to
-            // [MIN,MAX]. A faithful BV/FP encoding is an ite-chain over
-            // fp.isNaN / fp.geq / fp.lt plus fp.to_sbv on the in-range branch;
-            // until that is written and cross-checked we fail CLOSED here rather
-            // than risk an unsound approximation. The reference interpreter
-            // (trust-ir::interpret) carries the exact saturating semantics.
-            Err(AYError::UnsupportedOp(format!(
-                "{op} (saturating float→int) is not yet supported by the BV encoding"
-            )))
-        }
+        CastOp::FPToSISat => encode_saturating_fp_cast(solver, operand, dst_width, true),
+        CastOp::FPToUISat => encode_saturating_fp_cast(solver, operand, dst_width, false),
     }
 }
 
@@ -539,66 +910,66 @@ fn fp_sort_from_total_width(total_width: u32) -> Result<(u32, u32), AYError> {
 /// Ordered comparisons (O-prefix) return false if either operand is NaN.
 /// Unordered comparisons (U-prefix) return true if either operand is NaN.
 /// Returns a boolean ay term.
-pub fn encode_fcmp(solver: &mut Solver, op: FCmpOp, lhs: Term, rhs: Term) -> Term {
-    match op {
+pub fn encode_fcmp(solver: &mut Solver, op: FCmpOp, lhs: Term, rhs: Term) -> Result<Term, AYError> {
+    Ok(match op {
         // Ordered comparisons: false if NaN
-        FCmpOp::OEq => solver.fp_eq(lhs, rhs),
+        FCmpOp::OEq => solver.try_fp_eq(lhs, rhs)?,
         FCmpOp::ONe => {
-            let eq = solver.fp_eq(lhs, rhs);
-            solver.not(eq)
+            let eq = solver.try_fp_eq(lhs, rhs)?;
+            solver.try_not(eq)?
         }
-        FCmpOp::OLt => solver.fp_lt(lhs, rhs),
-        FCmpOp::OLe => solver.fp_le(lhs, rhs),
-        FCmpOp::OGt => solver.fp_gt(lhs, rhs),
-        FCmpOp::OGe => solver.fp_ge(lhs, rhs),
+        FCmpOp::OLt => solver.try_fp_lt(lhs, rhs)?,
+        FCmpOp::OLe => solver.try_fp_le(lhs, rhs)?,
+        FCmpOp::OGt => solver.try_fp_gt(lhs, rhs)?,
+        FCmpOp::OGe => solver.try_fp_ge(lhs, rhs)?,
         // Unordered comparisons: true if NaN
         FCmpOp::UEq => {
             // UEq = isNaN(a) OR isNaN(b) OR fp.eq(a, b)
-            let nan_a = solver.fp_is_nan(lhs);
-            let nan_b = solver.fp_is_nan(rhs);
-            let eq = solver.fp_eq(lhs, rhs);
-            let nan_either = solver.or(nan_a, nan_b);
-            solver.or(nan_either, eq)
+            let nan_a = solver.try_fp_is_nan(lhs)?;
+            let nan_b = solver.try_fp_is_nan(rhs)?;
+            let eq = solver.try_fp_eq(lhs, rhs)?;
+            let nan_either = solver.try_or(nan_a, nan_b)?;
+            solver.try_or(nan_either, eq)?
         }
         FCmpOp::UNe => {
             // UNe = isNaN(a) OR isNaN(b) OR NOT fp.eq(a, b)
-            let nan_a = solver.fp_is_nan(lhs);
-            let nan_b = solver.fp_is_nan(rhs);
-            let eq = solver.fp_eq(lhs, rhs);
-            let neq = solver.not(eq);
-            let nan_either = solver.or(nan_a, nan_b);
-            solver.or(nan_either, neq)
+            let nan_a = solver.try_fp_is_nan(lhs)?;
+            let nan_b = solver.try_fp_is_nan(rhs)?;
+            let eq = solver.try_fp_eq(lhs, rhs)?;
+            let neq = solver.try_not(eq)?;
+            let nan_either = solver.try_or(nan_a, nan_b)?;
+            solver.try_or(nan_either, neq)?
         }
         FCmpOp::ULt => {
             // ULt = isNaN(a) OR isNaN(b) OR fp.lt(a, b)
-            let nan_a = solver.fp_is_nan(lhs);
-            let nan_b = solver.fp_is_nan(rhs);
-            let lt = solver.fp_lt(lhs, rhs);
-            let nan_either = solver.or(nan_a, nan_b);
-            solver.or(nan_either, lt)
+            let nan_a = solver.try_fp_is_nan(lhs)?;
+            let nan_b = solver.try_fp_is_nan(rhs)?;
+            let lt = solver.try_fp_lt(lhs, rhs)?;
+            let nan_either = solver.try_or(nan_a, nan_b)?;
+            solver.try_or(nan_either, lt)?
         }
         FCmpOp::ULe => {
-            let nan_a = solver.fp_is_nan(lhs);
-            let nan_b = solver.fp_is_nan(rhs);
-            let le = solver.fp_le(lhs, rhs);
-            let nan_either = solver.or(nan_a, nan_b);
-            solver.or(nan_either, le)
+            let nan_a = solver.try_fp_is_nan(lhs)?;
+            let nan_b = solver.try_fp_is_nan(rhs)?;
+            let le = solver.try_fp_le(lhs, rhs)?;
+            let nan_either = solver.try_or(nan_a, nan_b)?;
+            solver.try_or(nan_either, le)?
         }
         FCmpOp::UGt => {
-            let nan_a = solver.fp_is_nan(lhs);
-            let nan_b = solver.fp_is_nan(rhs);
-            let gt = solver.fp_gt(lhs, rhs);
-            let nan_either = solver.or(nan_a, nan_b);
-            solver.or(nan_either, gt)
+            let nan_a = solver.try_fp_is_nan(lhs)?;
+            let nan_b = solver.try_fp_is_nan(rhs)?;
+            let gt = solver.try_fp_gt(lhs, rhs)?;
+            let nan_either = solver.try_or(nan_a, nan_b)?;
+            solver.try_or(nan_either, gt)?
         }
         FCmpOp::UGe => {
-            let nan_a = solver.fp_is_nan(lhs);
-            let nan_b = solver.fp_is_nan(rhs);
-            let ge = solver.fp_ge(lhs, rhs);
-            let nan_either = solver.or(nan_a, nan_b);
-            solver.or(nan_either, ge)
+            let nan_a = solver.try_fp_is_nan(lhs)?;
+            let nan_b = solver.try_fp_is_nan(rhs)?;
+            let ge = solver.try_fp_ge(lhs, rhs)?;
+            let nan_either = solver.try_or(nan_a, nan_b)?;
+            solver.try_or(nan_either, ge)?
         }
-    }
+    })
 }
 
 // ============================================================================
@@ -612,9 +983,15 @@ pub fn encode_fcmp(solver: &mut Solver, op: FCmpOp, lhs: Term, rhs: Term) -> Ter
 pub struct MemoryModel {
     /// The ay term representing the current memory state (Array sort).
     pub state: Term,
-    /// Counter for generating fresh allocation base addresses.
-    alloc_counter: u64,
+    /// The bump pointer: the base the next [`Self::encode_alloca`] hands out.
+    /// Always a multiple of [`ALLOCA_GRANULE`], never below it.
+    next_free: u64,
 }
+
+/// Every alloca base is a multiple of this, and the first base is this, so
+/// page 0 is never allocated and no base is null. Bases are therefore aligned
+/// to any power of two up to 4 KiB.
+const ALLOCA_GRANULE: u64 = 0x1000;
 
 /// The ay sort for memory: `Array(BitVec(64), BitVec(8))`.
 pub fn memory_sort() -> Sort {
@@ -626,13 +1003,13 @@ pub fn memory_sort() -> Sort {
 
 impl MemoryModel {
     /// Create a new symbolic memory state.
-    pub fn new(solver: &mut Solver, name: &str) -> Self {
+    pub fn new(solver: &mut Solver, name: &str) -> Result<Self, AYError> {
         let sort = memory_sort();
-        let state = solver.declare_const(name, sort);
-        Self {
+        let state = solver.try_declare_const(name, sort)?;
+        Ok(Self {
             state,
-            alloc_counter: 0,
-        }
+            next_free: ALLOCA_GRANULE,
+        })
     }
 
     /// Encode a multi-byte load from memory.
@@ -649,18 +1026,18 @@ impl MemoryModel {
             return Err(AYError::MemoryError("load of zero bytes".to_string()));
         }
         // Read byte 0 (least significant)
-        let byte0 = solver.select(self.state, addr);
+        let byte0 = solver.try_select(self.state, addr)?;
         if byte_width == 1 {
             return Ok(byte0);
         }
         // Read remaining bytes and concatenate (little-endian: high bytes on left)
         let mut result = byte0;
         for i in 1..byte_width {
-            let offset = solver.bv_const(i as i64, 64);
-            let byte_addr = solver.bvadd(addr, offset);
-            let byte_val = solver.select(self.state, byte_addr);
+            let offset = solver.try_bv_const(i as i64, 64)?;
+            let byte_addr = solver.try_bvadd(addr, offset)?;
+            let byte_val = solver.try_select(self.state, byte_addr)?;
             // Concat: byte_val is more significant, result is less significant
-            result = solver.bvconcat(byte_val, result);
+            result = solver.try_bvconcat(byte_val, result)?;
         }
         Ok(result)
     }
@@ -679,51 +1056,91 @@ impl MemoryModel {
         if byte_width == 0 {
             return Err(AYError::MemoryError("store of zero bytes".to_string()));
         }
+        // The stored value is a bit-vector of `byte_width * 8` bits, and a
+        // bit-vector width is a `u32`: a wider store has no value to extract
+        // from. Refused before any solver work, never wrapped into a bit
+        // offset of some other byte.
+        let too_wide = || {
+            AYError::MemoryError(format!(
+                "store of {byte_width} bytes: {byte_width} * 8 bits exceeds the u32 bit-vector \
+                 width"
+            ))
+        };
+        if byte_width.checked_mul(8).is_none() {
+            return Err(too_wide());
+        }
         let mut mem = self.state;
         for i in 0..byte_width {
-            let offset = solver.bv_const(i as i64, 64);
-            let byte_addr = solver.bvadd(addr, offset);
-            // Extract byte i from value (little-endian: byte 0 is bits [7:0])
-            let lo = i * 8;
-            let hi = lo + 7;
-            let byte_val = solver.bvextract(value, hi, lo);
-            mem = solver.store(mem, byte_addr, byte_val);
+            // Extract byte i from value (little-endian: byte 0 is bits [7:0]).
+            // `lo` is a multiple of 8, so `lo | 7` is `lo + 7` without an add.
+            let lo = i.checked_mul(8).ok_or_else(too_wide)?;
+            let hi = lo | 7;
+            let offset = solver.try_bv_const(i64::from(i), 64)?;
+            let byte_addr = solver.try_bvadd(addr, offset)?;
+            let byte_val = solver.try_bvextract(value, hi, lo)?;
+            mem = solver.try_store(mem, byte_addr, byte_val)?;
         }
         self.state = mem;
         Ok(mem)
     }
 
-    /// Encode an alloca: return a fresh symbolic address with non-overlap constraints.
+    /// Encode an alloca: return a fresh, concrete, non-null address for
+    /// `byte_size` bytes that overlaps no earlier allocation.
     ///
-    /// The returned address is constrained to be non-null and non-overlapping
-    /// with previous allocations (using a monotonically increasing base).
-    pub fn encode_alloca(&mut self, solver: &mut Solver, byte_size: u64) -> Term {
-        // Use a well-separated base address for each allocation
-        // Base addresses: 0x1000, 0x2000, 0x3000, ...
-        self.alloc_counter += 1;
-        let base = self.alloc_counter * 0x1000;
-        let addr = solver.bv_const(base as i64, 64);
+    /// Bases come from a bump pointer over [`ALLOCA_GRANULE`] (4 KiB)
+    /// granules, starting at 0x1000: the allocation occupies
+    /// `[base, base + max(byte_size, 1))` and the next base is the first
+    /// granule boundary at or above its end. Allocations of at most 4 KiB keep
+    /// the historical bases 0x1000, 0x2000, 0x3000, ...; a larger one now
+    /// advances the pointer past its own end. (The earlier fixed 0x1000 stride
+    /// overlapped any allocation larger than 4 KiB — a `<1024 x i64>` slot, as
+    /// the whole-function VC sizes it — with the next one, so a store to one
+    /// was visible through a load from the other.)
+    ///
+    /// # Errors
+    ///
+    /// [`AYError::MemoryError`] when the allocation and its granule padding do
+    /// not fit below 2^64. The model refuses rather than wrap a base onto an
+    /// earlier allocation, and so never asserts the (then false) no-wrap
+    /// constraint that would make every later query vacuously unsatisfiable.
+    pub fn encode_alloca(&mut self, solver: &mut Solver, byte_size: u64) -> Result<Term, AYError> {
+        let base = self.next_free;
+        let exhausted = || {
+            AYError::MemoryError(format!(
+                "alloca of {byte_size} bytes at base {base:#x} does not fit the 64-bit address space"
+            ))
+        };
+        let end = base.checked_add(byte_size.max(1)).ok_or_else(exhausted)?;
+        self.next_free =
+            end.checked_add(ALLOCA_GRANULE - 1).ok_or_else(exhausted)? & !(ALLOCA_GRANULE - 1);
+        let addr = solver.try_bv_const_u64(base, 64)?;
 
         // Assert non-null
-        let null = solver.bv_const(0, 64);
-        let not_null = solver.eq(addr, null);
-        let not_null = solver.not(not_null);
-        solver.assert_term(not_null);
+        let null = solver.try_bv_const(0, 64)?;
+        let not_null = solver.try_eq(addr, null)?;
+        let not_null = solver.try_not(not_null)?;
+        solver.try_assert_term(not_null)?;
 
-        // Assert in-bounds: addr + size does not wrap around
-        let size = solver.bv_const(byte_size as i64, 64);
-        let end = solver.bvadd(addr, size);
-        let no_wrap = solver.bvuge(end, addr);
-        solver.assert_term(no_wrap);
+        // Assert in-bounds: addr + size does not wrap around (true by the
+        // checked arithmetic above; stated so the solver has it too).
+        let size = solver.try_bv_const_u64(byte_size, 64)?;
+        let end = solver.try_bvadd(addr, size)?;
+        let no_wrap = solver.try_bvuge(end, addr)?;
+        solver.try_assert_term(no_wrap)?;
 
-        addr
+        Ok(addr)
     }
 
     /// Encode a GEP (GetElementPtr) as pointer arithmetic.
     ///
     /// `base + offset_bytes` using bitvector addition on 64-bit pointers.
-    pub fn encode_gep(&self, solver: &mut Solver, base: Term, offset_bytes: Term) -> Term {
-        solver.bvadd(base, offset_bytes)
+    pub fn encode_gep(
+        &self,
+        solver: &mut Solver,
+        base: Term,
+        offset_bytes: Term,
+    ) -> Result<Term, AYError> {
+        Ok(solver.try_bvadd(base, offset_bytes)?)
     }
 }
 
@@ -759,10 +1176,10 @@ pub fn permission_sort() -> Sort {
 
 impl BorrowModel {
     /// Create a new symbolic borrow permission state.
-    pub fn new(solver: &mut Solver, name: &str) -> Self {
+    pub fn new(solver: &mut Solver, name: &str) -> Result<Self, AYError> {
         let sort = permission_sort();
-        let state = solver.declare_const(name, sort);
-        Self { state }
+        let state = solver.try_declare_const(name, sort)?;
+        Ok(Self { state })
     }
 
     /// Encode a shared borrow from `ptr`.
@@ -770,18 +1187,22 @@ impl BorrowModel {
     /// The pointer must currently be `Owned` (1) or already `SharedBorrow` (2).
     /// Asserts this precondition and sets the permission to `SharedBorrow` (2).
     /// Returns the borrowed pointer and the updated permission state.
-    pub fn encode_borrow(&mut self, solver: &mut Solver, ptr: Term) -> (Term, Term) {
-        let permission = self.get_permission(solver, ptr);
-        let owned = solver.bv_const(1, 2);
-        let shared_borrow = solver.bv_const(2, 2);
-        let is_owned = solver.eq(permission, owned);
-        let is_shared = solver.eq(permission, shared_borrow);
-        let can_borrow = solver.or(is_owned, is_shared);
-        solver.assert_term(can_borrow);
+    pub fn encode_borrow(
+        &mut self,
+        solver: &mut Solver,
+        ptr: Term,
+    ) -> Result<(Term, Term), AYError> {
+        let permission = self.get_permission(solver, ptr)?;
+        let owned = solver.try_bv_const(1, 2)?;
+        let shared_borrow = solver.try_bv_const(2, 2)?;
+        let is_owned = solver.try_eq(permission, owned)?;
+        let is_shared = solver.try_eq(permission, shared_borrow)?;
+        let can_borrow = solver.try_or(is_owned, is_shared)?;
+        solver.try_assert_term(can_borrow)?;
 
-        let new_state = solver.store(self.state, ptr, shared_borrow);
+        let new_state = solver.try_store(self.state, ptr, shared_borrow)?;
         self.state = new_state;
-        (ptr, new_state)
+        Ok((ptr, new_state))
     }
 
     /// Encode a mutable borrow from `ptr`.
@@ -789,31 +1210,39 @@ impl BorrowModel {
     /// The pointer must currently be `Owned` (1). Asserts this precondition
     /// and sets the permission to `MutableBorrow` (3).
     /// Returns the borrowed pointer and the updated permission state.
-    pub fn encode_borrow_mut(&mut self, solver: &mut Solver, ptr: Term) -> (Term, Term) {
-        let permission = self.get_permission(solver, ptr);
-        let owned = solver.bv_const(1, 2);
-        let mutable_borrow = solver.bv_const(3, 2);
-        let is_owned = solver.eq(permission, owned);
-        solver.assert_term(is_owned);
+    pub fn encode_borrow_mut(
+        &mut self,
+        solver: &mut Solver,
+        ptr: Term,
+    ) -> Result<(Term, Term), AYError> {
+        let permission = self.get_permission(solver, ptr)?;
+        let owned = solver.try_bv_const(1, 2)?;
+        let mutable_borrow = solver.try_bv_const(3, 2)?;
+        let is_owned = solver.try_eq(permission, owned)?;
+        solver.try_assert_term(is_owned)?;
 
-        let new_state = solver.store(self.state, ptr, mutable_borrow);
+        let new_state = solver.try_store(self.state, ptr, mutable_borrow)?;
         self.state = new_state;
-        (ptr, new_state)
+        Ok((ptr, new_state))
     }
 
     /// Encode the end of a borrow, restoring ownership.
     ///
     /// Sets the permission back to `Owned` (1). Returns the updated state.
-    pub fn encode_end_borrow(&mut self, solver: &mut Solver, borrow_ptr: Term) -> Term {
-        let owned = solver.bv_const(1, 2);
-        let new_state = solver.store(self.state, borrow_ptr, owned);
+    pub fn encode_end_borrow(
+        &mut self,
+        solver: &mut Solver,
+        borrow_ptr: Term,
+    ) -> Result<Term, AYError> {
+        let owned = solver.try_bv_const(1, 2)?;
+        let new_state = solver.try_store(self.state, borrow_ptr, owned)?;
         self.state = new_state;
-        new_state
+        Ok(new_state)
     }
 
     /// Read the current permission for `ptr`.
-    pub fn get_permission(&self, solver: &mut Solver, ptr: Term) -> Term {
-        solver.select(self.state, ptr)
+    pub fn get_permission(&self, solver: &mut Solver, ptr: Term) -> Result<Term, AYError> {
+        Ok(solver.try_select(self.state, ptr)?)
     }
 }
 
@@ -842,22 +1271,22 @@ pub fn refcount_sort() -> Sort {
 
 impl ArcModel {
     /// Create a new symbolic ARC refcount state.
-    pub fn new(solver: &mut Solver, name: &str) -> Self {
+    pub fn new(solver: &mut Solver, name: &str) -> Result<Self, AYError> {
         let sort = refcount_sort();
-        let state = solver.declare_const(name, sort);
-        Self { state }
+        let state = solver.try_declare_const(name, sort)?;
+        Ok(Self { state })
     }
 
     /// Encode an ARC retain by incrementing the refcount.
     ///
     /// Returns the updated refcount state.
-    pub fn encode_retain(&mut self, solver: &mut Solver, ptr: Term) -> Term {
-        let refcount = self.get_refcount(solver, ptr);
-        let one = solver.bv_const(1, 32);
-        let new_refcount = solver.bvadd(refcount, one);
-        let new_state = solver.store(self.state, ptr, new_refcount);
+    pub fn encode_retain(&mut self, solver: &mut Solver, ptr: Term) -> Result<Term, AYError> {
+        let refcount = self.get_refcount(solver, ptr)?;
+        let one = solver.try_bv_const(1, 32)?;
+        let new_refcount = solver.try_bvadd(refcount, one)?;
+        let new_state = solver.try_store(self.state, ptr, new_refcount)?;
         self.state = new_state;
-        new_state
+        Ok(new_state)
     }
 
     /// Encode an ARC release by decrementing the refcount.
@@ -865,14 +1294,14 @@ impl ArcModel {
     /// Asserts that the refcount is > 0 before decrementing.
     /// Returns the updated refcount state.
     pub fn encode_release(&mut self, solver: &mut Solver, ptr: Term) -> Result<Term, AYError> {
-        let refcount = self.get_refcount(solver, ptr);
-        let zero = solver.bv_const(0, 32);
-        let one = solver.bv_const(1, 32);
-        let positive = solver.bvugt(refcount, zero);
-        solver.assert_term(positive);
+        let refcount = self.get_refcount(solver, ptr)?;
+        let zero = solver.try_bv_const(0, 32)?;
+        let one = solver.try_bv_const(1, 32)?;
+        let positive = solver.try_bvugt(refcount, zero)?;
+        solver.try_assert_term(positive)?;
 
-        let new_refcount = solver.bvsub(refcount, one);
-        let new_state = solver.store(self.state, ptr, new_refcount);
+        let new_refcount = solver.try_bvsub(refcount, one)?;
+        let new_state = solver.try_store(self.state, ptr, new_refcount)?;
         self.state = new_state;
         Ok(new_state)
     }
@@ -880,15 +1309,15 @@ impl ArcModel {
     /// Check whether `ptr` has a unique ARC reference (refcount == 1).
     ///
     /// Returns a boolean ay term.
-    pub fn encode_is_unique(&self, solver: &mut Solver, ptr: Term) -> Term {
-        let refcount = self.get_refcount(solver, ptr);
-        let one = solver.bv_const(1, 32);
-        solver.eq(refcount, one)
+    pub fn encode_is_unique(&self, solver: &mut Solver, ptr: Term) -> Result<Term, AYError> {
+        let refcount = self.get_refcount(solver, ptr)?;
+        let one = solver.try_bv_const(1, 32)?;
+        Ok(solver.try_eq(refcount, one)?)
     }
 
     /// Read the current refcount for `ptr`.
-    pub fn get_refcount(&self, solver: &mut Solver, ptr: Term) -> Term {
-        solver.select(self.state, ptr)
+    pub fn get_refcount(&self, solver: &mut Solver, ptr: Term) -> Result<Term, AYError> {
+        Ok(solver.try_select(self.state, ptr)?)
     }
 }
 
@@ -928,6 +1357,14 @@ pub enum VerificationResult {
 /// `ProofCertificate` record. Until AY exports proof bytes, callers must keep
 /// successful obligations `Pending`; [`VerificationResult::status`] enforces
 /// that fail-closed policy.
+///
+/// ONE SOLVER PER CALL. The condition is asserted into `solver` with no
+/// push/pop frame, so it stays asserted afterwards: a later check on the same
+/// solver is made under this one's negated goal. And on `Err` ay may have
+/// left the solver corrupted (a caught panic is `SolverError::SolverPanic`).
+/// Pass a fresh solver, and discard it after the call — always on `Err`. The
+/// VC builder (`vc`) does not use this entry point; it frames each condition
+/// and poisons its session on any error (r11 review H1, L8).
 pub fn verify_and_certify(
     solver: &mut Solver,
     annotation: &ProofAnnotation,
@@ -937,10 +1374,10 @@ pub fn verify_and_certify(
     let condition = verify_proof_obligation(solver, annotation, operands)?;
 
     // Assert the condition term
-    solver.assert_term(condition.term);
+    solver.try_assert_term(condition.term)?;
 
     // Check satisfiability
-    let sat_result = solver.check_sat();
+    let sat_result = solver.try_check_sat()?;
 
     match condition.strategy {
         ProofStrategy::AssertAndCheckUnsat => {
@@ -973,6 +1410,10 @@ pub fn verify_and_certify(
                     obligation: obligation_id,
                     prover: "ay".to_string(),
                     evidence: ProofEvidence::SmtProof(Vec::new()),
+                    // v41: this adapter records no coverage bound of its own; the
+                    // projection is the bundle writer's job, and `None` reads as
+                    // UNKNOWN coverage rather than `Unbounded`.
+                    assurance: None,
                 }))
             } else if sat_result.is_sat() {
                 // SAT => counterexample exists => obligation does NOT hold
@@ -981,6 +1422,10 @@ pub fn verify_and_certify(
                         obligation: obligation_id,
                         prover: "ay".to_string(),
                         evidence: ProofEvidence::SmtProof(Vec::new()),
+                        // v41: this adapter records no coverage bound of its own; the
+                        // projection is the bundle writer's job, and `None` reads as
+                        // UNKNOWN coverage rather than `Unbounded`.
+                        assurance: None,
                     },
                 })
             } else {
@@ -990,6 +1435,10 @@ pub fn verify_and_certify(
                         obligation: obligation_id,
                         prover: "ay".to_string(),
                         evidence: ProofEvidence::Trusted("ay returned unknown".to_string()),
+                        // v41: this adapter records no coverage bound of its own; the
+                        // projection is the bundle writer's job, and `None` reads as
+                        // UNKNOWN coverage rather than `Unbounded`.
+                        assurance: None,
                     },
                 })
             }
@@ -1069,27 +1518,27 @@ pub fn encode_overflow_check(
     is_signed: bool,
     lhs: Term,
     rhs: Term,
-) -> Term {
-    match (op, is_signed) {
+) -> Result<Term, AYError> {
+    Ok(match (op, is_signed) {
         (OverflowOp::AddOverflow, true) => {
-            let no_overflow = solver.bvadd_no_overflow(lhs, rhs, true);
-            let no_underflow = solver.bvadd_no_underflow(lhs, rhs);
-            solver.and(no_overflow, no_underflow)
+            let no_overflow = solver.try_bvadd_no_overflow(lhs, rhs, true)?;
+            let no_underflow = solver.try_bvadd_no_underflow(lhs, rhs)?;
+            solver.try_and(no_overflow, no_underflow)?
         }
-        (OverflowOp::AddOverflow, false) => solver.bvadd_no_overflow(lhs, rhs, false),
+        (OverflowOp::AddOverflow, false) => solver.try_bvadd_no_overflow(lhs, rhs, false)?,
         (OverflowOp::SubOverflow, true) => {
-            let no_overflow = solver.bvsub_no_overflow(lhs, rhs);
-            let no_underflow = solver.bvsub_no_underflow(lhs, rhs, true);
-            solver.and(no_overflow, no_underflow)
+            let no_overflow = solver.try_bvsub_no_overflow(lhs, rhs)?;
+            let no_underflow = solver.try_bvsub_no_underflow(lhs, rhs, true)?;
+            solver.try_and(no_overflow, no_underflow)?
         }
-        (OverflowOp::SubOverflow, false) => solver.bvsub_no_underflow(lhs, rhs, false),
+        (OverflowOp::SubOverflow, false) => solver.try_bvsub_no_underflow(lhs, rhs, false)?,
         (OverflowOp::MulOverflow, true) => {
-            let no_overflow = solver.bvmul_no_overflow(lhs, rhs, true);
-            let no_underflow = solver.bvmul_no_underflow(lhs, rhs);
-            solver.and(no_overflow, no_underflow)
+            let no_overflow = solver.try_bvmul_no_overflow(lhs, rhs, true)?;
+            let no_underflow = solver.try_bvmul_no_underflow(lhs, rhs)?;
+            solver.try_and(no_overflow, no_underflow)?
         }
-        (OverflowOp::MulOverflow, false) => solver.bvmul_no_overflow(lhs, rhs, false),
-    }
+        (OverflowOp::MulOverflow, false) => solver.try_bvmul_no_overflow(lhs, rhs, false)?,
+    })
 }
 
 /// Generate a ay verification condition for a `ProofAnnotation`.
@@ -1132,9 +1581,9 @@ pub fn verify_proof_obligation(
                      (ProofOperands::with_signedness); refusing to default"
                 )));
             };
-            let safe = encode_overflow_check(solver, *op, is_signed, lhs, rhs);
+            let safe = encode_overflow_check(solver, *op, is_signed, lhs, rhs)?;
             // Assert NOT safe, check UNSAT => safe always holds
-            let negated = solver.not(safe);
+            let negated = solver.try_not(safe)?;
             Ok(ProofCondition {
                 term: negated,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1142,8 +1591,8 @@ pub fn verify_proof_obligation(
         }
         ProofAnnotation::DivNonZero => {
             let divisor = operands.single_operand("divisor")?;
-            let zero = solver.bv_const(0, operands.bit_width()?);
-            let is_zero = solver.eq(divisor, zero);
+            let zero = solver.try_bv_const(0, operands.bit_width()?)?;
+            let is_zero = solver.try_eq(divisor, zero)?;
             // Assert divisor == 0, check UNSAT => divisor never zero
             Ok(ProofCondition {
                 term: is_zero,
@@ -1153,7 +1602,7 @@ pub fn verify_proof_obligation(
         ProofAnnotation::ShiftInRange => {
             let (shift_amount, bit_width_term) =
                 operands.two_operands("shift_amount", "bit_width")?;
-            let out_of_range = solver.bvuge(shift_amount, bit_width_term);
+            let out_of_range = solver.try_bvuge(shift_amount, bit_width_term)?;
             // Assert shift >= width, check UNSAT => shift always in range
             Ok(ProofCondition {
                 term: out_of_range,
@@ -1162,7 +1611,7 @@ pub fn verify_proof_obligation(
         }
         ProofAnnotation::InBounds => {
             let (index, length) = operands.two_operands("index", "length")?;
-            let out_of_bounds = solver.bvuge(index, length);
+            let out_of_bounds = solver.try_bvuge(index, length)?;
             // Assert index >= length, check UNSAT => always in bounds
             Ok(ProofCondition {
                 term: out_of_bounds,
@@ -1171,8 +1620,8 @@ pub fn verify_proof_obligation(
         }
         ProofAnnotation::NotNull => {
             let ptr = operands.single_operand("ptr")?;
-            let null = solver.bv_const(0, 64);
-            let is_null = solver.eq(ptr, null);
+            let null = solver.try_bv_const(0, 64)?;
+            let is_null = solver.try_eq(ptr, null)?;
             // Assert ptr == 0, check UNSAT => ptr never null
             Ok(ProofCondition {
                 term: is_null,
@@ -1181,9 +1630,9 @@ pub fn verify_proof_obligation(
         }
         ProofAnnotation::ValidBorrow => {
             let (_ptr, permission) = operands.two_operands("ptr", "permission")?;
-            let owned = solver.bv_const(1, 2);
-            let is_owned = solver.eq(permission, owned);
-            let invalid = solver.not(is_owned);
+            let owned = solver.try_bv_const(1, 2)?;
+            let is_owned = solver.try_eq(permission, owned)?;
+            let invalid = solver.try_not(is_owned)?;
             // Assert permission != Owned, check UNSAT => permission is always Owned
             Ok(ProofCondition {
                 term: invalid,
@@ -1192,8 +1641,8 @@ pub fn verify_proof_obligation(
         }
         ProofAnnotation::UniqueBorrow => {
             let (_ptr, permission) = operands.two_operands("ptr", "permission")?;
-            let mutable_borrow = solver.bv_const(3, 2);
-            let has_mutable_borrow = solver.eq(permission, mutable_borrow);
+            let mutable_borrow = solver.try_bv_const(3, 2)?;
+            let has_mutable_borrow = solver.try_eq(permission, mutable_borrow)?;
             // Assert permission == MutableBorrow, check UNSAT => no concurrent mutable borrows exist
             Ok(ProofCondition {
                 term: has_mutable_borrow,
@@ -1202,12 +1651,12 @@ pub fn verify_proof_obligation(
         }
         ProofAnnotation::SharedBorrow => {
             let (_ptr, permission) = operands.two_operands("ptr", "permission")?;
-            let owned = solver.bv_const(1, 2);
-            let shared_borrow = solver.bv_const(2, 2);
-            let is_owned = solver.eq(permission, owned);
-            let is_shared = solver.eq(permission, shared_borrow);
-            let readable = solver.or(is_owned, is_shared);
-            let not_readable = solver.not(readable);
+            let owned = solver.try_bv_const(1, 2)?;
+            let shared_borrow = solver.try_bv_const(2, 2)?;
+            let is_owned = solver.try_eq(permission, owned)?;
+            let is_shared = solver.try_eq(permission, shared_borrow)?;
+            let readable = solver.try_or(is_owned, is_shared)?;
+            let not_readable = solver.try_not(readable)?;
             // Assert NOT (permission == Owned OR permission == SharedBorrow),
             // check UNSAT => permission always allows shared reads
             Ok(ProofCondition {
@@ -1218,9 +1667,9 @@ pub fn verify_proof_obligation(
         ProofAnnotation::ValidDealloc => {
             // Pointer must be Owned (permission == 1) to deallocate.
             let (_ptr, permission) = operands.two_operands("ptr", "permission")?;
-            let owned = solver.bv_const(1, 2);
-            let is_owned = solver.eq(permission, owned);
-            let not_owned = solver.not(is_owned);
+            let owned = solver.try_bv_const(1, 2)?;
+            let is_owned = solver.try_eq(permission, owned)?;
+            let not_owned = solver.try_not(is_owned)?;
             // Assert permission != Owned, check UNSAT => always owned when deallocating
             Ok(ProofCondition {
                 term: not_owned,
@@ -1233,8 +1682,8 @@ pub fn verify_proof_obligation(
             // of the same operation with the same symbolic inputs.
             // Condition: result1 != result2, check UNSAT => always equal.
             let (result1, result2) = operands.two_operands("result1", "result2")?;
-            let eq = solver.eq(result1, result2);
-            let neq = solver.not(eq);
+            let eq = solver.try_eq(result1, result2)?;
+            let neq = solver.try_not(eq)?;
             Ok(ProofCondition {
                 term: neq,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1244,8 +1693,8 @@ pub fn verify_proof_obligation(
             // f(a,b) == f(b,a). Operands: "result_ab" is f(a,b), "result_ba" is f(b,a).
             // Condition: result_ab != result_ba, check UNSAT => always commutative.
             let (result_ab, result_ba) = operands.two_operands("result_ab", "result_ba")?;
-            let eq = solver.eq(result_ab, result_ba);
-            let neq = solver.not(eq);
+            let eq = solver.try_eq(result_ab, result_ba)?;
+            let neq = solver.try_not(eq)?;
             Ok(ProofCondition {
                 term: neq,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1256,8 +1705,8 @@ pub fn verify_proof_obligation(
             // Condition: result_left != result_right, check UNSAT => always associative.
             let (result_left, result_right) =
                 operands.two_operands("result_left", "result_right")?;
-            let eq = solver.eq(result_left, result_right);
-            let neq = solver.not(eq);
+            let eq = solver.try_eq(result_left, result_right)?;
+            let neq = solver.try_not(eq)?;
             Ok(ProofCondition {
                 term: neq,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1268,7 +1717,7 @@ pub fn verify_proof_obligation(
             // Operands: "ptr1", "ptr2".
             // Condition: ptr1 == ptr2, check UNSAT => never alias.
             let (ptr1, ptr2) = operands.two_operands("ptr1", "ptr2")?;
-            let eq = solver.eq(ptr1, ptr2);
+            let eq = solver.try_eq(ptr1, ptr2)?;
             Ok(ProofCondition {
                 term: eq,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1279,11 +1728,11 @@ pub fn verify_proof_obligation(
             // Operands: "ptr" (64-bit pointer).
             // Condition: ptr % n != 0, check UNSAT => always aligned.
             let ptr = operands.single_operand("ptr")?;
-            let align = solver.bv_const(*n as i64, 64);
-            let remainder = solver.bvurem(ptr, align);
-            let zero = solver.bv_const(0, 64);
-            let not_aligned = solver.eq(remainder, zero);
-            let not_aligned = solver.not(not_aligned);
+            let align = solver.try_bv_const(*n as i64, 64)?;
+            let remainder = solver.try_bvurem(ptr, align)?;
+            let zero = solver.try_bv_const(0, 64)?;
+            let not_aligned = solver.try_eq(remainder, zero)?;
+            let not_aligned = solver.try_not(not_aligned)?;
             Ok(ProofCondition {
                 term: not_aligned,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1294,7 +1743,7 @@ pub fn verify_proof_obligation(
             // true when no panic occurs).
             // Condition: NOT safe, check UNSAT => safe always holds.
             let safe = operands.single_operand("safe")?;
-            let not_safe = solver.not(safe);
+            let not_safe = solver.try_not(safe)?;
             Ok(ProofCondition {
                 term: not_safe,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1305,7 +1754,7 @@ pub fn verify_proof_obligation(
             // that is true when the value is well-defined).
             // Condition: NOT is_defined, check UNSAT => always defined.
             let is_defined = operands.single_operand("is_defined")?;
-            let not_defined = solver.not(is_defined);
+            let not_defined = solver.try_not(is_defined)?;
             Ok(ProofCondition {
                 term: not_defined,
                 strategy: ProofStrategy::AssertAndCheckUnsat,
@@ -1337,12 +1786,22 @@ pub struct ProofCondition {
 impl ProofCondition {
     /// Execute this proof condition against the given solver.
     ///
-    /// Returns `true` if the proof obligation is verified (holds).
-    pub fn check(&self, solver: &mut Solver) -> bool {
-        solver.assert_term(self.term);
-        match self.strategy {
-            ProofStrategy::AssertAndCheckUnsat => solver.check_sat().is_unsat(),
-        }
+    /// Returns `Ok(true)` if the proof obligation is verified (holds).
+    ///
+    /// ONE SOLVER PER CALL: the term is asserted with no push/pop frame, so
+    /// it stays asserted, and on `Err` ay may have left the solver corrupted.
+    /// Pass a fresh solver and discard it afterwards — always on `Err` (see
+    /// [`verify_and_certify`]).
+    ///
+    /// # Errors
+    ///
+    /// [`AYError::SolverError`] when ay refuses the assertion or the check —
+    /// never read as "verified".
+    pub fn check(&self, solver: &mut Solver) -> Result<bool, AYError> {
+        solver.try_assert_term(self.term)?;
+        Ok(match self.strategy {
+            ProofStrategy::AssertAndCheckUnsat => solver.try_check_sat()?.is_unsat(),
+        })
     }
 }
 
@@ -1434,7 +1893,7 @@ impl ProofOperands {
             {
                 width = Some(bv.width);
             }
-            terms.push(solver.declare_const(&ay_symbol(func, *value), sort));
+            terms.push(solver.try_declare_const(&ay_symbol(func, *value), sort)?);
         }
         let width = width.ok_or_else(|| {
             AYError::UnsupportedAnnotation(format!(
@@ -1541,22 +2000,90 @@ impl ProofOperands {
 pub fn verify_no_overflow() -> Result<bool, AYError> {
     let mut solver = create_bv_solver()?;
     let sort = Sort::BitVec(BitVecSort { width: 32 });
-    let a = solver.declare_const("a", sort.clone());
-    let b = solver.declare_const("b", sort);
+    let a = solver.try_declare_const("a", sort.clone())?;
+    let b = solver.try_declare_const("b", sort)?;
 
-    let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b);
-    let not_safe = solver.not(safe);
-    solver.assert_term(not_safe);
+    let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b)?;
+    let not_safe = solver.try_not(safe)?;
+    solver.try_assert_term(not_safe)?;
 
     // If SAT, there exist values a,b where addition overflows
-    Ok(solver.check_sat().is_sat())
+    Ok(solver.try_check_sat()?.is_sat())
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)] // tests drive ay directly (r11 item 5)
+
     use super::*;
 
     // ---- ty_to_sort tests ----
+
+    /// r11 review L8 (FAILING-FIRST in the debug test profile: the surface
+    /// is unchanged). `trunc` / narrowing `ptrtoint` to width 0 computed
+    /// `dst_width - 1`, an arithmetic-overflow panic in debug. Both are now a
+    /// named refusal.
+    #[test]
+    fn a_cast_to_a_zero_width_integer_is_refused_not_underflowed() {
+        let mut solver = create_bv_solver().expect("solver");
+        let x = solver
+            .try_declare_const("x", Sort::BitVec(BitVecSort { width: 64 }))
+            .expect("declare");
+        for (op, src) in [(CastOp::Trunc, 64), (CastOp::PtrToInt, 64)] {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                encode_cast(&mut solver, op, x, src, 0)
+            }))
+            .expect("a zero-width cast must not underflow");
+            assert!(
+                matches!(&outcome, Err(AYError::UnsupportedOp(message))
+                    if message.contains("zero-width")),
+                "{op:?}: {outcome:?}"
+            );
+        }
+    }
+
+    /// r11 review M1. ay's `term_sort` PANICS (`require_term`) on a handle
+    /// this solver did not issue; its total twin `try_term_sort` exists from
+    /// AY `1128b49f2` on (pinned: `8e7b3fe6b`). The width
+    /// query behind `rotl`/`rotr`/`ctlz`/`cttz`/`bswap`/`bitreverse` called
+    /// it unguarded, so a public `encode_binop` / `encode_unop` caller holding
+    /// another solver's term panicked inside ay. The query now calls ay's
+    /// total twin `try_term_sort`, whose refusal is a typed
+    /// `InvalidTermHandle`. Mutation check: calling the panicking `term_sort`
+    /// instead turns this test red (the panic is caught and the `expect`
+    /// fails).
+    #[test]
+    fn a_foreign_term_handle_is_refused_by_the_width_query_not_panicked() {
+        let mut minting = create_bv_solver().expect("solver");
+        let foreign = minting
+            .try_declare_const("x", Sort::BitVec(BitVecSort { width: 8 }))
+            .expect("declare");
+        let mut other = create_bv_solver().expect("solver");
+        let refused = |outcome: std::thread::Result<Result<Term, AYError>>| {
+            let outcome = outcome.expect("a foreign handle must not panic inside ay");
+            assert!(
+                matches!(&outcome, Err(AYError::SolverError(message))
+                    if message.contains("invalid term handle in term_sort")),
+                "{outcome:?}"
+            );
+        };
+        for op in [
+            UnOp::CtPop,
+            UnOp::CtLz,
+            UnOp::CtTz,
+            UnOp::BSwap,
+            UnOp::BitReverse,
+        ] {
+            refused(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || encode_unop(&mut other, op, foreign),
+            )));
+        }
+        for op in [BinOp::RotL, BinOp::RotR] {
+            refused(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || encode_binop(&mut other, op, foreign, foreign),
+            )));
+        }
+    }
 
     #[test]
     fn ty_to_sort_integers() {
@@ -1661,6 +2188,11 @@ mod tests {
         }
     }
 
+    /// Which float ops BUILD a term at f32. Building is not correctness:
+    /// `FRem` once built a term (bare `fp.rem`, the IEEE remainder) that
+    /// computed the wrong function (TRUST-IR-AY-FREM-1). Its value is pinned
+    /// to the interpreter by `tests/frem_fmod.rs`; this test only checks
+    /// that the exact `fmod` encoding stays well-sorted.
     #[test]
     fn encode_binop_float_ops() {
         let mut solver = create_fp_solver().unwrap();
@@ -1727,7 +2259,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let five = solver.bv_const(5, 32);
         let also_five = solver.bv_const(5, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Eq, five, also_five);
+        let result =
+            encode_icmp(&mut solver, ICmpOp::Eq, five, also_five).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1737,7 +2270,7 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let five = solver.bv_const(5, 32);
         let six = solver.bv_const(6, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Eq, five, six);
+        let result = encode_icmp(&mut solver, ICmpOp::Eq, five, six).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_unsat());
     }
@@ -1747,7 +2280,7 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let five = solver.bv_const(5, 32);
         let six = solver.bv_const(6, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Ne, five, six);
+        let result = encode_icmp(&mut solver, ICmpOp::Ne, five, six).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1758,7 +2291,7 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let five = solver.bv_const(5, 32);
         let ten = solver.bv_const(10, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Ult, five, ten);
+        let result = encode_icmp(&mut solver, ICmpOp::Ult, five, ten).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1769,7 +2302,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let neg_one = solver.bv_const(-1, 32);
         let zero = solver.bv_const(0, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Slt, neg_one, zero);
+        let result =
+            encode_icmp(&mut solver, ICmpOp::Slt, neg_one, zero).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1780,7 +2314,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let neg_one = solver.bv_const(-1, 32);
         let zero = solver.bv_const(0, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Ult, neg_one, zero);
+        let result =
+            encode_icmp(&mut solver, ICmpOp::Ult, neg_one, zero).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_unsat());
     }
@@ -1805,7 +2340,7 @@ mod tests {
             ICmpOp::Sge,
         ];
         for op in &ops {
-            let _result = encode_icmp(&mut solver, *op, a, b);
+            let _result = encode_icmp(&mut solver, *op, a, b).expect("the adapter encodes");
             // Just verifying construction does not panic
         }
     }
@@ -1816,7 +2351,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let five = solver.bv_const(5, 32);
         let also_five = solver.bv_const(5, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Ule, five, also_five);
+        let result =
+            encode_icmp(&mut solver, ICmpOp::Ule, five, also_five).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1827,7 +2363,7 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let ten = solver.bv_const(10, 32);
         let five = solver.bv_const(5, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Ugt, ten, five);
+        let result = encode_icmp(&mut solver, ICmpOp::Ugt, ten, five).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1838,7 +2374,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let zero = solver.bv_const(0, 32);
         let neg_one = solver.bv_const(-1, 32);
-        let result = encode_icmp(&mut solver, ICmpOp::Sge, zero, neg_one);
+        let result =
+            encode_icmp(&mut solver, ICmpOp::Sge, zero, neg_one).expect("the adapter encodes");
         solver.assert_term(result);
         assert!(solver.check_sat().is_sat());
     }
@@ -1879,11 +2416,158 @@ mod tests {
     }
 
     #[test]
-    fn encode_unop_ctpop_unsupported() {
+    fn encode_unop_ctpop_matches_rust_across_widths() {
+        for width in [1, 2, 3, 7, 8, 16, 32, 64, 128] {
+            let mask = if width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << width) - 1
+            };
+            let mut samples = vec![0, 1, mask, 1u128 << (width - 1), mask >> 1];
+            if width == 8 {
+                samples.extend(0..=255);
+            }
+            let mut seed = 0x7ac1_1905_b9e2_04d7u128;
+            for _ in 0..16 {
+                seed = seed
+                    .wrapping_mul(0x01ed_8e91_513f_82a7_6d4c_308e_932b_66d5)
+                    .wrapping_add(1);
+                samples.push(seed & mask);
+            }
+            for raw in samples {
+                let mut solver = create_bv_solver().unwrap();
+                let x = solver.declare_const("x", Sort::BitVec(BitVecSort { width }));
+                let hi = solver.bv_const_u64((raw >> 64) as u64, 64);
+                let lo = solver.bv_const_u64(raw as u64, 64);
+                let wide = solver.bvconcat(hi, lo);
+                let value = solver.bvextract(wide, width - 1, 0);
+                let pin = solver.eq(x, value);
+                solver.assert_term(pin);
+                let count = encode_unop(&mut solver, UnOp::CtPop, x).unwrap();
+                assert_eq!(
+                    solver.try_term_sort(count).unwrap().bitvec_width(),
+                    Some(width)
+                );
+                let expected = solver.bv_const_u64(u64::from(raw.count_ones()), width);
+                let equal = solver.eq(count, expected);
+                let wrong = solver.not(equal);
+                solver.assert_term(wrong);
+                assert!(solver.check_sat().is_unsat(), "popcount{width}({raw:#x})");
+            }
+        }
+    }
+
+    #[test]
+    fn encode_unop_ctpop_rejects_non_bitvectors() {
+        for sort in [Sort::FloatingPoint(8, 24), Sort::Bool] {
+            let mut solver = create_fp_solver().unwrap();
+            let x = solver.declare_const("x", sort);
+            assert!(matches!(encode_unop(&mut solver, UnOp::CtPop, x),
+                Err(AYError::UnsupportedOp(message)) if message.contains("not a bit-vector")));
+        }
+    }
+
+    // WS3.20 (F-057): the bit intrinsics against concrete Rust values. Each
+    // asserts the encoding is UNSAT-distinct from the wrong answer: the term
+    // must EQUAL the value `u32::leading_zeros` & co. compute, on a symbolic
+    // operand pinned to the sample by an equality assertion.
+    fn assert_bv_op_equals(
+        op_name: &str,
+        build: impl Fn(&mut Solver, Term) -> Term,
+        x: u32,
+        want: u32,
+    ) {
         let mut solver = create_bv_solver().unwrap();
-        let x = solver.bv_const(0x55, 8);
-        let result = encode_unop(&mut solver, UnOp::CtPop, x);
-        assert!(matches!(result, Err(AYError::UnsupportedOp(op)) if op == "ctpop"));
+        let sort = Sort::BitVec(BitVecSort { width: 32 });
+        let sym = solver.declare_const("x", sort);
+        let xv = solver.bv_const_u64(u64::from(x), 32);
+        let pin = solver.eq(sym, xv);
+        solver.assert_term(pin);
+        let got = build(&mut solver, sym);
+        let wantv = solver.bv_const_u64(u64::from(want), 32);
+        let eq = solver.eq(got, wantv);
+        let ne = solver.not(eq);
+        solver.assert_term(ne);
+        assert!(
+            solver.check_sat().is_unsat(),
+            "{op_name}({x:#x}) must encode to exactly {want:#x}"
+        );
+    }
+
+    #[test]
+    fn encode_unop_ctlz_cttz_match_rust() {
+        for x in [0u32, 1, 0x8000_0000, 0x1234_5678, u32::MAX, 0x0000_0100] {
+            assert_bv_op_equals(
+                "ctlz",
+                |s, t| encode_unop(s, UnOp::CtLz, t).unwrap(),
+                x,
+                x.leading_zeros(),
+            );
+            assert_bv_op_equals(
+                "cttz",
+                |s, t| encode_unop(s, UnOp::CtTz, t).unwrap(),
+                x,
+                x.trailing_zeros(),
+            );
+        }
+    }
+
+    #[test]
+    fn encode_unop_bswap_bitreverse_match_rust() {
+        for x in [0u32, 1, 0x8000_0000, 0x1234_5678, u32::MAX, 0xDEAD_BEEF] {
+            assert_bv_op_equals(
+                "bswap",
+                |s, t| encode_unop(s, UnOp::BSwap, t).unwrap(),
+                x,
+                x.swap_bytes(),
+            );
+            assert_bv_op_equals(
+                "bitreverse",
+                |s, t| encode_unop(s, UnOp::BitReverse, t).unwrap(),
+                x,
+                x.reverse_bits(),
+            );
+        }
+    }
+
+    #[test]
+    fn encode_binop_rotates_match_rust_modulo_width() {
+        for (x, n) in [
+            (0x1234_5678u32, 0u32),
+            (0x1234_5678, 8),
+            (0x1234_5678, 40),
+            (1, 31),
+            (u32::MAX, 13),
+        ] {
+            assert_bv_op_equals(
+                "rotl",
+                |s, t| {
+                    let amount = s.bv_const_u64(u64::from(n), 32);
+                    encode_binop(s, BinOp::RotL, t, amount).unwrap()
+                },
+                x,
+                x.rotate_left(n),
+            );
+            assert_bv_op_equals(
+                "rotr",
+                |s, t| {
+                    let amount = s.bv_const_u64(u64::from(n), 32);
+                    encode_binop(s, BinOp::RotR, t, amount).unwrap()
+                },
+                x,
+                x.rotate_right(n),
+            );
+        }
+    }
+
+    #[test]
+    fn encode_binop_fcopysign_unsupported_by_name() {
+        let mut solver = create_fp_solver().unwrap();
+        let sort = Sort::FloatingPoint(11, 53);
+        let a = solver.declare_const("a", sort.clone());
+        let b = solver.declare_const("b", sort);
+        let result = encode_binop(&mut solver, BinOp::FCopySign, a, b);
+        assert!(matches!(result, Err(AYError::UnsupportedOp(op)) if op == "fcopysign"));
     }
 
     #[test]
@@ -2075,6 +2759,37 @@ mod tests {
     }
 
     #[test]
+    fn bv_carrier_bitcast_requires_the_declared_width() {
+        let mut solver = create_fp_solver().unwrap();
+        let nan = solver
+            .try_fp_const_from_bits(f64::NAN.to_bits(), 11, 53)
+            .unwrap();
+        assert!(matches!(
+            encode_cast(&mut solver, CastOp::Bitcast, nan, 64, 64),
+            Err(AYError::UnsupportedOp(_))
+        ));
+        let narrow = solver.try_bv_const(7, 16).unwrap();
+        assert!(matches!(
+            encode_cast(&mut solver, CastOp::Bitcast, narrow, 64, 64),
+            Err(AYError::UnsupportedOp(_))
+        ));
+    }
+
+    #[test]
+    fn bv_carrier_integer_equality_requires_bitvectors() {
+        let mut solver = create_fp_solver().unwrap();
+        let nan = solver
+            .try_fp_const_from_bits(f64::NAN.to_bits(), 11, 53)
+            .unwrap();
+        for op in [ICmpOp::Eq, ICmpOp::Ne] {
+            assert!(matches!(
+                encode_icmp(&mut solver, op, nan, nan),
+                Err(AYError::UnsupportedOp(_))
+            ));
+        }
+    }
+
+    #[test]
     fn encode_cast_trunc_8_to_1() {
         // Truncate 8-bit value to 1-bit (boolean)
         let mut solver = create_bv_solver().unwrap();
@@ -2094,7 +2809,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let one = solver.bv_const(1, 32);
         let also_one = solver.bv_const(1, 32);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, one, also_one);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, one, also_one)
+            .expect("the adapter encodes");
         solver.assert_term(safe);
         assert!(solver.check_sat().is_sat());
     }
@@ -2105,7 +2821,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let max = solver.bv_const(i32::MAX as i64, 32);
         let one = solver.bv_const(1, 32);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, max, one);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, max, one)
+            .expect("the adapter encodes");
         // Safe should be false (overflow occurs)
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
@@ -2118,7 +2835,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let min = solver.bv_const(i32::MIN as i64, 32);
         let one = solver.bv_const(1, 32);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::SubOverflow, true, min, one);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::SubOverflow, true, min, one)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(solver.check_sat().is_sat());
@@ -2130,7 +2848,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let two = solver.bv_const(2, 32);
         let three = solver.bv_const(3, 32);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::MulOverflow, true, two, three);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::MulOverflow, true, two, three)
+            .expect("the adapter encodes");
         solver.assert_term(safe);
         assert!(solver.check_sat().is_sat());
     }
@@ -2141,7 +2860,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let max = solver.bv_const(i32::MAX as i64, 32);
         let two = solver.bv_const(2, 32);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::MulOverflow, true, max, two);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::MulOverflow, true, max, two)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(solver.check_sat().is_sat());
@@ -2154,7 +2874,8 @@ mod tests {
         let sort = Sort::BitVec(BitVecSort { width: 32 });
         let a = solver.declare_const("a", sort.clone());
         let b = solver.declare_const("b", sort);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         // Should be SAT: there exist a,b that overflow
@@ -2177,7 +2898,7 @@ mod tests {
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoOverflow, &operands).unwrap();
         // Should NOT verify (is_sat => UNSAT fails => obligation does not hold universally)
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2207,7 +2928,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::DivNonZero, &[five], 32).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::DivNonZero, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2220,7 +2941,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::DivNonZero, &[d], 32).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::DivNonZero, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2234,7 +2955,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::ShiftInRange, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2248,7 +2969,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::ShiftInRange, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2262,7 +2983,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::InBounds, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2276,7 +2997,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::InBounds, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2288,7 +3009,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NotNull, &[ptr], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NotNull, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2300,7 +3021,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NotNull, &[ptr], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NotNull, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2350,7 +3071,7 @@ mod tests {
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoWrap, &operands).unwrap();
         // Symbolic => should not verify
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     // ---- verify_no_overflow end-to-end ----
@@ -2482,7 +3203,7 @@ mod tests {
         assert_eq!(operands.terms[0].0, "divisor");
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::DivNonZero, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -2519,7 +3240,7 @@ mod tests {
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::DivNonZero, &operands).unwrap();
         // Symbolic divisor can be zero => refuted, with a model over f2_v7.
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
         let model = solver.model().expect("SAT result has a model");
         let (value, width) = model
             .model()
@@ -2542,17 +3263,19 @@ mod tests {
         let zero = solver.bv_const(0, 32);
 
         // Constraints: a > 0, b > 0 (signed)
-        let a_pos = encode_icmp(&mut solver, ICmpOp::Sgt, a, zero);
-        let b_pos = encode_icmp(&mut solver, ICmpOp::Sgt, b, zero);
+        let a_pos = encode_icmp(&mut solver, ICmpOp::Sgt, a, zero).expect("the adapter encodes");
+        let b_pos = encode_icmp(&mut solver, ICmpOp::Sgt, b, zero).expect("the adapter encodes");
 
         // No overflow
-        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a, b)
+            .expect("the adapter encodes");
 
         // a + b
         let sum = encode_binop(&mut solver, BinOp::Add, a, b).unwrap();
 
         // Assert sum <= 0 (negation of sum > 0)
-        let sum_not_pos = encode_icmp(&mut solver, ICmpOp::Sle, sum, zero);
+        let sum_not_pos =
+            encode_icmp(&mut solver, ICmpOp::Sle, sum, zero).expect("the adapter encodes");
 
         // Keep the exact authored query as one conjunction. AY's mandatory
         // UNSAT boundary replays a strict proof against this immutable source
@@ -2611,7 +3334,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let max = solver.bv_const(127, 8);
         let one = solver.bv_const(1, 8);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, max, one);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, max, one)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(solver.check_sat().is_sat());
@@ -2634,7 +3358,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let zero = solver.bv_const(0, 64);
         let one = solver.bv_const(1, 64);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::SubOverflow, false, zero, one);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::SubOverflow, false, zero, one)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(
@@ -2649,7 +3374,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let one = solver.bv_const(1, 64);
         let zero = solver.bv_const(0, 64);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::SubOverflow, false, one, zero);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::SubOverflow, false, one, zero)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(
@@ -2665,7 +3391,8 @@ mod tests {
         let mut solver = create_bv_solver().unwrap();
         let max = solver.bv_const(255, 8);
         let one = solver.bv_const(1, 8);
-        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, false, max, one);
+        let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, false, max, one)
+            .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(
@@ -2681,7 +3408,8 @@ mod tests {
         let one = solver.bv_const(1, 8);
         let also_one = solver.bv_const(1, 8);
         let safe =
-            encode_overflow_check(&mut solver, OverflowOp::AddOverflow, false, one, also_one);
+            encode_overflow_check(&mut solver, OverflowOp::AddOverflow, false, one, also_one)
+                .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(
@@ -2701,7 +3429,8 @@ mod tests {
             false,
             sixteen,
             sixteen,
-        );
+        )
+        .expect("the adapter encodes");
         let not_safe = solver.not(safe);
         solver.assert_term(not_safe);
         assert!(
@@ -2713,7 +3442,8 @@ mod tests {
         let three = solver2.bv_const(3, 8);
         let five = solver2.bv_const(5, 8);
         let safe2 =
-            encode_overflow_check(&mut solver2, OverflowOp::MulOverflow, false, three, five);
+            encode_overflow_check(&mut solver2, OverflowOp::MulOverflow, false, three, five)
+                .expect("the adapter encodes");
         let not_safe2 = solver2.not(safe2);
         solver2.assert_term(not_safe2);
         assert!(
@@ -2742,6 +3472,10 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// EVERY float `BinOp` at f64: the five with an exact SMT encoding build
+    /// a term (`FRem` as the exact `fmod`, see [`encode_frem_fmod`]; its value
+    /// is pinned by `tests/frem_fmod.rs`). The three with no SMT-LIB FP
+    /// counterpart are refused BY NAME, never approximated.
     #[test]
     fn encode_binop_all_float_variants() {
         let mut solver = create_fp_solver().unwrap();
@@ -2758,6 +3492,16 @@ mod tests {
         for op in &float_ops {
             let result = encode_binop(&mut solver, *op, a, b);
             assert!(result.is_ok(), "encode_binop failed for {:?}", op);
+        }
+        for (op, name) in [
+            (BinOp::FMin, "fmin"),
+            (BinOp::FMax, "fmax"),
+            (BinOp::FCopySign, "fcopysign"),
+        ] {
+            match encode_binop(&mut solver, op, a, b) {
+                Err(AYError::UnsupportedOp(refused)) => assert_eq!(refused, name),
+                other => panic!("{op:?} must be refused by name, got {other:?}"),
+            }
         }
     }
 
@@ -2787,7 +3531,7 @@ mod tests {
             FCmpOp::OGe,
         ];
         for op in &ordered {
-            let _result = encode_fcmp(&mut solver, *op, a, b);
+            let _result = encode_fcmp(&mut solver, *op, a, b).expect("the adapter encodes");
             // Just verifying construction does not panic
         }
     }
@@ -2807,7 +3551,7 @@ mod tests {
             FCmpOp::UGe,
         ];
         for op in &unordered {
-            let _result = encode_fcmp(&mut solver, *op, a, b);
+            let _result = encode_fcmp(&mut solver, *op, a, b).expect("the adapter encodes");
         }
     }
 
@@ -2899,14 +3643,14 @@ mod tests {
     #[test]
     fn memory_model_new() {
         let mut solver = create_fp_solver().unwrap();
-        let mem = MemoryModel::new(&mut solver, "mem0");
-        assert_eq!(mem.alloc_counter, 0);
+        let mem = MemoryModel::new(&mut solver, "mem0").expect("the adapter encodes");
+        assert_eq!(mem.next_free, ALLOCA_GRANULE);
     }
 
     #[test]
     fn memory_model_load_single_byte() {
         let mut solver = create_fp_solver().unwrap();
-        let mem = MemoryModel::new(&mut solver, "mem");
+        let mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
         let addr = solver.bv_const(0x1000, 64);
         let result = mem.encode_load(&mut solver, addr, 1);
         assert!(result.is_ok());
@@ -2915,7 +3659,7 @@ mod tests {
     #[test]
     fn memory_model_load_multi_byte() {
         let mut solver = create_fp_solver().unwrap();
-        let mem = MemoryModel::new(&mut solver, "mem");
+        let mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
         let addr = solver.bv_const(0x1000, 64);
         let result = mem.encode_load(&mut solver, addr, 4);
         assert!(result.is_ok());
@@ -2924,7 +3668,7 @@ mod tests {
     #[test]
     fn memory_model_load_zero_bytes_error() {
         let mut solver = create_fp_solver().unwrap();
-        let mem = MemoryModel::new(&mut solver, "mem");
+        let mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
         let addr = solver.bv_const(0x1000, 64);
         let result = mem.encode_load(&mut solver, addr, 0);
         assert!(result.is_err());
@@ -2933,7 +3677,7 @@ mod tests {
     #[test]
     fn memory_model_store_single_byte() {
         let mut solver = create_fp_solver().unwrap();
-        let mut mem = MemoryModel::new(&mut solver, "mem");
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
         let addr = solver.bv_const(0x1000, 64);
         let val = solver.bv_const(0x42, 8);
         let result = mem.encode_store(&mut solver, addr, val, 1);
@@ -2943,7 +3687,7 @@ mod tests {
     #[test]
     fn memory_model_store_zero_bytes_error() {
         let mut solver = create_fp_solver().unwrap();
-        let mut mem = MemoryModel::new(&mut solver, "mem");
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
         let addr = solver.bv_const(0x1000, 64);
         let val = solver.bv_const(0, 8);
         let result = mem.encode_store(&mut solver, addr, val, 0);
@@ -2954,7 +3698,7 @@ mod tests {
     fn memory_model_store_then_load_roundtrip() {
         // Store a 32-bit value and load it back, verify they are equal
         let mut solver = create_fp_solver().unwrap();
-        let mut mem = MemoryModel::new(&mut solver, "mem");
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
 
         let addr = solver.bv_const(0x2000, 64);
         let val = solver.bv_const(0x12345678, 32);
@@ -2974,8 +3718,8 @@ mod tests {
     #[test]
     fn memory_model_alloca_returns_nonnull() {
         let mut solver = create_fp_solver().unwrap();
-        let mut mem = MemoryModel::new(&mut solver, "mem");
-        let addr = mem.encode_alloca(&mut solver, 16);
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
+        let addr = mem.encode_alloca(&mut solver, 16).unwrap();
 
         // The addr should be non-null (we asserted it)
         let null = solver.bv_const(0, 64);
@@ -2985,24 +3729,109 @@ mod tests {
         assert!(solver.check_sat().is_unsat());
     }
 
+    /// Is `addr == expected` satisfiable in a fresh scope of `solver`?
+    fn address_is(solver: &mut Solver, addr: Term, expected: u64) -> bool {
+        solver.push();
+        let want = solver.bv_const_u64(expected, 64);
+        let eq = solver.eq(addr, want);
+        solver.assert_term(eq);
+        let sat = solver.check_sat().is_sat();
+        solver.pop();
+        sat
+    }
+
     #[test]
-    fn memory_model_alloca_increments_counter() {
+    fn memory_model_small_allocas_keep_the_historical_bases() {
         let mut solver = create_fp_solver().unwrap();
-        let mut mem = MemoryModel::new(&mut solver, "mem");
-        assert_eq!(mem.alloc_counter, 0);
-        let _addr1 = mem.encode_alloca(&mut solver, 8);
-        assert_eq!(mem.alloc_counter, 1);
-        let _addr2 = mem.encode_alloca(&mut solver, 8);
-        assert_eq!(mem.alloc_counter, 2);
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
+        let addr1 = mem.encode_alloca(&mut solver, 8).unwrap();
+        let addr2 = mem.encode_alloca(&mut solver, 8).unwrap();
+        let addr3 = mem.encode_alloca(&mut solver, ALLOCA_GRANULE).unwrap();
+        assert!(address_is(&mut solver, addr1, 0x1000));
+        assert!(address_is(&mut solver, addr2, 0x2000));
+        assert!(address_is(&mut solver, addr3, 0x3000));
+        assert_eq!(mem.next_free, 0x4000);
+    }
+
+    #[test]
+    fn memory_model_a_large_alloca_does_not_overlap_the_next() {
+        // 0x2800 bytes at 0x1000 end at 0x3800; the fixed 0x1000 stride put
+        // the next allocation at 0x2000, inside it.
+        let mut solver = create_fp_solver().unwrap();
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
+        let big = mem.encode_alloca(&mut solver, 0x2800).unwrap();
+        let next = mem.encode_alloca(&mut solver, 8).unwrap();
+        assert!(address_is(&mut solver, big, 0x1000));
+        assert!(address_is(&mut solver, next, 0x4000));
+        assert!(!address_is(&mut solver, next, 0x2000));
+    }
+
+    #[test]
+    fn memory_model_a_zero_sized_alloca_still_gets_its_own_base() {
+        let mut solver = create_fp_solver().unwrap();
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
+        let zst = mem.encode_alloca(&mut solver, 0).unwrap();
+        let next = mem.encode_alloca(&mut solver, 0).unwrap();
+        assert!(address_is(&mut solver, zst, 0x1000));
+        assert!(address_is(&mut solver, next, 0x2000));
+    }
+
+    #[test]
+    fn memory_model_alloca_past_the_address_space_is_refused_not_wrapped() {
+        let mut solver = create_fp_solver().unwrap();
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
+        // An allocation that would end past 2^64.
+        let error = mem.encode_alloca(&mut solver, u64::MAX).unwrap_err();
+        assert!(
+            matches!(&error, AYError::MemoryError(msg) if msg.contains("does not fit the 64-bit address space")),
+            "unexpected refusal: {error}"
+        );
+        assert_eq!(
+            mem.next_free, ALLOCA_GRANULE,
+            "a refused alloca consumes nothing"
+        );
+        // The last granule: the allocation itself fits, its padding does not.
+        mem.next_free = !(ALLOCA_GRANULE - 1);
+        assert!(mem.encode_alloca(&mut solver, 1).is_err());
+        // The solver state is not poisoned: nothing false was asserted.
+        assert!(solver.check_sat().is_sat());
+    }
+
+    #[test]
+    fn memory_model_store_wider_than_a_bit_vector_is_refused_before_any_work() {
+        // 2^29 bytes is 2^32 bits, one more than a `u32` bit-vector width can
+        // hold. The loop used to compute `i * 8` for every byte, which wraps
+        // past byte 2^29 in release; the store is now refused up front, and
+        // the memory state is untouched.
+        let mut solver = create_fp_solver().unwrap();
+        let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
+        let before = mem.state;
+        let addr = solver.bv_const(0x1000, 64);
+        let val = solver.bv_const(0, 8);
+        let error = mem
+            .encode_store(&mut solver, addr, val, 1 << 29)
+            .unwrap_err();
+        assert!(
+            matches!(&error, AYError::MemoryError(msg) if msg.contains("exceeds the u32 bit-vector width")),
+            "unexpected refusal: {error}"
+        );
+        assert!(
+            mem.state == before,
+            "a refused store must not move the memory state"
+        );
+        // The widest representable store is admitted by the width check.
+        assert_eq!(((1u32 << 29) - 1).checked_mul(8), Some(u32::MAX - 7));
     }
 
     #[test]
     fn memory_model_gep() {
         let mut solver = create_fp_solver().unwrap();
-        let mem = MemoryModel::new(&mut solver, "mem");
+        let mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
         let base = solver.bv_const(0x1000, 64);
         let offset = solver.bv_const(16, 64);
-        let result = mem.encode_gep(&mut solver, base, offset);
+        let result = mem
+            .encode_gep(&mut solver, base, offset)
+            .expect("the adapter encodes");
 
         // result should be base + offset = 0x1010
         let expected = solver.bv_const(0x1010, 64);
@@ -3096,6 +3925,10 @@ mod tests {
             obligation: ProofId::new(42),
             prover: "ay".to_string(),
             evidence: ProofEvidence::SmtProof(vec![]),
+            // v41: this adapter records no coverage bound of its own; the
+            // projection is the bundle writer's job, and `None` reads as
+            // UNKNOWN coverage rather than `Unbounded`.
+            assurance: None,
         };
         let vr = VerificationResult::Verified(cert);
         assert!(vr.is_proved_by_solver());
@@ -3110,6 +3943,10 @@ mod tests {
             obligation: ProofId::new(0),
             prover: "ay".to_string(),
             evidence: ProofEvidence::SmtProof(vec![]),
+            // v41: this adapter records no coverage bound of its own; the
+            // projection is the bundle writer's job, and `None` reads as
+            // UNKNOWN coverage rather than `Unbounded`.
+            assurance: None,
         };
         let vr = VerificationResult::Refuted { certificate: cert };
         assert_eq!(vr.status(), ProofStatus::Failed);
@@ -3121,6 +3958,10 @@ mod tests {
             obligation: ProofId::new(0),
             prover: "ay".to_string(),
             evidence: ProofEvidence::Trusted("timeout".to_string()),
+            // v41: this adapter records no coverage bound of its own; the
+            // projection is the bundle writer's job, and `None` reads as
+            // UNKNOWN coverage rather than `Unbounded`.
+            assurance: None,
         };
         let vr = VerificationResult::Unknown { certificate: cert };
         assert_eq!(vr.status(), ProofStatus::Pending);
@@ -3145,15 +3986,17 @@ mod tests {
     #[test]
     fn borrow_model_new() {
         let mut solver = create_fp_solver().unwrap();
-        let _model = BorrowModel::new(&mut solver, "perms0");
+        let _model = BorrowModel::new(&mut solver, "perms0").expect("the adapter encodes");
     }
 
     #[test]
     fn borrow_model_get_permission() {
         let mut solver = create_fp_solver().unwrap();
-        let model = BorrowModel::new(&mut solver, "perms");
+        let model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
-        let _perm = model.get_permission(&mut solver, ptr);
+        let _perm = model
+            .get_permission(&mut solver, ptr)
+            .expect("the adapter encodes");
         // Just verifying construction does not panic
     }
 
@@ -3161,14 +4004,16 @@ mod tests {
     fn borrow_model_encode_borrow_from_owned() {
         // If permission is Owned(1), shared borrow should succeed
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set initial permission to Owned(1)
         let owned = solver.bv_const(1, 2);
         model.state = solver.store(model.state, ptr, owned);
 
-        let (_borrow_ptr, new_state) = model.encode_borrow(&mut solver, ptr);
+        let (_borrow_ptr, new_state) = model
+            .encode_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // After borrow, permission should be SharedBorrow(2)
         let perm = solver.select(new_state, ptr);
@@ -3182,14 +4027,16 @@ mod tests {
     fn borrow_model_encode_borrow_from_shared() {
         // If permission is already SharedBorrow(2), another shared borrow should succeed
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x2000, 64);
 
         // Set initial permission to SharedBorrow(2)
         let shared = solver.bv_const(2, 2);
         model.state = solver.store(model.state, ptr, shared);
 
-        let (_borrow_ptr, new_state) = model.encode_borrow(&mut solver, ptr);
+        let (_borrow_ptr, new_state) = model
+            .encode_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Should still be SharedBorrow(2)
         let perm = solver.select(new_state, ptr);
@@ -3201,14 +4048,16 @@ mod tests {
     #[test]
     fn borrow_model_encode_borrow_mut_from_owned() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set initial permission to Owned(1)
         let owned = solver.bv_const(1, 2);
         model.state = solver.store(model.state, ptr, owned);
 
-        let (_borrow_ptr, new_state) = model.encode_borrow_mut(&mut solver, ptr);
+        let (_borrow_ptr, new_state) = model
+            .encode_borrow_mut(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // After borrow_mut, permission should be MutableBorrow(3)
         let perm = solver.select(new_state, ptr);
@@ -3221,14 +4070,16 @@ mod tests {
     #[test]
     fn borrow_model_encode_end_borrow_restores_owned() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set permission to MutableBorrow(3)
         let mutable = solver.bv_const(3, 2);
         model.state = solver.store(model.state, ptr, mutable);
 
-        let new_state = model.encode_end_borrow(&mut solver, ptr);
+        let new_state = model
+            .encode_end_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // After end_borrow, permission should be Owned(1)
         let perm = solver.select(new_state, ptr);
@@ -3242,7 +4093,7 @@ mod tests {
     fn borrow_model_full_lifecycle() {
         // Owned -> SharedBorrow -> EndBorrow -> Owned -> BorrowMut -> EndBorrow -> Owned
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x3000, 64);
 
         // Start Owned
@@ -3250,16 +4101,24 @@ mod tests {
         model.state = solver.store(model.state, ptr, owned);
 
         // Shared borrow
-        model.encode_borrow(&mut solver, ptr);
+        model
+            .encode_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // End shared borrow
-        model.encode_end_borrow(&mut solver, ptr);
+        model
+            .encode_end_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Mutable borrow (now Owned again)
-        model.encode_borrow_mut(&mut solver, ptr);
+        model
+            .encode_borrow_mut(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // End mutable borrow
-        let final_state = model.encode_end_borrow(&mut solver, ptr);
+        let final_state = model
+            .encode_end_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Should be Owned(1) at the end
         let perm = solver.select(final_state, ptr);
@@ -3287,28 +4146,32 @@ mod tests {
     #[test]
     fn arc_model_new() {
         let mut solver = create_fp_solver().unwrap();
-        let _model = ArcModel::new(&mut solver, "refcounts0");
+        let _model = ArcModel::new(&mut solver, "refcounts0").expect("the adapter encodes");
     }
 
     #[test]
     fn arc_model_get_refcount() {
         let mut solver = create_fp_solver().unwrap();
-        let model = ArcModel::new(&mut solver, "refcounts");
+        let model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
-        let _rc = model.get_refcount(&mut solver, ptr);
+        let _rc = model
+            .get_refcount(&mut solver, ptr)
+            .expect("the adapter encodes");
     }
 
     #[test]
     fn arc_model_encode_retain_increments() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set initial refcount to 1
         let one = solver.bv_const(1, 32);
         model.state = solver.store(model.state, ptr, one);
 
-        let new_state = model.encode_retain(&mut solver, ptr);
+        let new_state = model
+            .encode_retain(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // After retain, refcount should be 2
         let rc = solver.select(new_state, ptr);
@@ -3321,7 +4184,7 @@ mod tests {
     #[test]
     fn arc_model_encode_release_decrements() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set initial refcount to 2
@@ -3341,14 +4204,16 @@ mod tests {
     #[test]
     fn arc_model_encode_is_unique_true() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set refcount to 1
         let one = solver.bv_const(1, 32);
         model.state = solver.store(model.state, ptr, one);
 
-        let is_unique = model.encode_is_unique(&mut solver, ptr);
+        let is_unique = model
+            .encode_is_unique(&mut solver, ptr)
+            .expect("the adapter encodes");
         solver.assert_term(is_unique);
         assert!(solver.check_sat().is_sat());
     }
@@ -3356,14 +4221,16 @@ mod tests {
     #[test]
     fn arc_model_encode_is_unique_false() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x1000, 64);
 
         // Set refcount to 3
         let three = solver.bv_const(3, 32);
         model.state = solver.store(model.state, ptr, three);
 
-        let is_unique = model.encode_is_unique(&mut solver, ptr);
+        let is_unique = model
+            .encode_is_unique(&mut solver, ptr)
+            .expect("the adapter encodes");
         // Assert is_unique => should be UNSAT because refcount is 3, not 1
         solver.assert_term(is_unique);
         assert!(solver.check_sat().is_unsat());
@@ -3373,7 +4240,7 @@ mod tests {
     fn arc_model_retain_release_lifecycle() {
         // Start at 1, retain to 2, retain to 3, release to 2, release to 1
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x4000, 64);
 
         // Set initial refcount to 1
@@ -3381,8 +4248,12 @@ mod tests {
         model.state = solver.store(model.state, ptr, one);
 
         // Retain twice
-        model.encode_retain(&mut solver, ptr);
-        model.encode_retain(&mut solver, ptr);
+        model
+            .encode_retain(&mut solver, ptr)
+            .expect("the adapter encodes");
+        model
+            .encode_retain(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Release twice
         model.encode_release(&mut solver, ptr).unwrap();
@@ -3410,7 +4281,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::ValidBorrow, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3424,7 +4295,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::ValidBorrow, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3439,7 +4310,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::ValidBorrow, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3453,7 +4324,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::UniqueBorrow, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3467,7 +4338,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::UniqueBorrow, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3481,7 +4352,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::UniqueBorrow, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3496,7 +4367,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::UniqueBorrow, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3510,7 +4381,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::SharedBorrow, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3524,7 +4395,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::SharedBorrow, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3538,7 +4409,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::SharedBorrow, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3552,7 +4423,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::SharedBorrow, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3567,7 +4438,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::SharedBorrow, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     // ============================================================
@@ -3578,7 +4449,7 @@ mod tests {
     fn borrow_model_valid_borrow_after_init_owned() {
         // Initialize a pointer as Owned, then verify ValidBorrow holds
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x5000, 64);
 
         // Set permission to Owned
@@ -3586,37 +4457,43 @@ mod tests {
         model.state = solver.store(model.state, ptr, owned);
 
         // Read permission back
-        let perm = model.get_permission(&mut solver, ptr);
+        let perm = model
+            .get_permission(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Verify ValidBorrow
         let operands =
             ProofOperands::for_annotation(&ProofAnnotation::ValidBorrow, &[ptr, perm], 2).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::ValidBorrow, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
     fn borrow_model_shared_borrow_readable_after_borrow() {
         // After a shared borrow, SharedBorrow proof obligation should hold
         let mut solver = create_fp_solver().unwrap();
-        let mut model = BorrowModel::new(&mut solver, "perms");
+        let mut model = BorrowModel::new(&mut solver, "perms").expect("the adapter encodes");
         let ptr = solver.bv_const(0x6000, 64);
 
         // Set permission to Owned, then borrow
         let owned = solver.bv_const(1, 2);
         model.state = solver.store(model.state, ptr, owned);
-        model.encode_borrow(&mut solver, ptr);
+        model
+            .encode_borrow(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Read permission (should be SharedBorrow(2))
-        let perm = model.get_permission(&mut solver, ptr);
+        let perm = model
+            .get_permission(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Verify SharedBorrow
         let operands =
             ProofOperands::for_annotation(&ProofAnnotation::SharedBorrow, &[ptr, perm], 2).unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::SharedBorrow, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     // ============================================================
@@ -3626,16 +4503,20 @@ mod tests {
     #[test]
     fn arc_model_is_unique_after_single_retain() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x7000, 64);
 
         // Set refcount to 0, then retain once
         let zero = solver.bv_const(0, 32);
         model.state = solver.store(model.state, ptr, zero);
-        model.encode_retain(&mut solver, ptr);
+        model
+            .encode_retain(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Should be unique (refcount == 1)
-        let is_unique = model.encode_is_unique(&mut solver, ptr);
+        let is_unique = model
+            .encode_is_unique(&mut solver, ptr)
+            .expect("the adapter encodes");
         solver.assert_term(is_unique);
         assert!(solver.check_sat().is_sat());
     }
@@ -3643,17 +4524,23 @@ mod tests {
     #[test]
     fn arc_model_not_unique_after_two_retains() {
         let mut solver = create_fp_solver().unwrap();
-        let mut model = ArcModel::new(&mut solver, "refcounts");
+        let mut model = ArcModel::new(&mut solver, "refcounts").expect("the adapter encodes");
         let ptr = solver.bv_const(0x7000, 64);
 
         // Set refcount to 0, retain twice
         let zero = solver.bv_const(0, 32);
         model.state = solver.store(model.state, ptr, zero);
-        model.encode_retain(&mut solver, ptr);
-        model.encode_retain(&mut solver, ptr);
+        model
+            .encode_retain(&mut solver, ptr)
+            .expect("the adapter encodes");
+        model
+            .encode_retain(&mut solver, ptr)
+            .expect("the adapter encodes");
 
         // Should NOT be unique (refcount == 2)
-        let is_unique = model.encode_is_unique(&mut solver, ptr);
+        let is_unique = model
+            .encode_is_unique(&mut solver, ptr)
+            .expect("the adapter encodes");
         solver.assert_term(is_unique);
         assert!(solver.check_sat().is_unsat());
     }
@@ -3808,7 +4695,7 @@ mod tests {
         let operands =
             ProofOperands::for_annotation(&ProofAnnotation::Pure, &[r1, r2], 32).unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::Pure, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3820,7 +4707,7 @@ mod tests {
         let operands =
             ProofOperands::for_annotation(&ProofAnnotation::Pure, &[r1, r2], 32).unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::Pure, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3833,7 +4720,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::Deterministic, &[r1, r2], 32).unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::Deterministic, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3849,7 +4736,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::Commutative, &[ab, ba], 32).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Commutative, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3865,7 +4752,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::Commutative, &[ab, ba], 32).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Commutative, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3885,7 +4772,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Associative, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3905,7 +4792,7 @@ mod tests {
                 .unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Associative, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3918,7 +4805,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoAlias, &[p1, p2], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoAlias, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3930,7 +4817,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoAlias, &[p, p], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoAlias, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3944,7 +4831,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoAlias, &[p1, p2], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoAlias, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3956,7 +4843,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::Aligned(16), &[ptr], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Aligned(16), &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3968,7 +4855,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::Aligned(16), &[ptr], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Aligned(16), &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3981,7 +4868,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::Aligned(8), &[ptr], 64).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::Aligned(8), &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -3993,7 +4880,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoPanic, &[safe], 1).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoPanic, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -4005,7 +4892,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoPanic, &[safe], 1).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoPanic, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -4017,7 +4904,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoUndef, &[defined], 1).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoUndef, &operands).unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -4029,7 +4916,7 @@ mod tests {
             ProofOperands::for_annotation(&ProofAnnotation::NoUndef, &[defined], 1).unwrap();
         let cond =
             verify_proof_obligation(&mut solver, &ProofAnnotation::NoUndef, &operands).unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -4043,7 +4930,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::ValidDealloc, &operands)
             .unwrap();
-        assert!(cond.check(&mut solver));
+        assert!(cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -4057,7 +4944,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::ValidDealloc, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     #[test]
@@ -4072,7 +4959,7 @@ mod tests {
                 .unwrap();
         let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::ValidDealloc, &operands)
             .unwrap();
-        assert!(!cond.check(&mut solver));
+        assert!(!cond.check(&mut solver).expect("the condition checks"));
     }
 
     // ============================================================
@@ -4138,10 +5025,57 @@ mod tests {
     }
 }
 
+/// Encode integer (or boolean `Not`) unary operations independently per lane.
+/// Lane zero occupies the least-significant bits. Shape and operand width are
+/// checked before extraction; float lanes require a separate IEEE lane model.
+pub fn encode_vector_unop(
+    solver: &mut Solver,
+    op: UnOp,
+    elem_ty: &Ty,
+    lane_count: u32,
+    operand: Term,
+) -> Result<Term, AYError> {
+    let unsupported =
+        || AYError::UnsupportedType(Ty::Vector(Box::new(elem_ty.clone()), lane_count));
+    if !(elem_ty.is_integer() || (*elem_ty == Ty::Bool && op == UnOp::Not)) {
+        return Err(unsupported());
+    }
+    let elem_width = ty_to_sort(elem_ty)?
+        .bitvec_width()
+        .ok_or_else(unsupported)?;
+    let total = elem_width.checked_mul(lane_count).ok_or_else(unsupported)?;
+    if total == 0 {
+        return Err(unsupported());
+    }
+    if bitvec_width_of(solver, operand, "vector unary operation")? != total {
+        return Err(AYError::UnsupportedOp(
+            "vector unary operand width does not match its lanes".into(),
+        ));
+    }
+    let mut result = None;
+    for lane in 0..lane_count {
+        let lo = lane * elem_width;
+        let value = solver.try_bvextract(operand, lo + elem_width - 1, lo)?;
+        let encoded = encode_unop(solver, op, value)?;
+        result = Some(match result {
+            None => encoded,
+            Some(lower) => solver.try_bvconcat(encoded, lower)?,
+        });
+    }
+    result.ok_or_else(unsupported)
+}
+
 /// Encode a vector binary operation.
 ///
 /// Vectors are modeled as concatenated bitvectors: lane_count * elem_width.
 /// The operation is applied independently to each lane.
+///
+/// # Errors
+///
+/// [`AYError::UnsupportedType`] for a zero-lane vector (it has no bit-vector
+/// model — [`ty_to_sort`] refuses it too), for an element type with no bit
+/// width, and for a lane count whose concatenated width does not fit a `u32`.
+/// Each is refused before any lane is encoded.
 pub fn encode_vector_binop(
     solver: &mut Solver,
     op: BinOp,
@@ -4150,37 +5084,193 @@ pub fn encode_vector_binop(
     lhs: Term,
     rhs: Term,
 ) -> Result<Term, AYError> {
-    let elem_width = match ty_to_sort(elem_ty)? {
-        Sort::BitVec(bv) => bv.width,
-        Sort::FloatingPoint(eb, sb) => eb + sb,
-        _ => return Err(AYError::UnsupportedType(elem_ty.clone())),
-    };
+    let unsupported =
+        || AYError::UnsupportedType(Ty::Vector(Box::new(elem_ty.clone()), lane_count));
+    let elem_width = sort_bit_width(&ty_to_sort(elem_ty)?).ok_or_else(unsupported)?;
+    if lane_count == 0 || elem_width == 0 || elem_width.checked_mul(lane_count).is_none() {
+        return Err(unsupported());
+    }
 
-    let mut result_lanes = Vec::with_capacity(lane_count as usize);
-
+    // Each lane is concatenated onto the accumulator as soon as it is encoded
+    // (little-endian: lane 0 is least significant), so nothing sized by the
+    // lane count — an unchecked number from the module — is allocated up front.
+    let mut result: Option<Term> = None;
     for i in 0..lane_count {
-        let lo = i * elem_width;
-        let hi = lo + elem_width - 1;
+        let lo = i.checked_mul(elem_width).ok_or_else(unsupported)?;
+        let hi = lo.checked_add(elem_width - 1).ok_or_else(unsupported)?;
 
-        let l_lane = solver.bvextract(lhs, hi, lo);
-        let r_lane = solver.bvextract(rhs, hi, lo);
+        let l_lane = solver.try_bvextract(lhs, hi, lo)?;
+        let r_lane = solver.try_bvextract(rhs, hi, lo)?;
 
         let res_lane = encode_binop(solver, op, l_lane, r_lane)?;
-        result_lanes.push(res_lane);
+        result = Some(match result {
+            None => res_lane,
+            Some(lower) => solver.try_bvconcat(res_lane, lower)?,
+        });
     }
 
-    // Concatenate lanes (little-endian: lane 0 is least significant)
-    let mut result = result_lanes[0];
-    for &lane in &result_lanes[1..] {
-        result = solver.bvconcat(lane, result);
-    }
-
-    Ok(result)
+    result.ok_or_else(unsupported)
 }
 
 #[cfg(test)]
 mod vector_tests {
+    #![allow(clippy::disallowed_methods)] // tests drive ay directly (r11 item 5)
+
     use super::*;
+
+    #[test]
+    fn integer_vector_unops_keep_lane_boundaries() {
+        for (elem, width, lanes) in [
+            (Ty::U8, 8u32, 4u32),
+            (Ty::U16, 16, 8),
+            (Ty::U32, 32, 4),
+            (Ty::U64, 64, 2),
+        ] {
+            let mask = (1u128 << width) - 1;
+            let raw = 0xff01_8000_00ff_0001_0100_ffff_8000_0001u128;
+            for op in [
+                UnOp::Neg,
+                UnOp::Not,
+                UnOp::CtPop,
+                UnOp::CtLz,
+                UnOp::CtTz,
+                UnOp::BSwap,
+                UnOp::BitReverse,
+            ] {
+                let mut expected = 0u128;
+                for lane in 0..lanes {
+                    let value = (raw >> (lane * width)) & mask;
+                    let count = match op {
+                        UnOp::Neg => value.wrapping_neg() & mask,
+                        UnOp::Not => !value & mask,
+                        UnOp::CtPop => u128::from(value.count_ones()),
+                        UnOp::CtLz => u128::from(value.leading_zeros() - (128 - width)),
+                        UnOp::CtTz => {
+                            if value == 0 {
+                                u128::from(width)
+                            } else {
+                                u128::from(value.trailing_zeros())
+                            }
+                        }
+                        UnOp::BSwap => (0..width / 8)
+                            .fold(0, |acc, byte| (acc << 8) | ((value >> (8 * byte)) & 255)),
+                        UnOp::BitReverse => value.reverse_bits() >> (128 - width),
+                        _ => unreachable!(),
+                    };
+                    expected |= count << (lane * width);
+                }
+                let mut solver = create_bv_solver().unwrap();
+                let total = width * lanes;
+                let x = solver.declare_const("x", Sort::BitVec(BitVecSort { width: total }));
+                let mut packed = |raw: u128| {
+                    let hi = solver.bv_const_u64((raw >> 64) as u64, 64);
+                    let lo = solver.bv_const_u64(raw as u64, 64);
+                    let wide = solver.bvconcat(hi, lo);
+                    solver.bvextract(wide, total - 1, 0)
+                };
+                let value = packed(raw);
+                let want = packed(expected);
+                let pin = solver.eq(x, value);
+                solver.assert_term(pin);
+                let got = encode_vector_unop(&mut solver, op, &elem, lanes, x).unwrap();
+                let equal = solver.eq(got, want);
+                let wrong = solver.not(equal);
+                solver.assert_term(wrong);
+                assert!(solver.check_sat().is_unsat(), "{op:?} <{lanes} x {elem}>");
+            }
+        }
+    }
+
+    #[test]
+    fn vector_unop_rejects_bad_shapes_and_widths() {
+        let mut solver = create_bv_solver().unwrap();
+        let x = solver.bv_const(0, 32);
+        for (elem, lanes) in [
+            (Ty::U8, 0),
+            (Ty::U64, u32::MAX),
+            (Ty::F32, 1),
+            (Ty::Bool, 4),
+        ] {
+            assert!(matches!(
+                encode_vector_unop(&mut solver, UnOp::CtPop, &elem, lanes, x),
+                Err(AYError::UnsupportedType(_))
+            ));
+        }
+        for width in [24, 40] {
+            let wrong = solver.bv_const(0, width);
+            assert!(matches!(
+                encode_vector_unop(&mut solver, UnOp::CtPop, &Ty::U8, 4, wrong),
+                Err(AYError::UnsupportedOp(_))
+            ));
+        }
+        let input = solver.bv_const(5, 4);
+        let got = encode_vector_unop(&mut solver, UnOp::Not, &Ty::Bool, 4, input).unwrap();
+        let want = solver.bv_const(10, 4);
+        let eq = solver.eq(got, want);
+        let wrong = solver.not(eq);
+        solver.assert_term(wrong);
+        assert!(solver.check_sat().is_unsat());
+    }
+
+    #[test]
+    fn sort_bit_width_is_checked_on_the_open_float_sort() {
+        assert_eq!(
+            sort_bit_width(&Sort::BitVec(BitVecSort { width: 7 })),
+            Some(7)
+        );
+        assert_eq!(sort_bit_width(&Sort::FloatingPoint(5, 11)), Some(16));
+        assert_eq!(sort_bit_width(&Sort::FloatingPoint(8, 24)), Some(32));
+        assert_eq!(sort_bit_width(&Sort::FloatingPoint(11, 53)), Some(64));
+        // ay's sort admits any pair; one whose sum overflows has no width.
+        assert_eq!(sort_bit_width(&Sort::FloatingPoint(u32::MAX, 1)), None);
+        assert_eq!(sort_bit_width(&memory_sort()), None);
+        // The float sorts `ty_to_sort` produces are their IEEE storage widths.
+        for (ty, bits) in [(Ty::F16, 16), (Ty::F32, 32), (Ty::F64, 64)] {
+            assert_eq!(sort_bit_width(&ty_to_sort(&ty).unwrap()), Some(bits));
+        }
+    }
+
+    #[test]
+    fn a_vector_wider_than_a_u32_bit_width_has_no_sort() {
+        // u32::MAX lanes of 64 bits: the concatenated width wrapped in release.
+        let wide = Ty::Vector(Box::new(Ty::I64), u32::MAX);
+        assert!(matches!(ty_to_sort(&wide), Err(AYError::UnsupportedType(t)) if t == wide));
+        let wide_float = Ty::Vector(Box::new(Ty::F64), u32::MAX);
+        assert!(matches!(
+            ty_to_sort(&wide_float),
+            Err(AYError::UnsupportedType(_))
+        ));
+        // The widest representable one still maps.
+        let fits = Ty::Vector(Box::new(Ty::I8), u32::MAX / 8);
+        assert_eq!(
+            ty_to_sort(&fits).unwrap(),
+            Sort::BitVec(BitVecSort {
+                width: (u32::MAX / 8) * 8
+            })
+        );
+    }
+
+    #[test]
+    fn a_zero_lane_vector_binop_is_refused_not_an_index_panic() {
+        let mut solver = create_bv_solver().unwrap();
+        let sort = Sort::BitVec(BitVecSort { width: 32 });
+        let lhs = solver.declare_const("lhs", sort.clone());
+        let rhs = solver.declare_const("rhs", sort);
+        let error =
+            encode_vector_binop(&mut solver, BinOp::Add, &Ty::I32, 0, lhs, rhs).unwrap_err();
+        assert!(matches!(error, AYError::UnsupportedType(Ty::Vector(_, 0))));
+    }
+
+    #[test]
+    fn a_vector_binop_wider_than_a_u32_bit_width_is_refused_before_any_lane() {
+        let mut solver = create_bv_solver().unwrap();
+        let sort = Sort::BitVec(BitVecSort { width: 64 });
+        let lhs = solver.declare_const("lhs", sort.clone());
+        let rhs = solver.declare_const("rhs", sort);
+        let error =
+            encode_vector_binop(&mut solver, BinOp::Add, &Ty::I64, u32::MAX, lhs, rhs).unwrap_err();
+        assert!(matches!(error, AYError::UnsupportedType(Ty::Vector(_, n)) if n == u32::MAX));
+    }
 
     #[test]
     fn test_encode_vector_binop_add() {
@@ -4213,5 +5303,181 @@ mod vector_tests {
         solver.assert_term(eq1);
 
         assert!(solver.check_sat().is_sat());
+    }
+}
+
+#[cfg(test)]
+mod fp_integer_cast_tests {
+    #![allow(clippy::disallowed_methods)]
+    use super::*;
+
+    fn input(value: f64, width: u32) -> (u64, u32, u32, f64) {
+        match width {
+            16 => {
+                let bits = trust_ir::interpret::f64_to_f16_bits(value);
+                (
+                    u64::from(bits),
+                    5,
+                    11,
+                    trust_ir::interpret::f16_bits_to_f64(bits),
+                )
+            }
+            32 => (
+                u64::from((value as f32).to_bits()),
+                8,
+                24,
+                f64::from(value as f32),
+            ),
+            64 => (value.to_bits(), 11, 53, value),
+            _ => unreachable!(),
+        }
+    }
+
+    fn expected(value: f64, width: u32, signed: bool) -> u128 {
+        let raw = if signed {
+            (match width {
+                8 => i128::from(value as i8),
+                16 => i128::from(value as i16),
+                32 => i128::from(value as i32),
+                64 => i128::from(value as i64),
+                128 => value as i128,
+                _ => unreachable!(),
+            }) as u128
+        } else {
+            match width {
+                8 => u128::from(value as u8),
+                16 => u128::from(value as u16),
+                32 => u128::from(value as u32),
+                64 => u128::from(value as u64),
+                128 => value as u128,
+                _ => unreachable!(),
+            }
+        };
+        if width == 128 {
+            raw
+        } else {
+            raw & ((1u128 << width) - 1)
+        }
+    }
+
+    #[test]
+    fn fp_to_integer_casts_match_rust_values_and_boundaries() {
+        let mut checks = 0;
+        for source in [16, 32, 64] {
+            for width in [8u32, 16, 32, 64, 128] {
+                for signed in [false, true] {
+                    let exponent = width - u32::from(signed);
+                    let upper = 2.0f64.powi(exponent as i32);
+                    let lower = if signed { -upper } else { 0.0 };
+                    let mut samples = vec![
+                        0.0,
+                        -0.0,
+                        0.75,
+                        -0.75,
+                        1.5,
+                        -1.5,
+                        1.75,
+                        -1.75,
+                        2.5,
+                        -2.5,
+                        127.75,
+                        -127.75,
+                        -128.5,
+                        255.75,
+                        65504.0,
+                        65520.0,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NAN,
+                        -f64::NAN,
+                        2.0f64.powi(-24),
+                        -2.0f64.powi(-24),
+                        f64::MAX,
+                        -f64::MAX,
+                    ];
+                    for bound in [lower, upper] {
+                        for offset in [-1i64, 0, 1] {
+                            samples
+                                .push(f64::from_bits(bound.to_bits().wrapping_add_signed(offset)));
+                            // Adjacent F64 inputs can round to the same F16/F32.
+                            // Also probe each source format's own neighbors.
+                            let source_bits = input(bound, source).0;
+                            samples.push(match source {
+                                16 => trust_ir::interpret::f16_bits_to_f64(
+                                    (source_bits as u16).wrapping_add_signed(offset as i16),
+                                ),
+                                32 => f64::from(f32::from_bits(
+                                    (source_bits as u32).wrapping_add_signed(offset as i32),
+                                )),
+                                64 => f64::from_bits(source_bits.wrapping_add_signed(offset)),
+                                _ => unreachable!(),
+                            });
+                        }
+                    }
+                    for value in samples {
+                        let (bits, eb, sb, value) = input(value, source);
+                        for saturating in [false, true] {
+                            if !saturating
+                                && (!value.is_finite() || value < lower || value >= upper)
+                            {
+                                continue;
+                            }
+                            let op = match (signed, saturating) {
+                                (false, false) => CastOp::FPToUI,
+                                (true, false) => CastOp::FPToSI,
+                                (false, true) => CastOp::FPToUISat,
+                                (true, true) => CastOp::FPToSISat,
+                            };
+                            let mut solver = create_fp_solver().unwrap();
+                            let operand = solver.fp_const_from_bits(bits, eb, sb);
+                            let result =
+                                encode_cast(&mut solver, op, operand, source, width).unwrap();
+                            assert_eq!(
+                                solver.try_term_sort(result).unwrap().bitvec_width(),
+                                Some(width)
+                            );
+                            let raw = expected(value, width, signed);
+                            let hi = solver.bv_const_u64((raw >> 64) as u64, 64);
+                            let lo = solver.bv_const_u64(raw as u64, 64);
+                            let wide = solver.bvconcat(hi, lo);
+                            let want = solver.bvextract(wide, width - 1, 0);
+                            let eq = solver.eq(result, want);
+                            let wrong = solver.not(eq);
+                            solver.assert_term(wrong);
+                            assert!(
+                                solver.check_sat().is_unsat(),
+                                "{op:?} f{source} {value:?} -> {width}"
+                            );
+                            checks += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("{checks} FP-to-integer numeric queries passed");
+    }
+
+    #[test]
+    fn saturating_fp_cast_refuses_invalid_width_sort_and_foreign_handle() {
+        let mut solver = create_fp_solver().unwrap();
+        let fp = solver.fp_const_from_bits(1.75f64.to_bits(), 11, 53);
+        let bv = solver.bv_const(1, 32);
+        for op in [CastOp::FPToSISat, CastOp::FPToUISat] {
+            for width in [0, 129, u32::MAX] {
+                assert!(matches!(
+                    encode_cast(&mut solver, op, fp, 64, width),
+                    Err(AYError::UnsupportedOp(_))
+                ));
+            }
+            assert!(matches!(
+                encode_cast(&mut solver, op, bv, 32, 32),
+                Err(AYError::UnsupportedOp(_))
+            ));
+            let mut other = create_fp_solver().unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                encode_cast(&mut other, op, fp, 64, 32)
+            }));
+            assert!(matches!(result.unwrap(), Err(AYError::SolverError(_))));
+        }
     }
 }

@@ -1,0 +1,4 @@
+DATA ONLY: external consumer rederives the goal and audits every declaration.
+definition-0: name=trust_cg_fnv128_step_lo is_reducible=false reducibility=Regular(1)
+definition-1: name=trust_cg_fnv128_step_hi is_reducible=false reducibility=Regular(1)
+source=trust_cg_fnv128_step_hi

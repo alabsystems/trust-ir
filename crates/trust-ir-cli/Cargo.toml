@@ -10,15 +10,28 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Command-line inspector for TrustIr modules (validate/dump/convert/run/show-gpu-eligibility/spec-link)"
+description = "Command-line inspector for TrustIr modules (validate/dump/dependencies/convert/run/digest/handles/show-gpu-eligibility/spec-link)"
 
 [[bin]]
 name = "trust-ir"
 path = "src/main.rs"
 
+[features]
+# `discharge --bvblast` (WS5.4): the bit-blast discharge route and its
+# replaying validator capability, from the `trust-ir-ay` adapter. OFF by
+# default: the adapter is the one crate that pulls an external git dependency
+# (ay), so the default CLI build stays offline-capable. Built from THIS
+# workspace and lockfile, so the certificates it stamps name the ay revision
+# the adapter actually links (`AY_REV` / `BVBLAST_PROVER`).
+ay = ["dep:trust-ir-ay"]
+
 [dependencies]
-trust-ir = { path = "../trust-ir", features = ["parser", "binary", "serde"] }
-trust-ir-build = { path = "../trust-ir-build", features = ["serde"] }
+trust-ir = { path = "../trust-ir", features = ["parser", "binary", "serde", "fmt"] }
+trust-ir-ay = { path = "../trust-ir-ay", optional = true }
+# `binary` (a forwarding feature) so `validate` can hold a decoded blob to the
+# v41 producer rule through `validate_module_as_decoded`, which exists only
+# where the codec that mints a `WireVersion` does.
+trust-ir-build = { path = "../trust-ir-build", features = ["serde", "binary"] }
 clap = { workspace = true }
 serde_json = "1.0"
 rmp-serde = "1.3"

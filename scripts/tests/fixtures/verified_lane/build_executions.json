@@ -1,0 +1,110 @@
+{
+ "laws_base_run.json": {
+  "assumptions": [
+   {
+    "scope": "crate",
+    "source": "dep-tcb-cargo-unit-inventory",
+    "subject": "cargo-target(package_id=\"path+file://<path>#0.14.0\",package=\"trust-ir\",kind=[\"custom-build\"],target=\"build-script-build\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"run-custom-build\",compile_kind=\"host\",unit_identity_sha256=\"da6e188872ae38eba7aa1e02951900740b029257461f6199b4f2778f7aa11351\",compile_target_spec_sha256=None,proof_unit_index=14,proof_unit_mode=\"run-custom-build\",proof_unit_role=\"excluded\",semantics_sha256=\"e2acdaa5e3d2a0219a20a1291ed6813f9368c46860784129b8cc6fbc54def0aa\");graph_role=\"control\"",
+    "tag": "build-execution-scope"
+   },
+   {
+    "scope": "crate",
+    "source": "dep-tcb-cargo-unit-inventory",
+    "subject": "cargo-target(package_id=\"registry+https://github.com/rust-lang/crates.io-index#generic-array@0.14.7\",package=\"generic-array\",kind=[\"custom-build\"],target=\"build-script-build\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"run-custom-build\",compile_kind=\"host\",unit_identity_sha256=\"4981e8f2f192184113004dd1c0c5d6445f1b52cda61fd2e9f6e3862640362324\",compile_target_spec_sha256=None,proof_unit_index=7,proof_unit_mode=\"run-custom-build\",proof_unit_role=\"excluded\",semantics_sha256=\"9fe9fbf92ec24d6e342d829659525dce73f22bebf22a6b77129c842718c24dd6\");graph_role=\"control\"",
+    "tag": "build-execution-scope"
+   },
+   {
+    "scope": "crate",
+    "source": "dep-tcb-cargo-unit-inventory",
+    "subject": "cargo-target(package_id=\"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189\",package=\"libc\",kind=[\"custom-build\"],target=\"build-script-build\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"run-custom-build\",compile_kind=\"host\",unit_identity_sha256=\"47b1f9f725cc99db52c84c61cd56b0fe44082c4df976a42af482764fb0645480\",compile_target_spec_sha256=None,proof_unit_index=10,proof_unit_mode=\"run-custom-build\",proof_unit_role=\"excluded\",semantics_sha256=\"50adfba1e9824389a94106c218d5e9f62ed523da4aae298011d42add703c63f3\");graph_role=\"control\"",
+    "tag": "build-execution-scope"
+   }
+  ],
+  "excluded_active_units": [
+   {
+    "exclusion_reason": "build-script-execution",
+    "package_id": "registry+https://github.com/rust-lang/crates.io-index#generic-array@0.14.7",
+    "package_name": "generic-array",
+    "proof_unit_index": 7,
+    "proof_unit_mode": "run-custom-build",
+    "target_name": "build-script-build"
+   },
+   {
+    "exclusion_reason": "build-script-execution",
+    "package_id": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
+    "package_name": "libc",
+    "proof_unit_index": 10,
+    "proof_unit_mode": "run-custom-build",
+    "target_name": "build-script-build"
+   },
+   {
+    "exclusion_reason": "build-script-execution",
+    "package_id": "path+file://<path>#0.14.0",
+    "package_name": "trust-ir",
+    "proof_unit_index": 14,
+    "proof_unit_mode": "run-custom-build",
+    "target_name": "build-script-build"
+   }
+  ]
+ },
+ "laws_mutant_run.json": {
+  "assumptions": [
+   {
+    "scope": "crate",
+    "source": "dep-tcb-cargo-unit-inventory",
+    "subject": "cargo-target(package_id=\"path+file://<path>#0.14.0\",package=\"trust-ir\",kind=[\"custom-build\"],target=\"build-script-build\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"run-custom-build\",compile_kind=\"host\",unit_identity_sha256=\"7c06916cec4bf8f5a36d2cc1f97b670d74347582f2de6d5d785c8b0b0ad465cf\",compile_target_spec_sha256=None,proof_unit_index=14,proof_unit_mode=\"run-custom-build\",proof_unit_role=\"excluded\",semantics_sha256=\"e2acdaa5e3d2a0219a20a1291ed6813f9368c46860784129b8cc6fbc54def0aa\");graph_role=\"control\"",
+    "tag": "build-execution-scope"
+   },
+   {
+    "scope": "crate",
+    "source": "dep-tcb-cargo-unit-inventory",
+    "subject": "cargo-target(package_id=\"registry+https://github.com/rust-lang/crates.io-index#generic-array@0.14.7\",package=\"generic-array\",kind=[\"custom-build\"],target=\"build-script-build\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"run-custom-build\",compile_kind=\"host\",unit_identity_sha256=\"0e6e88a7552b7198014fadf7181df2ff0e71c0a4e1a3ee4eb24c5e83c0421b51\",compile_target_spec_sha256=None,proof_unit_index=7,proof_unit_mode=\"run-custom-build\",proof_unit_role=\"excluded\",semantics_sha256=\"9fe9fbf92ec24d6e342d829659525dce73f22bebf22a6b77129c842718c24dd6\");graph_role=\"control\"",
+    "tag": "build-execution-scope"
+   },
+   {
+    "scope": "crate",
+    "source": "dep-tcb-cargo-unit-inventory",
+    "subject": "cargo-target(package_id=\"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189\",package=\"libc\",kind=[\"custom-build\"],target=\"build-script-build\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"run-custom-build\",compile_kind=\"host\",unit_identity_sha256=\"8bb491c4007c7bd001e2bf9216ac754d5ca33e0d6f4051b271470b5f55cdfa34\",compile_target_spec_sha256=None,proof_unit_index=10,proof_unit_mode=\"run-custom-build\",proof_unit_role=\"excluded\",semantics_sha256=\"50adfba1e9824389a94106c218d5e9f62ed523da4aae298011d42add703c63f3\");graph_role=\"control\"",
+    "tag": "build-execution-scope"
+   }
+  ],
+  "excluded_active_units": [
+   {
+    "exclusion_reason": "build-script-execution",
+    "package_id": "registry+https://github.com/rust-lang/crates.io-index#generic-array@0.14.7",
+    "package_name": "generic-array",
+    "proof_unit_index": 7,
+    "proof_unit_mode": "run-custom-build",
+    "target_name": "build-script-build"
+   },
+   {
+    "exclusion_reason": "build-script-execution",
+    "package_id": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
+    "package_name": "libc",
+    "proof_unit_index": 10,
+    "proof_unit_mode": "run-custom-build",
+    "target_name": "build-script-build"
+   },
+   {
+    "exclusion_reason": "build-script-execution",
+    "package_id": "path+file://<path>#0.14.0",
+    "package_name": "trust-ir",
+    "proof_unit_index": 14,
+    "proof_unit_mode": "run-custom-build",
+    "target_name": "build-script-build"
+   }
+  ]
+ },
+ "provenance": {
+  "date": "2026-10-01",
+  "gate": "scripts/verified_contracts.py (gate 13), a real kept run (--keep)",
+  "regenerate": "scripts/tests/fixtures/verified_lane/refresh.py",
+  "runs": {
+   "laws_base_run.json": "base",
+   "laws_mutant_run.json": "mutant coverage-unbounded-demand-met-by-anything"
+  },
+  "toolchain": "rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0) | commit-hash: 321aaeda75478038420d97830f14724c33c8dc39 | host: aarch64-apple-darwin | trust: 0.1.0",
+  "tree": "a53f332009cbc58189e0a6806fd36c01b0ff1833",
+  "workspace_version": "0.14.0"
+ }
+}

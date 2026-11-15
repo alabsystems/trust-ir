@@ -1,0 +1,5 @@
+# Beside gate 9 (`formula-dag`, trust-ir-contract half): the hash-consed
+# Formula DAG and the one per-node SMT-LIB spelling its printers share.
+formula_dag  # round trip for every variant (census-complete), exact identity, foreign ids refused, let/define-fun printers = tree printer up to bindings, no binding captured, linear node count and printer work (wide, deep, shared, quantified), 10^6-deep chains
+formula_smtlib_legacy_parity  # the per-node split of Formula::to_smtlib moved no byte (the pre-split printer kept as the oracle)
+smtlib_symbols  # lexical symbol rules shared by tree/DAG terms and datatype declarations

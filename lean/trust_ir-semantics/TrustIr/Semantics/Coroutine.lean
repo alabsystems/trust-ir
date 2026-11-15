@@ -23,52 +23,49 @@ lower it to (inst.rs "Backends lower `CoroSuspend` by macro-expanding it"):
     store i64 `nextState` into `frame[stateSlot]`   -- the frame's state index
     return `value`
 
-`semCoroSuspend` is DEFINED as that composition of the already-modelled
-semantic functions — a fresh `i64` slot index, `semGEP` to the state field,
-a fresh `i64` next-state value, `semStore`, then `semReturn` — so its
-correctness reduces to the per-instruction semantics it composes, exactly as
-the backend lowering's correctness reduces to the per-instruction lowering
-proofs. The fresh binds mirror the `Const` instructions the macro-expansion
-materializes for the two immediates.
+The intrinsic operates on held values, as the reference interpreter does.
+It does not manufacture SSA bindings for the lowering's temporary values.
+A real expansion has explicit source destinations and a freshly inferred type
+context; its relation to this intrinsic is proved separately at the real call
+frame boundary, rather than by equating private register maps.
 
 The matched `resume` entry is NOT a new primitive: it is an ordinary
 `Load` + `Switch` dispatch on `frame[stateSlot]`, already covered by the
-memory and control-flow semantics.
+memory and control-flow semantics. That the two compose into a correct
+state machine is proved, not assumed: `CoroGen.coro_two_state_roundtrip`
+(`Proofs/CoroutineProps.lean`, WS2.25) drives a `load; switch {0, 1}` resume
+entry twice over the real evaluator and gets the yielded value, then the
+final value, for every state whose frame slot is a live zero-initialised
+`i64` cell; the `next + 1` mutant is refuted alongside it.
 -/
 
-/-- Evaluate a CoroSuspend terminator: record the resume state index in the
-    coroutine frame, then return the yielded value to the resumer. -/
+/-- Record the state index, then look up and return the yield operand.
+    GEP and Store use shared value-level operations and publish no temporary
+    SSA values. The error order matches the reference interpreter. -/
 def semCoroSuspend (frameId : ValueId) (stateSlot : Nat) (nextState : Int)
-    (valueId : ValueId) : Sem StepResult := do
-  let slotIdx ← Sem.bindFresh (.int 64 stateSlot)
-  let slotAddr ← semGEP .I64 frameId [slotIdx]
-  let next ← Sem.bindFresh (.int 64 nextState)
-  semStore .I64 slotAddr next
+    (valueId : ValueId) (model : ByteModel := .le64) : Sem StepResult := do
+  let frame ← Sem.lookupValue frameId
+  let slot ← semGEPValuesUsing (scalarMemoryLayout model)
+    (fun (_ : Unit) value => typedIntegerValue model .I64 value)
+    .I64 frame [((), Value.intAt 64 stateSlot)] model
+  semStoreValueUsing (scalarMemoryLayout model) (encodeMemoryAt model .I64)
+    .I64 slot (Value.intAt 64 nextState) false none model
+  -- The reference interpreter looks up yield after the store. The intrinsic
+  -- never publishes the lowering's private SSA temporaries.
   semReturn [valueId]
 
-/-- Definition-shape lock: a DEFINITIONAL equality pinning `semCoroSuspend`
-    to the composition above, so any future edit that diverges from the
-    expansion breaks this lemma rather than silently changing the semantics.
-
-    Honest scope: this is `rfl` against the definition — it does NOT relate
-    `semCoroSuspend` to `stepInst`-executed `Const`/`GEP`/`Store`/`Return`
-    instructions. The gap is small but real: `semGEP`/`semStore`/`semReturn`
-    ARE the `stepInst` implementations of those instructions, and `stepInst`'s
-    `Const .I64 (.int k)` case binds `Value.int 64 k` exactly as the
-    `Sem.bindFresh` here does (Step.lean, width from `Ty.bitWidth`), but the
-    `InstrResult` plumbing and the static-vs-extracted operand ids of a real
-    instruction sequence are not modelled by this lemma. The end-to-end
-    behavior is pinned by the `coro_suspend_stores_state_and_yields_stable`
-    fixture (ExecutableFixtures.lean); a full `stepInst`-sequence equivalence
-    theorem is a candidate deepening (B3 depth ledger). -/
-theorem semCoroSuspend_is_macro_expansion (frameId : ValueId) (stateSlot : Nat)
-    (nextState : Int) (valueId : ValueId) :
-    semCoroSuspend frameId stateSlot nextState valueId
-      = (do
-          let slotIdx ← Sem.bindFresh (.int 64 stateSlot)
-          let slotAddr ← semGEP .I64 frameId [slotIdx]
-          let next ← Sem.bindFresh (.int 64 nextState)
-          semStore .I64 slotAddr next
-          semReturn [valueId]) := rfl
+/-- The intrinsic performs the two immediate operations on held values.
+    Actual SSA expansion correctness is a separate source-graph theorem; an
+    untyped instruction stream with private aliases is not this semantics. -/
+theorem semCoroSuspend_is_value_composition (frameId : ValueId) (stateSlot : Nat)
+    (nextState : Int) (valueId : ValueId) (model : ByteModel := .le64) :
+    semCoroSuspend frameId stateSlot nextState valueId model = (do
+      let frame ← Sem.lookupValue frameId
+      let slot ← semGEPValuesUsing (scalarMemoryLayout model)
+        (fun (_ : Unit) value => typedIntegerValue model .I64 value)
+        .I64 frame [((), Value.intAt 64 stateSlot)] model
+      semStoreValueUsing (scalarMemoryLayout model) (encodeMemoryAt model .I64)
+        .I64 slot (Value.intAt 64 nextState) false none model
+      semReturn [valueId]) := rfl
 
 end TrustIr

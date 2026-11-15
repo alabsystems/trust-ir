@@ -82,30 +82,34 @@ def isValidStoreOrdering : MemOrdering -> Bool
     validation.
 
     Mirrors Rust `Inst::AtomicLoad`. -/
-def semAtomicLoad (ty : Ty) (ptrId : ValueId) (ordering : MemOrdering)
-    : Sem ValueId := do
+def semAtomicLoadUsing (decode : Memory → List UInt8 → Except SemError Value)
+    (ty : Ty) (ptrId : ValueId) (ordering : MemOrdering)
+    (model : ByteModel := .le64) : Sem ValueId := do
   -- Validate ordering
   if !isValidLoadOrdering ordering then
     Sem.throwTypeError "AtomicLoad: invalid load ordering"
   -- Delegate to regular load logic
   let ptrVal ← Sem.lookupValue ptrId
-  let addr ← match ptrVal with
-    | .ptr a    => pure a
-    | .nullPtr  => Sem.throwUB "AtomicLoad: null pointer dereference"
-    | _         => Sem.throwTypeError "AtomicLoad: operand is not a pointer"
-  if addr == 0 then Sem.throwUB "AtomicLoad: null pointer dereference"
-  let byteSize ← match ty.byteSize with
+  Sem.rejectPartial ptrVal "AtomicLoad"
+  let (ptrAddr, ptrAlloc) ← Sem.expectPointer "AtomicLoad" ptrVal
+  let byteSize ← match (ty.byteSizeFor model) with
     | some s => pure s
-    | none   => Sem.throwTypeError "AtomicLoad: type has no byte size"
+    | none   => Sem.throwUnsupported .layout "AtomicLoad: type has no byte size"
+  -- An atomic access is a strict access at the type's natural alignment
+  -- through the operand's provenance (interpret.rs `eval_load(.., None, strict)`).
+  let alignment ← Sem.accessAlign "AtomicLoad" ty none model
+  let addr ← Sem.checkedAccess "AtomicLoad" ptrAddr ptrAlloc byteSize alignment model
   let s ← Sem.getState
-  if !s.memory.isInBounds addr byteSize then
-    Sem.throwUB "AtomicLoad: access is out of bounds"
   let bytes ← match s.memory.readBytes addr byteSize with
     | some bs => pure bs
     | none    => Sem.throwUB "AtomicLoad: reading uninitialized memory"
-  match decodeValue ty bytes with
-  | some v => Sem.bindFresh v
-  | none   => Sem.throwTypeError "AtomicLoad: failed to decode bytes"
+  match decode s.memory bytes with
+  | .ok v    => Sem.bindFresh v
+  | .error e => throw e
+
+def semAtomicLoad (ty : Ty) (ptrId : ValueId) (ordering : MemOrdering)
+    (model : ByteModel := .le64) : Sem ValueId :=
+  semAtomicLoadUsing (fun mem bytes => decodeMemoryAt model mem ty bytes) ty ptrId ordering model
 
 -- =================================================================
 -- AtomicStore
@@ -116,32 +120,39 @@ def semAtomicLoad (ty : Ty) (ptrId : ValueId) (ordering : MemOrdering)
     validation.
 
     Mirrors Rust `Inst::AtomicStore`. -/
-def semAtomicStore (ty : Ty) (ptrId valueId : ValueId) (ordering : MemOrdering)
-    : Sem Unit := do
+def semAtomicStoreUsing (encode : Value → Except SemError (List UInt8))
+    (ty : Ty) (ptrId valueId : ValueId) (ordering : MemOrdering)
+    (model : ByteModel := .le64) : Sem Unit := do
   -- Validate ordering
   if !isValidStoreOrdering ordering then
     Sem.throwTypeError "AtomicStore: invalid store ordering"
   -- Delegate to regular store logic
   let ptrVal ← Sem.lookupValue ptrId
-  let addr ← match ptrVal with
-    | .ptr a    => pure a
-    | .nullPtr  => Sem.throwUB "AtomicStore: null pointer dereference"
-    | _         => Sem.throwTypeError "AtomicStore: first operand is not a pointer"
-  if addr == 0 then Sem.throwUB "AtomicStore: null pointer dereference"
-  let byteSize ← match ty.byteSize with
+  Sem.rejectPartial ptrVal "AtomicStore"
+  let (ptrAddr, ptrAlloc) ← Sem.expectPointer "AtomicStore" ptrVal
+  let byteSize ← match (ty.byteSizeFor model) with
     | some s => pure s
-    | none   => Sem.throwTypeError "AtomicStore: type has no byte size"
+    | none   => Sem.throwUnsupported .layout "AtomicStore: type has no byte size"
+  -- An atomic access is a strict access at the type's natural alignment
+  -- through the operand's provenance (interpret.rs `eval_load(.., None, strict)`).
+  let alignment ← Sem.accessAlign "AtomicStore" ty none model
+  let addr ← Sem.checkedAccess "AtomicStore" ptrAddr ptrAlloc byteSize alignment model
   let s ← Sem.getState
-  if !s.memory.isInBounds addr byteSize then
-    Sem.throwUB "AtomicStore: access is out of bounds"
   let val ← Sem.lookupValue valueId
-  let encoded ← match encodeValue val with
-    | some bs => pure bs
-    | none    => Sem.throwTypeError "AtomicStore: cannot encode value"
+  -- An atomic store is STRICT: storing poison (`.partial` / `.undef`) is UB,
+  -- mirroring interpret.rs `eval_store` with `strict = true` (roadmap WS2.10).
+  Sem.rejectPartial val "AtomicStore"
+  let encoded ← match encode val with
+    | .ok bs   => pure bs
+    | .error e => throw e
   if encoded.length != byteSize then
     Sem.throwTypeError "AtomicStore: encoded size does not match type size"
   let mem' := s.memory.writeBytes addr encoded
   Sem.modifyState fun st => { st with memory := mem' }
+
+def semAtomicStore (ty : Ty) (ptrId valueId : ValueId) (ordering : MemOrdering)
+    (model : ByteModel := .le64) : Sem Unit :=
+  semAtomicStoreUsing (encodeMemoryAt model ty) ty ptrId valueId ordering model
 
 -- =================================================================
 -- AtomicRMW helper: apply the RMW operation
@@ -150,9 +161,13 @@ def semAtomicStore (ty : Ty) (ptrId valueId : ValueId) (ordering : MemOrdering)
 /-- Apply an atomic read-modify-write operation to two integer values.
     Returns the new value to be written back.
 
-    For Max/Min/UMax/UMin, we need signed vs unsigned comparison.
-    In Phase 4 we use simple Int comparison (treating all values as
-    signed).  UMax/UMin treat values as unsigned by masking. -/
+    `Max` / `Min` order the two values SIGNED (`toSigned`, the interpreter's
+    `as_signed`), `UMax` / `UMin` unsigned. Both operands are residues (one
+    integer representation, `Value.intAt`), and the result is one of them, so
+    it is a residue too. Until 2026-09-30 `Max` / `Min` ordered the raw `Int`s,
+    which on residues is the unsigned order: `atomicrmw max i32 p, -1` over a
+    stored 5 wrote 4294967295 where the interpreter keeps 5 (168 of the 1680
+    `AtomicRMW` runs of `negative_literal_constants_agree_across_engines`). -/
 def applyAtomicRMWOp (op : AtomicRMWOp) (width : Nat) (old new_ : Int) : Int :=
   let modulus := (2 : Int) ^ width
   let wrap (v : Int) := ((v % modulus) + modulus) % modulus
@@ -163,8 +178,8 @@ def applyAtomicRMWOp (op : AtomicRMWOp) (width : Nat) (old new_ : Int) : Int :=
   | .And  => Int.land old new_
   | .Or   => Int.lor old new_
   | .Xor  => Int.xor old new_
-  | .Max  => if old >= new_ then old else new_
-  | .Min  => if old <= new_ then old else new_
+  | .Max  => if toSigned old width >= toSigned new_ width then old else new_
+  | .Min  => if toSigned old width <= toSigned new_ width then old else new_
   | .UMax =>
     let uOld := wrap old
     let uNew := wrap new_
@@ -184,30 +199,33 @@ def applyAtomicRMWOp (op : AtomicRMWOp) (width : Nat) (old new_ : Int) : Int :=
     value (before modification), matching LLVM IR semantics.
 
     Mirrors Rust `Inst::AtomicRMW`. -/
-def semAtomicRMW (op : AtomicRMWOp) (ty : Ty) (ptrId valueId : ValueId)
-    (_ordering : MemOrdering) : Sem ValueId := do
+def semAtomicRMWUsing (decode : Memory → List UInt8 → Except SemError Value)
+    (encode : Value → Except SemError (List UInt8))
+    (op : AtomicRMWOp) (ty : Ty) (ptrId valueId : ValueId)
+    (_ordering : MemOrdering) (model : ByteModel := .le64) : Sem ValueId := do
   -- Read the old value from memory
   let ptrVal ← Sem.lookupValue ptrId
-  let addr ← match ptrVal with
-    | .ptr a    => pure a
-    | .nullPtr  => Sem.throwUB "AtomicRMW: null pointer dereference"
-    | _         => Sem.throwTypeError "AtomicRMW: operand is not a pointer"
-  if addr == 0 then Sem.throwUB "AtomicRMW: null pointer dereference"
-  let byteSize ← match ty.byteSize with
+  Sem.rejectPartial ptrVal "AtomicRMW"
+  let (ptrAddr, ptrAlloc) ← Sem.expectPointer "AtomicRMW" ptrVal
+  let byteSize ← match (ty.byteSizeFor model) with
     | some s => pure s
-    | none   => Sem.throwTypeError "AtomicRMW: type has no byte size"
+    | none   => Sem.throwUnsupported .layout "AtomicRMW: type has no byte size"
+  -- An atomic access is a strict access at the type's natural alignment
+  -- through the operand's provenance (interpret.rs `eval_load(.., None, strict)`).
+  let alignment ← Sem.accessAlign "AtomicRMW" ty none model
+  let addr ← Sem.checkedAccess "AtomicRMW" ptrAddr ptrAlloc byteSize alignment model
   let s ← Sem.getState
-  if !s.memory.isInBounds addr byteSize then
-    Sem.throwUB "AtomicRMW: access is out of bounds"
   -- Read old value
   let bytes ← match s.memory.readBytes addr byteSize with
     | some bs => pure bs
     | none    => Sem.throwUB "AtomicRMW: reading uninitialized memory"
-  let oldVal ← match decodeValue ty bytes with
-    | some v => pure v
-    | none   => Sem.throwTypeError "AtomicRMW: failed to decode bytes"
+  let oldVal ← match decode s.memory bytes with
+    | .ok v    => pure v
+    | .error e => throw e
   -- Get the operand value
   let operandVal ← Sem.lookupValue valueId
+  -- The RMW operator inspects its operand: a poison operand is UB (WS2.10).
+  Sem.rejectPartial operandVal "AtomicRMW"
   -- Apply the RMW operation
   let newVal ← match oldVal, operandVal with
     | .int w oldInt, .int _ operandInt =>
@@ -215,14 +233,19 @@ def semAtomicRMW (op : AtomicRMWOp) (ty : Ty) (ptrId valueId : ValueId)
       pure (.int w result)
     | _, _ => Sem.throwTypeError "AtomicRMW: expected integer operands"
   -- Write back the new value
-  let newEncoded ← match encodeValue newVal with
-    | some bs => pure bs
-    | none    => Sem.throwTypeError "AtomicRMW: cannot encode new value"
+  let newEncoded ← match encode newVal with
+    | .ok bs   => pure bs
+    | .error e => throw e
   let s' ← Sem.getState
   let mem' := s'.memory.writeBytes addr newEncoded
   Sem.modifyState fun st => { st with memory := mem' }
   -- Return the OLD value
   Sem.bindFresh oldVal
+
+def semAtomicRMW (op : AtomicRMWOp) (ty : Ty) (ptrId valueId : ValueId)
+    (ordering : MemOrdering) (model : ByteModel := .le64) : Sem ValueId :=
+  semAtomicRMWUsing (fun mem bytes => decodeMemoryAt model mem ty bytes) (encodeMemoryAt model ty)
+    op ty ptrId valueId ordering model
 
 -- =================================================================
 -- CmpXchg
@@ -233,49 +256,85 @@ def semAtomicRMW (op : AtomicRMWOp) (ty : Ty) (ptrId valueId : ValueId)
     - If equal: writes `desired` and returns `(old, true)`
     - If not equal: leaves memory unchanged and returns `(old, false)`
 
-    Returns an aggregate value `[old_value, success_flag]`.
+    `semCmpXchgExchange` is the memory half: it performs the compare and the
+    conditional write and returns the pair `(old value, success flag)` as
+    plain values; `semCmpXchg` then binds them.
 
     Mirrors Rust `Inst::CmpXchg`. -/
-def semCmpXchg (ty : Ty) (ptrId expectedId desiredId : ValueId)
-    (_success _failure : MemOrdering) : Sem ValueId := do
+def semCmpXchgExchangeUsing (decode : Memory → List UInt8 → Except SemError Value)
+    (encode : Value → Except SemError (List UInt8))
+    (ty : Ty) (ptrId expectedId desiredId : ValueId) (model : ByteModel := .le64) :
+    Sem (Value × Bool) := do
   -- Read the current value from memory
   let ptrVal ← Sem.lookupValue ptrId
-  let addr ← match ptrVal with
-    | .ptr a    => pure a
-    | .nullPtr  => Sem.throwUB "CmpXchg: null pointer dereference"
-    | _         => Sem.throwTypeError "CmpXchg: operand is not a pointer"
-  if addr == 0 then Sem.throwUB "CmpXchg: null pointer dereference"
-  let byteSize ← match ty.byteSize with
+  Sem.rejectPartial ptrVal "CmpXchg"
+  let (ptrAddr, ptrAlloc) ← Sem.expectPointer "CmpXchg" ptrVal
+  let byteSize ← match (ty.byteSizeFor model) with
     | some s => pure s
-    | none   => Sem.throwTypeError "CmpXchg: type has no byte size"
+    | none   => Sem.throwUnsupported .layout "CmpXchg: type has no byte size"
+  -- An atomic access is a strict access at the type's natural alignment
+  -- through the operand's provenance (interpret.rs `eval_load(.., None, strict)`).
+  let alignment ← Sem.accessAlign "CmpXchg" ty none model
+  let addr ← Sem.checkedAccess "CmpXchg" ptrAddr ptrAlloc byteSize alignment model
   let s ← Sem.getState
-  if !s.memory.isInBounds addr byteSize then
-    Sem.throwUB "CmpXchg: access is out of bounds"
   -- Read current value
   let bytes ← match s.memory.readBytes addr byteSize with
     | some bs => pure bs
     | none    => Sem.throwUB "CmpXchg: reading uninitialized memory"
-  let currentVal ← match decodeValue ty bytes with
-    | some v => pure v
-    | none   => Sem.throwTypeError "CmpXchg: failed to decode bytes"
+  let currentVal ← match decode s.memory bytes with
+    | .ok v    => pure v
+    | .error e => throw e
   -- Compare with expected
   let expectedVal ← Sem.lookupValue expectedId
-  let isEqual := match currentVal, expectedVal with
-    | .int _ a, .int _ b => a == b
-    | .bool a,  .bool b  => a == b
-    | .ptr a,   .ptr b   => a == b
-    | _, _               => false
+  -- The comparison INSPECTS `expected`: a poison `expected` is UB, never a
+  -- silent "unequal" (mirror interpret.rs `Inst::CmpXchg`, WS2.10 review).
+  Sem.rejectPartial expectedVal "CmpXchg expected"
+  -- The comparison is BITWISE (LLVM `cmpxchg`, the interpreter's value
+  -- equality over `FloatBits`): a float compares its IEEE pattern at `ty`,
+  -- so `+0.0` and `-0.0` differ. A NaN refuses (`floatToBitsAt`): its payload
+  -- is unobservable in Lean 4.8.0, so neither answer can be vouched for.
+  -- (Before WS2.23 a float never compared equal, so an F32/F64 `cmpxchg`
+  -- whose expected value matched memory reported failure and skipped the
+  -- write.)
+  let isEqual ← match currentVal, expectedVal with
+    | .float a, .float b =>
+      match floatToBitsAt ty a, floatToBitsAt ty b with
+      | .ok x, .ok y => pure (x == y)
+      | .error e, _ => throw e
+      | _, .error e => throw e
+    | .int _ a, .int _ b => pure (a == b)
+    | .bool a,  .bool b  => pure (a == b)
+    | .ptr a p, .ptr b q => pure (a == b && p == q)
+    | .fnDef a f, .fnDef b g => pure (a == b && f == g)
+    | .nullPtr, .nullPtr => pure true
+    | _, _               => pure false
   -- If equal, write desired; otherwise leave memory unchanged
   if isEqual then do
     let desiredVal ← Sem.lookupValue desiredId
-    let desiredEncoded ← match encodeValue desiredVal with
-      | some bs => pure bs
-      | none    => Sem.throwTypeError "CmpXchg: cannot encode desired value"
+    -- The successful exchange is a STRICT store: poison `desired` is UB.
+    Sem.rejectPartial desiredVal "CmpXchg"
+    let desiredEncoded ← match encode desiredVal with
+      | .ok bs   => pure bs
+      | .error e => throw e
     let s' ← Sem.getState
     let mem' := s'.memory.writeBytes addr desiredEncoded
     Sem.modifyState fun st => { st with memory := mem' }
-  -- Return aggregate (old_value, success_flag)
-  Sem.bindFresh (.aggregate [currentVal, .bool isEqual])
+  pure (currentVal, isEqual)
+
+def semCmpXchgExchange (ty : Ty) (ptrId expectedId desiredId : ValueId)
+    (model : ByteModel := .le64) : Sem (Value × Bool) :=
+  semCmpXchgExchangeUsing (fun mem bytes => decodeMemoryAt model mem ty bytes) (encodeMemoryAt model ty)
+    ty ptrId expectedId desiredId model
+
+/-- Evaluate a CmpXchg instruction: run the exchange, then bind TWO fresh SSA
+    values, in order — the old (loaded) value, then the success flag — and
+    return their ids `(old, success)`. This is the Rust two-result shape
+    (interpret.rs `bind_results(.., [current, success])`); there is no packed
+    aggregate form (WS2.24). -/
+def semCmpXchg (ty : Ty) (ptrId expectedId desiredId : ValueId)
+    (_success _failure : MemOrdering) (model : ByteModel := .le64) : Sem (ValueId × ValueId) := do
+  let exchanged ← semCmpXchgExchange ty ptrId expectedId desiredId model
+  Sem.bindFreshPair exchanged.1 (.bool exchanged.2)
 
 -- =================================================================
 -- Fence

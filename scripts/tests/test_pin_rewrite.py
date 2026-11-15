@@ -9,11 +9,16 @@ the count is enforced rather than advisory.
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
+import hashlib
 import unittest
 from pathlib import Path
 
@@ -21,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PIN_REWRITE_PATH = ROOT / "scripts" / "pin_rewrite.py"
 BUMP_SCRIPT = ROOT / "scripts" / "bump-dep-pin.sh"
+TARGO_RUNNER = ROOT / "scripts" / "run-targo.sh"
 
 SPEC = importlib.util.spec_from_file_location("pin_rewrite", PIN_REWRITE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -37,6 +43,39 @@ CLEAN_DEP_LINE = (
     'clean-kernel = {{ version = "1.2.0", '
     'git = "https://github.com/alabsystems/clean.git", rev = "{rev}" }}\n'
 )
+
+
+def copy_archived_pin_boundary(root: Path) -> None:
+    fixture = ROOT / "scripts/tests/fixtures/captured-pin-boundary"
+    manifest = fixture / "artifact-manifest.json"
+    assert hashlib.sha256(manifest.read_bytes()).hexdigest() == PIN.ARCHIVED_SOURCE_MANIFEST_SHA256
+    rows = json.loads(manifest.read_text())["files"]
+    with contextlib.ExitStack() as opened:
+        archive = None
+        for row in rows:
+            if not row["path"].startswith("source/"):
+                continue
+            source = fixture / row["path"]
+            target = root / PIN.ARCHIVED_SOURCE_ROOT / row["path"][7:]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_file():
+                shutil.copy2(source, target)
+            else:
+                # Exact inert source fixture; no private history/network lookup.
+                # Its original digest and all inner member checks remain binding.
+                if archive is None:
+                    container = fixture / "source.tar.gz"
+                    assert hashlib.sha256(container.read_bytes()).hexdigest() == "311358d0bee8eaa5c692bd2aa1aee268e48d17311bb629848187d59413fecfba"
+                    archive = opened.enter_context(tarfile.open(container, mode="r:gz"))
+                member = archive.getmember(row["path"])
+                assert member.isfile() and member.mode in (0o644, 0o755)
+                payload = archive.extractfile(member).read()
+                assert hashlib.sha256(payload).hexdigest() == row["sha256"]
+                target.write_bytes(payload)
+                target.chmod(member.mode)
+    target_manifest = root / PIN.ARCHIVED_SOURCE_MANIFEST
+    target_manifest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(manifest, target_manifest)
 
 
 def leg(dep: str, relpath: str) -> "PIN.Leg":
@@ -95,12 +134,12 @@ class LegTableTests(unittest.TestCase):
 class SubstituteTests(unittest.TestCase):
     def test_manifest_rewrite_reports_the_expected_count(self) -> None:
         target = leg("clean", "crates/trust-ir-build/Cargo.toml")
-        manifest = "".join(CLEAN_DEP_LINE.format(rev=OLD) for _ in range(3))
+        manifest = "".join(CLEAN_DEP_LINE.format(rev=OLD) for _ in range(6))
         rewritten, count = PIN.substitute(manifest, target, NEW)
-        self.assertEqual(count, 3)
+        self.assertEqual(count, 6)
         self.assertIsNone(PIN.check_count(target, count))
         self.assertNotIn(OLD, rewritten)
-        self.assertEqual(rewritten.count(NEW), 3)
+        self.assertEqual(rewritten.count(NEW), 6)
 
     def test_spacing_drift_matches_nothing_and_is_rejected(self) -> None:
         # The bug this prevents: a reformatted manifest where the anchored
@@ -163,7 +202,7 @@ class SubstituteTests(unittest.TestCase):
             if relpath == "crates/trust-ir/Cargo.toml":
                 return manifest
             if relpath == "crates/trust-ir-build/Cargo.toml":
-                return manifest * 3
+                return manifest * 6
             if relpath == PIN.GUARD_TEST:
                 return f'const CLEAN_REVISION: &str = "{OLD}";\n'
             raise AssertionError(relpath)
@@ -200,6 +239,64 @@ class StaticGuardMirrorTests(unittest.TestCase):
         report = PIN.static_guard(self._reader())
         self.assertTrue(report.coherent, report.render())
 
+    def test_lock_source_control_prefix_is_not_rust_whitespace(self) -> None:
+        revision = PIN.census(self._reader(), "clean").current()
+        exact_source = f'source = "git+{PIN.CLEAN_REMOTE}?rev={revision}#{revision}"'
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        self.assertIn(exact_source, lock)
+        for prefix in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            changed = lock.replace(exact_source, prefix + exact_source, 1)
+            with self.subTest(prefix=prefix):
+                self.assert_rejected("Cargo.lock", changed, "Clean source")
+
+    def test_lock_only_lf_and_crlf_separate_rust_source_lines(self) -> None:
+        revision = PIN.census(self._reader(), "clean").current()
+        exact_source = f'source = "git+{PIN.CLEAN_REMOTE}?rev={revision}#{revision}"'
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        self.assertIn("\n" + exact_source, lock)
+        for separator in ("\r", "\v", "\f", "\x85", "\x1c", "\x1d", "\x1e", "\u2028", "\u2029"):
+            changed = lock.replace("\n" + exact_source, separator + exact_source, 1)
+            with self.subTest(separator=separator):
+                self.assert_rejected("Cargo.lock", changed, "Clean source")
+
+    def test_frontend_lock_control_prefix_does_not_authenticate_exact_version(self) -> None:
+        version = PIN.version_census(self._reader(), "clean").current()
+        exact_version = f'version = "{version}"'
+        lock = (ROOT / "frontend/Cargo.lock").read_text(encoding="utf-8")
+        blocks = lock.split("[[package]]")
+        selected = [i for i, block in enumerate(blocks) if 'name = "clean-kernel"' in block]
+        self.assertEqual(len(selected), 1)
+        position = selected[0]
+        self.assertIn(exact_version, blocks[position])
+        for prefix in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            changed = blocks.copy()
+            changed[position] = changed[position].replace(exact_version, prefix + exact_version, 1)
+            with self.subTest(prefix=prefix):
+                self.assert_rejected("frontend/Cargo.lock", "[[package]]".join(changed), "exact version")
+
+    def test_lock_rust_lf_crlf_and_unterminated_final_line_remain_supported(self) -> None:
+        for relpath in ("Cargo.lock", "frontend/Cargo.lock"):
+            lock = (ROOT / relpath).read_text(encoding="utf-8")
+            for changed in (lock.rstrip("\n"), lock.replace("\n", "\r\n")):
+                report = PIN.static_guard(self._reader({relpath: changed}))
+                with self.subTest(relpath=relpath, crlf="\r\n" in changed):
+                    self.assertTrue(report.coherent, report.render())
+
+    def test_repo_reader_preserves_lock_bytes_for_rust_line_checks(self) -> None:
+        revision = PIN.census(self._reader(), "clean").current()
+        exact_source = f'source = "git+{PIN.CLEAN_REMOTE}?rev={revision}#{revision}"'
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        changed = lock.replace("\n" + exact_source, "\r" + exact_source, 1)
+        self.assertNotEqual(changed, lock)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "Cargo.lock"
+            path.write_bytes(changed.encode("utf-8"))
+            read = PIN.repo_reader(Path(temporary))
+            report = PIN.static_guard(self._reader({"Cargo.lock": read("Cargo.lock")}))
+            self.assertFalse(report.coherent, report.render())
+            self.assertIn("Clean source", report.render())
+            self.assertEqual(read("Cargo.lock").encode("utf-8"), path.read_bytes())
+
     def test_root_clean_patch_is_rejected(self) -> None:
         manifest = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
         manifest += (
@@ -218,6 +315,48 @@ class StaticGuardMirrorTests(unittest.TestCase):
             f'git = "{PIN.CLEAN_REMOTE}", rev = "{clean_revision}" }}\n'
         )
         self.assert_rejected(relpath, manifest, "Clean dependency inventory")
+
+    def test_operational_factory_optional_dependency_is_an_exact_default_off_leg(self) -> None:
+        relpath = "crates/trust-ir-build/Cargo.toml"
+        manifest = (ROOT / relpath).read_text(encoding="utf-8")
+        regular = manifest.split("[dev-dependencies]", 1)[0]
+        lines = [line for line in regular.splitlines() if line.startswith("clean-verify = ")]
+        self.assertEqual(len(lines), 1)
+        declaration = lines[0]
+        self.assertIn("optional = true", declaration)
+        self.assertIn('source-value-operational = ["clean-tv-anchor", "dep:clean-verify"]', manifest)
+        self.assertIn('default = ["clean-tv-anchor"]', manifest)
+        self.assertIn('clean-tv-anchor = ["trust-ir/clean-expr"]', manifest)
+        revision = PIN.census(self._reader(), "clean").current()
+        version = PIN.version_census(self._reader(), "clean").current()
+        for wrong, diagnostic in [
+            (declaration.replace(revision, OTHER), "wrong revision"),
+            (declaration.replace(f'version = "{version}"', 'version = "999.0.0"'), "wrong version"),
+        ]:
+            with self.subTest(diagnostic=diagnostic):
+                self.assert_rejected(relpath, manifest.replace(declaration, wrong), diagnostic)
+
+    def test_byte_replay_dev_dependency_is_an_atomic_pin_and_version_leg(self) -> None:
+        relpath = "crates/trust-ir-build/Cargo.toml"
+        manifest = (ROOT / relpath).read_text(encoding="utf-8")
+        dev_section = manifest.split("[dev-dependencies]", 1)[1]
+        lines = [line for line in dev_section.splitlines()
+                 if line.startswith("clean-verify = ")]
+        self.assertEqual(len(lines), 1)
+        declaration = lines[0]
+        current = PIN.census(self._reader(), "clean").current()
+        version = PIN.version_census(self._reader(), "clean").current()
+        rewritten, count = PIN.substitute(manifest, leg("clean", relpath), NEW)
+        self.assertEqual(count, 6)
+        self.assertIn(declaration.replace(current, NEW), rewritten)
+        for wrong, diagnostic in [
+            (declaration.replace(current, OTHER), "wrong revision"),
+            (declaration.replace(f'version = "{version}"', 'version = "999.0.0"'), "wrong version"),
+        ]:
+            with self.subTest(diagnostic=diagnostic):
+                self.assertNotEqual(wrong, declaration)
+                self.assert_rejected(relpath, manifest.replace(declaration, wrong), diagnostic)
+        self.assert_rejected(relpath, manifest.replace(declaration, ""), "Clean dependency inventory")
 
     def test_frontend_clean_package_cardinality_is_exact(self) -> None:
         relpath = "frontend/Cargo.lock"
@@ -293,6 +432,107 @@ class StaticGuardMirrorTests(unittest.TestCase):
         )
         self.assert_rejected(relpath, lock, "outside the exact version")
 
+    # x86_icmp_certificate_rule_names_the_pinned_ay, mirrored. Until 2026-09-30
+    # the mirror lacked it and passed a tree whose rule named another AY while
+    # the compiled gate 7 failed.
+    @staticmethod
+    def _rule_ay_literal(rev: str, version: str) -> str:
+        return (
+            "    ay: ChcX86IcmpCertifyingBuild {\n"
+            '        package: "ay",\n'
+            f'        rev: "{rev}",\n'
+            f'        version: "{version}",\n'
+        )
+
+    def _rule_with_ay(self, rev: str, version: str) -> str:
+        text = (ROOT / PIN.CERTIFICATE_RULE_PATH).read_text(encoding="utf-8")
+        live = self._rule_ay_literal(*PIN.certificate_rule_ay(text))
+        self.assertEqual(text.count(live), 1)
+        return text.replace(live, self._rule_ay_literal(rev, version))
+
+    def test_the_live_rule_names_the_ay_pin(self) -> None:
+        text = (ROOT / PIN.CERTIFICATE_RULE_PATH).read_text(encoding="utf-8")
+        self.assertEqual(
+            PIN.certificate_rule_ay(text),
+            (
+                PIN.census(self._reader(), "ay").current(),
+                PIN.version_census(self._reader(), "ay").current(),
+            ),
+        )
+
+    def test_certificate_rule_ay_revision_split_is_rejected(self) -> None:
+        version = PIN.version_census(self._reader(), "ay").current()
+        self.assert_rejected(
+            PIN.CERTIFICATE_RULE_PATH,
+            self._rule_with_ay(NEW, version),
+            f"CHC_X86_ICMP_CERTIFICATE_RULE.ay names {NEW} {version}, not the AY pin",
+        )
+
+    def test_certificate_rule_ay_version_split_is_rejected(self) -> None:
+        revision = PIN.census(self._reader(), "ay").current()
+        self.assert_rejected(
+            PIN.CERTIFICATE_RULE_PATH,
+            self._rule_with_ay(revision, "999.0.0"),
+            f"CHC_X86_ICMP_CERTIFICATE_RULE.ay names {revision} 999.0.0, not the AY pin",
+        )
+
+    def test_an_unanchorable_certificate_rule_is_rejected(self) -> None:
+        text = (ROOT / PIN.CERTIFICATE_RULE_PATH).read_text(encoding="utf-8")
+        self.assert_rejected(
+            PIN.CERTIFICATE_RULE_PATH,
+            text.replace(PIN.CERTIFICATE_RULE_DECLARATION, "", 1),
+            "must declare CHC_X86_ICMP_CERTIFICATE_RULE exactly once",
+        )
+        self.assert_rejected(
+            PIN.CERTIFICATE_RULE_PATH,
+            text.replace('        package: "ay",\n', '        package:  "ay",\n', 1),
+            "found 0",
+        )
+
+    # The mirror table, held against the guard's #[test] set.
+    def test_the_mirror_table_names_exactly_the_guard_tests(self) -> None:
+        guard = (ROOT / PIN.GUARD_TEST).read_text(encoding="utf-8")
+        self.assertEqual(PIN.guard_test_parity(guard), [])
+        names = {match["name"] for match in PIN.GUARD_TEST_FUNCTION.finditer(guard)}
+        self.assertEqual(names, set(PIN.GUARD_TEST_MIRRORS))
+        # The one exemption is the one the docstrings and CLAUDE.md name.
+        self.assertEqual(
+            {name for name, mirror in PIN.GUARD_TEST_MIRRORS.items() if mirror is None},
+            {"frontend_lock_resolves_under_locked"},
+        )
+
+    def test_a_guard_test_without_a_mirror_row_is_rejected(self) -> None:
+        guard = (ROOT / PIN.GUARD_TEST).read_text(encoding="utf-8")
+        guard += "\n#[test]\nfn an_unmirrored_pin_assertion() {}\n"
+        self.assert_rejected(
+            PIN.GUARD_TEST,
+            guard,
+            "test an_unmirrored_pin_assertion has no row in scripts/pin_rewrite.py GUARD_TEST_MIRRORS",
+        )
+
+    def test_a_mirror_row_whose_guard_test_is_gone_is_rejected(self) -> None:
+        guard = (ROOT / PIN.GUARD_TEST).read_text(encoding="utf-8")
+        renamed = guard.replace(
+            "fn x86_icmp_certificate_rule_names_the_pinned_ay()",
+            "fn x86_icmp_certificate_rule_renamed()",
+            1,
+        )
+        self.assertNotEqual(renamed, guard)
+        report = PIN.static_guard(self._reader({PIN.GUARD_TEST: renamed}))
+        self.assertIn(
+            "GUARD_TEST_MIRRORS names x86_icmp_certificate_rule_names_the_pinned_ay, "
+            "which crates/trust-ir/tests/dependency_pin_coherence.rs no longer defines",
+            report.render(),
+        )
+        self.assertIn("test x86_icmp_certificate_rule_renamed has no row", report.render())
+
+    def test_a_guard_test_the_reader_cannot_parse_is_rejected(self) -> None:
+        guard = (ROOT / PIN.GUARD_TEST).read_text(encoding="utf-8")
+        guard += "\n#[test]\nfn generic_pin_assertion<T>() {}\n"
+        self.assert_rejected(
+            PIN.GUARD_TEST, guard, "the mirror table cannot be checked"
+        )
+
 
 class SyntheticTreeTests(unittest.TestCase):
     """Drive the CLI over a synthetic repository, coherent and half-bumped."""
@@ -301,7 +541,7 @@ class SyntheticTreeTests(unittest.TestCase):
         files = {
             "crates/trust-ir/Cargo.toml": CLEAN_DEP_LINE.format(rev=OLD),
             "crates/trust-ir-build/Cargo.toml": "".join(
-                CLEAN_DEP_LINE.format(rev=OLD) for _ in range(3)
+                CLEAN_DEP_LINE.format(rev=OLD) for _ in range(6)
             ),
             PIN.GUARD_TEST: (
                 f'const CLEAN_REVISION: &str = "{guard_rev}";\n'
@@ -496,6 +736,93 @@ class SyntheticTreeTests(unittest.TestCase):
             }
             self.assertEqual(before, after, "coordinated apply must not mutate --root")
 
+    def test_both_apply_modes_refuse_staging_inside_the_source_tree(self) -> None:
+        for mode in ("apply", "apply-clean-ay"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "repo"
+                root.mkdir()
+                self.build_tree(root, guard_rev=OLD)
+                before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                args = (["--dep", "clean", "--to", NEW] if mode == "apply"
+                        else ["--clean-to", NEW, "--ay-to", NEW])
+                result = self.run_cli(mode, "--root", str(root), *args,
+                                      "--stage-dir", str(root / PIN.ARCHIVED_SOURCE_ROOT))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("outside the source tree", result.stderr)
+                self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()})
+
+    def test_both_apply_modes_refuse_redirected_stage_roots_and_children(self) -> None:
+        for mode in ("apply", "apply-clean-ay"):
+            for redirect in ("root", "child", "late-child"):
+                with self.subTest(mode=mode, redirect=redirect), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "repo"
+                    root.mkdir()
+                    self.build_tree(root, guard_rev=OLD)
+                    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                    stage = Path(temporary) / "stage"
+                    if redirect == "root":
+                        stage.symlink_to(root, target_is_directory=True)
+                    elif redirect == "child":
+                        stage.mkdir()
+                        (stage / "crates").symlink_to(root / "crates", target_is_directory=True)
+                    else:
+                        (stage / "crates/trust-ir").mkdir(parents=True)
+                        (stage / "crates/trust-ir/tests").symlink_to(root / "crates/trust-ir/tests", target_is_directory=True)
+                    args = (["--dep", "clean", "--to", NEW] if mode == "apply"
+                            else ["--clean-to", NEW, "--ay-to", NEW])
+                    result = self.run_cli(mode, "--root", str(root), *args, "--stage-dir", str(stage))
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()})
+                    if redirect != "root":
+                        self.assertEqual(list(stage.iterdir()), [stage / "crates"])
+                    if redirect == "late-child":
+                        self.assertFalse((stage / "crates/trust-ir-build/Cargo.toml").exists())
+
+    def test_both_apply_modes_refuse_physical_case_alias_of_archived_source(self) -> None:
+        for mode in ("apply", "apply-clean-ay"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "repo"
+                root.mkdir()
+                self.build_tree(root, guard_rev=OLD)
+                copy_archived_pin_boundary(root)
+                alias = root.with_name("REPO")
+                if not alias.exists():
+                    # Case-sensitive hosts still exercise a physical alias;
+                    # this machine's case-insensitive APFS takes the real alias.
+                    alias.symlink_to(root, target_is_directory=True)
+                self.assertTrue(alias.samefile(root))
+                before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                args = (["--dep", "clean", "--to", NEW] if mode == "apply"
+                        else ["--clean-to", NEW, "--ay-to", NEW])
+                result = self.run_cli(mode, "--root", str(root), *args,
+                                      "--stage-dir", str(alias / PIN.ARCHIVED_SOURCE_ROOT))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("outside the source tree", result.stderr)
+                self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()})
+
+    def test_both_apply_modes_refuse_existing_hardlinked_stage_outputs(self) -> None:
+        for mode in ("apply", "apply-clean-ay"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "repo"
+                root.mkdir()
+                self.build_tree(root, guard_rev=OLD)
+                copy_archived_pin_boundary(root)
+                captured = root / PIN.ARCHIVED_SOURCE_ROOT / "crates/trust-ir-build/Cargo.toml"
+                stage = Path(temporary) / "stage"
+                output = stage / "crates/trust-ir-build/Cargo.toml"
+                output.parent.mkdir(parents=True)
+                os.link(captured, output)
+                before = captured.read_bytes()
+                args = (["--dep", "clean", "--to", NEW] if mode == "apply"
+                        else ["--clean-to", NEW, "--ay-to", NEW])
+                result = self.run_cli(mode, "--root", str(root), *args, "--stage-dir", str(stage))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("must be fresh", result.stderr)
+                self.assertEqual(captured.read_bytes(), before)
+                with self.assertRaisesRegex(PIN.PinError, "exclusively create"):
+                    PIN.write_staged_output(output, "must not overwrite shared inode")
+                self.assertEqual(captured.read_bytes(), before)
+
     def test_abbreviated_and_uppercase_revisions_are_usage_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
@@ -560,9 +887,8 @@ class BumpScriptTests(unittest.TestCase):
 
     def test_clean_authority_reads_the_immutable_target_commit(self) -> None:
         script = BUMP_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn(
-            'git -C "$CLEAN_OBJECT_REPO" show "${clean_rev}:Cargo.toml"', script
-        )
+        self.assertIn('"$AUTHORITY" manifest clean "$clean_rev"', script)
+        self.assertIn('"$AUTHORITY" offline-manifest "$CLEAN_OBJECT_REPO" "$clean_rev"', script)
         self.assertIn("immutable Clean commit content is authoritative", script)
 
     def test_cross_repo_guidance_does_not_require_impossible_sha_equality(self) -> None:
@@ -695,11 +1021,18 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         ay_rev: str,
         clean_version: str = "1.2.0",
         ay_version: str = "0.9.0",
+        rule_ay: tuple[str, str] | None = None,
     ) -> Path:
+        """A minimal trust-ir tree. ``rule_ay`` is the certificate rule's AY
+        ``(rev, version)``, the pin's by default. An AY move needs it moved
+        BEFORE the bump (re-certification is evidence, which the bumper cannot
+        move), so a test that moves AY passes the target here."""
         root = workspace / "trust-ir"
         (root / "scripts").mkdir(parents=True)
         shutil.copy2(BUMP_SCRIPT, root / "scripts" / BUMP_SCRIPT.name)
         shutil.copy2(PIN_REWRITE_PATH, root / "scripts" / PIN_REWRITE_PATH.name)
+        shutil.copy2(TARGO_RUNNER, root / "scripts" / TARGO_RUNNER.name)
+        shutil.copy2(ROOT / "scripts/dependency_authority.py", root / "scripts/dependency_authority.py")
         self._write(root / "Cargo.toml", "[workspace]\nmembers = []\n")
         self._write(
             root / "crates/trust-ir/Cargo.toml",
@@ -711,7 +1044,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                 CLEAN_DEP_LINE.replace("1.2.0", clean_version).format(
                     rev=clean_rev
                 )
-                for _ in range(3)
+                for _ in range(6)
             ),
         )
         self._write(
@@ -721,7 +1054,24 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             f'const CLEAN_VERSION: &str = "{clean_version}";\n'
             f'const AY_REPOSITORY: &str = "{PIN.AY_REMOTE}";\n'
             f'const AY_REVISION: &str = "{ay_rev}";\n'
-            f'const AY_VERSION: &str = "{ay_version}";\n',
+            f'const AY_VERSION: &str = "{ay_version}";\n'
+            # One stub per guard test the mirror table names, so the parity
+            # check reads the same test set the real guard has.
+            + "".join(
+                f"\n#[test]\nfn {name}() {{}}\n"
+                for name in sorted(PIN.GUARD_TEST_MIRRORS)
+            ),
+        )
+        rule_rev, rule_version = rule_ay or (ay_rev, ay_version)
+        self._write(
+            root / PIN.CERTIFICATE_RULE_PATH,
+            PIN.CERTIFICATE_RULE_DECLARATION
+            + "    ay: ChcX86IcmpCertifyingBuild {\n"
+            + '        package: "ay",\n'
+            + f'        rev: "{rule_rev}",\n'
+            + f'        version: "{rule_version}",\n'
+            + "    },\n"
+            + "};\n",
         )
         self._write(
             root / "frontend/Cargo.lock",
@@ -775,6 +1125,74 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             if path.is_file()
         }
 
+    def _fake_targo(self, directory: Path, body: str, *, guard_exit: int = 0) -> None:
+        """A recorded fake frontend, never an actual compiler or resolver.
+
+        The real repository wrapper must select this exact binary and preserve
+        its argv. A poison stock-Cargo sibling catches accidental bypasses.
+        Logs live outside the transaction tree so rollback cannot erase them.
+        It answers the wrapper's `targo --unverified --version` discriminator
+        (which upstream Cargo named targo fails) without logging it, so the
+        log records exactly the dispatched commands.
+        """
+        binary = directory / "targo"
+        self._write(
+            binary,
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(sys.executable)} - \"$@\" <<'PYTHON_FIXTURE'\n"
+            "import json, os, subprocess, sys\n"
+            "if sys.argv[1:] == ['--unverified', '--version']:\n"
+            "    raise SystemExit(0)\n"
+            "with open(os.environ['FAKE_TARGO_LOG'], 'a', encoding='utf-8') as log:\n"
+            "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['--unverified', 'test']:\n"
+            f"    raise SystemExit({guard_exit})\n"
+            "if sys.argv[1] not in ('metadata', 'update'):\n"
+            "    raise SystemExit(97)\n"
+            f"body = {body!r}\n"
+            "raise SystemExit(subprocess.run(['/bin/sh', '-c', body, 'fake-targo', *sys.argv[1:]]).returncode)\n"
+            "PYTHON_FIXTURE\n",
+        )
+        binary.chmod(0o755)
+        cargo = directory / "cargo"
+        self._write(cargo, "#!/bin/sh\necho 'stock Cargo bypass is forbidden' >&2\nexit 98\n")
+        cargo.chmod(0o755)
+
+    @staticmethod
+    def _targo_calls(directory: Path) -> list[list[str]]:
+        log = directory / "targo-calls.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    @staticmethod
+    def _expected_targo_calls(
+        root: Path, *, frontend: bool, guard: bool = False
+    ) -> list[list[str]]:
+        calls = [["metadata", "--format-version", "1", "--all-features",
+                  "--manifest-path", os.fspath(root / "Cargo.toml")]]
+        if frontend:
+            calls.append(["update", "--manifest-path", os.fspath(root / "frontend/Cargo.toml"),
+                          "-p", "clean-kernel"])
+        if guard:
+            calls.append(["--unverified", "test", "--locked", "-p", "trust-ir",
+                          "--test", "dependency_pin_coherence"])
+        return calls
+
+    @staticmethod
+    def _environment(root: Path, path_prefix: Path | None = None) -> dict[str, str]:
+        env = os.environ.copy()
+        env.pop("TRUST_IR_CLEAN_SIBLING", None)
+        # A parent test runner may select authenticated real binaries/object
+        # caches. Fixtures must never inherit those authorities or compile.
+        env["TRUST_IR_CLEAN_REPO"] = os.fspath(root.parent / "clean")
+        env["TRUST_TARGO_BIN"] = os.fspath(root.parent / "absent-targo" / "targo")
+        if path_prefix is not None:
+            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+            env["TRUST_TARGO_BIN"] = os.fspath(path_prefix / "targo")
+            env["FAKE_TARGO_LOG"] = os.fspath(path_prefix / "targo-calls.jsonl")
+        return env
+
     def _run_bump(
         self,
         root: Path,
@@ -783,12 +1201,9 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         clean_override: Path | None = None,
         path_prefix: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        env.pop("TRUST_IR_CLEAN_SIBLING", None)
+        env = self._environment(root, path_prefix)
         if clean_override is not None:
-            env["TRUST_IR_CLEAN_SIBLING"] = os.fspath(clean_override)
-        if path_prefix is not None:
-            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+            env["TRUST_IR_CLEAN_REPO"] = os.fspath(clean_override)
         return subprocess.run(
             [
                 "/bin/bash",
@@ -816,11 +1231,9 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         clean_version: str | None = None,
         ay_version: str | None = None,
         dry_run: bool = False,
+        run_guard: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        env.pop("TRUST_IR_CLEAN_SIBLING", None)
-        if path_prefix is not None:
-            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+        env = self._environment(root, path_prefix)
         command = [
             "/bin/bash",
             os.fspath(root / "scripts/bump-dep-pin.sh"),
@@ -828,8 +1241,9 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             clean_target,
             ay_target,
             "--offline",
-            "--no-guard-test",
         ]
+        if not run_guard:
+            command.append("--no-guard-test")
         if clean_version is not None:
             command.extend(["--clean-version", clean_version])
         if ay_version is not None:
@@ -849,8 +1263,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
     def _run_clean_bump(
         self, root: Path, clean_target: str
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        env.pop("TRUST_IR_CLEAN_SIBLING", None)
+        env = self._environment(root)
         return subprocess.run(
             [
                 "/bin/bash",
@@ -1098,14 +1511,10 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             root = self._build_trust_ir(workspace, clean_rev=frozen, ay_rev=OLD)
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_cargo = fake_bin / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
+            self._fake_targo(fake_bin,
                 "printf '\\nforced lock mutation\\n' >> Cargo.lock\n"
                 "exit 23\n",
-                encoding="utf-8",
             )
-            fake_cargo.chmod(0o755)
             before = self._snapshot(root)
 
             result = self._run_bump(root, NEW, path_prefix=fake_bin)
@@ -1113,6 +1522,8 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("root lock refresh failed", result.stdout)
             self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=False))
             self.assertEqual(self._snapshot(root), before)
             self.assertNotIn(NEW, (root / "Cargo.lock").read_text(encoding="utf-8"))
 
@@ -1137,9 +1548,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             )
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_cargo = fake_bin / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
+            self._fake_targo(fake_bin,
                 "if [ \"$1\" = metadata ]; then\n"
                 f"  sed 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 21\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 22\n"
@@ -1147,9 +1556,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                 "fi\n"
                 "printf '\\nforced coordinated frontend mutation\\n' >> frontend/Cargo.lock\n"
                 "exit 23\n",
-                encoding="utf-8",
             )
-            fake_cargo.chmod(0o755)
             before = self._snapshot(root)
 
             result = self._run_clean_ay_bump(
@@ -1164,6 +1571,8 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("frontend/Cargo.lock refresh failed", result.stdout)
             self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True))
             self.assertEqual(self._snapshot(root), before)
             guard = (root / PIN.GUARD_TEST).read_text(encoding="utf-8")
             self.assertIn(f'const CLEAN_REVISION: &str = "{OLD}";', guard)
@@ -1176,12 +1585,12 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             workspace = Path(temporary)
             _, clean_target, head = self._init_clean(workspace, ay_rev=NEW)
             self.assertEqual(clean_target, head)
-            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            root = self._build_trust_ir(
+                workspace, clean_rev=OLD, ay_rev=OLD, rule_ay=(NEW, "0.9.0")
+            )
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_cargo = fake_bin / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
+            self._fake_targo(fake_bin,
                 "if [ \"$1\" = metadata ]; then\n"
                 f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
                 f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
@@ -1191,17 +1600,18 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                 f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
                 "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
                 "fi\n",
-                encoding="utf-8",
             )
-            fake_cargo.chmod(0o755)
 
             result = self._run_clean_ay_bump(
-                root, clean_target, NEW, path_prefix=fake_bin
+                root, clean_target, NEW, path_prefix=fake_bin, run_guard=True
             )
 
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("DONE — Clean pinned", result.stdout)
             self.assertIn("STATIC GUARD: PASS", result.stdout)
+            self.assertIn("VERIFY: guard test PASSED", result.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True, guard=True))
             clean_report = PIN.census(PIN.repo_reader(root), "clean")
             ay_report = PIN.census(PIN.repo_reader(root), "ay")
             self.assertTrue(clean_report.coherent, clean_report.render())
@@ -1225,9 +1635,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             )
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_cargo = fake_bin / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
+            self._fake_targo(fake_bin,
                 "if [ \"$1\" = metadata ]; then\n"
                 f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
                 f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
@@ -1237,18 +1645,100 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                 f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
                 "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
                 "fi\n",
-                encoding="utf-8",
             )
-            fake_cargo.chmod(0o755)
             before = self._snapshot(root)
 
             result = self._run_clean_ay_bump(
-                root, clean_target, NEW, path_prefix=fake_bin
+                root, clean_target, NEW, path_prefix=fake_bin, run_guard=True
             )
 
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("re-introduces a Clean path patch", result.stdout)
             self.assertIn("exact static dependency-pin guard FAILED", result.stdout)
+            self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True))
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_ay_move_that_does_not_move_the_certificate_rule_rolls_back(self) -> None:
+        # Tier 1 alone (no compiled guard): before the mirror held the rule this
+        # printed DONE while gate 7 was red.
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            self._fake_targo(fake_bin,
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
+                f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
+                "Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n",
+            )
+            before = self._snapshot(root)
+
+            result = self._run_clean_ay_bump(root, clean_target, NEW, path_prefix=fake_bin)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn(
+                f"CHC_X86_ICMP_CERTIFICATE_RULE.ay names {OLD} 0.9.0, not the AY pin {NEW} 0.9.0",
+                result.stdout,
+            )
+            self.assertIn("exact static dependency-pin guard FAILED", result.stdout)
+            self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertNotIn("DONE", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_compiled_guard_failure_still_rolls_back_after_successful_static_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
+            root = self._build_trust_ir(
+                workspace, clean_rev=OLD, ay_rev=OLD, rule_ay=(NEW, "0.9.0")
+            )
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            self._fake_targo(fake_bin,
+                "if [ \"$1\" = metadata ]; then\n"
+                f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
+                f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
+                "Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                f"  sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n",
+                guard_exit=41,
+            )
+            before = self._snapshot(root)
+            result = self._run_clean_ay_bump(
+                root, clean_target, NEW, path_prefix=fake_bin, run_guard=True
+            )
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("STATIC GUARD: PASS", result.stdout)
+            self.assertIn("coherence guard test FAILED", result.stdout)
+            self.assertNotIn("compiled guard SKIPPED", result.stdout)
+            self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True, guard=True))
+            self.assertEqual(self._snapshot(root), before)
+
+    def test_unavailable_selected_targo_refuses_lock_refresh_and_restores_both_pin_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD)
+            before = self._snapshot(root)
+            result = self._run_clean_ay_bump(root, clean_target, NEW)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("TRUST_TARGO_BIN is not executable", result.stdout)
+            self.assertIn("root lock refresh failed (Targo metadata)", result.stdout)
+            self.assertNotIn("compiled guard SKIPPED", result.stdout)
             self.assertIn("ROLLED BACK — working tree unchanged", result.stdout)
             self.assertEqual(self._snapshot(root), before)
 
@@ -1263,9 +1753,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_cargo = fake_bin / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
+            self._fake_targo(fake_bin,
                 "if [ \"$1\" = metadata ]; then\n"
                 f"  sed 's/{OTHER}/{clean_target}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 32\n"
@@ -1273,9 +1761,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                 f"  sed 's/{OTHER}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
                 "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
                 "fi\n",
-                encoding="utf-8",
             )
-            fake_cargo.chmod(0o755)
 
             unchanged = self._run_clean_ay_bump(
                 root, clean_target, OLD, path_prefix=fake_bin
@@ -1283,21 +1769,21 @@ class BumpScriptIntegrationTests(unittest.TestCase):
 
             self.assertEqual(unchanged.returncode, 0, unchanged.stdout)
             self.assertNotIn(f"the previous revision {OLD}", unchanged.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True))
 
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
             root = self._build_trust_ir(
-                workspace, clean_rev=OTHER, ay_rev=OLD
+                workspace, clean_rev=OTHER, ay_rev=OLD, rule_ay=(NEW, "0.9.0")
             )
             self._write(root / "notes/stale-ay.txt", f"retired AY {OLD}\n")
             subprocess.run(["git", "init", "-q", os.fspath(root)], check=True)
             subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_cargo = fake_bin / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
+            self._fake_targo(fake_bin,
                 "if [ \"$1\" = metadata ]; then\n"
                 f"  sed -e 's/{OTHER}/{clean_target}/g' -e 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 32\n"
@@ -1305,9 +1791,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
                 f"  sed 's/{OTHER}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
                 "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
                 "fi\n",
-                encoding="utf-8",
             )
-            fake_cargo.chmod(0o755)
 
             stale = self._run_clean_ay_bump(
                 root, clean_target, NEW, path_prefix=fake_bin
@@ -1316,21 +1800,195 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             self.assertEqual(stale.returncode, 0, stale.stdout)
             self.assertIn(f"the previous revision {OLD}", stale.stdout)
             self.assertIn("notes/stale-ay.txt", stale.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True))
+
+
+    def test_dry_run_and_noop_refuse_capture_integrity_before_staging(self) -> None:
+        for mode in ("clean", "clean-ay"):
+            for damage in ("content", "redirect"):
+                with self.subTest(mode=mode, damage=damage), tempfile.TemporaryDirectory() as temporary:
+                    workspace = Path(temporary)
+                    _, target, _ = self._init_clean(workspace, ay_rev=NEW)
+                    root = self._build_trust_ir(workspace, clean_rev=target, ay_rev=NEW)
+                    copy_archived_pin_boundary(root)
+                    subprocess.run(["git", "init", "-q", str(root)], check=True)
+                    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+                    capture = root / next(iter(PIN.ARCHIVED_PIN_INPUT_SHA256))
+                    if damage == "content":
+                        capture.write_text("no dependency pin remains\n")
+                    else:
+                        held = workspace / "same-payload.data"
+                        capture.rename(held)
+                        capture.symlink_to(held)
+                    before = self._snapshot(root)
+                    command = ["/bin/bash", str(root / "scripts/bump-dep-pin.sh"), mode, target]
+                    if mode == "clean-ay":
+                        command.append(NEW)
+                    command += ["--offline", "--dry-run", "--no-guard-test"]
+                    result = subprocess.run(command, cwd=root, env=self._environment(root),
+                                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn("pin input integrity failed", result.stdout)
+                    self.assertNotIn("PHASE B", result.stdout)
+                    self.assertNotIn("DRY RUN", result.stdout)
+                    self.assertEqual(self._snapshot(root), before)
+
+
+class ArchivedLockCensusTests(unittest.TestCase):
+    """Historical reproducer inputs must not become live dependency-pin legs."""
+
+    def test_lock_templates_preserve_pins_without_exempting_active_report_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", os.fspath(root)], check=True)
+            for relative, fixture_name in (
+                ("reports/2026-11-06-source-identity-data/consumer.Cargo.lock.in", "consumer.Cargo.lock.in"),
+                ("reports/2026-11-07-zero-sized-wide-operands/Cargo.lock.in", "zero-sized-wide-Cargo.lock.in"),
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fixture = ROOT / "scripts/tests/fixtures/captured-pin-boundary" / fixture_name
+                path.write_bytes(fixture.read_bytes())
+            subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
+            for dep in ("clean", "ay"):
+                self.assertEqual(PIN.undeclared_pin_sites(root, dep), [])
+
+            # An actual tracked Cargo input remains subject to the complement
+            # census even when it is placed beside historical report assets.
+            live = "reports/2026-11-07-zero-sized-wide-operands/Cargo.lock"
+            (root / live).write_bytes((root / (live + ".in")).read_bytes())
+            subprocess.run(["git", "-C", os.fspath(root), "add", live], check=True)
+            offenders = PIN.undeclared_pin_sites(root, "clean")
+            self.assertTrue(offenders)
+            self.assertEqual({path for path, _, _ in offenders}, {live})
+
+    def _captured_inputs(self, root: Path) -> None:
+        subprocess.run(["git", "init", "-q", os.fspath(root)], check=True)
+        copy_archived_pin_boundary(root)
+        subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
+
+    def test_exact_captured_inputs_are_not_rewritten_live_pin_legs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            for dep in ("clean", "ay"):
+                self.assertEqual(PIN.undeclared_pin_sites(root, dep), [])
+            live = root / next(iter(PIN.ARCHIVED_PIN_INPUT_SHA256))
+            live = live.with_name("Cargo.toml")
+            live.write_text(CLEAN_DEP_LINE.format(rev=OLD))
+            subprocess.run(["git", "-C", os.fspath(root), "add", "."], check=True)
+            with self.assertRaisesRegex(PIN.PinError, "gained an input"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_changed_captured_input_refuses_even_after_pins_are_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            relative = next(iter(PIN.ARCHIVED_PIN_INPUT_SHA256))
+            (root / relative).write_text("no dependency pin remains\n")
+            with self.assertRaisesRegex(PIN.PinError, "content changed"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_captured_input_symlink_refuses_identical_target_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            relative = next(iter(PIN.ARCHIVED_PIN_INPUT_SHA256))
+            path = root / relative
+            target = root / "same-bytes.lock.in"
+            path.rename(target)
+            path.symlink_to(target)
+            with self.assertRaisesRegex(PIN.PinError, "symlink"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_captured_parent_directory_symlink_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            relative = next(iter(PIN.ARCHIVED_PIN_INPUT_SHA256))
+            directory = (root / relative).parent
+            target = directory.with_name("captured-source.data")
+            directory.rename(target)
+            directory.symlink_to(target)
+            with self.assertRaisesRegex(PIN.PinError, "symlink"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_url_free_neighbor_workspace_cannot_activate_the_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            path = root / PIN.ARCHIVED_SOURCE_ROOT / "Cargo.toml"
+            path.write_text('[workspace]\nmembers = ["crates/trust-ir-build"]\n')
+            with self.assertRaisesRegex(PIN.PinError, "gained an input"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_external_cargo_members_paths_globs_and_redirects_cannot_adopt_capture(self) -> None:
+        for kind in ("member", "path", "glob", "redirect", "multiline", "case-alias"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self._captured_inputs(root)
+                target = PIN.ARCHIVED_SOURCE_ROOT + "/crates/trust-ir-build"
+                if kind == "glob":
+                    target = "reports/*/evidence/*/source/crates/*"
+                elif kind == "case-alias":
+                    target = target.upper()
+                elif kind == "redirect":
+                    (root / "activate").symlink_to(root / target, target_is_directory=True)
+                    target = "activate"
+                text = ('[dependencies]\ncaptured = { path = "./' + target + '" }\n'
+                        if kind == "path" else '[workspace]\nmembers = ["' + target + '"]\n')
+                if kind == "multiline":
+                    text = '[workspace]\nmembers = ["""\n' + target + '"""]\n'
+                (root / "Cargo.toml").write_text(text)
+                subprocess.run(["git", "-C", str(root), "add", "Cargo.toml"], check=True)
+                with self.assertRaisesRegex(PIN.PinError, "adopts"):
+                    PIN.undeclared_pin_sites(root, "clean")
+
+    def test_cargo_comments_versions_and_quoted_keys_do_not_activate_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            (root / "Cargo.toml").write_text(
+                '# "quotes across\n# comment lines"\n'
+                '[workspace]\nmembers = []\n'
+                '[dependencies]\nexample = { version = "*" }\n'
+                '[profile.dev.package."*"]\nopt-level = 3\n'
+            )
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml"], check=True)
+            self.assertEqual(PIN.undeclared_pin_sites(root, "clean"), [])
+            target = PIN.ARCHIVED_SOURCE_ROOT + "/crates/trust-ir-build"
+            (root / "Cargo.toml").write_text(
+                '[workspace]\n"members" = ["ordinary=directory", "' + target + '"]\n'
+            )
+            with self.assertRaisesRegex(PIN.PinError, "adopts"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_workspace_glob_cannot_hide_a_symlink_into_the_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            (root / "activate").mkdir()
+            (root / "activate/snapshot").symlink_to(
+                root / PIN.ARCHIVED_SOURCE_ROOT / "crates", target_is_directory=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["activate/*/trust-ir-build"]\n')
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml", "activate"], check=True)
+            with self.assertRaisesRegex(PIN.PinError, "adopts"):
+                PIN.undeclared_pin_sites(root, "clean")
+
+    def test_recursive_and_outside_globs_refuse_without_walking_foreign_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._captured_inputs(root)
+            boundary = root / PIN.ARCHIVED_SOURCE_ROOT
+            for pattern in ("**", "../*/Cargo.toml"):
+                with self.subTest(pattern=pattern), self.assertRaises(PIN.PinError):
+                    PIN.inspect_cargo_pattern(root, pattern, root, boundary)
 
 
 class RepositoryCoherenceTests(unittest.TestCase):
     """The live repository must satisfy its own leg table."""
-
-    def test_this_repository_is_pin_coherent(self) -> None:
-        read = PIN.repo_reader(ROOT)
-        for dep in sorted(PIN.LEGS):
-            with self.subTest(dep=dep):
-                report = PIN.census(read, dep)
-                self.assertTrue(report.coherent, report.render())
-
-    def test_this_repository_passes_the_exact_static_guard(self) -> None:
-        report = PIN.static_guard(PIN.repo_reader(ROOT))
-        self.assertTrue(report.coherent, report.render())
 
     def test_the_leg_table_matches_the_rust_guard_inventory(self) -> None:
         # scripts/pin_rewrite.py and dependency_pin_coherence.rs duplicate the
@@ -1346,14 +2004,14 @@ class RepositoryCoherenceTests(unittest.TestCase):
             expected,
             {
                 "crates/trust-ir/Cargo.toml": 1,
-                "crates/trust-ir-build/Cargo.toml": 3,
+                "crates/trust-ir-build/Cargo.toml": 6,
             },
         )
         self.assertIn(
             'assert_exact_manifest_pins("crates/trust-ir/Cargo.toml", TRUST_IR_MANIFEST, 1)',
             guard,
         )
-        self.assertIn("TRUST_IR_BUILD_MANIFEST,\n        3,", guard)
+        self.assertIn("TRUST_IR_BUILD_MANIFEST,\n        6,", guard)
 
     def test_the_guard_failure_message_names_the_bump_script(self) -> None:
         guard = (ROOT / PIN.GUARD_TEST).read_text(encoding="utf-8")

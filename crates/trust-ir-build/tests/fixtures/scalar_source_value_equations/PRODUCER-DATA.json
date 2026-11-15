@@ -1,0 +1,61 @@
+{
+  "scope": "DATA ONLY. Complete actual modules, original definitions, checked theorem terms and closure data. Independent consumer reconstructs and checks the original judgment; this manifest grants no acceptance/body/ABI/NoUB/machine authority.",
+  "producer_repository": "alabsystems/clean",
+  "producer_commit": "e0af3a837189e150f2788682895c3b22b6c2314c",
+  "producer_result_sha256": "4a553eee98018a91b056b8ba71eab9419e233a03ebf053b0e738d831bd13eb5d",
+  "producer_toolchain": "Trust SDK 16387, explicitly unverified build lane; actual kernel source-equation judgments checked by the tests",
+  "command": [
+    "targo",
+    "--unverified",
+    "test",
+    "--locked",
+    "-p",
+    "clean-reflect",
+    "--lib",
+    "--tests",
+    "--",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "CLEAN_SCALAR_SOURCE_EQUATION_EXPORT_DIR": "fresh absolute directory"
+  },
+  "producer_qualification": "141 reflection tests passed, zero failures/ignores/filters, all-target Tippy warnings denied; exact source/tools/locked inputs unchanged. Not compiler/native/machine qualification.",
+  "files": {
+    "extended_u16_bool.json": {
+      "sha256": "4c60b439d18fadc7153879d22b7a2649cc408e052ad8bcc1a27cd43e57c33e05",
+      "bytes": 16819
+    },
+    "extended_u32_bool.json": {
+      "sha256": "81c61586f6958c487e2c7104e6cb73f2e7e8e1c00114cc3a0fd07915b3e88a9c",
+      "bytes": 16824
+    },
+    "extended_u64_bool.json": {
+      "sha256": "3d1643a1ff8e3d9cb6570ead4077c7bd182d0f3974c5948511c36026dfb99548",
+      "bytes": 16834
+    },
+    "extended_u8_bool.json": {
+      "sha256": "9928118c349eb1f102c1ca4287fbdd55279021ac4416175488a5226b278f11c8",
+      "bytes": 16773
+    },
+    "mixed_u16_bool_u16_bool.json": {
+      "sha256": "dfda319c16e060365be52046c5a3202daf9a87ec880028b8cd39c51abbe728ff",
+      "bytes": 10196
+    },
+    "mixed_u32_bool_u32_bool.json": {
+      "sha256": "08efc0ab74c79691221c136a76a3947a790a2407e8ffb93138cecf9116a9721f",
+      "bytes": 10205
+    },
+    "mixed_u64_bool_u64_bool.json": {
+      "sha256": "1d116a39107c18d5ba88277869b1b709ede7b6c4b23b7d80a6cfe2dc8fff381f",
+      "bytes": 10204
+    },
+    "mixed_u8_bool_u8_bool.json": {
+      "sha256": "e141546020ee373af7073e6217f561d3214f08047a5a124db9550fb37be6af8c",
+      "bytes": 10157
+    },
+    "rex_bool4_u8.json": {
+      "sha256": "26ea6dbf95aeda761d2d026a523e83d82c0bd8db5a0590fc0c2c54a93c8f616c",
+      "bytes": 65177
+    }
+  }
+}

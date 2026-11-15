@@ -1,0 +1,33 @@
+; TrustIr text format v1
+module "abi_calling_conv"
+target "x86_64-unknown-linux-gnu" 8 little abi="sysv64"
+
+functy.0 = () -> ()
+
+c_unwindcc fn @foreign_c_unwindcc(functy.0) {
+}
+
+sysv64cc fn @foreign_sysv64cc(functy.0) {
+}
+
+win64cc fn @foreign_win64cc(functy.0) {
+}
+
+aapcscc fn @foreign_aapcscc(functy.0) {
+}
+
+efiapicc fn @foreign_efiapicc(functy.0) {
+}
+
+vectorcallcc fn @foreign_vectorcallcc(functy.0) {
+}
+
+rust_coldcc fn @foreign_rust_coldcc(functy.0) {
+}
+
+rustcc fn @caller(functy.0) {
+bb0:
+    %0 = const ptr fndef<func.0>
+    call_indirect %0(functy.0)() cc=c_unwindcc
+    ret
+}

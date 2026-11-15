@@ -10,9 +10,10 @@
 // report. This is the END-TO-END automated path: a real `LocalDefId` from a real
 // compile fed through the lowering.
 //
-// Build against the bootstrap-prepared rustc-private metadata as documented in
-// Cargo.toml. At runtime set RUSTC to the matching public stage1 compiler (or
-// pass its `--sysroot` explicitly) and provide the private dylib search path.
+// Build with `targo --unverified build --manifest-path frontend/Cargo.toml`
+// (Cargo.toml): the installed Trust sysroot resolves rustc_private directly, and
+// build.rs bakes an rpath to its `librustc_driver`. At runtime RUSTC defaults to
+// `trustc`; set it (or pass `--sysroot`) to name another ABI-matching compiler.
 
 #![feature(rustc_private)]
 #![allow(rustc::default_hash_types)]
@@ -378,9 +379,10 @@ fn run_coverage(tcx: TyCtxt<'_>) {
             i64_ty,
             "i64",
             0,
-        ) {
-            Ok(lowered) => {
-                let module = mb.build();
+        )
+        .and_then(|lowered| Ok((lowered, mb.build()?)))
+        {
+            Ok((lowered, module)) => {
                 let verrs = validate_module(&module);
                 if verrs.is_empty() {
                     ok += 1;
@@ -1431,9 +1433,7 @@ fn run_m3(
                 two_depth_def,
                 lit_eval_def,
                 neg_lit_def,
-                nbox_nil_depth_def,
-                nbox_one_depth_def,
-                nbox_two_depth_def,
+                [nbox_nil_depth_def, nbox_one_depth_def, nbox_two_depth_def],
             ) {
                 Ok((total_fns, report)) => {
                     eprintln!(
@@ -1967,7 +1967,7 @@ fn dump_expr(thir: &rustc_middle::thir::Thir<'_>, e: rustc_middle::thir::ExprId,
     let mut kids: Vec<rustc_middle::thir::ExprId> = Vec::new();
     match k {
         Scope { value, .. } => kids.push(*value),
-        Use { source } | NeverToAny { source } | PointerCoercion { source, .. } => kids.push(*source),
+        NeverToAny { source } | PointerCoercion { source, .. } => kids.push(*source),
         Deref { arg } | Borrow { arg, .. } => kids.push(*arg),
         Block { block } => {
             if let Some(x) = thir[*block].expr { kids.push(x); }
@@ -2174,7 +2174,14 @@ fn run_differential_for(
     let heap_layout =
         trust_ir_frontend::model::HeapLayout::from_enum_layout(&enum_model.layout);
     match trust_ir_frontend::model::run_emitted_differential(mb, func_id, name, &heap_layout) {
-        Some(r) => {
+        Err(fault) => {
+            eprintln!(
+                "   PARITY NOT CHECKED — FAIL: the module builder refused the differential \
+                 module for `{name}`: {fault}"
+            );
+            std::process::exit(1);
+        }
+        Ok(Some(r)) => {
             eprintln!(
                 "   DIFFERENTIAL (emitted-from-THIR, heap layout, vs native `{name}`): {}/{} match (Param cases: {}/{}); validate_module on combined module: {} error(s){}",
                 r.n_match,
@@ -2191,7 +2198,7 @@ fn run_differential_for(
         // SOUNDNESS (audit FIX B): a missing native oracle must be a LOUD failure
         // matching the <4-variant arm above — a quiet skip lets a wrong lowering
         // pass unchecked, contradicting FIX 5's fail-loud intent.
-        None => {
+        Ok(None) => {
             eprintln!(
                 "   PARITY NOT CHECKED — FAIL: no native oracle for `{name}`; the differential \
                  could NOT be checked. Refusing to silently skip."

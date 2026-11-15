@@ -1,0 +1,142 @@
+{
+  "name": "refuse_import_backed",
+  "functions": [
+    {
+      "id": 0,
+      "name": "f",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": {
+        "requires": [],
+        "ensures": [
+          {
+            "schema": "smtlib2",
+            "payload": "(>= result 0)",
+            "smtlib": "(>= result 0)",
+            "sort": "Bool",
+            "bindings": [
+              [
+                "result",
+                {
+                  "sort": "Int",
+                  "place": {
+                    "ResultSlot": {
+                      "index": 0
+                    }
+                  }
+                }
+              ]
+            ]
+          }
+        ],
+        "params": [],
+        "proved": true,
+        "decreases": [],
+        "backed_by": {
+          "module": 0,
+          "symbol": "f",
+          "obligation": 0
+        }
+      },
+      "producer": "Trust",
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [],
+      "returns": [
+        "U64"
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": {
+    "triple": "aarch64-apple-darwin",
+    "pointer_size": 8,
+    "endianness": "Little",
+    "abi": null,
+    "struct_passing": "NativeC"
+  },
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [
+    {
+      "name": "some_dependency",
+      "digest": {
+        "algorithm": "Sha256",
+        "bytes": [
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66,
+          66
+        ]
+      },
+      "producer": "Trust",
+      "scheme": "V3"
+    }
+  ],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

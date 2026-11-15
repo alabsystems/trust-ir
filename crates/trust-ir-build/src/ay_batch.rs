@@ -60,18 +60,18 @@ impl AYBatchBuilder {
         let mut fb = self.mb.function("ay_chc_batch_eval", ft);
 
         // NOTE: `Pure` intentionally omitted — see the doc comment above.
-        fb.add_proof(ProofAnnotation::Deterministic);
-        fb.add_proof(ProofAnnotation::Terminates);
-        fb.add_proof(ProofAnnotation::NoPanic);
-        fb.add_proof(ProofAnnotation::NoUndef);
-        fb.add_proof(ProofAnnotation::AppendOnlyBuffer);
+        fb.add_function_proof(ProofAnnotation::Deterministic);
+        fb.add_function_proof(ProofAnnotation::Terminates);
+        fb.add_function_proof(ProofAnnotation::NoPanic);
+        fb.add_function_proof(ProofAnnotation::NoUndef);
+        fb.add_function_proof(ProofAnnotation::AppendOnlyBuffer);
 
         // Add required proof obligations for ay batches
-        fb.add_proof(ProofAnnotation::Custom(ProofTag::new(1001))); // ay.chc.batch.v1
-        fb.add_proof(ProofAnnotation::Custom(ProofTag::new(1002))); // ay.chc.scalar_oracle
-        fb.add_proof(ProofAnnotation::Custom(ProofTag::new(1003))); // ay.chc.layout_hash
-        fb.add_proof(ProofAnnotation::Custom(ProofTag::new(1004))); // ay.chc.generation_domain
-        fb.add_proof(ProofAnnotation::Custom(ProofTag::new(1005))); // ay.chc.batch_shape_version
+        fb.add_function_proof(ProofAnnotation::Custom(ProofTag::new(1001))); // ay.chc.batch.v1
+        fb.add_function_proof(ProofAnnotation::Custom(ProofTag::new(1002))); // ay.chc.scalar_oracle
+        fb.add_function_proof(ProofAnnotation::Custom(ProofTag::new(1003))); // ay.chc.layout_hash
+        fb.add_function_proof(ProofAnnotation::Custom(ProofTag::new(1004))); // ay.chc.generation_domain
+        fb.add_function_proof(ProofAnnotation::Custom(ProofTag::new(1005))); // ay.chc.batch_shape_version
 
         fb
     }
@@ -148,7 +148,13 @@ impl AYBatchBuilder {
         fb.build();
     }
 
-    pub fn build(self) -> Module {
+    /// The module, or the first fault its builder recorded
+    /// ([`ModuleBuilder::build`]).
+    ///
+    /// # Errors
+    ///
+    /// The first recorded [`crate::builder::BuildError`].
+    pub fn build(self) -> Result<Module, crate::builder::BuildError> {
         self.mb.build()
     }
 }
@@ -162,7 +168,9 @@ mod tests {
     fn v4_i32_transition_body_is_real_and_valid() {
         let mut builder = AYBatchBuilder::new("chc_batch_v4i32");
         builder.emit_v4_i32_chc_transition();
-        let module = builder.build();
+        let module = builder
+            .build()
+            .expect("AYBatchBuilder::build: test fixture");
 
         let errors = validate_module(&module);
         assert!(errors.is_empty(), "validation errors: {errors:?}");
@@ -192,7 +200,9 @@ mod tests {
     fn v2_i64_transition_body_is_real_and_valid() {
         let mut builder = AYBatchBuilder::new("chc_batch_v2i64");
         builder.emit_v2_i64_chc_transition();
-        let module = builder.build();
+        let module = builder
+            .build()
+            .expect("AYBatchBuilder::build: test fixture");
 
         let errors = validate_module(&module);
         assert!(errors.is_empty(), "validation errors: {errors:?}");

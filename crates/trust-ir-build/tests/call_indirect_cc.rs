@@ -60,7 +60,7 @@ fn call_indirect_cc_round_trips_binary() {
         fb.ret(vec![r]);
         fb.build();
     }
-    let m = mb.build();
+    let m = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // The builder recorded the declared ABI.
     match &m.functions[0].blocks[0].body[0].inst {
@@ -68,7 +68,7 @@ fn call_indirect_cc_round_trips_binary() {
         other => panic!("expected CallIndirect, got {other:?}"),
     }
 
-    let bytes = trust_ir::binary::serialize_module(&m);
+    let bytes = trust_ir::binary::serialize_module(&m).expect("serialize_module: test fixture");
     let back = trust_ir::binary::deserialize_module(&bytes).expect("binary round trip");
     match &back.functions[0].blocks[0].body[0].inst {
         Inst::CallIndirect { calling_conv, .. } => assert_eq!(*calling_conv, CallingConv::Swift),
@@ -88,7 +88,7 @@ fn call_indirect_cc_round_trips_binary() {
         fb.ret(vec![]);
         fb.build();
     }
-    let m2 = mb2.build();
+    let m2 = mb2.build().expect("ModuleBuilder::build: test fixture");
     match &m2.functions[0].blocks[0].body[0].inst {
         Inst::CallIndirect { calling_conv, .. } => assert_eq!(*calling_conv, CallingConv::C),
         other => panic!("expected CallIndirect, got {other:?}"),

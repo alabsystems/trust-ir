@@ -1,0 +1,33 @@
+{
+  "structs": [],
+  "enums": [],
+  "types": [],
+  "arguments": [
+    {
+      "Const": {
+        "Int": 1
+      }
+    }
+  ],
+  "holes": [],
+  "header": {
+    "symbol": "identity_u64",
+    "linkage": "Internal",
+    "visibility": "Default",
+    "calling_conv": "Rust",
+    "attrs": {
+      "readonly": false,
+      "readnone": false,
+      "inlinehint": false,
+      "cold": false,
+      "params": [],
+      "naked": false,
+      "target_features": []
+    },
+    "display_path": "identity::u64",
+    "body_gate": "Ungated"
+  },
+  "destructors": [],
+  "tuple_layouts": [],
+  "tamper": false
+}

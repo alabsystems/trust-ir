@@ -1,0 +1,23 @@
+; TrustIr text format v1
+module "abi_param_facts"
+target "x86_64-unknown-linux-gnu" 8 little abi="sysv64"
+
+functy.0 = ((u64, u64), (), ptr) -> (u8)
+
+functy.1 = ((u64, u64), i16) -> ()
+
+type ty.0 = (u64, u64)
+
+tuple_layout ty.0 size=16 align=8 offsets=[0,8]
+
+fn @c_abi_decl(functy.0) {
+    ; #ret_attrs: zeroext
+    ; #param_attrs 0: pass=pair
+    ; #param_attrs 1: pass=ignore
+    ; #param_attrs 2: byval pass=indirect(true)
+}
+
+fn @coerced(functy.1) {
+    ; #param_attrs 0: pass=cast(u64, u64)
+    ; #param_attrs 1: signext pass=direct
+}

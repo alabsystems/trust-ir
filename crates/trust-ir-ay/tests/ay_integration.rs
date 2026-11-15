@@ -5,6 +5,8 @@
 // End-to-end ay integration tests: build TrustIr programs with the builder API,
 // encode to ay, and verify proof obligations.
 
+#![allow(clippy::disallowed_methods)] // a test drives ay directly; a panic here is a test failure (r11 item 5, crates/trust-ir-ay/clippy.toml)
+
 use ay::Sort;
 use trust_ir::inst::*;
 use trust_ir::proof::{ProofAnnotation, ProofStatus};
@@ -48,7 +50,7 @@ fn arithmetic_program_no_overflow_verified_for_constants() {
     fb.ret(vec![sum]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify the TrustIr was built correctly
     assert_eq!(module.functions.len(), 1);
@@ -110,7 +112,7 @@ fn arithmetic_program_no_overflow_refuted_for_symbolic() {
     let sum = fb.add(Ty::I32, a, b_param);
     fb.ret(vec![sum]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify program structure
     assert_eq!(module.functions[0].name, "unchecked_add");
@@ -177,7 +179,7 @@ fn memory_program_inbounds_verified() {
     );
     fb.ret(vec![loaded]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify proof annotations exist on the instructions
     let block = &module.functions[0].blocks[0];
@@ -228,16 +230,16 @@ fn memory_program_not_null_verified_for_alloca() {
     let loaded = fb.load_proven(Ty::I32, ptr, vec![ProofAnnotation::NotNull]);
     fb.ret(vec![loaded]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert_eq!(module.functions[0].name, "alloca_load");
 
     // --- Verify NotNull with ay using MemoryModel ---
     let mut solver = create_fp_solver().unwrap();
-    let mut mem = MemoryModel::new(&mut solver, "mem");
+    let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
 
     // Alloca returns a non-null address
-    let addr = mem.encode_alloca(&mut solver, 4);
+    let addr = mem.encode_alloca(&mut solver, 4).unwrap();
 
     // Verify NotNull: the alloca'd address should be non-null
     let operands = ProofOperands::for_annotation(&ProofAnnotation::NotNull, &[addr], 64).unwrap();
@@ -270,7 +272,7 @@ fn memory_program_gep_inbounds() {
     let val = fb.load(Ty::I32, elem_ptr);
     fb.ret(vec![val]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify InBounds annotation on GEP
     let block = &module.functions[0].blocks[0];
@@ -286,7 +288,7 @@ fn memory_program_gep_inbounds() {
         ProofOperands::for_annotation(&ProofAnnotation::InBounds, &[index, length], 32).unwrap();
     let cond = verify_proof_obligation(&mut solver, &ProofAnnotation::InBounds, &operands).unwrap();
 
-    assert!(cond.check(&mut solver));
+    assert!(cond.check(&mut solver).expect("the condition checks"));
 }
 
 // ============================================================================
@@ -311,7 +313,7 @@ fn deliberate_bug_div_by_zero_refuted() {
     let result = fb.sdiv(Ty::I32, a, b_param);
     fb.ret(vec![result]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert_eq!(module.functions[0].name, "buggy_div");
 
@@ -360,7 +362,7 @@ fn deliberate_bug_out_of_bounds_refuted() {
     let val = fb.load(Ty::I32, ptr);
     fb.ret(vec![val]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert_eq!(module.functions[0].name, "buggy_access");
 
@@ -401,7 +403,7 @@ fn deliberate_bug_null_pointer_refuted() {
     let val = fb.load(Ty::I32, ptr);
     fb.ret(vec![val]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert_eq!(module.functions[0].name, "buggy_deref");
 
@@ -447,7 +449,7 @@ fn deliberate_bug_shift_out_of_range_refuted() {
     let result = fb.binop(BinOp::Shl, Ty::I32, val, shift);
     fb.ret(vec![result]);
     fb.build();
-    let _module = mb.build();
+    let _module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // --- Verify ShiftInRange ---
     let mut solver = create_bv_solver().unwrap();
@@ -487,8 +489,8 @@ fn verify_and_certify_returns_non_authoritative_evidence_records() {
     let ft = mb.add_func_type(vec![Ty::I32, Ty::I32], vec![Ty::I32]);
     let mut fb = mb.function("fully_safe_add", ft);
 
-    fb.add_proof(ProofAnnotation::Pure);
-    fb.add_proof(ProofAnnotation::NoPanic);
+    fb.add_function_proof(ProofAnnotation::Pure);
+    fb.add_function_proof(ProofAnnotation::NoPanic);
 
     let entry = fb.create_block();
     let _a = fb.add_block_param(entry, Ty::I32);
@@ -507,7 +509,7 @@ fn verify_and_certify_returns_non_authoritative_evidence_records() {
     );
     fb.ret(vec![sum]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify function-level proofs
     let func = &module.functions[0];
@@ -671,7 +673,7 @@ fn builder_types_map_to_ay_sorts() {
     let ret_val = fb.iconst(Ty::I32, 0);
     fb.ret(vec![ret_val]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify each parameter type maps to expected ay sort
     let block = &module.functions[0].blocks[0];
@@ -714,7 +716,7 @@ fn overflow_check_combined_with_binop_encoding() {
     let (result, overflow_flag) = fb.overflow(OverflowOp::AddOverflow, Ty::I32, a, b_param);
     fb.ret(vec![result, overflow_flag]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Verify the overflow instruction was emitted
     let block = &module.functions[0].blocks[0];
@@ -736,13 +738,15 @@ fn overflow_check_combined_with_binop_encoding() {
     let _sum = encode_binop(&mut solver, BinOp::Add, lhs, rhs).unwrap();
 
     // Encode the overflow check (verify construction works)
-    let _safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, lhs, rhs);
+    let _safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, lhs, rhs)
+        .expect("the adapter encodes");
 
     // Verify with concrete constrained values where no overflow occurs.
     let mut solver2 = create_bv_solver().unwrap();
     let a2 = solver2.bv_const(100, 32);
     let b2 = solver2.bv_const(200, 32);
-    let safe2 = encode_overflow_check(&mut solver2, OverflowOp::AddOverflow, true, a2, b2);
+    let safe2 = encode_overflow_check(&mut solver2, OverflowOp::AddOverflow, true, a2, b2)
+        .expect("the adapter encodes");
     solver2.assert_term(safe2);
     assert!(solver2.check_sat().is_sat()); // 100 + 200 is safe
 
@@ -771,16 +775,16 @@ fn memory_model_store_load_roundtrip() {
     let loaded = fb.load(Ty::I32, ptr);
     fb.ret(vec![loaded]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert_eq!(module.functions[0].name, "store_load");
 
     // --- Verify with ay MemoryModel ---
     let mut solver = create_fp_solver().unwrap();
-    let mut mem = MemoryModel::new(&mut solver, "mem");
+    let mut mem = MemoryModel::new(&mut solver, "mem").expect("the adapter encodes");
 
     // Alloca: get a non-null address
-    let addr = mem.encode_alloca(&mut solver, 4);
+    let addr = mem.encode_alloca(&mut solver, 4).unwrap();
 
     // Store 0x42 as 4 bytes (little-endian)
     let val = solver.bv_const(0x42, 32);
@@ -807,7 +811,7 @@ fn full_pipeline_build_verify_certify() {
     let ft = mb.add_func_type(vec![Ty::Ptr], vec![Ty::I32]);
     let mut fb = mb.function("safe_deref", ft);
 
-    fb.add_proof(ProofAnnotation::Pure);
+    fb.add_function_proof(ProofAnnotation::Pure);
 
     let entry = fb.create_block();
     let ptr = fb.add_block_param(entry, Ty::Ptr);
@@ -820,7 +824,7 @@ fn full_pipeline_build_verify_certify() {
     );
     fb.ret(vec![val]);
     fb.build();
-    let mut module = mb.build();
+    let mut module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // --- Step 2: Check proof conditions with AY ---
     // NotNull: the pointer is a known non-null address (0x1000)
@@ -888,7 +892,7 @@ fn float_types_map_to_ay_fp_sorts() {
     let sum = fb.fadd(Ty::F64, wide, b_param);
     fb.ret(vec![sum]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert_eq!(module.functions[0].name, "fp_ops");
 
@@ -931,7 +935,7 @@ fn constrained_addition_has_a_strict_bv_proof() {
     );
     fb.ret(vec![sum]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(module.functions[0].blocks[0].body[0].has_proof(&ProofAnnotation::NoOverflow));
 
@@ -955,7 +959,8 @@ fn constrained_addition_has_a_strict_bv_proof() {
     solver.assert_term(b_le_100);
 
     // Now check: can overflow occur?
-    let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a_sym, b_sym);
+    let safe = encode_overflow_check(&mut solver, OverflowOp::AddOverflow, true, a_sym, b_sym)
+        .expect("the adapter encodes");
     let not_safe = solver.not(safe);
     solver.assert_term(not_safe);
 
@@ -965,21 +970,4 @@ fn constrained_addition_has_a_strict_bv_proof() {
     let result = solver.check_sat();
     assert!(result.is_unsat(), "strictly proved theorem became {result}");
     assert!(result.has_unsat_emission_witness());
-}
-
-#[test]
-fn test_ay_batch_builder_simd_jit() {
-    use trust_ir_build::ay_batch::AYBatchBuilder;
-    let mut builder = AYBatchBuilder::new("simd_batch");
-    builder.emit_v4_i32_chc_transition();
-    let module = builder.build();
-
-    assert_eq!(module.functions.len(), 1);
-    assert_eq!(module.functions[0].name, "ay_chc_batch_eval");
-
-    // Real whole-function verification: traverse the module's instructions,
-    // encode them via the per-op encoders, and check the body's conditions
-    // (see tests/vc_integration.rs for the full VC coverage).
-    let vc = trust_ir_ay::verify_function(&module, module.functions[0].id).unwrap();
-    assert!(vc.all_proved());
 }

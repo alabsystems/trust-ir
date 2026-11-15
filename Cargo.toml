@@ -7,9 +7,11 @@
 [workspace]
 resolver = "2"
 # trust-ir-ay is intentionally NOT a default member: it is the only crate that
-# pulls an external (git) dependency (ay), so the default `cargo build`/`cargo
-# test` graph stays offline-capable and matches the "zero required deps" core
-# contract. Build/test it explicitly with `-p trust-ir-ay` or `--workspace`.
+# pulls an external (git) dependency (ay), so the default `targo --unverified
+# build`/`test` graph stays offline-capable and matches the "zero required
+# deps" core contract. Build/test it explicitly with `-p trust-ir-ay` or
+# `--workspace`. Nor are the two benchmark generators: they have no tests and
+# nothing depends on them; `--workspace` (gate 0's tippy) still checks them.
 default-members = [
     "crates/trust-ir",
     "crates/trust-ir-build",
@@ -19,8 +21,7 @@ default-members = [
     "crates/trust-ir-diff",
     "crates/trust-ir-fmt",
     "crates/trust-ir-giveback",
-    "benchmarks/supremacy-fixture",
-    "benchmarks/raft-fixture",
+    "crates/trust-ir-laws",
 ]
 members = [
     "crates/trust-ir",
@@ -31,6 +32,7 @@ members = [
     "crates/trust-ir-diff",
     "crates/trust-ir-fmt",
     "crates/trust-ir-giveback",
+    "crates/trust-ir-laws",
     "crates/trust-ir-ay",
     "benchmarks/supremacy-fixture",
     "benchmarks/raft-fixture",
@@ -38,7 +40,7 @@ members = [
 exclude = ["frontend"]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/alabsystems/trust-ir"
@@ -46,8 +48,9 @@ authors = ["Andrew Yates <andrewyates.name@gmail.com>"]
 
 [workspace.dependencies]
 trust-ir = { path = "crates/trust-ir" }
-trust-ir-build = { path = "crates/trust-ir-build" }
-trust-ir-contract = { path = "crates/trust-ir-contract" }
+# The pure decision tables whose laws are PROVED Trust contracts (leaf: depends
+# on trust-ir only; verified by scripts/verified_contracts.py, gate 13).
+trust-ir-laws = { path = "crates/trust-ir-laws" }
 rayon = "1.8"
 clap = { version = "4.5", features = ["derive"] }
 
@@ -84,6 +87,14 @@ clap = { version = "4.5", features = ["derive"] }
 # `.cargo/config.toml`, or `paths = ["../clean"]` — so the affordance stays in
 # the developer's environment instead of in the committed dependency graph.
 
+# Line tables keep panic backtraces readable. Full DWARF made every test
+# binary (each statically links trust-ir-build and the Clean stack) up to
+# 1.5 GB, a 27 GB debug tree on Linux; dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
+
 # AY's strict Bool/BV authority has a production wall-clock envelope around
 # proof construction and independent replay.  Building the solver stack at
 # opt-level 0 makes a small 32-bit associativity proof consume that envelope
@@ -105,8 +116,57 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.num-bigint]
 opt-level = 3
+# The in-process Clean kernel re-check (trust-ir-build's CleanCic re-checker)
+# is the same kind of hot path: the two-language ratchet target
+# `two_language_b3` re-checks dozens of `clean_backend_tv` certificates and
+# measured 370 s at opt-level 0. Same policy as above: the dependency is
+# compiled the way it is deployed, and no proof or resource limit changes.
+[profile.dev.package.clean-kernel]
+opt-level = 3
+# The same for the Clean elaborator stack `clean-verify` (a trust-ir-build
+# dev-dependency) pulls in: the replay tests (core_execution_*_replay,
+# island_theorem, certificate_binding, two_language_b3, the trust-ir-build lib
+# tests) spend nearly all of their time elaborating Clean's eval-IR prelude
+# spec in clean-elab / clean-macro / clean-parser.
+[profile.dev.package.clean-verify]
+opt-level = 3
+[profile.dev.package.clean-elab]
+opt-level = 3
+[profile.dev.package.clean-macro]
+opt-level = 3
+[profile.dev.package.clean-parser]
+opt-level = 3
+[profile.dev.package.clean-auto]
+opt-level = 3
+[profile.dev.package.clean-compiler]
+opt-level = 3
+[profile.dev.package.clean-olean]
+opt-level = 3
+[profile.dev.package.clean-runtime]
+opt-level = 3
+# The kernel's hot path also runs through its hashing and stack-probing
+# dependencies, which opt-level 0 left unoptimized: sampled 2026-10-14 (macOS
+# `sample`, 8 s of core_execution_u64_add), ahash 10.5%, hashbrown 10.1% and
+# stacker 6.6% of the self time, with psm's stack probe beside them. Same
+# policy: compiled the way they are deployed; the dev profile's overflow
+# checks and debug assertions still apply, and no proof or resource limit
+# changes.
+[profile.dev.package.ahash]
+opt-level = 3
+[profile.dev.package.hashbrown]
+opt-level = 3
+[profile.dev.package.stacker]
+opt-level = 3
+[profile.dev.package.psm]
+opt-level = 3
 
 [workspace.metadata.atpkg]
 # The binaries atpkg shims onto PATH when `trust-ir` is installed. The *-fixture bins are
 # internal test fixtures, not user commands.
 expose = ["trust-ir", "trust-ir-diff", "trust-ir-fmt"]
+
+# Trust: policy for `targo trust` over this workspace.
+[trust]
+# No budget key: Trust retired `function_budget_ms` (its DECISION_QUEUE
+# BUDGET-1a; a targo that carries the retirement refuses the key here), so a
+# `targo trust` run of this workspace uses the toolchain's builtin clocks.

@@ -37,21 +37,21 @@
 // — so it does NOT exercise the actual THIR -> trust-ir lowering. The genuine
 // lowering is validated by the `--m3` driver + the default-mode predicate
 // differential. `tests/real_lowering_acceptance.rs` drives that REAL lowering
-// from within `cargo test`: it spawns the built `trust_ir_frontend` binary under
-// the stage1 rustc toolchain on `m3_corpus.rs` (both `--m3` and default mode)
-// and asserts exit 0, an "ALL MATCH" RESULT line for every milestone family
-// (M3/M4/M5[=M5.1]/M5.2/M5.3/SCALAR-DEREF/M5.4/M5.6), "21/21" twice in default
-// mode, and NO "MISMATCH"/"PARITY NOT CHECKED"/"FAILURES"/"LOWERING FAILED".
-// Build it against the bootstrap-prepared rustc-private metadata (Cargo.toml),
-// then run it with the matching stage1 RUSTC/sysroot and private dylib path.
-// (`cargo test --lib` runs only the unit suite and does NOT run this gate;
-// bare `cargo test` additionally runs doctests, which fail to build under the
-// rustc_private sysroot — a pre-existing rustdoc limitation, so prefer --tests.)
+// from within `targo --unverified test`: it spawns the built `trust_ir_frontend`
+// binary under the linked Trust toolchain on `m3_corpus.rs` (both `--m3` and
+// default mode) and asserts exit 0, an "ALL MATCH" RESULT line for every
+// milestone family (M3/M4/M5[=M5.1]/M5.2/M5.3/SCALAR-DEREF/M5.4/M5.6), "21/21"
+// twice in default mode, and NO "MISMATCH"/"PARITY NOT CHECKED"/"FAILURES"/
+// "LOWERING FAILED". Run it with `targo --unverified test --manifest-path
+// frontend/Cargo.toml` (Cargo.toml); `--lib` runs only the unit suite and does
+// NOT run this gate. Doctests are off (`doctest = false`).
 // ============================================================================
 
 use rustc_abi::VariantIdx;
 use rustc_middle::thir::{self, ExprId, ExprKind, Thir};
-use rustc_middle::ty::{self, EarlyBinder, GenericArg, Instance, TyCtxt, TyKind, TypingEnv};
+use rustc_middle::ty::{
+    self, EarlyBinder, GenericArg, Instance, TyCtxt, TyKind, TypeVisitableExt, TypingEnv,
+};
 use rustc_span::def_id::{DefId, LocalDefId};
 
 use trust_ir::value::{BlockId, FuncId, SourceSpan, ValueId};
@@ -422,7 +422,7 @@ pub fn lower_scalar_generic_instance<'tcx>(
         // bare-param (`ret %0`) and `add x,x` (`add i64 %0,%0`) shapes, so the
         // M3 emit + `--emit-text` stay byte-identical; this makes the "ONE
         // unified lowering path" claim true at the M3 scalar entry point.
-        let empty_by_key: std::collections::HashMap<String, u32> =
+        let empty_by_key: InstanceMap<'tcx> =
             std::collections::HashMap::new();
         let result = cx.lower_expr(&mut fb, &empty_by_key, body_expr)?;
         fb.ret(vec![result]);
@@ -520,7 +520,7 @@ pub fn lower_multi_generic_instance<'tcx>(
         bind_params_n(&thir, &mut cx.params, &param_vals)?;
         // Lower the body through the UNIFIED `MonoCx::lower_expr` (the SAME entry
         // every other milestone uses). Leaf bodies -> empty `by_key`.
-        let empty_by_key: std::collections::HashMap<String, u32> =
+        let empty_by_key: InstanceMap<'tcx> =
             std::collections::HashMap::new();
         let result = cx.lower_expr(&mut fb, &empty_by_key, body_expr)?;
         fb.ret(vec![result]);
@@ -679,19 +679,23 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
 //     instance the SAME way and mapping it through the instance->FuncId map.
 
 /// A discovered monomorphic instance to lower (root or a transitively-called
-/// generic fn at concrete args). `key` is a stable de-dup string.
+/// generic fn at concrete args). Identity is typed and local to this TyCtxt.
 #[derive(Clone)]
 struct MonoInstance<'tcx> {
     def: LocalDefId,
     args: ty::GenericArgsRef<'tcx>,
-    key: String,
 }
 
-/// Stable identity for an instance: def_id + the Debug of its concrete args.
-/// `args` is post-substitution/normalization, so equal monomorphizations share a
-/// key (e.g. two call sites to `double<i64>` collapse to ONE Function).
-fn instance_key<'tcx>(def_id: DefId, args: ty::GenericArgsRef<'tcx>) -> String {
-    format!("{def_id:?}|{args:?}")
+/// Equality is the actual local declaration and its substituted, interned
+/// generic arguments in THIS compiler context, never a display/debug spelling
+/// or the erased IR signature. The key cannot outlive its owning TyCtxt.
+type InstanceKey<'tcx> = (LocalDefId, ty::GenericArgsRef<'tcx>);
+type InstanceMap<'tcx> = std::collections::HashMap<InstanceKey<'tcx>, u32>;
+
+impl<'tcx> MonoInstance<'tcx> {
+    fn key(&self) -> InstanceKey<'tcx> {
+        (self.def, self.args)
+    }
 }
 
 /// The collected worklist plus the de-dup map (instance key -> FuncId index).
@@ -699,7 +703,7 @@ struct Worklist<'tcx> {
     /// Instances in discovery order; index == FuncId.
     instances: Vec<MonoInstance<'tcx>>,
     /// instance key -> FuncId index.
-    by_key: std::collections::HashMap<String, u32>,
+    by_key: InstanceMap<'tcx>,
 }
 
 impl<'tcx> Worklist<'tcx> {
@@ -708,14 +712,15 @@ impl<'tcx> Worklist<'tcx> {
     }
 
     /// Record an instance if unseen; return its FuncId index either way.
-    fn intern(&mut self, inst: MonoInstance<'tcx>) -> u32 {
-        if let Some(&id) = self.by_key.get(&inst.key) {
-            return id;
+    fn intern(&mut self, inst: MonoInstance<'tcx>) -> LResult<u32> {
+        if let Some(&id) = self.by_key.get(&inst.key()) {
+            return Ok(id);
         }
-        let id = self.instances.len() as u32;
-        self.by_key.insert(inst.key.clone(), id);
+        let id = u32::try_from(self.instances.len())
+            .map_err(|_| LowerError("instance worklist exceeds the FuncId space".into()))?;
+        self.by_key.insert(inst.key(), id);
         self.instances.push(inst);
-        id
+        Ok(id)
     }
 }
 
@@ -767,13 +772,37 @@ fn resolve_user_call<'tcx>(
     if arith_binop_of(tcx, did).is_some() {
         return Ok(None);
     }
+    // Current rustc keeps late-bound arguments on the function-item type.
+    // This monomorphic worklist has no binder-instantiation semantics: do not
+    // erase a bound type/const/region merely to obtain a GenericArgsRef.
+    let callee_generic_args = callee_generic_args.no_bound_vars().ok_or_else(|| {
+        LowerError(format!(
+            "M4 late-bound function arguments are unsupported for {did:?}"
+        ))
+    })?;
     // Substitute the callee's generic args through THIS instance's args — the
     // monomorphization step (mirrors `MonoCx::concretize` for a GenericArgsRef).
-    let mono_args = tcx.instantiate_and_normalize_erasing_regions(
-        current_args,
-        typing_env,
-        EarlyBinder::bind(tcx, callee_generic_args),
-    );
+    let mono_args: ty::GenericArgsRef<'tcx> = tcx
+        .try_instantiate_and_normalize_erasing_regions(
+            current_args,
+            typing_env,
+            EarlyBinder::bind(tcx, callee_generic_args),
+        )
+        .map_err(|error| {
+            LowerError(format!(
+                "M4 callee argument normalization failed: {error:?}"
+            ))
+        })?;
+    if mono_args.has_escaping_bound_vars()
+        || mono_args.has_non_region_param()
+        || mono_args.has_infer()
+        || mono_args.has_placeholders()
+        || mono_args.has_aliases()
+    {
+        return bail(format!(
+            "M4 callee arguments are not fully monomorphic for {did:?}"
+        ));
+    }
     let instance = Instance::try_resolve(tcx, typing_env, did, mono_args)
         .map_err(|e| LowerError(format!("M4 try_resolve errored for {did:?}: {e:?}")))?
         .ok_or_else(|| {
@@ -786,8 +815,7 @@ fn resolve_user_call<'tcx>(
     let local = resolved_def.as_local().ok_or_else(|| {
         LowerError(format!("M4 callee {resolved_def:?} is not local (extern body)"))
     })?;
-    let key = instance_key(resolved_def, resolved_args);
-    Ok(Some(MonoInstance { def: local, args: resolved_args, key }))
+    Ok(Some(MonoInstance { def: local, args: resolved_args }))
 }
 
 /// PASS 1: collect, in discovery order, every concrete instance reachable from
@@ -796,30 +824,18 @@ fn collect_worklist<'tcx>(
     tcx: TyCtxt<'tcx>,
     root: MonoInstance<'tcx>,
 ) -> LResult<Worklist<'tcx>> {
-    let typing_env = TypingEnv::fully_monomorphized();
-    let mut wl = Worklist::new();
-    let root_id = wl.intern(root);
-    debug_assert_eq!(root_id, 0);
-
-    // Process by index so newly-interned instances (appended) are visited in
-    // discovery order; the loop re-reads `instances.len()` as it grows.
-    let mut i = 0usize;
-    while i < wl.instances.len() {
-        let inst = wl.instances[i].clone();
-        let (thir_steal, body_expr) = tcx
-            .thir_body(inst.def)
-            .map_err(|_| LowerError("M4: thir_body errored (tainted)".into()))?;
-        let thir = thir_steal.borrow();
-        // Find every user-fn Call in this body and intern its resolved callee.
-        let mut found: Vec<MonoInstance<'tcx>> = Vec::new();
-        collect_calls_in_body(tcx, typing_env, &thir, inst.args, body_expr, &mut found)?;
-        for callee in found {
-            wl.intern(callee);
-        }
-        i += 1;
-    }
+    let (wl, roots) = worklist_batch::collect_roots(tcx, [root])?;
+    debug_assert_eq!(roots, [0]);
     Ok(wl)
 }
+
+#[path = "m3_worklist_batch.rs"]
+mod worklist_batch;
+use worklist_batch::WorklistSymbols;
+
+#[cfg(test)]
+#[path = "m3_worklist_batch_tests.rs"]
+mod worklist_batch_tests;
 
 /// Recursively walk a THIR body collecting resolved USER-fn callees (in source
 /// order). Overloaded-arith Calls are skipped (lowered inline). Nested Calls
@@ -836,7 +852,7 @@ fn collect_calls_in_body<'tcx>(
         ExprKind::Scope { value, .. } => {
             collect_calls_in_body(tcx, typing_env, thir, current_args, *value, out)
         }
-        ExprKind::Use { source } | ExprKind::NeverToAny { source } => {
+        ExprKind::NeverToAny { source } => {
             collect_calls_in_body(tcx, typing_env, thir, current_args, *source, out)
         }
         ExprKind::Block { block } => {
@@ -950,12 +966,23 @@ fn emit_worklist<'tcx>(
     tcx: TyCtxt<'tcx>,
     mb: &mut ModuleBuilder,
     wl: &Worklist<'tcx>,
-    name_suffix: &str,
+    symbols: WorklistSymbols<'tcx, '_>,
     func_base: u32,
     register_structs: bool,
 ) -> LResult<Vec<LoweredInstance>> {
     let typing_env = TypingEnv::fully_monomorphized();
     let mut lowered = Vec::with_capacity(wl.instances.len());
+    let actual_base = worklist_batch::next_function_id(mb)?;
+    if actual_base.index() != func_base {
+        return bail(format!(
+            "worklist base {func_base} differs from actual builder id {}", actual_base.index()
+        ));
+    }
+    if let Some(last) = wl.instances.len().checked_sub(1) {
+        let last = u32::try_from(last)
+            .map_err(|_| LowerError("instance worklist exceeds the FuncId space".into()))?;
+        worklist_batch::function_id(func_base, last)?;
+    }
 
     // M5.4: register the tagged-struct `EnumModel` for every recursive enum
     // matched anywhere in this worklist, keyed by AdtDef DefId, BEFORE any
@@ -972,6 +999,15 @@ fn emit_worklist<'tcx>(
     let enum_models = build_worklist_enum_models(tcx, mb, wl, register_structs)?;
 
     for (idx, inst) in wl.instances.iter().enumerate() {
+        let ordinal = u32::try_from(idx)
+            .map_err(|_| LowerError("instance worklist exceeds the FuncId space".into()))?;
+        let expected_id = worklist_batch::function_id(func_base, ordinal)?;
+        let actual_next = worklist_batch::next_function_id(mb)?;
+        if actual_next != expected_id {
+            return bail(format!(
+                "worklist ordinal {ordinal} differs from actual builder function id {}", actual_next.index()
+            ));
+        }
         let (thir_steal, body_expr) = tcx
             .thir_body(inst.def)
             .map_err(|_| LowerError("M4: thir_body errored (tainted)".into()))?;
@@ -1007,8 +1043,7 @@ fn emit_worklist<'tcx>(
             .collect::<LResult<Vec<_>>>()?;
         let out_ty = cx.concrete_ir_ty(sig.output())?;
 
-        let base_name = tcx.item_name(inst.def.to_def_id()).to_string();
-        let full_name = format!("{base_name}__{name_suffix}");
+        let full_name = symbols.name(tcx, inst);
         let sig_id = mb.add_func_type(in_tys.clone(), vec![out_ty.clone()]);
 
         let func_id = {
@@ -1029,11 +1064,9 @@ fn emit_worklist<'tcx>(
         // The auto-assigned FuncId MUST match this instance's discovery index
         // OFFSET by the worklist base (the contract that makes forward Call edges
         // to later-built fns valid). With base==0 this is the original M4 check.
-        assert_eq!(
-            func_id.index(),
-            func_base + idx as u32,
-            "M4 FuncId/discovery-order mismatch for {full_name}"
-        );
+        if func_id != expected_id {
+            return bail(format!("M4 FuncId/discovery-order mismatch for {full_name}"));
+        }
 
         lowered.push(LoweredInstance {
             func_id,
@@ -1099,6 +1132,14 @@ fn build_worklist_enum_models<'tcx>(
         collect_match_enum_adts(&thir, body_expr, &mut seen, &mut adts);
     }
     let mut models = std::collections::HashMap::new();
+    // This mature heap-model adapter has one nominal StructId(0). Never turn
+    // batching into permission to merge distinct source enums under that id.
+    if adts.len() > 1 {
+        return bail(format!(
+            "worklist references {} distinct enums; the heap model owns one nominal enum",
+            adts.len()
+        ));
+    }
     for adt in adts {
         // Register the tagged struct (M5.4 single-root case) OR reuse an already-
         // registered one (M5.6 second predicate sharing the module's `Level`):
@@ -1151,7 +1192,7 @@ fn collect_match_enum_adts<'tcx>(
 ) {
     match &thir[expr].kind {
         ExprKind::Scope { value, .. } => collect_match_enum_adts(thir, *value, seen, out),
-        ExprKind::Use { source } | ExprKind::NeverToAny { source } => {
+        ExprKind::NeverToAny { source } => {
             collect_match_enum_adts(thir, *source, seen, out)
         }
         ExprKind::Block { block } => {
@@ -1248,7 +1289,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_expr(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         expr: ExprId,
     ) -> LResult<ValueId> {
         // Span threading: `lower_expr_inner` stamps each visited expr's span as
@@ -1268,7 +1309,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_expr_inner(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         expr: ExprId,
     ) -> LResult<ValueId> {
         let mut e = expr;
@@ -1278,7 +1319,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
             self.enter_expr_span(fb, e);
             match &self.thir[e].kind {
                 ExprKind::Scope { value, .. } => e = *value,
-                ExprKind::Use { source } | ExprKind::NeverToAny { source } => e = *source,
+                ExprKind::NeverToAny { source } => e = *source,
                 ExprKind::Block { block } => {
                     // M5.2: a block may carry `let`-binding (and statement-expr)
                     // statements BEFORE its trailing value expr. Lower each stmt
@@ -1461,7 +1502,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_block_stmts(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         block_id: rustc_middle::thir::BlockId,
     ) -> LResult<Option<ExprId>> {
         // `self.thir` is `&'a Thir`, so this borrow is tied to 'a (NOT &self) —
@@ -1558,7 +1599,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_zst_adt(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         e: ExprId,
     ) -> LResult<ValueId> {
         // M5.7f: an ENUM-VARIANT construction (`Level::Succ(..)`, `Val::Lit(5)`)
@@ -1665,7 +1706,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_enum_variant_construction(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         e: ExprId,
     ) -> LResult<ValueId> {
         // Pull the construction's variant index + field expr ids out of the
@@ -1893,7 +1934,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_if(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         if_expr: ExprId,
         cond: ExprId,
         then: ExprId,
@@ -1952,7 +1993,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_match_scalar(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         match_expr: ExprId,
         scrutinee: ExprId,
         arms: &[thir::ArmId],
@@ -2102,8 +2143,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
             .ok_or_else(|| LowerError("M5.3: pattern const is not a scalar leaf".into()))?;
         let input = self
             .typing_env
-            .with_post_analysis_normalized(self.tcx)
-            .as_query_input(value.ty);
+            .with_post_analysis_normalized_invalidating_rigid_aliases(self.tcx, value.ty);
         let size = self
             .tcx
             .layout_of(input)
@@ -2202,7 +2242,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_match_adt(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         match_expr: ExprId,
         scrutinee: ExprId,
         arms: &[thir::ArmId],
@@ -2601,7 +2641,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         let field_rustc_ty = self.adt_field_rustc_ty(did, enum_args, vidx, field)?;
         let field_off = self.variant_field_offset(did, vidx, field)?;
         match lower_concrete_ty(self.tcx, field_rustc_ty) {
-            Ok(field_ir) if field_ir == trust_ir::ty::Ty::Ptr => {
+            Ok(trust_ir::ty::Ty::Ptr) => {
                 // POINTER field (a `Box<Self>`/`&`/recursive-enum child): the slot
                 // HOLDS the pointer. A by-ref binding is the stored pointer =
                 // `Load(Ptr, GEP)`. (M5.4: `count_succ`'s `Succ(inner)`.)
@@ -2685,7 +2725,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         // The leaf sub-field, classified by its REAL type (the SAME pointer-vs-scalar
         // discipline `bind_payload_field` uses).
         match lower_concrete_ty(self.tcx, cur_ty) {
-            Ok(field_ir) if field_ir == trust_ir::ty::Ty::Ptr => {
+            Ok(trust_ir::ty::Ty::Ptr) => {
                 // A POINTER sub-field (a `Box`/`&` child inside the aggregate): the
                 // slot HOLDS the pointer. Bind the stored pointer = Load(Ptr, GEP).
                 Ok(load_field(fb, base_ptr, cur_off, trust_ir::ty::Ty::Ptr))
@@ -2800,7 +2840,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         // a tagged struct whose i32 tag we then read). Reject a scalar nested field.
         let field_rustc_ty = self.adt_field_rustc_ty(did, enum_args, outer_vidx, nf.outer_field)?;
         match lower_concrete_ty(self.tcx, field_rustc_ty) {
-            Ok(field_ir) if field_ir == trust_ir::ty::Ty::Ptr => {}
+            Ok(trust_ir::ty::Ty::Ptr) => {}
             _ => {
                 return bail(format!(
                     "M5.7a: a nested constructor on a non-pointer field (variant {outer_vidx:?} \
@@ -2874,14 +2914,14 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_place(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         expr: ExprId,
     ) -> LResult<ValueId> {
         let mut e = expr;
         loop {
             match &self.thir[e].kind {
                 ExprKind::Scope { value, .. } => e = *value,
-                ExprKind::Use { source } | ExprKind::NeverToAny { source } => e = *source,
+                ExprKind::NeverToAny { source } => e = *source,
                 ExprKind::Borrow { arg, .. } | ExprKind::Deref { arg } => e = *arg,
                 ExprKind::PointerCoercion { source, .. } => e = *source,
                 // The auto-deref `<Box as Deref>::deref(&m)` inserted before a
@@ -2956,7 +2996,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         loop {
             match &self.thir[e].kind {
                 ExprKind::Scope { value, .. } => e = *value,
-                ExprKind::Use { source } | ExprKind::NeverToAny { source } => e = *source,
+                ExprKind::NeverToAny { source } => e = *source,
                 // The pointer operand is itself the result of dereferencing /
                 // (re)borrowing another pointer: multi-level.
                 ExprKind::Deref { .. } | ExprKind::Borrow { .. } => return Ok(true),
@@ -3004,7 +3044,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_logical(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         op: rustc_middle::thir::LogicalOp,
         lhs: ExprId,
         rhs: ExprId,
@@ -3045,7 +3085,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_call_expr(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         call_expr: ExprId,
         callee_ty: ty::Ty<'tcx>,
         args: &[ExprId],
@@ -3054,12 +3094,12 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         if let Some(inst) =
             resolve_user_call(self.tcx, self.typing_env, self.args, callee_ty)?
         {
-            let callee_idx = *by_key.get(&inst.key).ok_or_else(|| {
-                LowerError(format!("M4: callee instance {} not in worklist", inst.key))
+            let callee_idx = *by_key.get(&inst.key()).ok_or_else(|| {
+                LowerError(format!("M4: callee instance {:?} not in worklist", inst.key()))
             })?;
             // Offset by the worklist base so a cross-fn Call edge targets the
             // callee's ACTUAL FuncId when several worklists share a module.
-            let callee_funcid = FuncId::new(self.func_base + callee_idx);
+            let callee_funcid = worklist_batch::function_id(self.func_base, callee_idx)?;
             let mut lowered_args = Vec::with_capacity(args.len());
             for a in args.iter() {
                 lowered_args.push(self.lower_expr(fb, by_key, *a)?);
@@ -3159,7 +3199,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn lower_unary(
         &mut self,
         fb: &mut FunctionBuilder<'_>,
-        by_key: &std::collections::HashMap<String, u32>,
+        by_key: &InstanceMap<'tcx>,
         e: ExprId,
         op: rustc_middle::mir::UnOp,
         arg: ExprId,
@@ -3236,10 +3276,9 @@ pub fn lower_callchain_instance_ext<'tcx>(
     let root = MonoInstance {
         def: root_def,
         args: root_args,
-        key: instance_key(root_def_id, root_args),
     };
     let wl = collect_worklist(tcx, root)?;
-    emit_worklist(tcx, mb, &wl, name_suffix, func_base, register_structs)
+    emit_worklist(tcx, mb, &wl, WorklistSymbols::Legacy(name_suffix), func_base, register_structs)
 }
 
 /// M5.5 UNIFIED predicate entry. Lower a single `fn(&Enum) -> bool` predicate
@@ -3296,7 +3335,6 @@ pub fn lower_predicate_to_builder<'tcx>(
     let root = MonoInstance {
         def,
         args: root_args,
-        key: instance_key(root_def_id, root_args),
     };
     let wl = collect_worklist(tcx, root)?;
 
@@ -3333,7 +3371,7 @@ pub fn lower_predicate_to_builder<'tcx>(
 
     // Emit the predicate (and any callee predicates) at FuncId(func_base + i),
     // base 0, REGISTERING the matched enum's tagged struct (StructId 0).
-    let lowered = emit_worklist(tcx, &mut mb, &wl, "i64", 0, true)?;
+    let lowered = emit_worklist(tcx, &mut mb, &wl, WorklistSymbols::Legacy("i64"), 0, true)?;
     let root = lowered
         .first()
         .ok_or_else(|| LowerError("M5.5: empty predicate worklist".into()))?;
@@ -3352,7 +3390,7 @@ pub fn emit_callchain_roundtrip_module<'tcx>(
     let mut mb = ModuleBuilder::new("frontend::m4::callchain".to_string());
     let i64_ty = tcx.types.i64;
     let _lowered = lower_callchain_instance(tcx, &mut mb, quad_def, i64_ty, "i64", 0)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 /// Run the M4 worklist lowering + differential for `quad<i64>`. Builds the module
@@ -3378,7 +3416,7 @@ pub fn run_m4_differential<'tcx>(
         .map(|&x| (x, add_unary_runner(&mut mb, root, x)))
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -3450,7 +3488,7 @@ pub fn run_m5_differential<'tcx>(
             .ok_or_else(|| LowerError("M5: empty worklist".into()))?;
         let runner = add_nary_runner(&mut mb, root, &case.args);
 
-        let module = mb.build();
+        let module = mb.build()?;
         total_verrs += trust_ir_build::validate_module(&module).len();
         push_int_check(&module, &mut checks, &case.label, runner, case.oracle);
         last_module = Some(module);
@@ -3480,7 +3518,7 @@ pub fn emit_if_roundtrip_module<'tcx>(
         let base = pick.len() as u32;
         let _sel = lower_callchain_instance(tcx, &mut mb, s, i64_ty, "i64", base)?;
     }
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.7c: unary ops + the rest of the integer binops -----------------------
@@ -3530,7 +3568,7 @@ pub fn run_m5g_differential<'tcx>(
             .ok_or_else(|| LowerError("M5.7c: empty worklist".into()))?;
         let runner = add_nary_runner(&mut mb, root, &case.args);
 
-        let module = mb.build();
+        let module = mb.build()?;
         total_verrs += trust_ir_build::validate_module(&module).len();
         match case.oracle {
             M5gOracle::Int(o) => push_int_check(&module, &mut checks, &case.label, runner, o),
@@ -3563,7 +3601,7 @@ pub fn emit_ops_roundtrip_module<'tcx>(
         let lowered = lower_callchain_instance(tcx, &mut mb, def, i64_ty, "i64", base)?;
         base += lowered.len() as u32;
     }
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.7d: MULTI-type-param generic monomorphization ------------------------
@@ -3619,7 +3657,7 @@ pub fn run_m5h_differential<'tcx>(
             ret_ty: root.ret_ty.clone(),
         });
 
-        let module = mb.build();
+        let module = mb.build()?;
         total_verrs += trust_ir_build::validate_module(&module).len();
         match case.oracle {
             M5gOracle::Int(o) => push_int_check(&module, &mut checks, &case.label, runner, o),
@@ -3655,7 +3693,7 @@ pub fn emit_multigen_roundtrip_module<'tcx>(
     // combine<i64,i64>: (i64,i64,i64)->i64.
     let _combine =
         lower_multi_generic_instance(tcx, &mut mb, combine_def, &[i64_ty, i64_ty], "i64_i64")?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.2: `let`-bindings (multi-statement blocks) ---------------------------
@@ -3699,7 +3737,7 @@ pub fn emit_let_roundtrip_module<'tcx>(
     let base = poly.len() as u32;
     // `quad_let` discovers `double__i64`: its worklist is 2 fns, based after poly.
     let _ql = lower_callchain_instance(tcx, &mut mb, quad_let_def, i64_ty, "i64", base)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.3: `match`-as-VALUE over a scalar (integer) discriminant -------------
@@ -3777,7 +3815,7 @@ pub fn run_deref_differential<'tcx>(
             fb.build()
         };
 
-        let module = mb.build();
+        let module = mb.build()?;
         total_verrs += trust_ir_build::validate_module(&module).len();
         let oracle = x.wrapping_add(1) as i128;
         push_int_check(&module, &mut checks, &format!("deref_add(&{x}) [*r + 1]"), runner, oracle);
@@ -3808,7 +3846,7 @@ pub fn emit_match_roundtrip_module<'tcx>(
         // `step` discovers `double__i64`: its worklist is 2 fns, based after classify.
         let _step = lower_callchain_instance(tcx, &mut mb, s, i64_ty, "i64", base)?;
     }
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.4: `match` over a RECURSIVE ADT (heap-tag), value-returning ----------
@@ -3891,7 +3929,7 @@ pub fn run_m5d_differential<'tcx>(
         })
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -3914,7 +3952,7 @@ pub fn emit_adt_match_roundtrip_module<'tcx>(
     let mut mb = ModuleBuilder::new("frontend::m5::adtmatch".to_string());
     let i64_ty = tcx.types.i64;
     let _lowered = lower_callchain_instance(tcx, &mut mb, count_succ_def, i64_ty, "i64", 0)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.7b: INLINE-SCALAR enum payload (a tiny expression evaluator) ----------
@@ -4006,7 +4044,7 @@ pub fn run_m5i_differential<'tcx>(
         })
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -4029,7 +4067,7 @@ pub fn emit_eval_roundtrip_module<'tcx>(
     let mut mb = ModuleBuilder::new("frontend::m5::evalscalar".to_string());
     let i64_ty = tcx.types.i64;
     let _lowered = lower_callchain_instance(tcx, &mut mb, eval_def, i64_ty, "i64", 0)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.7a: NESTED-CONSTRUCTOR match patterns (the canonical β-redex shape) ----
@@ -4131,7 +4169,7 @@ pub fn run_m5j_differential<'tcx>(
         })
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -4154,7 +4192,7 @@ pub fn emit_redex_roundtrip_module<'tcx>(
     let mut mb = ModuleBuilder::new("frontend::m5::redex".to_string());
     let i64_ty = tcx.types.i64;
     let _lowered = lower_callchain_instance(tcx, &mut mb, redex_def, i64_ty, "i64", 0)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.7e: TUPLE/AGGREGATE enum payload + sub-field destructuring -------------
@@ -4311,7 +4349,7 @@ pub fn run_m5l_differential<'tcx>(
         })
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -4467,7 +4505,7 @@ pub fn run_m5_pair_differential<'tcx>(
         })
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -4488,7 +4526,7 @@ pub fn emit_sym_roundtrip_module<'tcx>(
     let mut mb = ModuleBuilder::new("frontend::m5::symagg".to_string());
     let i64_ty = tcx.types.i64;
     let _lowered = lower_callchain_instance(tcx, &mut mb, sym_sum_def, i64_ty, "i64", 0)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.7f: ENUM-VARIANT CONSTRUCTION (the DUAL of lower_match_adt) ------------
@@ -4540,10 +4578,9 @@ pub fn run_m5k_differential<'tcx>(
     lit_eval_def: Option<LocalDefId>,
     neg_lit_def: Option<LocalDefId>,
     // FIX 2: the NICHE untagged-variant construction family (`NBox`).
-    nbox_nil_depth_def: Option<LocalDefId>,
-    nbox_one_depth_def: Option<LocalDefId>,
-    nbox_two_depth_def: Option<LocalDefId>,
+    nbox_depth_defs: [Option<LocalDefId>; 3],
 ) -> LResult<(usize, M3Report)> {
+    let [nbox_nil_depth_def, nbox_one_depth_def, nbox_two_depth_def] = nbox_depth_defs;
     // `args` is the i64 input list (empty for the nullary depth fns); the oracle is
     // computed BY THE DOCUMENTED ARITHMETIC, not a literal.
     let probes_n = [-7i128, 0, 1, 5, 42, i64::MAX as i128, i64::MIN as i128];
@@ -4631,37 +4668,30 @@ pub fn run_m5k_differential<'tcx>(
         let i64_ty = tcx.types.i64; // identity args for the non-generic construct fns.
         let mut mb = ModuleBuilder::new(format!("frontend::m5::construct::{family_name}"));
 
-        // PHASE 1: emit ALL worklist roots of this family into the module FIRST, with
-        // NO runners interleaved — a runner between roots would shift FuncIds and trip
-        // the discovery-order assertion in emit_worklist. The FIRST root registers the
-        // enum's tagged struct; later roots over the SAME enum reuse it.
-        let mut func_base: u32 = 0;
-        let mut registered = false;
-        let mut roots: Vec<(LoweredInstance, Cases)> = Vec::new();
-        for (def, cases) in family {
-            let Some(def) = def else { continue };
-            let register = !std::mem::replace(&mut registered, true);
-            let lowered = lower_callchain_instance_ext(
-                tcx, &mut mb, def, i64_ty, "i64", func_base, register,
-            )?;
-            let root = lowered
-                .first()
-                .ok_or_else(|| LowerError("M5.7f: empty worklist for a construct fn".into()))?
-                .clone();
-            func_base += lowered.len() as u32;
-            roots.push((root, cases));
-        }
+        // PHASE 1: collect all actual roots in ONE typed worklist for this
+        // nominal enum family. A shared folder is discovered/lowered once,
+        // and every original root ordinal is retained independently.
+        let (instances, case_sets): (Vec<_>, Vec<_>) = family.into_iter().filter_map(|(def, cases)| {
+            def.map(|def| {
+                let args = args_for_single_type_param(tcx, def.to_def_id(), i64_ty);
+                (MonoInstance { def, args }, cases)
+            })
+        }).unzip();
+        let (wl, root_ids) = worklist_batch::collect_roots(tcx, instances)?;
+        let func_base = worklist_batch::next_function_id(&mb)?.index();
+        let lowered = emit_worklist(tcx, &mut mb, &wl, WorklistSymbols::SourceOwned, func_base, true)?;
+        let roots = worklist_batch::selected_roots(&lowered, &root_ids)?;
 
         // PHASE 2: append a nullary runner per case (after every root).
         let mut plan: Vec<(String, i128, FuncId)> = Vec::new();
-        for (root, cases) in roots {
+        for (root, cases) in roots.into_iter().zip(case_sets) {
             for (label, args, oracle) in cases {
                 let runner = add_nary_runner(&mut mb, &root, &args);
                 plan.push((label, oracle, runner));
             }
         }
 
-        let module = mb.build();
+        let module = mb.build()?;
         total_fns += module.functions.len();
         total_verrs += trust_ir_build::validate_module(&module).len();
         for (label, oracle, runner) in plan {
@@ -4698,7 +4728,7 @@ pub fn emit_construct_roundtrip_module<'tcx>(
     let mut mb = ModuleBuilder::new("frontend::m5::construct".to_string());
     let i64_ty = tcx.types.i64;
     let _lowered = lower_callchain_instance(tcx, &mut mb, two_depth_def, i64_ty, "i64", 0)?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M5.6 CAPSTONE: REAL clean-kernel `Level::is_zero`/`is_nonzero` -----------
@@ -4795,7 +4825,7 @@ pub fn run_m5f_differential<'tcx>(
         })
         .collect();
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -4840,7 +4870,7 @@ pub fn emit_predicate_roundtrip_module<'tcx>(
         // validation. It reuses StructId 0 for its field Loads.
         let _inz = lower_callchain_instance_ext(tcx, &mut mb, inz, i64_ty, "i64", base, false)?;
     }
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 // --- M3 differential harness -------------------------------------------------
@@ -4897,9 +4927,15 @@ fn lower_trait_caller<'tcx>(
     // The caller is non-generic, so the i64 `concrete` is just an unused identity
     // arg seed (mirrors how the non-generic M5.4/M5.6 roots are lowered).
     let i64_ty = tcx.types.i64;
-    let lowered =
-        lower_callchain_instance(tcx, mb, caller_def, i64_ty, name_suffix, func_base)?;
-    let root = lowered
+    let args = args_for_single_type_param(tcx, caller_def.to_def_id(), i64_ty);
+    let instance = MonoInstance { def: caller_def, args };
+    let (wl, root_ids) = worklist_batch::collect_roots(tcx, [instance])?;
+    let root = wl.instances.get(root_ids[0] as usize)
+        .ok_or_else(|| LowerError("trait-dispatch: missing collected source root".into()))?;
+    let export = WorklistSymbols::RootExport { root: root.key(), suffix: name_suffix };
+    let lowered = emit_worklist(tcx, mb, &wl, export, func_base, true)?;
+    let roots = worklist_batch::selected_roots(&lowered, &root_ids)?;
+    let root = roots
         .first()
         .ok_or_else(|| LowerError("trait-dispatch: empty worklist".into()))?;
     // The resolved impl method is the worklist's other instance (the caller calls
@@ -4907,7 +4943,9 @@ fn lower_trait_caller<'tcx>(
     // Re-resolve from the caller's THIR so the label is the genuine impl method
     // (`<Yes as Predicate>::pred`), not the generated FuncId name.
     let resolved_name = resolve_trait_callee_name(tcx, caller_def)?;
-    Ok((TraitCaller { caller: root.func_id, resolved_name }, lowered.len() as u32))
+    let count = u32::try_from(lowered.len())
+        .map_err(|_| LowerError("trait-dispatch worklist exceeds the FuncId space".into()))?;
+    Ok((TraitCaller { caller: root.func_id, resolved_name }, count))
 }
 
 /// Resolve the single trait-method call in a nullary trait-dispatch caller body
@@ -4960,15 +4998,15 @@ pub fn run_m3_differential<'tcx>(
     // Trait static dispatch, NOW through the unified worklist. `func_base` tracks
     // the module's running function count so each worklist's "root at FuncId base"
     // contract holds. The 4 scalar instances above occupy FuncIds 0..4.
-    let mut func_base = 4u32;
+    let mut func_base = worklist_batch::next_function_id(&mb)?.index();
     // `call_yes()` resolves `Yes.pred()` -> the impl, a DIRECT Call (a bool leaf).
-    let (dispatch, n) = lower_trait_caller(tcx, &mut mb, call_yes_def, "i64", func_base)?;
-    func_base += n;
+    let (dispatch, _) = lower_trait_caller(tcx, &mut mb, call_yes_def, "i64", func_base)?;
+    func_base = worklist_batch::next_function_id(&mb)?.index();
     // A SECOND caller on a different Self proves per-Self resolution.
     let dispatch_no = match call_no_def {
         Some(d) => {
-            let (tc, n) = lower_trait_caller(tcx, &mut mb, d, "i64", func_base)?;
-            func_base += n;
+            let (tc, _) = lower_trait_caller(tcx, &mut mb, d, "i64", func_base)?;
+            func_base = worklist_batch::next_function_id(&mb)?.index();
             Some(tc)
         }
         None => None,
@@ -4978,16 +5016,16 @@ pub fn run_m3_differential<'tcx>(
     // callee body lowers via `lower_expr` + a DERIVED `fn(Ptr) -> i64` sig.
     let dispatch_two = match call_two_def {
         Some(d) => {
-            let (tc, n) = lower_trait_caller(tcx, &mut mb, d, "i64", func_base)?;
-            func_base += n;
+            let (tc, _) = lower_trait_caller(tcx, &mut mb, d, "i64", func_base)?;
+            func_base = worklist_batch::next_function_id(&mb)?.index();
             Some(tc)
         }
         None => None,
     };
     let dispatch_neg = match call_neg_def {
         Some(d) => {
-            let (tc, n) = lower_trait_caller(tcx, &mut mb, d, "i64", func_base)?;
-            func_base += n;
+            let (tc, _) = lower_trait_caller(tcx, &mut mb, d, "i64", func_base)?;
+            func_base = worklist_batch::next_function_id(&mb)?.index();
             Some(tc)
         }
         None => None,
@@ -5007,7 +5045,7 @@ pub fn run_m3_differential<'tcx>(
     let dbl_u32_wrap_run = add_unary_runner(&mut mb, &dbl_u32, 0x8000_0000);
     let dbl_i64_nowrap_run = add_unary_runner(&mut mb, &dbl_i64, 0x8000_0000);
 
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = trust_ir_build::validate_module(&module);
 
     let mut checks = Vec::new();
@@ -5091,7 +5129,7 @@ pub fn emit_scalar_roundtrip_module<'tcx>(
     let i64_ty = tcx.types.i64;
     let _id_i64 = lower_scalar_generic_instance(tcx, &mut mb, id_def, i64_ty, "i64")?;
     let _dbl_i64 = lower_scalar_generic_instance(tcx, &mut mb, double_def, i64_ty, "i64")?;
-    Ok(mb.build())
+    Ok(mb.build()?)
 }
 
 /// Add a nullary runner that calls a unary scalar instance with a literal int
@@ -5100,7 +5138,8 @@ fn add_unary_runner(mb: &mut ModuleBuilder, inst: &LoweredInstance, arg: i128) -
     let ret_ty = inst.ret_ty.clone();
     let in_ty = inst.param_tys[0].clone();
     let sig = mb.add_func_type(vec![], vec![ret_ty]);
-    let mut fb = mb.function(format!("run_{}", inst.name), sig);
+    let runner_name = fresh_runner_name(mb, inst);
+    let mut fb = mb.function(runner_name, sig);
     let entry = fb.create_block();
     fb.switch_to_block(entry);
     let a = fb.iconst(in_ty, arg);
@@ -5121,7 +5160,8 @@ fn add_nary_runner(mb: &mut ModuleBuilder, inst: &LoweredInstance, args: &[i128]
     );
     let ret_ty = inst.ret_ty.clone();
     let sig = mb.add_func_type(vec![], vec![ret_ty]);
-    let mut fb = mb.function(format!("run_{}", inst.name), sig);
+    let runner_name = fresh_runner_name(mb, inst);
+    let mut fb = mb.function(runner_name, sig);
     let entry = fb.create_block();
     fb.switch_to_block(entry);
     let arg_vals: Vec<ValueId> = inst
@@ -5137,6 +5177,22 @@ fn add_nary_runner(mb: &mut ModuleBuilder, inst: &LoweredInstance, args: &[i128]
     fb.ret(vec![r]);
     fb.build()
 }
+
+/// A harness invocation owns its own symbol, even when the source instance and
+/// arguments repeat. Read the builder's next id before opening the function;
+/// deriving it from an argument, source name or case label conflates invocations.
+/// This does not rename the source instance or change its FuncId/call edges.
+fn fresh_runner_name(mb: &ModuleBuilder, inst: &LoweredInstance) -> String {
+    // Once the function-id space is exhausted the next `mb.function(..)`
+    // records the fault and `ModuleBuilder::build` refuses, so this name can
+    // never reach a module; `u32::MAX` only keeps the spelling total.
+    let next = mb.peek_next_func_id().map_or(u32::MAX, |id| id.index());
+    format!("run_{}__f{}", inst.name, next)
+}
+
+#[cfg(test)]
+#[path = "m3_runner_symbol_tests.rs"]
+mod runner_symbol_tests;
 
 fn interp_int(module: &Module, runner: FuncId) -> Result<i128, String> {
     let interp = Interpreter::with_module(module);
@@ -5234,7 +5290,7 @@ mod tests {
             fb.ret(vec![r]);
             fb.build()
         };
-        (mb.build(), run)
+        (mb.build().expect("ModuleBuilder::build: test fixture"), run)
     }
 
     #[test]
@@ -5286,7 +5342,7 @@ mod tests {
                 fb.ret(vec![r]);
                 fb.build()
             };
-            let m = mb.build();
+            let m = mb.build().expect("ModuleBuilder::build: test fixture");
             assert_eq!(validate_module(&m).len(), 0, "dispatch validate");
             assert_eq!(interp_bool(&m, caller).unwrap(), oracle, "dispatch interp");
         }
@@ -5341,7 +5397,7 @@ mod tests {
                 fb.ret(vec![r]);
                 fb.build()
             };
-            let m = mb.build();
+            let m = mb.build().expect("ModuleBuilder::build: test fixture");
             assert_eq!(validate_module(&m).len(), 0, "callchain validate");
             assert_eq!(interp_int(&m, run).unwrap(), want, "callchain interp (4x)");
         }
@@ -5389,7 +5445,7 @@ mod tests {
             fb.ret(vec![r]);
             fb.build()
         };
-        (mb.build(), run)
+        (mb.build().expect("ModuleBuilder::build: test fixture"), run)
     }
 
     #[test]
@@ -5477,7 +5533,7 @@ mod tests {
             fb.ret(vec![r]);
             fb.build()
         };
-        (mb.build(), run)
+        (mb.build().expect("ModuleBuilder::build: test fixture"), run)
     }
 
     #[test]
@@ -5542,6 +5598,7 @@ mod tests {
             size: None,
             align: None,
             repr: Default::default(),
+            origin: None,
         });
         let sig = mb.add_func_type(vec![Ty::Ptr], vec![Ty::I64]);
         let cs = FuncId::new(0);
@@ -5644,7 +5701,7 @@ mod tests {
                 (m.count_succ() as i128, add_int_input_runner(&mut mb, &lay, m, cs, nullary_i64, &format!("run_{i}")))
             })
             .collect();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
         assert_eq!(validate_module(&module).len(), 0, "count_succ validate");
         for (oracle, run) in runners {
             assert_eq!(interp_int(&module, run).unwrap(), oracle, "count_succ interp");
@@ -5658,7 +5715,7 @@ mod tests {
     #[test]
     fn adt_match_text_roundtrips() {
         let (mb, _cs) = build_count_succ_module();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
         let text = format!("{module}");
         let reparsed =
             trust_ir::parser::parse_module(&text).expect("emitted ADT-match text must reparse");
@@ -5698,6 +5755,7 @@ mod tests {
             size: None,
             align: None,
             repr: Default::default(),
+            origin: None,
         });
         let sig = mb.add_func_type(vec![Ty::Ptr], vec![Ty::Bool]);
         let iz = FuncId::new(0);
@@ -5789,7 +5847,7 @@ mod tests {
                 (m.is_zero(), add_input_runner(&mut mb, &lay, m, iz, nullary_bool, &format!("run_{i}")))
             })
             .collect();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
         assert_eq!(validate_module(&module).len(), 0, "is_zero validate");
         for (oracle, run) in runners {
             assert_eq!(interp_bool(&module, run).unwrap(), oracle, "is_zero interp parity");
@@ -5803,7 +5861,7 @@ mod tests {
     #[test]
     fn predicate_text_roundtrips() {
         let (mb, _iz) = build_is_zero_module();
-        let module = mb.build();
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
         let text = format!("{module}");
         let reparsed =
             trust_ir::parser::parse_module(&text).expect("emitted predicate text must reparse");

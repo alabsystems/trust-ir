@@ -407,6 +407,7 @@ fn add_microlevel_struct(mb: &mut ModuleBuilder) -> StructId {
         size: None,
         align: None,
         repr: Default::default(),
+        origin: None,
     });
     sid
 }
@@ -452,7 +453,9 @@ fn store_field(
 ///   b_max_rhs: l2 = load ptr (gep i8 self,16) ; c1 = call self(l2) ; -> join(c1)
 ///   b_imax:  l2 = load ptr (gep i8 self,16) ; c = call self(l2) ; ret c
 ///   b_unreach: unreachable
-pub fn build_predicate_module(pred: Pred) -> (Module, FuncId, StructId, trust_ir::value::FuncTyId) {
+pub fn build_predicate_module(
+    pred: Pred,
+) -> Result<(Module, FuncId, StructId, trust_ir::value::FuncTyId), trust_ir_build::BuildError> {
     let name = match pred {
         Pred::IsZero => "is_zero",
         Pred::IsNonzero => "is_nonzero",
@@ -522,7 +525,7 @@ pub fn build_predicate_module(pred: Pred) -> (Module, FuncId, StructId, trust_ir
         fb.build();
     }
 
-    (mb.build(), func_id, sid, sig)
+    Ok((mb.build()?, func_id, sid, sig))
 }
 
 /// Emit the Max-arm short-circuit recursion into `b_max`. The recursion passes
@@ -669,6 +672,7 @@ pub fn add_int_input_runner(
 ///     emitted `eval` binds by ADDRESS and `*n`-Loads as an i64.)
 ///   - `Neg(a)`: alloc the child, store its POINTER at slot 0 (`Store(Ptr, @8)`).
 ///   - `Add(a, b)`: store the two child POINTERS at slots 0/1.
+///
 /// Mirrors `build_heap_value` for `Micro`, but with the inline-scalar `Lit` arm.
 fn build_val_heap_value(fb: &mut FunctionBuilder<'_>, lay: &HeapLayout, v: &Val) -> ValueId {
     let p = fb.heap_alloc(Ty::Struct(lay.struct_id), None, None, AllocOrigin::RustHeap);
@@ -727,6 +731,7 @@ pub fn add_val_int_runner(
 ///   - `Var(n)`: store the i64 INLINE at slot 0 (a scalar leaf, like `Val::Lit`).
 ///   - `Lam(b)`: alloc the child, store its POINTER at slot 0.
 ///   - `App(f, a)`: store the two child POINTERS at slots 0/1.
+///
 /// Mirrors `build_val_heap_value`/`build_heap_value`.
 fn build_term_heap_value(fb: &mut FunctionBuilder<'_>, lay: &HeapLayout, t: &Term) -> ValueId {
     let p = fb.heap_alloc(Ty::Struct(lay.struct_id), None, None, AllocOrigin::RustHeap);
@@ -788,6 +793,7 @@ pub fn add_term_bool_runner(
 ///     `span_sub_offsets[0]`/`[1]` (the tuple's offset within the variant + each
 ///     sub-field's offset within the tuple) — NO Box.
 ///   - `Cons(t)`: alloc the child, store its POINTER at the `Cons` field slot.
+///
 /// `span_sub_offsets` are the absolute byte offsets the FRONTEND derived for the two
 /// `Span` sub-fields (computed from `tcx.layout_of`), so the bytes this writes match
 /// EXACTLY what the lowered `sym_sum` Loads.
@@ -912,7 +918,10 @@ pub fn add_pair_int_runner(
 /// Build a full module for `pred` containing the predicate plus one nullary
 /// runner per corpus value, returning (Module, predicate FuncId, runner ids
 /// aligned with `cases`).
-fn build_differential_module(pred: Pred, cases: &[Micro]) -> (Module, FuncId, Vec<FuncId>) {
+fn build_differential_module(
+    pred: Pred,
+    cases: &[Micro],
+) -> Result<(Module, FuncId, Vec<FuncId>), trust_ir_build::BuildError> {
     let name = match pred {
         Pred::IsZero => "is_zero",
         Pred::IsNonzero => "is_nonzero",
@@ -935,7 +944,7 @@ fn build_differential_module(pred: Pred, cases: &[Micro]) -> (Module, FuncId, Ve
     for (i, m) in cases.iter().enumerate() {
         runners.push(add_input_runner(&mut mb, &lay, m, pred_func, runner_sig, &format!("run_{i}")));
     }
-    (mb.build(), pred_func, runners)
+    Ok((mb.build()?, pred_func, runners))
 }
 
 /// Emit just the predicate function body into an existing ModuleBuilder (shared
@@ -1007,11 +1016,11 @@ pub fn run_emitted_differential(
     pred_func: FuncId,
     name: &str,
     lay: &HeapLayout,
-) -> Option<DifferentialReport> {
+) -> Result<Option<DifferentialReport>, trust_ir_build::BuildError> {
     let pred = match name {
         "is_zero" => Pred::IsZero,
         "is_nonzero" => Pred::IsNonzero,
-        _ => return None,
+        _ => return Ok(None),
     };
     let cases = corpus();
     let nullary_bool = mb.add_func_type(vec![], vec![Ty::Bool]);
@@ -1020,7 +1029,7 @@ pub fn run_emitted_differential(
         .enumerate()
         .map(|(i, m)| add_input_runner(&mut mb, lay, m, pred_func, nullary_bool, &format!("run_{i}")))
         .collect();
-    let module = mb.build();
+    let module = mb.build()?;
     let verrs = validate_module(&module);
 
     let mut n_match = 0usize;
@@ -1055,7 +1064,7 @@ pub fn run_emitted_differential(
             }
         }
     }
-    Some(DifferentialReport {
+    Ok(Some(DifferentialReport {
         pred,
         validate_errors: verrs.len(),
         n_match,
@@ -1063,7 +1072,7 @@ pub fn run_emitted_differential(
         param_match,
         param_total,
         first_mismatch,
-    })
+    }))
 }
 
 /// Run the interpreter on `runner` (a nullary fn building the heap graph and
@@ -1116,9 +1125,9 @@ pub fn corpus() -> Vec<Micro> {
 /// Run the full differential for one predicate: build the shared heap module
 /// (predicate + per-input runners), validate, interpret each runner vs the
 /// native oracle. Returns a structured report.
-pub fn run_differential(pred: Pred) -> DifferentialReport {
+pub fn run_differential(pred: Pred) -> Result<DifferentialReport, trust_ir_build::BuildError> {
     let cases = corpus();
-    let (module, _pred_func, runners) = build_differential_module(pred, &cases);
+    let (module, _pred_func, runners) = build_differential_module(pred, &cases)?;
     let verrs = validate_module(&module);
     let mut n_match = 0usize;
     let mut first_mismatch = None;
@@ -1152,7 +1161,7 @@ pub fn run_differential(pred: Pred) -> DifferentialReport {
             }
         }
     }
-    DifferentialReport {
+    Ok(DifferentialReport {
         pred,
         validate_errors: verrs.len(),
         n_match,
@@ -1160,7 +1169,7 @@ pub fn run_differential(pred: Pred) -> DifferentialReport {
         param_match,
         param_total,
         first_mismatch,
-    }
+    })
 }
 
 /// Does this value mention a `Param` anywhere (for Param-coverage accounting)?
@@ -1191,7 +1200,7 @@ mod tests {
 
     #[test]
     fn is_zero_differential_heap() {
-        let r = run_differential(Pred::IsZero);
+        let r = run_differential(Pred::IsZero).expect("the differential module builds");
         assert_eq!(r.validate_errors, 0, "validate errors: {r:?}");
         assert_eq!(r.n_match, r.n_total, "mismatch: {:?}", r.first_mismatch);
         assert!(r.param_total > 0, "corpus must cover Param");
@@ -1200,7 +1209,7 @@ mod tests {
 
     #[test]
     fn is_nonzero_differential_heap() {
-        let r = run_differential(Pred::IsNonzero);
+        let r = run_differential(Pred::IsNonzero).expect("the differential module builds");
         assert_eq!(r.validate_errors, 0, "validate errors: {r:?}");
         assert_eq!(r.n_match, r.n_total, "mismatch: {:?}", r.first_mismatch);
         assert!(r.param_total > 0, "corpus must cover Param");
@@ -1212,7 +1221,8 @@ mod tests {
     #[test]
     fn predicate_module_validates() {
         for pred in [Pred::IsZero, Pred::IsNonzero] {
-            let (module, _f, _sid, _sig) = build_predicate_module(pred);
+            let (module, _f, _sid, _sig) =
+                build_predicate_module(pred).expect("the predicate module builds");
             let verrs = validate_module(&module);
             assert_eq!(verrs.len(), 0, "{pred:?} validate: {verrs:?}");
         }

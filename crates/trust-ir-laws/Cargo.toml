@@ -1,0 +1,25 @@
+# trust-ir-laws — the pure decision tables of the TrustIr validator, each with
+# its English laws stated as Trust contracts and PROVED under the explicit
+# verified lane (scripts/verified_contracts.py; gate `verified-contracts`).
+#
+# Author: Andrew Yates <andrewyates.name@gmail.com>
+# Copyright 2026 Andrew Yates | License: Apache-2.0
+
+[package]
+name = "trust-ir-laws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Pure decision tables of the TrustIr validator whose laws are proved Trust contracts"
+
+[dependencies]
+trust-ir = { workspace = true }
+
+[lints.rust]
+# `trust_verify` is set by the Trust compiler ITSELF (`trustc --print cfg`)
+# exactly when its verification pass is on; `trustc -Ztrust-verify=off` (the
+# `targo --unverified` lane) and stock rustc set nothing. `src/laws.rs`, whose
+# contract grammar stock rustc cannot parse, is compiled under it alone.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trust_verify)'] }

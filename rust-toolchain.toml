@@ -1,0 +1,6 @@
+# Owner directive 2026-09-28: ALab systems build with the Trust toolchain.
+# Selects the compiler only; targo picks the lane (`targo trust` verified,
+# `targo --unverified` no proof claim). Gate 0 checks this pin. The old stock
+# 1.97.1 pin and its rationale: `git show bf7ee706:rust-toolchain.toml`.
+[toolchain]
+channel = "trust"

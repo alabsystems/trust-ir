@@ -55,8 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fb.ret(vec![ret_val]);
     fb.build();
 
-    let module = ay.build();
-    let bytes = trust_ir::binary::serialize_module(&module);
+    let module = ay.build()?;
+    let bytes = trust_ir::binary::serialize_module(&module)?;
 
     fs::write(&args.output, bytes)?;
     println!(

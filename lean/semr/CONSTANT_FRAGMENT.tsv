@@ -1,0 +1,16 @@
+# SemR's constant fragment: the Rust `Constant` variants whose semantics is
+# SemR's (`lean/semr/SemR.lean`) rather than lean/trust_ir-semantics', each
+# beside the SemR `Const` constructor that carries it.
+# `crates/trust-ir/tests/lean_schema_parity.rs`
+# (`constant_parity_reads_semr_for_its_constant_fragment`) holds every row to
+# both sides: the Rust variant exists and SemR.lean declares the constructor;
+# every Rust `Constant` variant NOT listed here keeps the old gate (a
+# constructor in lean/trust_ir-semantics/TrustIr/Constant.lean), and every
+# SemR `Const` constructor is a row here or names an old-gate variant. A listed
+# constant is credited by SemR's differential only when an agreeing run
+# EXECUTES it (`semr_eval --executed`'s `consts`). An element type SemR
+# refuses by name (`unsupported <feature>`, e.g. a float tensor element, until
+# PKG-U15) stays refused; the row is the constant former.
+#
+# rust-variant	semr-constructor
+TensorBlob	tensorBlob

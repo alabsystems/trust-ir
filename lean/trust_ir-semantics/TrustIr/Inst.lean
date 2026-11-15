@@ -24,10 +24,10 @@ Instructions are organized by category:
 - Arithmetic: BinOp, UnOp, Overflow
 - Comparison: ICmp, FCmp
 - Casts: Cast
-- Memory: Load, Store, Alloca, GEP, Dealloc
+- Memory: Load, Store, Alloca, GEP, Dealloc, MemCopy, MemSet (WS3.20)
 - Atomics: AtomicLoad, AtomicStore, AtomicRMW, CmpXchg, Fence
 - Control flow: Br, CondBr, Switch, Call, CallIndirect, Return
-- Aggregates: ExtractField, InsertField, ExtractElement, InsertElement
+- Aggregates: ExtractField, InsertField, MakeAggregate, ArraySplat, ExtractElement, InsertElement
 - Constants: Const, NullPtr, Undef
 - Proof: Assume, Assert, Unreachable
 - Pseudo: Copy, Select
@@ -116,6 +116,77 @@ inductive AllocOrigin where
   | CleanHeap : AllocOrigin
   deriving Repr, DecidableEq
 
+/-- The operation whose overflow an `AssertKind.Overflow` check guards
+    (plan item P, wire v52). Mirrors Rust `trust_ir::AssertOverflowOp`. -/
+inductive AssertOverflowOp where
+  | Add : AssertOverflowOp
+  | Sub : AssertOverflowOp
+  | Mul : AssertOverflowOp
+  | Div : AssertOverflowOp
+  | Rem : AssertOverflowOp
+  | Shl : AssertOverflowOp
+  | Shr : AssertOverflowOp
+  | Neg : AssertOverflowOp
+  deriving Repr, DecidableEq
+
+/-- WHICH Rust panic a failed `Inst.Assert` is (plan item P, wire v52).
+    Mirrors Rust `trust_ir::AssertKind`. The kind changes only the panic
+    MESSAGE (`Semantics/Step.lean`, `assertFailMessage`), never whether the
+    assert fails: that is still exactly `cond = false`. `Unspecified` is the
+    kind of every pre-v52 assert. The operand-carrying kinds name the values
+    the message prints, read only on failure. -/
+inductive AssertKind where
+  | Unspecified : AssertKind
+  | Overflow (op : AssertOverflowOp) : AssertKind
+  | DivByZero : AssertKind
+  | RemByZero : AssertKind
+  | BoundsCheck (index : ValueId) (len : ValueId) : AssertKind
+  | MisalignedPtr (required : ValueId) (found : ValueId) : AssertKind
+  | NullPtr : AssertKind
+  deriving Repr
+
+/-- The panic message of an operand-free kind, byte-identical to the Rust
+    `AssertKind::constant_panic_message` (and to `core`'s text for every kind
+    but `Unspecified`, whose `"assertion failed"` is the engines' own). The
+    operand kinds' messages are built in `Semantics/Step.lean`. -/
+def AssertKind.constantMessage : AssertKind → String
+  | .Unspecified => "assertion failed"
+  | .Overflow .Add => "attempt to add with overflow"
+  | .Overflow .Sub => "attempt to subtract with overflow"
+  | .Overflow .Mul => "attempt to multiply with overflow"
+  | .Overflow .Div => "attempt to divide with overflow"
+  | .Overflow .Rem => "attempt to calculate the remainder with overflow"
+  | .Overflow .Shl => "attempt to shift left with overflow"
+  | .Overflow .Shr => "attempt to shift right with overflow"
+  | .Overflow .Neg => "attempt to negate with overflow"
+  | .DivByZero => "attempt to divide by zero"
+  | .RemByZero => "attempt to calculate the remainder with a divisor of zero"
+  | .NullPtr => "null pointer dereference occurred"
+  | .BoundsCheck _ _ => "index out of bounds"
+  | .MisalignedPtr _ _ => "misaligned pointer dereference"
+
+/-- Where a failed check's panic is reported: the LAST argument of its panic
+    site's entry (amendment P, wire v54; `docs/SPEC_RATIFICATIONS.md` §19.1).
+    Mirrors Rust `trust_ir::PanicLocation`. `global g` is the address of an
+    immutable module global holding the record, the one spelling of a
+    location known at compile time; `value v` is a run-time location (a
+    `#[track_caller]` function forwarding its caller's). No IR semantics
+    reads the record's bytes. -/
+inductive PanicLocation where
+  | global (g : GlobalId) : PanicLocation
+  | value (v : ValueId) : PanicLocation
+  deriving Repr
+
+/-- How a failed assert is realized (amendment P, wire v54): call
+    `entry(kind operands.., location)`. Mirrors Rust `trust_ir::PanicSite`.
+    The executable model never executes the entry: a failed check is a
+    terminal panic outcome that NAMES it (`Semantics/Step.lean`,
+    `semAssertFail`). -/
+structure PanicSite where
+  entry : FuncId
+  location : PanicLocation
+  deriving Repr
+
 /-- TrustIr instruction. Mirrors Rust `trust_ir::Inst`.
 
     This is the core of the TrustIr formalization: every instruction
@@ -144,8 +215,14 @@ inductive Inst where
   -- misalignment-UB is a deferred memory-model refinement.
   | Load         (ty : Ty) (ptr : ValueId) (volatile : Bool) (align : Option Nat) : Inst
   | Store        (ty : Ty) (ptr : ValueId) (value : ValueId) (volatile : Bool) (align : Option Nat) : Inst
-  | Alloca       (ty : Ty) (count : Option ValueId) : Inst
-  | HeapAlloc    (ty : Ty) (count : Option ValueId) (origin : AllocOrigin) : Inst
+  -- `align` mirrors Rust `Inst::Alloca`/`HeapAlloc { align }` (the requested
+  -- allocation alignment, `none` = the type's natural alignment). Carried for
+  -- field-level parity (WS2.18); the executable model does not yet place
+  -- allocations at a requested alignment — a recorded depth gap
+  -- (docs/roadmap/B3-lean-ir-parity.md), exactly like `Load`/`Store` `align`.
+  | Alloca       (ty : Ty) (count : Option ValueId) (align : Option Nat) : Inst
+  | HeapAlloc    (ty : Ty) (count : Option ValueId) (align : Option Nat)
+                 (origin : AllocOrigin) : Inst
   -- `inbounds` mirrors Rust `Inst::GEP { inbounds }` (fast-3): a claim that the
   -- computed address stays within the base allocation (poison/UB otherwise).
   -- The poison-on-out-of-bounds semantics + inbounds-folding theorem are the
@@ -164,23 +241,57 @@ inductive Inst where
   | AtomicStore  (ty : Ty) (ptr : ValueId) (value : ValueId) (ordering : MemOrdering) : Inst
   | AtomicRMW    (op : AtomicRMWOp) (ty : Ty) (ptr : ValueId)
                  (value : ValueId) (ordering : MemOrdering) : Inst
+  -- `weak` mirrors Rust Inst::CmpXchg's `weak` flag (crystal D3). A WEAK
+  -- compare-exchange may fail SPURIOUSLY -- report `false` and store nothing
+  -- even when the loaded value equals `expected` -- so its outcome is not a
+  -- function of the state. `Sem` has no nondeterminism source, so stepping it
+  -- as strong would execute one of its two legal outcomes and call that its
+  -- semantics. Semantics: TrustIr.Semantics.Step -- a STRUCTURED UNSUPPORTED
+  -- (`unsupported.weak_cmpxchg`), matching the reference interpreter, which
+  -- refuses it too. `weak = false` is the historical strong instruction.
   | CmpXchg      (ty : Ty) (ptr : ValueId) (expected desired : ValueId)
-                 (success failure : MemOrdering) : Inst
+                 (success failure : MemOrdering) (weak : Bool) : Inst
   | Fence        (ordering : MemOrdering) : Inst
 
   -- Control flow
   | Br           (target : BlockId) (args : List ValueId) : Inst
   | CondBr       (cond : ValueId) (thenTarget : BlockId) (thenArgs : List ValueId)
                  (elseTarget : BlockId) (elseArgs : List ValueId) : Inst
+  -- `exhaustiveEnumUnreachable` mirrors Rust `Inst::Switch
+  -- { exhaustive_enum_unreachable }` (binary v15): the producer's claim that
+  -- the cases cover every enum discriminant, so the default edge is dead. It
+  -- is a codegen license, not a value rule: the reference interpreter takes
+  -- the default edge on a miss regardless, and so does `semSwitch`. Carried so
+  -- a `true` and a `false` switch are DISTINCT Lean instructions (WS2.18).
   | Switch       (value : ValueId) (default_ : BlockId) (defaultArgs : List ValueId)
-                 (cases : List SwitchCase) : Inst
+                 (cases : List SwitchCase) (exhaustiveEnumUnreachable : Bool) : Inst
   | Call         (callee : FuncId) (args : List ValueId) : Inst
-  | CallIndirect (callee : ValueId) (sig : FuncTyId) (args : List ValueId) : Inst
+  | CallIndirect (callee : ValueId) (sig : FuncTyId) (args : List ValueId)
+                 (callingConv : CallingConv) : Inst
+  -- Normative no-crossing unwind boundaries, NOT NoPanic assertions. The
+  -- executable model refuses them until host unwinding is modeled.
+  | CallCannotUnwind (callee : FuncId) (args : List ValueId) : Inst
+  | CallIndirectCannotUnwind (callee : ValueId) (sig : FuncTyId) (args : List ValueId)
+                 (callingConv : CallingConv) : Inst
   | Return       (values : List ValueId) : Inst
 
   -- Aggregates
   | ExtractField   (ty : Ty) (aggregate : ValueId) (field : Nat) : Inst
   | InsertField    (ty : Ty) (aggregate : ValueId) (field : Nat) (value : ValueId) : Inst
+  /-- Build a fully-initialised aggregate VALUE from declaration-ordered
+      register lanes (WS3.5, F-049 register-seed half). `variant` is `some v`
+      exactly for an enum (the tag is `discriminants[v]`, never a lane) and
+      `none` for a struct / tuple / record / array. Mirrors Rust
+      `Inst::MakeAggregate { ty, variant, fields }`. -/
+  | MakeAggregate  (ty : Ty) (variant : Option Nat) (fields : List ValueId) : Inst
+  /-- Runtime captures. The executable model refuses this until its closure
+      tables and checked physical target signatures are operational. -/
+  | MakeClosure (ty : ClosureTyId) (func : FuncId) (captures : List ValueId) : Inst
+  /-- `n` copies of one register value: the array `[value; n]` of type
+      `ty = Array e n` (wire v50). The register twin of `Constant.splat`,
+      denoted `.aggregate (List.replicate n v)`. Mirrors Rust
+      `Inst::ArraySplat { ty, value }`. -/
+  | ArraySplat     (ty : Ty) (value : ValueId) : Inst
   | ExtractElement (ty : Ty) (array : ValueId) (index : ValueId) : Inst
   | InsertElement  (ty : Ty) (array : ValueId) (index : ValueId) (value : ValueId) : Inst
 
@@ -191,7 +302,10 @@ inductive Inst where
 
   -- Proof instructions
   | Assume       (cond : ValueId) : Inst
-  | Assert       (cond : ValueId) : Inst
+  /-- A runtime check; `kind` names the Rust panic its failure is (wire v52)
+      and `site` the entry a failure calls and the location it reports
+      (amendment P, wire v54; `none` is an unsited check). -/
+  | Assert       (cond : ValueId) (kind : AssertKind) (site : Option PanicSite) : Inst
   | Unreachable  : Inst
 
   -- Pseudo instructions
@@ -199,7 +313,7 @@ inductive Inst where
   /-- Branchless selection.
 
       Lean execution accepts scalar `Bool` as whole-value selection and a
-      bounded same-lane `<N x Bool>` mask path for lane-wise vector selection.
+      same-lane `<N x Bool>` masks at every positive admitted lane count.
       Physical integer masks such as x86 `<N x i32>` all-ones/zero lanes are
       lowering details, not TrustIr source conditions. -/
   | Select       (ty : Ty) (cond : ValueId) (thenVal elseVal : ValueId) : Inst
@@ -248,6 +362,39 @@ inductive Inst where
   -- marks the allocation dead, clears its permission, and zeros its refcount.
   | Dealloc      (ptr : ValueId) : Inst
 
+  -- Bulk memory (WS3.20, F-057). Mirror Rust Inst::MemCopy / Inst::MemSet
+  -- (crates/trust-ir/src/inst.rs). Semantics: TrustIr.Semantics.Memory
+  -- `semMemCopy` / `semMemSet` — byte-granular, DYNAMIC count.
+  /-- `memcpy` (`overlap = false`) / `memmove` (`overlap = true`): copy
+      `bytes` bytes from `src` to `dst`, carrying each byte's VALUE and INIT
+      STATE (an uninitialized source byte stays uninitialized at the
+      destination — copy-propagates-poison, `readBytesMaybeUninit` /
+      `writeBytesMaybeUninit`). Out of bounds is UB; an overlapping copy
+      without `overlap` is UB; a zero count is a no-op. -/
+  | MemCopy      (dst : ValueId) (src : ValueId) (bytes : ValueId) (overlap : Bool) : Inst
+  /-- `memset`: write the `U8` `byte` to each of `bytes` bytes at `dst`;
+      every written byte becomes initialized. Out of bounds is UB; a zero
+      count is a no-op. -/
+  | MemSet       (dst : ValueId) (byte : ValueId) (bytes : ValueId) : Inst
+  -- Run `ty`'s DESTRUCTOR on the object at `ptr`. Mirrors Rust Inst::Drop
+  -- (crates/trust-ir/src/inst.rs), added by the THIR lowering's wave-DS so a
+  -- body's drops are part of the IR rather than silently absent.
+  --
+  -- A place is named by a POINTER, exactly as Store names one: no new notion of
+  -- where a droppable value lives is introduced, and a temporary is materialised
+  -- by Alloca and dropped through the pointer that yields.
+  --
+  -- A PLAIN INSTRUCTION, not a terminator, though MIR's Drop is one; the Rust
+  -- shim splits the block when it lowers this.
+  --
+  -- Semantics: TrustIr.Semantics.Step -- a STRUCTURED UNSUPPORTED, matching the
+  -- reference interpreter (interpret.rs), which refuses it with "no destructor
+  -- model". Dropping is observable (it frees, it runs user code), so modelling it
+  -- as a no-op would silently evaluate a DIFFERENT program; refusing is the only
+  -- honest total option until a destructor model exists. `Drop` is therefore
+  -- OUTSIDE the lowering-target conformance subset, beside Resume.
+  | Drop         (ty : Ty) (ptr : ValueId) : Inst
+
   -- Binding frames (typed quantifier lowering)
   -- Mirrors Rust Inst enum (crates/trust_ir/src/inst.rs). See
   -- designs/2026-04-19-binding-frames-lean-semantics.md section 2.2.
@@ -278,10 +425,13 @@ inductive Inst where
 
   -- Exception handling (zero-cost table-driven unwinding). Mirrors Rust
   -- Inst::Invoke / Inst::LandingPad / Inst::Resume (crates/trust-ir/src/inst.rs).
-  -- The executable model, like the reference interpreter, models a
-  -- NON-THROWING callee (panic=abort): an Invoke runs the call and always
-  -- takes the normal edge; the unwind edge / landing-pad entry / re-raise are
-  -- carried with structural fidelity but never taken under evaluation.
+  -- The executable model, like the reference interpreter, runs under a named
+  -- `PanicStrategy` (amendment D, Part 2; `Semantics/Eval.lean`). Under
+  -- `.abort` (the default, the panic=abort projection) an Invoke runs the
+  -- call and always takes the normal edge, and a landing pad or a re-raise is
+  -- refused. Under `.unwind` a failed check raises, the invoke-family
+  -- terminators catch the unwinding into their landing pad, and `Resume`
+  -- re-raises it. The bare `stepInst` is the `.abort` step.
   /-- A call with two control-flow successors (TERMINATOR): on normal return
       the callee's results bind this node's results and control transfers to
       `normalDest` with `normalArgs`; if the callee unwound, control would
@@ -289,12 +439,50 @@ inductive Inst where
   | Invoke       (callee : FuncId) (args : List ValueId) (normalDest : BlockId)
                  (normalArgs : List ValueId) (unwindDest : BlockId) : Inst
   /-- Entry of an exception handler / cleanup block (NOT a terminator).
-      Produces the exception-object pointer and type selector, packed as an
-      aggregate pair `(Ptr, I32)` per the Overflow multi-result convention. -/
+      In Rust it produces TWO results, the exception-object pointer and the
+      type selector `(Ptr, I32)`. Under `PanicStrategy.unwind` an unwinding
+      entering the pad binds them (selector 1 for a catch-all clause 0, 0 for
+      a cleanup pad; a typed clause is `unsupported.typed_catch`). Reached
+      with no exception in hand — always, under `.abort` — it FAILS CLOSED
+      (`unsupported.host_unwind`) exactly like interpret.rs: it binds no
+      fabricated `(null, 0)` (WS2.5 / WS2.24). -/
   | LandingPad   (isCleanup : Bool) (catchTypeIndices : List Nat) : Inst
   /-- Continue unwinding (re-raise) after a cleanup pad (TERMINATOR with no
-      successors in this function). -/
+      successors in this function). Under `PanicStrategy.unwind` it re-raises
+      the exception object its operand addresses (any other value is UB);
+      under `.abort` it is refused (`unsupported.host_unwind`). -/
   | Resume       (exn : ValueId) : Inst
+  /-- A sited check whose failure must enter an in-frame landing pad (MIR
+      `UnwindAction::Cleanup` / `Terminate`; amendment P, wire v54). A
+      TERMINATOR with `Invoke`'s successors: a passing check continues to
+      `normalDest` with `normalArgs`; a failing one is the sited panic. Under
+      `PanicStrategy.abort` (the panic=abort projection) the unwind edge is
+      never taken; under `.unwind` the failure raises and enters the pad at
+      `unwindDest` (amendment D, Part 2). Mirrors Rust `Inst::AssertInvoke`. -/
+  | AssertInvoke (cond : ValueId) (kind : AssertKind) (site : PanicSite)
+                 (normalDest : BlockId) (normalArgs : List ValueId)
+                 (unwindDest : BlockId) : Inst
+  /-- Run `ty`'s drop glue on the object at `ptr`, with an unwind edge
+      (amendment D, wire v55). The unwinding twin of `Drop`, exactly as
+      `Invoke` is `Call`'s: a TERMINATOR with `Invoke`'s successors and no
+      results. Resolved through the module drop-glue table it IS
+      `Invoke glue [ptr] normalDest normalArgs unwindDest`; unresolved, it is
+      refused exactly as an unresolved `Drop` is. The unwind edge is taken
+      only under `PanicStrategy.unwind`, when the glue unwinds. Mirrors Rust
+      `Inst::DropInvoke`. -/
+  | DropInvoke   (ty : Ty) (ptr : ValueId) (normalDest : BlockId)
+                 (normalArgs : List ValueId) (unwindDest : BlockId) : Inst
+  /-- `CallIndirect` with an unwind edge (amendment D, Part 2; wire v56, Inst
+      tag 69): `CallIndirect`'s unwinding twin, exactly as `Invoke` is
+      `Call`'s. A TERMINATOR with `Invoke`'s successors: the callee is
+      resolved and checked as `CallIndirect`'s; on a normal return its
+      results bind this node's results (`terminatorResultDests`) and control
+      transfers to `normalDest` with `normalArgs`. The unwind edge is taken
+      only under `PanicStrategy.unwind`, when the callee unwinds. Mirrors Rust
+      `Inst::InvokeIndirect`. -/
+  | InvokeIndirect (callee : ValueId) (sig : FuncTyId) (args : List ValueId)
+                 (callingConv : CallingConv) (normalDest : BlockId)
+                 (normalArgs : List ValueId) (unwindDest : BlockId) : Inst
 
   -- Dialect op: a namespaced operation from a TrustIr dialect. Mirrors Rust
   -- Inst::DialectOp(Box<DialectInst>) from crates/trust_ir/src/inst.rs.
@@ -321,6 +509,12 @@ def Inst.isTerminator : Inst → Bool
   -- terminator (it is the first instruction of the pad block).
   | .Invoke ..      => true
   | .Resume ..      => true
+  -- A sited check with an unwind edge (amendment P). Mirrors Rust.
+  | .AssertInvoke .. => true
+  -- A drop with an unwind edge (amendment D). Mirrors Rust.
+  | .DropInvoke ..   => true
+  -- An indirect call with an unwind edge (amendment D, Part 2). Mirrors Rust.
+  | .InvokeIndirect .. => true
   | _               => false
 
 /-- Returns true if the instruction MUTATES the abstract machine state
@@ -350,10 +544,15 @@ def Inst.hasSideEffects : Inst → Bool
   | .AtomicLoad ..  => true
   | .AtomicStore .. => true
   | .AtomicRMW ..   => true
+  -- Both strengths: a weak compare-exchange may STORE (when it succeeds), so
+  -- it mutates state exactly as a strong one does. The `..` pattern covers the
+  -- `weak` field; do not narrow it to one strength.
   | .CmpXchg ..     => true
   | .Fence ..       => true
   | .Call ..        => true
   | .CallIndirect .. => true
+  | .CallCannotUnwind .. => true
+  | .CallIndirectCannotUnwind .. => true
   -- SeqMap invokes an arbitrary element function per element (a call in
   -- disguise): conservatively state-mutating/observable, exactly like Call.
   -- Mirrors Rust `has_observable_effects` (`Inst::SeqMap { .. } => true`).
@@ -375,6 +574,22 @@ def Inst.hasSideEffects : Inst → Bool
   -- Dealloc frees an allocation — always side-effecting. Mirrors
   -- Rust has_side_effects.
   | .Dealloc ..     => true
+  -- The bulk ops WRITE `bytes` bytes of the destination — as observable as a
+  -- Store, and they bind no result a use count could keep alive. Mirrors
+  -- Rust has_observable_effects (WS3.20).
+  | .MemCopy ..     => true
+  | .MemSet ..      => true
+  -- A DROP runs a destructor: it frees, and it can run arbitrary user code. It
+  -- is the definition of an observable effect and must never be removable.
+  -- Mirrors Rust has_observable_effects (`Inst::Drop { .. } => true`).
+  --
+  -- THIS ARM IS LOAD-BEARING, not documentation: the fallthrough below is
+  -- `i.isTerminator`, and Drop is deliberately NOT a terminator, so omitting
+  -- this line would read Drop as PURE and let `dce_pure_inst` license deleting
+  -- a destructor. The Lean build found it -- `TransformCorrectness` refused to
+  -- compile with the alternative missing -- which is that exhaustive match
+  -- doing exactly the job it exists for.
+  | .Drop ..        => true
   -- CloseFrame is a DCE discipline marker (matches Rust has_observable_effects).
   -- OpenFrame, BindSlot, LoadSlot are pure SSA (default false).
   | .CloseFrame ..  => true

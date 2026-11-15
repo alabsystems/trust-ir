@@ -11,6 +11,8 @@
 // perfectly is still refused when it is not a proof of THIS obligation's
 // re-derived goal.
 
+#![allow(clippy::disallowed_methods)] // a test drives ay directly; a panic here is a test failure (r11 item 5, crates/trust-ir-ay/clippy.toml)
+
 use trust_ir::Module;
 use trust_ir::inst::{BinOp, ICmpOp};
 use trust_ir::proof::{
@@ -67,12 +69,14 @@ fn build_mask_bound(mask: i128, bound: i128, kind: ObligationKind) -> Fixture {
     fb.unreachable();
 
     let func = fb.build();
-    let obligation = mb.add_proof_obligation(|id| {
-        ProofObligation::new(id, kind, ProofStatus::Pending, "masked index in bounds")
-            .with_site(ObligationSite::new(func, entry, site_index))
-    });
+    let obligation = mb
+        .add_proof_obligation(|id| {
+            ProofObligation::new(id, kind, ProofStatus::Pending, "masked index in bounds")
+                .with_site(ObligationSite::new(func, entry, site_index))
+        })
+        .expect("a fresh obligation id");
     Fixture {
-        module: mb.build(),
+        module: mb.build().expect("ModuleBuilder::build: test fixture"),
         obligation,
     }
 }
@@ -107,17 +111,19 @@ fn build_escape_unicode_shape(shift: i128, bound: i128) -> Fixture {
     fb.unreachable();
 
     let func = fb.build();
-    let obligation = mb.add_proof_obligation(|id| {
-        ProofObligation::new(
-            id,
-            ObligationKind::BoundsCheck,
-            ProofStatus::Pending,
-            "nibble indexes the 16-entry hex table",
-        )
-        .with_site(ObligationSite::new(func, entry, site_index))
-    });
+    let obligation = mb
+        .add_proof_obligation(|id| {
+            ProofObligation::new(
+                id,
+                ObligationKind::BoundsCheck,
+                ProofStatus::Pending,
+                "nibble indexes the 16-entry hex table",
+            )
+            .with_site(ObligationSite::new(func, entry, site_index))
+        })
+        .expect("a fresh obligation id");
     Fixture {
-        module: mb.build(),
+        module: mb.build().expect("ModuleBuilder::build: test fixture"),
         obligation,
     }
 }
@@ -290,6 +296,52 @@ fn a_payload_relabelled_with_the_right_digest_still_fails_the_cnf_check() {
     assert!(
         err.contains("re-derived"),
         "gate (10) should have rejected this, got: {err}"
+    );
+}
+
+#[test]
+fn a_certificate_whose_goal_digest_is_not_a_digest_is_refused_not_a_panic() {
+    // The payload's `goal_digest` is untrusted bytes. Before the decode check,
+    // a spelling whose byte 16 falls inside a UTF-8 character reached gate
+    // (8)'s refusal message, and slicing it there PANICKED the validator
+    // instead of refusing the certificate. 21 three-byte euro signs and a `0`
+    // are 64 bytes, the length of a real digest.
+    let mut fixture = build_mask_bound(15, 16, ObligationKind::BoundsCheck);
+    let certificate = discharge(&mut fixture);
+    assert!(accepts(&fixture.module), "baseline must be valid");
+
+    let mut payload = payload_of(&certificate);
+    payload.goal_digest = format!("{}0", "\u{20ac}".repeat(21));
+    assert_eq!(payload.goal_digest.len(), 64);
+    assert!(!payload.goal_digest.is_char_boundary(16));
+    restamp(&mut fixture.module, fixture.obligation, &payload);
+
+    assert!(
+        !accepts(&fixture.module),
+        "a certificate with a non-digest goal_digest was accepted"
+    );
+    let obligation = fixture
+        .module
+        .proof_obligations
+        .iter()
+        .find(|o| o.id == fixture.obligation)
+        .unwrap();
+    let certificate = fixture
+        .module
+        .proof_certificates
+        .iter()
+        .find(|c| c.obligation == fixture.obligation)
+        .unwrap();
+    let err = BvBlastAuthority::new()
+        .explain(&fixture.module, obligation, certificate)
+        .unwrap_err();
+    assert!(
+        err.contains("payload goal_digest is not a goal digest (64 bytes"),
+        "unexpected rejection reason: {err}"
+    );
+    assert!(
+        !err.contains('\u{20ac}'),
+        "the untrusted spelling must not be echoed: {err}"
     );
 }
 
@@ -488,6 +540,7 @@ fn a_forged_proof_of_a_false_neighbour_is_refused() {
         obligation: target.obligation,
         prover: BVBLAST_PROVER.to_string(),
         evidence: ProofEvidence::SmtProof(payload.to_bytes().unwrap()),
+        assurance: None,
     });
 
     assert!(
@@ -730,16 +783,18 @@ fn a_ground_goal_is_refused_before_it_reaches_the_solver() {
     fb.switch_to_block(panic);
     fb.unreachable();
     let func = fb.build();
-    let id = mb.add_proof_obligation(|id| {
-        ProofObligation::new(
-            id,
-            ObligationKind::BoundsCheck,
-            ProofStatus::Pending,
-            "size_of != 0",
-        )
-        .with_site(ObligationSite::new(func, entry, 5))
-    });
-    let mut module = mb.build();
+    let id = mb
+        .add_proof_obligation(|id| {
+            ProofObligation::new(
+                id,
+                ObligationKind::BoundsCheck,
+                ProofStatus::Pending,
+                "size_of != 0",
+            )
+            .with_site(ObligationSite::new(func, entry, 5))
+        })
+        .expect("a fresh obligation id");
+    let mut module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     let obligation = module
         .proof_obligations
@@ -780,16 +835,18 @@ fn mul_is_refused_structurally() {
     fb.switch_to_block(panic);
     fb.unreachable();
     let func = fb.build();
-    let id = mb.add_proof_obligation(|id| {
-        ProofObligation::new(
-            id,
-            ObligationKind::ArithmeticSafety,
-            ProofStatus::Pending,
-            "scaled index",
-        )
-        .with_site(ObligationSite::new(func, entry, 4))
-    });
-    let module = mb.build();
+    let id = mb
+        .add_proof_obligation(|id| {
+            ProofObligation::new(
+                id,
+                ObligationKind::ArithmeticSafety,
+                ProofStatus::Pending,
+                "scaled index",
+            )
+            .with_site(ObligationSite::new(func, entry, 4))
+        })
+        .expect("a fresh obligation id");
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let obligation = module
         .proof_obligations
         .iter()
@@ -823,16 +880,18 @@ fn division_and_float_are_refused() {
         fb.switch_to_block(panic);
         fb.unreachable();
         let func = fb.build();
-        let id = mb.add_proof_obligation(|id| {
-            ProofObligation::new(
-                id,
-                ObligationKind::ArithmeticSafety,
-                ProofStatus::Pending,
-                "op",
-            )
-            .with_site(ObligationSite::new(func, entry, 4))
-        });
-        let module = mb.build();
+        let id = mb
+            .add_proof_obligation(|id| {
+                ProofObligation::new(
+                    id,
+                    ObligationKind::ArithmeticSafety,
+                    ProofStatus::Pending,
+                    "op",
+                )
+                .with_site(ObligationSite::new(func, entry, 4))
+            })
+            .expect("a fresh obligation id");
+        let module = mb.build().expect("ModuleBuilder::build: test fixture");
         let obligation = module
             .proof_obligations
             .iter()
@@ -916,16 +975,18 @@ fn site_and_polarity_refusals() {
     fb.switch_to_block(b);
     fb.ret(vec![]);
     let func = fb.build();
-    let id = mb.add_proof_obligation(|id| {
-        ProofObligation::new(
-            id,
-            ObligationKind::BoundsCheck,
-            ProofStatus::Pending,
-            "not an assert",
-        )
-        .with_site(ObligationSite::new(func, entry, 2))
-    });
-    let module = mb.build();
+    let id = mb
+        .add_proof_obligation(|id| {
+            ProofObligation::new(
+                id,
+                ObligationKind::BoundsCheck,
+                ProofStatus::Pending,
+                "not an assert",
+            )
+            .with_site(ObligationSite::new(func, entry, 2))
+        })
+        .expect("a fresh obligation id");
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let obligation = module
         .proof_obligations
         .iter()
@@ -965,16 +1026,18 @@ fn a_cross_block_value_is_not_derivable() {
     fb.unreachable();
 
     let func = fb.build();
-    let id = mb.add_proof_obligation(|id| {
-        ProofObligation::new(
-            id,
-            ObligationKind::BoundsCheck,
-            ProofStatus::Pending,
-            "cross-block",
-        )
-        .with_site(ObligationSite::new(func, check, 0))
-    });
-    let module = mb.build();
+    let id = mb
+        .add_proof_obligation(|id| {
+            ProofObligation::new(
+                id,
+                ObligationKind::BoundsCheck,
+                ProofStatus::Pending,
+                "cross-block",
+            )
+            .with_site(ObligationSite::new(func, check, 0))
+        })
+        .expect("a fresh obligation id");
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let obligation = module
         .proof_obligations
         .iter()

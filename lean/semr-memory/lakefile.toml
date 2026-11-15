@@ -1,0 +1,58 @@
+# TOML, not Lean DSL: Trust's dependency-constellation check reads a
+# lakefile.toml's path requirements and refuses a local locator in a
+# lakefile.lean, which it cannot evaluate.
+name = "semrMemory"
+defaultTargets = ["SemRBoolMemory", "SemRBoolAccess", "SemRBoolAlloca", "SemRBoolHeap", "SemRFrameChecks"]
+
+[leanOptions]
+autoImplicit = false
+
+[[require]]
+name = "semr"
+path = "../semr"
+
+[[require]]
+name = "trust_irSemantics"
+path = "../trust_ir-semantics"
+
+[[lean_lib]]
+name = "SemRBoolMemory"
+
+[[lean_lib]]
+name = "SemRBoolAccess"
+
+[[lean_lib]]
+name = "SemRBoolAlloca"
+
+[[lean_lib]]
+name = "SemRBoolHeap"
+
+# Allocation-aware source/target byte embedding and compiler-private frames.
+# This grants no backend frame/caller certificate or source-execution theorem.
+[[lean_lib]]
+name = "SemRFrameMemory"
+
+[[lean_lib]]
+name = "SemRFrameMemoryChecks"
+
+[[lean_lib]]
+name = "SemRPlacedFrame"
+
+[[lean_lib]]
+name = "SemRPlacedFrameChecks"
+
+[[lean_lib]]
+name = "SemRFramePair"
+
+[[lean_lib]]
+name = "SemRFramePairChecks"
+
+[[lean_lib]]
+name = "SemRFrameStep"
+
+[[lean_lib]]
+name = "SemRFrameCaller"
+
+# Default build covers every frame component; FrameAudit replays all declarations.
+[[lean_lib]]
+name = "SemRFrameChecks"

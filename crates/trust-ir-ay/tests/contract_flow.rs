@@ -15,14 +15,26 @@
 //
 // The build-abort half of the seed lives in trust-ir-cli:
 // `validate --forbid-failed` (see cli_forbid_failed.rs and scripts/ci_gates.sh).
+//
+// WS1.3: `mint_summary_obligations` now attaches each clause as the row's
+// `formula` (that is what lets a row back exactly one clause of a `proved`
+// summary), and this adapter reports a formula-carrying obligation
+// `Unsupported` — it has no SMT-LIB bridge over bound places yet (WS5 /
+// F-091). So a MINTED row is never ay-discharged or ay-refuted
+// (`a_minted_contract_row_is_unsupported_fail_closed`). The refutation flow
+// below still runs, on a hand-built formula-less row (`mint_unstated`): such a
+// row can be refuted, and — WS1.3 — can never back `proved`.
+
+#![allow(clippy::disallowed_methods)] // a test drives ay directly; a panic here is a test failure (r11 item 5, crates/trust-ir-ay/clippy.toml)
 
 use trust_ir::inst::ICmpOp;
 use trust_ir::proof::{DiagnosticSeverity, ObligationKind, ProofFormula, ProofStatus};
 use trust_ir::ty::Ty;
-use trust_ir::value::ValueId;
+use trust_ir::value::{FuncId, ProofId, ValueId};
 use trust_ir::{FunctionSummary, Module};
 use trust_ir_ay::{
-    VcApplyError, VcObligationOutcome, VcSource, VcVerdict, apply_vc_outcomes, verify_function,
+    Counterexample, VcApplyError, VcObligationOutcome, VcSource, VcVerdict, apply_vc_outcomes,
+    verify_function,
 };
 use trust_ir_build::{ModuleBuilder, mint_summary_obligations, validate_module};
 
@@ -49,13 +61,76 @@ fn build_bump_module(addend: i128) -> (Module, ValueId) {
     fb.ret(vec![result]);
     fb.build();
 
-    let mut module = mb.build();
+    let mut module = mb.build().expect("ModuleBuilder::build: test fixture");
     module.functions[0].summary = Some(
         FunctionSummary::new()
             .with_params(vec!["x".to_string()])
             .ensuring(ProofFormula::smtlib2("(= result (+ x 1))", "Bool")),
     );
     (module, x)
+}
+
+/// Mint the contract rows, then strip each row's `formula`: the pre-WS1.3
+/// shape, which this adapter can still bind a function-wide refutation to.
+/// A formula-less row states no clause, so it can be REFUTED here but can
+/// never back a `proved` summary.
+fn mint_unstated(module: &mut Module, func: FuncId) -> Vec<ProofId> {
+    let ids = mint_summary_obligations(module, func).expect("fresh obligation ids");
+    for obligation in &mut module.proof_obligations {
+        if ids.contains(&obligation.id) {
+            obligation.formula = None;
+        }
+    }
+    ids
+}
+
+// ============================================================================
+// WS1.3: a minted row states its clause, and the adapter fails closed on it
+// ============================================================================
+
+/// The minted Postcondition carries `ensures (= result (+ x 1))` as its
+/// formula; the adapter has no bridge for a formula-carrying row, so the
+/// outcome is `Unsupported` whether the body satisfies or violates the
+/// clause, nothing transitions, and a `proved` summary over the still-Pending
+/// row is refused by the validator. ay-earned `proved` is unavailable until
+/// the adapter can discharge such a row — fail closed, never a false verdict.
+#[test]
+fn a_minted_contract_row_is_unsupported_fail_closed() {
+    for addend in [1, 2] {
+        let (mut module, _) = build_bump_module(addend);
+        let func = module.functions[0].id;
+        let ids = mint_summary_obligations(&mut module, func).expect("fresh obligation ids");
+        assert_eq!(ids.len(), 1);
+        assert_eq!(
+            module.proof_obligations[0].formula.as_ref(),
+            Some(&module.functions[0].summary.as_ref().unwrap().ensures[0]),
+            "the minted row states its clause exactly"
+        );
+
+        let vc = verify_function(&module, func).unwrap();
+        let outcome = vc
+            .obligations
+            .iter()
+            .find(|(id, _)| *id == ids[0])
+            .map(|(_, outcome)| outcome.clone())
+            .expect("the minted row is reported");
+        assert!(
+            matches!(&outcome, VcObligationOutcome::Unsupported { reason } if reason.contains("formula payload")),
+            "addend {addend}: {outcome:?}"
+        );
+        let transitions = apply_vc_outcomes(&mut module, &vc).unwrap();
+        assert!(transitions.is_empty(), "addend {addend}: {transitions:?}");
+        assert_eq!(module.proof_obligations[0].status, ProofStatus::Pending);
+
+        let summary = module.functions[0].summary.take().unwrap();
+        module.functions[0].summary = Some(summary.proved());
+        assert!(
+            validate_module(&module).iter().any(|error| error
+                .to_string()
+                .contains("ensures clause 0 `(= result (+ x 1))` has no Discharged/Certified")),
+            "addend {addend}: a Pending minted row backs nothing"
+        );
+    }
 }
 
 // ============================================================================
@@ -70,7 +145,7 @@ fn violated_ensures_fails_obligation_with_counterexample() {
     let (mut module, x) = build_bump_module(2);
     let func = module.functions[0].id;
 
-    let ids = mint_summary_obligations(&mut module, func);
+    let ids = mint_unstated(&mut module, func);
     assert_eq!(ids.len(), 1, "one ensures clause -> one obligation");
     let oid = ids[0];
     assert_eq!(
@@ -88,8 +163,14 @@ fn violated_ensures_fails_obligation_with_counterexample() {
     let vc = verify_function(&module, func).unwrap();
     assert_eq!(vc.conditions.len(), 1);
     assert_eq!(vc.conditions[0].source, VcSource::Assert);
-    let VcVerdict::Refuted { counterexample } = &vc.conditions[0].verdict else {
-        panic!("expected Refuted, got {:?}", vc.conditions[0].verdict);
+    let VcVerdict::Refuted {
+        counterexample: Counterexample::Model(counterexample),
+    } = &vc.conditions[0].verdict
+    else {
+        panic!(
+            "expected Refuted with a consumer-accepted model, got {:?}",
+            vc.conditions[0].verdict
+        );
     };
     assert!(
         counterexample.iter().any(|(v, _)| *v == x),
@@ -126,6 +207,49 @@ fn violated_ensures_fails_obligation_with_counterexample() {
     assert!(validate_module(&module).is_empty());
 }
 
+/// WS1.8 rule (a) companion: a Pending row may carry an evidence-awaiting-
+/// replay certificate an earlier pass attached. When THIS pass refutes the
+/// row, the stale certificate is dropped with the flip, so the module the
+/// validator sees is not a Failed row beside a discharging certificate
+/// (`GroundCertificateStatusInconsistent`). An `InheritedFromCallee`
+/// certificate is a composition edge, not a discharge claim, and is kept.
+#[test]
+fn refuting_a_row_drops_its_stale_discharging_certificate() {
+    use trust_ir::proof::{ProofCertificate, ProofEvidence};
+    let (mut module, _) = build_bump_module(2);
+    let func = module.functions[0].id;
+    let ids = mint_unstated(&mut module, func);
+    let oid = ids[0];
+    // An earlier pass left a replayable-later SMT payload on the Pending row
+    // (legal: Pending + certificate is the honest awaiting-replay carrier).
+    module.proof_certificates.push(ProofCertificate {
+        obligation: oid,
+        prover: "ay".to_string(),
+        evidence: ProofEvidence::SmtProof(b"(stale proof)".to_vec()),
+        assurance: None,
+    });
+    assert!(
+        validate_module(&module).is_empty(),
+        "Pending + certificate validates"
+    );
+
+    let vc = verify_function(&module, func).unwrap();
+    let transitions = apply_vc_outcomes(&mut module, &vc).unwrap();
+    assert_eq!(transitions, vec![(oid, ProofStatus::Failed)]);
+    assert!(
+        module
+            .proof_certificates
+            .iter()
+            .all(|c| c.obligation != oid),
+        "the refuted row's stale discharging certificate is dropped: {:?}",
+        module.proof_certificates
+    );
+    // The flipped module is valid: no Failed row carries a discharging
+    // certificate.
+    let errors = validate_module(&module);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 // ============================================================================
 // GREEN TWIN: satisfied ensures -> ay proves, authority remains pending
 // ============================================================================
@@ -138,7 +262,7 @@ fn satisfied_ensures_remains_pending_without_replayable_certificate() {
     let (mut module, _) = build_bump_module(1);
     let func = module.functions[0].id;
 
-    let ids = mint_summary_obligations(&mut module, func);
+    let ids = mint_unstated(&mut module, func);
     assert_eq!(ids.len(), 1);
     let oid = ids[0];
     assert_eq!(module.proof_obligations[0].id, oid);
@@ -168,7 +292,7 @@ fn satisfied_ensures_remains_pending_without_replayable_certificate() {
 fn recorded_failed_verdict_is_not_overwritten() {
     let (mut module, _) = build_bump_module(1);
     let func = module.functions[0].id;
-    let ids = mint_summary_obligations(&mut module, func);
+    let ids = mint_unstated(&mut module, func);
     module.proof_obligations[0].status = ProofStatus::Failed;
 
     let vc = verify_function(&module, func).unwrap();
@@ -196,7 +320,7 @@ fn precondition_obligation_stays_pending_under_body_vc() {
             .requiring(ProofFormula::smtlib2("(>= x 0)", "Bool")),
     );
     let func = module.functions[0].id;
-    let ids = mint_summary_obligations(&mut module, func);
+    let ids = mint_unstated(&mut module, func);
     assert_eq!(ids.len(), 2, "requires + ensures");
 
     let vc = verify_function(&module, func).unwrap();
@@ -233,12 +357,12 @@ fn precondition_obligation_stays_pending_under_body_vc() {
 fn vc_apply_rejects_cross_module_identity_mismatch() {
     let (mut refuted_module, _) = build_bump_module(2);
     let refuted_func = refuted_module.functions[0].id;
-    mint_summary_obligations(&mut refuted_module, refuted_func);
+    mint_unstated(&mut refuted_module, refuted_func);
     let vc = verify_function(&refuted_module, refuted_func).unwrap();
 
     let (mut proved_module, _) = build_bump_module(1);
     let proved_func = proved_module.functions[0].id;
-    mint_summary_obligations(&mut proved_module, proved_func);
+    mint_unstated(&mut proved_module, proved_func);
     let target_digest = proved_module.stable_digest();
 
     let error = apply_vc_outcomes(&mut proved_module, &vc)
@@ -263,7 +387,7 @@ fn vc_apply_rejects_cross_module_identity_mismatch() {
 fn vc_apply_uses_sealed_outcomes_not_mutable_report_projection() {
     let (mut module, _) = build_bump_module(2);
     let func = module.functions[0].id;
-    let ids = mint_summary_obligations(&mut module, func);
+    let ids = mint_unstated(&mut module, func);
     let oid = ids[0];
     let mut vc = verify_function(&module, func).unwrap();
 

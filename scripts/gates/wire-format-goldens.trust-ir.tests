@@ -1,0 +1,3 @@
+# Gate 8 (wire-format-goldens): the trust-ir crate's own codec guards.
+param_attrs_text_roundtrip  # exact raw recorded slot count, default tails, independent literal text and unknown-attribute refusals
+template_formats  # amendment S: the TRUST_IS template blob — four-format round trip, magic separation from TRUST_IR, the Ext tags refused under module magic, the read floor, trailing bytes

@@ -8,7 +8,7 @@
 --
 -- Reference: designs/2026-04-16-trust_ir-semantics-lean-architecture.md, Section 6 Phase 2
 
-import TrustIr.Semantics.Memory
+import TrustIr.Proofs.AllocationLayout
 
 namespace TrustIr
 
@@ -35,15 +35,10 @@ operations. They are the Phase 2 proof deliverables.
 13. encodeValue_bool_length: encoded bool length is 1
 14. encodeValue_nullPtr_length: encoded null pointer length is 8
 
-## Helper lemmas (proved, building blocks for 5, 6, and 10)
+## Byte-image lookup laws
 
-- updateBytes_below: bytes below write range are unchanged
-- updateBytes_above: bytes above write range are unchanged
-- readBytes_go_partial_ext: readBytes.go depends only on bytes in the read range
-- updateBytes_input_irrelevant: updateBytes depends only on bytes outside write range
-- updateBytes_overwrite_eq: most recent write wins at updateBytes level
-- updateBytes_at_index: updateBytes writes data[i] at addr+i
-- readBytes_go_from_bytes: readBytes.go recovers bytes when each position is initialized
+The shared byte store supplies exact snapshot, fill, inside-write and outside-
+write laws. Bulk operations retain images instead of building per-byte closures.
 
 ## Design note
 
@@ -86,382 +81,150 @@ theorem encode_nullPtr :
 -- Alloca properties
 -- =================================================================
 
-/-- Memory.alloc always returns an address >= the current nextAddr.
-    Since nextAddr starts at 1024 (the null page), this guarantees
-    the returned address is never zero. -/
-theorem alloc_addr_is_nextAddr (mem : Memory) (size : Nat) (origin : AllocationOrigin) :
-    (mem.alloc size origin).fst = mem.nextAddr := by
-  simp [Memory.alloc]
-
-/-- Memory.alloc advances nextAddr by exactly size bytes. -/
-theorem alloc_advances_nextAddr (mem : Memory) (size : Nat) (origin : AllocationOrigin) :
-    (mem.alloc size origin).snd.nextAddr = mem.nextAddr + size := by
-  simp [Memory.alloc]
-
-/-- Memory.alloc increments the allocation ID counter. -/
-theorem alloc_increments_allocId (mem : Memory) (size : Nat) (origin : AllocationOrigin) :
-    (mem.alloc size origin).snd.nextAllocId = mem.nextAllocId + 1 := by
-  simp [Memory.alloc]
-
-/-- Memory.alloc adds exactly one allocation to the list. -/
-theorem alloc_adds_one_allocation (mem : Memory) (size : Nat) (origin : AllocationOrigin) :
-    (mem.alloc size origin).snd.allocations.length = mem.allocations.length + 1 := by
-  simp [Memory.alloc, List.length_cons]
-
-/-- The fresh allocation from Memory.alloc is alive. -/
-theorem alloc_is_alive (mem : Memory) (size : Nat) (origin : AllocationOrigin) :
-    let result := mem.alloc size origin
-    let newAllocs := result.snd.allocations
-    match newAllocs with
-    | alloc :: _ => alloc.alive = true
-    | [] => False := by
-  simp [Memory.alloc]
-
-/-- In the initial empty memory, nextAddr is 1024 (null page reserve).
-    Combined with alloc_addr_is_nextAddr, this proves alloca never
-    returns address 0. -/
-theorem empty_memory_nextAddr :
-    Memory.empty.nextAddr = 1024 := by
-  simp [Memory.empty]
-
-/-- Alloca on empty memory produces a non-null address. -/
-theorem alloc_on_empty_is_nonzero (size : Nat) (origin : AllocationOrigin) :
-    (Memory.empty.alloc size origin).fst > 0 := by
-  simp [Memory.alloc, Memory.empty]
-
 -- =================================================================
--- Allocation origins are provenance, not discipline (P1 CleanHeap)
+-- Authoritative image helpers are in Semantics.Memory
 -- =================================================================
-
-/-- The IR→memory-model origin mapping sends Clean's Perceus RC origin to
-    `cleanHeap` — the mapping lock for `AllocOrigin.CleanHeap` (the Rust
-    binary codec's origin byte 3). -/
-theorem cleanHeap_toAllocationOrigin :
-    AllocOrigin.CleanHeap.toAllocationOrigin = AllocationOrigin.cleanHeap := rfl
-
-/-- Origins are provenance, not discipline: the origin tag never affects
-    which accesses an allocation admits. In particular a `cleanHeap` cell
-    and its `swiftHeap` twin accept exactly the same in-bounds accesses —
-    the symbolic backbone of the executable cleanHeap/swiftHeap refcount
-    parity fixtures (`ExecutableFixtures.lean`). No operational rule
-    matches on `AllocationOrigin`; ARC ops gate on `Permission.arcRef` and
-    `semDealloc` on `Permission.canDealloc`. -/
-theorem alloc_isInBounds_ignores_origin (mem : Memory) (size : Nat)
-    (o₁ o₂ : AllocationOrigin) (addr : Addr) (n : Nat) :
-    (mem.alloc size o₁).snd.isInBounds addr n
-      = (mem.alloc size o₂).snd.isInBounds addr n := rfl
-
-/-- Origin-irrelevance of liveness: same statement for `isAllocated`. -/
-theorem alloc_isAllocated_ignores_origin (mem : Memory) (size : Nat)
-    (o₁ o₂ : AllocationOrigin) (addr : Addr) :
-    (mem.alloc size o₁).snd.isAllocated addr
-      = (mem.alloc size o₂).snd.isAllocated addr := rfl
-
--- =================================================================
--- writeBytes / readBytes round-trip
--- =================================================================
-
-/-- Writing zero bytes is a no-op: the bytes function is unchanged. -/
-theorem writeBytes_nil (mem : Memory) (addr : Addr) :
-    (mem.writeBytes addr []).bytes = mem.bytes := by
-  simp [Memory.writeBytes, Memory.writeBytes.updateBytes]
-
-/-- Reading zero bytes always succeeds with an empty list. -/
-theorem readBytes_zero (mem : Memory) (addr : Addr) :
-    mem.readBytes addr 0 = some [] := by
-  simp [Memory.readBytes, Memory.readBytes.go]
-
-/-- Writing a single byte then reading it back returns the byte.
-    This is the base case for the writeBytes/readBytes round-trip. -/
-theorem writeBytes_readBytes_single (mem : Memory) (addr : Addr) (b : UInt8) :
-    (mem.writeBytes addr [b]).readBytes addr 1 = some [b] := by
-  simp [Memory.writeBytes, Memory.writeBytes.updateBytes,
-        Memory.readBytes, Memory.readBytes.go]
-
--- =================================================================
--- updateBytes helper lemmas (building blocks for store-store and
--- non-aliasing proofs)
--- =================================================================
-
-/-- updateBytes does not change bytes below the write start address.
-    If a < addr, then the byte at a is unchanged after updateBytes.
-    Proved by induction on data: each step extends the write range by 1
-    at the top, but a remains below the start. -/
-private theorem updateBytes_below (bytes : Addr -> Option UInt8) (data : List UInt8)
-    (addr a : Addr) (hlt : a < addr) :
-    Memory.writeBytes.updateBytes bytes addr data a = bytes a := by
-  induction data generalizing addr bytes with
-  | nil => simp [Memory.writeBytes.updateBytes]
-  | cons b rest ih =>
-    simp only [Memory.writeBytes.updateBytes]
-    have hne : ¬(a == addr) = true := by simp [beq_iff_eq]; exact Nat.ne_of_lt hlt
-    rw [ih _ _ (Nat.lt_succ_of_lt hlt)]; simp [hne]
-
-/-- updateBytes does not change bytes above the write range.
-    If a >= addr + data.length, then the byte at a is unchanged.
-    Proved by induction on data. -/
-private theorem updateBytes_above (bytes : Addr -> Option UInt8) (data : List UInt8)
-    (addr a : Addr) (hab : a >= addr + data.length) :
-    Memory.writeBytes.updateBytes bytes addr data a = bytes a := by
-  induction data generalizing addr bytes with
-  | nil => simp [Memory.writeBytes.updateBytes]
-  | cons b rest ih =>
-    simp only [Memory.writeBytes.updateBytes, List.length_cons] at hab |-
-    have hlt : addr < a :=
-      Nat.lt_of_lt_of_le (Nat.lt_add_of_pos_right (Nat.succ_pos rest.length)) hab
-    have hab' : a >= (addr + 1) + rest.length := by
-      have h1 : addr + rest.length.succ = addr + rest.length + 1 := rfl
-      have h2 : addr + rest.length + 1 = (addr + 1) + rest.length := by
-        rw [Nat.add_assoc, Nat.add_comm rest.length 1, Nat.add_assoc]
-      rw [h1, h2] at hab; exact hab
-    let bytes' : Addr -> Option UInt8 :=
-      fun x => if (x == addr) = true then some b else bytes x
-    rw [ih bytes' (addr + 1) hab']
-    simp [bytes', beq_iff_eq, Nat.ne_of_gt hlt]
-
--- =================================================================
--- readBytes extensionality (partial range)
--- =================================================================
-
-/-- readBytes.go only reads mem.bytes at addresses in [addr, addr+n).
-    If two memories agree on the bytes function over this range,
-    readBytes.go returns the same result.
-
-    Proof by induction on n. At each step, readBytes.go reads mem.bytes
-    at the current address, then recurses with (addr+1, n-1). -/
-private theorem readBytes_go_partial_ext (mem1 mem2 : Memory)
-    (n : Nat) (addr : Addr)
-    (hBytes : forall a, addr <= a -> a < addr + n -> mem1.bytes a = mem2.bytes a) :
-    Memory.readBytes.go mem1 n addr = Memory.readBytes.go mem2 n addr := by
-  induction n generalizing addr with
-  | zero => simp [Memory.readBytes.go]
-  | succ k ih =>
-    simp only [Memory.readBytes.go]
-    have hAddr : mem1.bytes addr = mem2.bytes addr :=
-      hBytes addr (Nat.le_refl addr) (Nat.lt_add_of_pos_right (Nat.succ_pos k))
-    rw [hAddr]
-    cases mem2.bytes addr with
-    | none => rfl
-    | some b =>
-      have ihResult := ih (addr + 1) (fun a ha1 ha2 => by
-        apply hBytes a
-        · exact Nat.le_of_succ_le ha1
-        · have h1 : addr + 1 + k = addr + (k + 1) := by
-            rw [Nat.add_assoc, Nat.add_comm 1 k]
-          rw [h1] at ha2; exact ha2)
-      rw [ihResult]
-
--- =================================================================
--- Multi-byte writeBytes/readBytes round-trip
--- =================================================================
-
-/-- updateBytes writes exactly the given byte at each indexed position.
-    After updateBytes bytes addr data, reading addr+i gives some data[i]
-    for i < data.length. Proved by induction on data with index tracking. -/
-private theorem updateBytes_at_index (bytes : Addr -> Option UInt8) (data : List UInt8)
-    (addr : Addr) (i : Nat) (hi : i < data.length) :
-    Memory.writeBytes.updateBytes bytes addr data (addr + i) = some (data.get ⟨i, hi⟩) := by
-  induction data generalizing addr bytes i with
-  | nil => exact absurd hi (Nat.not_lt_zero _)
-  | cons b rest ih =>
-    simp only [Memory.writeBytes.updateBytes]
-    cases i with
-    | zero =>
-      simp only [Nat.add_zero, List.get]
-      have h : addr < addr + 1 := Nat.lt_succ_of_le (Nat.le_refl addr)
-      rw [updateBytes_below _ rest (addr + 1) addr h]
-      simp
-    | succ j =>
-      have hj : j < rest.length := Nat.lt_of_succ_lt_succ (List.length_cons b rest ▸ hi)
-      simp only [List.get]
-      have hAddr : addr + (j + 1) = (addr + 1) + j := Nat.add_right_comm addr j 1
-      rw [hAddr]
-      exact ih _ (addr + 1) j hj
-
-/-- readBytes.go succeeds when every byte in the range is initialized.
-    If for all i < data.length, mem.bytes at addr+i equals some data[i],
-    then readBytes.go mem data.length addr returns some data. -/
-private theorem readBytes_go_from_bytes (mem : Memory)
-    (data : List UInt8) (addr : Addr)
-    (hBytes : forall i, (hi : i < data.length) -> mem.bytes (addr + i) = some (data.get ⟨i, hi⟩)) :
-    Memory.readBytes.go mem data.length addr = some data := by
-  induction data generalizing addr with
-  | nil => simp [Memory.readBytes.go]
-  | cons b rest ih =>
-    simp only [Memory.readBytes.go, List.length_cons]
-    have h0 : mem.bytes addr = some b := by
-      have := hBytes 0 (Nat.succ_pos rest.length)
-      simp only [Nat.add_zero, List.get] at this; exact this
-    rw [h0]
-    have ihResult := ih (addr + 1) (fun i hi => by
-      have hShift : (addr + 1) + i = addr + (i + 1) := (Nat.add_right_comm addr i 1).symm
-      rw [hShift]
-      exact hBytes (i + 1) (Nat.succ_lt_succ hi))
-    simp [ihResult]
-
-/-- Writing bytes then reading them back returns the original data.
-    This is the general multi-byte writeBytes/readBytes round-trip theorem.
-
-    Proof: writeBytes addr data writes data[i] at addr+i for each i.
-    readBytes addr data.length reads addr+i for i in 0 to data.length-1.
-    By updateBytes_at_index, each read recovers the written byte. -/
-theorem writeBytes_readBytes_general (mem : Memory) (addr : Addr) (data : List UInt8) :
-    (mem.writeBytes addr data).readBytes addr data.length = some data := by
-  simp only [Memory.readBytes, Memory.writeBytes]
-  apply readBytes_go_from_bytes _ data addr
-  intro i hi
-  exact updateBytes_at_index mem.bytes data addr i hi
-
--- =================================================================
--- updateBytes overwrite helper
--- =================================================================
-
-/-- updateBytes at addr with data overwrites [addr, addr+data.length).
-    If two byte functions agree outside this range, updateBytes results agree.
-    This is the key property: updateBytes overwrites bytes in the range
-    independently of the original function's values there. -/
-private theorem updateBytes_input_irrelevant (f1 f2 : Addr -> Option UInt8)
-    (data : List UInt8) (addr a : Addr)
-    (hAgree : forall x, x < addr \/ x >= addr + data.length -> f1 x = f2 x) :
-    Memory.writeBytes.updateBytes f1 addr data a =
-    Memory.writeBytes.updateBytes f2 addr data a := by
-  induction data generalizing addr f1 f2 with
-  | nil =>
-    simp only [Memory.writeBytes.updateBytes, List.length_nil, Nat.add_zero]
-    apply hAgree
-    rcases Nat.lt_or_ge a addr with hlt | hge
-    · exact Or.inl hlt
-    · exact Or.inr hge
-  | cons b rest ih =>
-    simp only [Memory.writeBytes.updateBytes]
-    apply ih
-    intro x hx
-    -- Goal: (if (x == addr) = true then some b else f1 x) =
-    --       (if (x == addr) = true then some b else f2 x)
-    by_cases hxa : (x == addr) = true
-    · simp [hxa]
-    · simp [hxa]
-      -- Need: f1 x = f2 x, using hAgree
-      apply hAgree
-      cases hx with
-      | inl hlt =>
-        -- x < addr + 1 and x ≠ addr, so x < addr
-        have hxne : x ≠ addr := by
-          intro heq; apply hxa; rw [beq_iff_eq]; exact heq
-        exact Or.inl (Nat.lt_of_le_of_ne (Nat.lt_succ_iff.mp hlt) hxne)
-      | inr hge =>
-        -- x >= addr + 1 + rest.length, so x >= addr + (rest.length + 1)
-        exact Or.inr (by
-          show addr + (rest.length + 1) ≤ x
-          calc addr + (rest.length + 1) = addr + 1 + rest.length := by
-                rw [Nat.add_assoc, Nat.add_comm 1 rest.length]
-               _ ≤ x := hge)
-
-/-- The most recent write wins: writing data2 after data1 at the same
-    address produces the same byte function as writing data2 alone
-    (when data1.length = data2.length). -/
-private theorem updateBytes_overwrite_eq (bytes : Addr -> Option UInt8)
-    (data1 data2 : List UInt8) (addr a : Addr)
-    (h : data1.length = data2.length) :
-    Memory.writeBytes.updateBytes
-      (Memory.writeBytes.updateBytes bytes addr data1) addr data2 a =
-    Memory.writeBytes.updateBytes bytes addr data2 a := by
-  apply updateBytes_input_irrelevant
-  intro x hx
-  cases hx with
-  | inl hlt => exact updateBytes_below bytes data1 addr x hlt
-  | inr hge => exact updateBytes_above bytes data1 addr x (h ▸ hge)
-
--- =================================================================
--- Store-store property
--- =================================================================
-
-/-- Storing to the same address twice: the second store overwrites
-    the first at the byte level. The bytes function at the stored
-    addresses reflects the second write.
-
-    Stated at the byte level: writing data2 after data1 at the same
-    address means readBytes returns data2. -/
-theorem writeBytes_overwrite (mem : Memory) (addr : Addr) (data1 data2 : List UInt8)
-    (h : data1.length = data2.length) :
-    (mem.writeBytes addr data1 |>.writeBytes addr data2).readBytes addr data2.length =
-    (mem.writeBytes addr data2).readBytes addr data2.length := by
-  -- Both sides call readBytes on memories that only differ in the bytes function.
-  -- We use readBytes_go_partial_ext to show readBytes agrees when bytes agree.
-  simp only [Memory.readBytes]
-  apply readBytes_go_partial_ext
-  intro a _ _
-  -- Show bytes fields agree at address a
-  show (mem.writeBytes addr data1 |>.writeBytes addr data2).bytes a =
-       (mem.writeBytes addr data2).bytes a
-  simp only [Memory.writeBytes]
-  exact updateBytes_overwrite_eq mem.bytes data1 data2 addr a h
-
--- =================================================================
--- Non-aliasing property
--- =================================================================
-
-/-- Writing to a non-overlapping address does not affect reads from
-    the original address.
-
-    Stated at the byte level: if [addr1, addr1+n1) and [addr2, addr2+n2)
-    do not overlap, then writeBytes at addr2 does not change readBytes
-    at addr1.
-
-    This is a key correctness property for optimizations that reorder
-    non-aliasing memory accesses. -/
-theorem writeBytes_non_aliasing (mem : Memory) (addr1 addr2 : Addr)
-    (n1 : Nat) (data2 : List UInt8)
-    (hNoOverlap : addr1 + n1 <= addr2 \/ addr2 + data2.length <= addr1) :
-    (mem.writeBytes addr2 data2).readBytes addr1 n1 = mem.readBytes addr1 n1 := by
-  -- writeBytes produces { mem with bytes := updateBytes mem.bytes addr2 data2 }.
-  -- readBytes addr1 n1 only reads mem.bytes at addresses in [addr1, addr1+n1).
-  -- For those addresses, updateBytes is identity because they are disjoint.
-  simp only [Memory.readBytes]
-  apply readBytes_go_partial_ext
-  intro a ha1 ha2
-  show (mem.writeBytes addr2 data2).bytes a = mem.bytes a
-  simp only [Memory.writeBytes]
-  cases hNoOverlap with
-  | inl hLeft =>
-    -- addr1 + n1 <= addr2, so a < addr1 + n1 <= addr2
-    exact updateBytes_below mem.bytes data2 addr2 a (Nat.lt_of_lt_of_le ha2 hLeft)
-  | inr hRight =>
-    -- addr2 + data2.length <= addr1, so a >= addr1 >= addr2 + data2.length
-    exact updateBytes_above mem.bytes data2 addr2 a (Nat.le_trans hRight ha1)
 
 -- =================================================================
 -- GEP properties
 -- =================================================================
 
-/-- GEP with index 0 produces the base address unchanged. -/
+theorem memoryExcept_bind {α β : Type} (e : Except SemError α)
+    (f : α → Except SemError β) :
+    Sem.fromMemoryExcept (e >>= f) = (do
+      let value ← Sem.fromMemoryExcept e
+      Sem.fromMemoryExcept (f value)) := by
+  cases e <;> rfl
+
+theorem memoryExcept_forIn {α β : Type} (xs : List α) (initial : β)
+    (body : α → β → Except SemError (ForInStep β)) :
+    (forIn xs initial (fun x value => Sem.fromMemoryExcept (body x value)) : Sem β) =
+      Sem.fromMemoryExcept (forIn xs initial body) := by
+  induction xs generalizing initial with
+  | nil => rfl
+  | cons x xs ih =>
+    first
+    | simp only [forIn, List.forIn, List.forIn.loop]
+    | simp only [List.forIn_cons]
+    rw [memoryExcept_bind]
+    cases hb : body x initial with
+    | error error => rfl
+    | ok step =>
+      cases step with
+      | done result => rfl
+      | yield result => exact ih result
+
+/-- The former per-step lifting and the pure-plan implementation agree for
+    all readers, layouts, worlds, errors and target models. This proof records
+    the refactor without retaining a second runtime implementation. -/
+private def gepValuesLiftedLoop {key : Type} (layoutOf : MemoryLayoutQuery)
+    (readInteger : key → Value → Except SemError Int) (pointeeTy : Ty)
+    (base : Value) (indices : List (key × Value)) (model : ByteModel := .le64) : Sem Value := do
+  let layout ← Sem.fromMemoryExcept (layoutOf pointeeTy)
+  let mut delta : Nat := 0
+  for (identity, value) in indices do
+    let integer ← Sem.fromMemoryExcept (readInteger identity value)
+    let index ← Sem.fromMemoryExcept (checkedWord64Operand "GEP" false integer)
+    let offset ← Sem.fromMemoryExcept (checkedWord64Mul "GEP" layout.size index)
+    delta ← Sem.fromMemoryExcept (checkedWord64Add "GEP" delta offset)
+  semGEPAddress base delta model
+
+theorem semGEPValuesUsing_liftedLoop {key : Type} (layoutOf : MemoryLayoutQuery)
+    (reader : key → Value → Except SemError Int) (ty : Ty)
+    (base : Value) (indices : List (key × Value)) (model : ByteModel) :
+    semGEPValuesUsing layoutOf reader ty base indices model =
+      gepValuesLiftedLoop layoutOf reader ty base indices model := by
+  apply Eq.symm
+  unfold gepValuesLiftedLoop semGEPValuesUsing gepOffsetUsing
+  rw [memoryExcept_bind]
+  cases hl : layoutOf ty with
+  | error error => rfl
+  | ok layout =>
+    simp only [Sem.fromMemoryExcept, pure_bind]
+    have body : (fun (input : key × Value) (delta : Nat) => do
+        let integer ← Sem.fromMemoryExcept (reader input.1 input.2)
+        let magnitude ← Sem.fromMemoryExcept (checkedWord64Operand "GEP" false integer)
+        let offset ← Sem.fromMemoryExcept (checkedWord64Mul "GEP" layout.size magnitude)
+        let result ← Sem.fromMemoryExcept (checkedWord64Add "GEP" delta offset)
+        pure PUnit.unit
+        pure (ForInStep.yield result)) =
+      (fun input delta => Sem.fromMemoryExcept (do
+        let integer ← reader input.1 input.2
+        let magnitude ← checkedWord64Operand "GEP" false integer
+        let offset ← checkedWord64Mul "GEP" layout.size magnitude
+        let result ← checkedWord64Add "GEP" delta offset
+        pure (ForInStep.yield result))) := by
+      funext input delta
+      simp only [memoryExcept_bind, pure_bind]
+      rfl
+    simp only [Sem.fromMemoryExcept, pure_bind] at body
+    have lifted := memoryExcept_forIn indices (0 : Nat) (fun input delta => do
+      let integer ← reader input.1 input.2
+      let magnitude ← checkedWord64Operand "GEP" false integer
+      let offset ← checkedWord64Mul "GEP" layout.size magnitude
+      let result ← checkedWord64Add "GEP" delta offset
+      pure (ForInStep.yield result))
+    simp only [Sem.fromMemoryExcept] at lifted
+    rw [body, lifted]
+
+/-- Every legacy-sized type also has its declared natural alignment. -/
+theorem byteAlign_of_byteSize (ty : Ty) (size : Nat) (h : ty.byteSize = some size) :
+    ty.byteAlign = some (ty.byteAlign.getD 1) := by
+  cases ty <;> simp_all only [Ty.byteSize, Ty.byteAlign, Option.getD_some, Option.noConfusion]
+  case Vector count elemTy =>
+    split at h
+    · contradiction
+    · simp only [Ty.byteAlign, ‹¬(count == 0) = true›, ↓reduceIte]
+      cases he : vectorScalarByteSize elemTy <;> simp_all
+
+theorem scalarMemoryLayout_of_byteSize (ty : Ty) (size : Nat)
+    (h : ty.byteSize = some size) :
+    scalarMemoryLayout .le64 ty = .ok ⟨size, ty.byteAlign.getD 1⟩ := by
+  have ha := byteAlign_of_byteSize ty size h
+  cases hal : ty.byteAlign with
+  | none => simp [hal] at ha
+  | some alignment =>
+    simp only [hal, Option.getD_some] at ha ⊢
+    simp only [scalarMemoryLayout, Ty.byteSizeFor, Ty.byteAlignFor, h, hal]
+
+/-- A bounded nonnegative integer converts to its mathematical magnitude. -/
+theorem checkedWord64Operand_nonnegative (op : String) (value : Int)
+    (h0 : 0 ≤ value) (h64 : value ≤ (word64Max : Int)) :
+    checkedWord64Operand op false value = .ok value.toNat := by
+  simp [checkedWord64Operand, Int.not_lt.mpr h0, Int.not_lt.mpr h64]
+
+/-- GEP with index 0 produces the base address unchanged, including ZSTs. -/
 theorem gepByteOffset_zero (ty : Ty) (s : Nat) (h : ty.byteSize = some s) :
     gepByteOffset ty 0 = .ok 0 := by
-  simp [gepByteOffset, h]
+  simp [gepByteOffset, scalarMemoryLayout_of_byteSize ty s h,
+    checkedWord64Operand, checkedWord64Mul, word64Max, word64Limit, word64Bits, bind, Except.bind, pure, Except.pure]
 
-/-- GEP byte offset is monotonically increasing with positive indices.
-    Proof: gepByteOffset with hTy gives .ok (index.toNat * s) for
-    non-negative index. Then i.toNat <= j.toNat (monotonicity of
-    Int.toNat on non-negatives) implies i.toNat * s <= j.toNat * s. -/
+/-- The word conversion and multiplication guards are separate: a ZST does
+    not erase an oversized operand. -/
+theorem gepByteOffset_bounded (ty : Ty) (size : Nat) (index : Int)
+    (hTy : ty.byteSize = some size) (h0 : 0 ≤ index)
+    (h64 : index ≤ (word64Max : Int)) (hMul : index.toNat * size ≤ word64Max) :
+    gepByteOffset ty index = .ok (index.toNat * size) := by
+  simp [gepByteOffset, scalarMemoryLayout_of_byteSize ty size hTy,
+    checkedWord64Operand_nonnegative "GEP" index h0 h64, checkedWord64Mul, hMul, bind, Except.bind, pure, Except.pure]
+
+/-- GEP offsets are monotone on the admitted u64 domain. The former theorem
+    over all nonnegative Ints was false once word overflow was modelled. -/
 theorem gepByteOffset_monotone (ty : Ty) (s : Nat) (i j : Int)
-    (hTy : ty.byteSize = some s) (hi : 0 <= i) (hj : i <= j) :
-    exists oi oj, gepByteOffset ty i = .ok oi /\ gepByteOffset ty j = .ok oj /\ oi <= oj := by
-  -- i >= 0 implies -(i < 0)
-  have hi_nonneg : ¬(i < 0) := Int.not_lt.mpr hi
-  -- j >= 0 follows from 0 <= i <= j
-  have hj_nonneg : ¬(j < 0) := Int.not_lt.mpr (Int.le_trans hi hj)
-  -- Unfold gepByteOffset for both i and j
-  refine ⟨i.toNat * s, j.toNat * s, ?_, ?_, ?_⟩
-  · simp [gepByteOffset, hTy, hi_nonneg]
-  · simp [gepByteOffset, hTy, hj_nonneg]
-  · -- Need: i.toNat <= j.toNat from 0 <= i <= j
-    apply Nat.mul_le_mul_right
+    (hTy : ty.byteSize = some s) (hi : 0 ≤ i) (hj : i ≤ j)
+    (hj64 : j ≤ (word64Max : Int)) (hjMul : j.toNat * s ≤ word64Max) :
+    exists oi oj, gepByteOffset ty i = .ok oi ∧ gepByteOffset ty j = .ok oj ∧ oi ≤ oj := by
+  have hnat : i.toNat ≤ j.toNat := by
     cases i with
     | ofNat n =>
       cases j with
-      | ofNat m => simp only [Int.toNat]; exact Int.ofNat_le.mp hj
+      | ofNat m => exact Int.ofNat_le.mp hj
       | negSucc m => exact absurd (Int.le_trans hi hj) (by simp)
     | negSucc n => exact absurd hi (by simp)
+  have hmul := Nat.mul_le_mul_right s hnat
+  exact ⟨i.toNat * s, j.toNat * s,
+    gepByteOffset_bounded ty s i hTy hi (Int.le_trans hj hj64) (Nat.le_trans hmul hjMul),
+    gepByteOffset_bounded ty s j hTy (Int.le_trans hi hj) hj64 hjMul, hmul⟩
 
 -- =================================================================
 -- Combined load-after-store theorem sketch
@@ -514,16 +277,6 @@ theorem encodeValue_bool_length (b : Bool) :
 theorem encodeValue_nullPtr_length :
     (match encodeValue .nullPtr with | some bs => bs.length | none => 0) = 8 := by
   simp [encodeValue, List.length_replicate]
-
-/-- encodeIntBytes produces exactly numBytes bytes. -/
-theorem encodeIntBytes_length (val : Int) (numBytes : Nat) :
-    (encodeIntBytes val numBytes).length = numBytes := by
-  simp [encodeIntBytes]
-  suffices h : forall n v, (encodeIntBytes.go n v).length = n from h numBytes val.toNat
-  intro n
-  induction n with
-  | zero => intro _; simp [encodeIntBytes.go]
-  | succ k ih => intro _; simp [encodeIntBytes.go, ih]
 
 /-- The encoded byte length of an integer value matches width/8. -/
 theorem encodeValue_int_length (w : Nat) (n : Int) :
@@ -598,19 +351,19 @@ private theorem lookupValue_bindFresh (val : Value) (st : MachineState) :
     address-of a global fixes its address (`global_addr_*` fixtures), EVERY later
     address-of the SAME global yields the SAME pointer — they alias and compare
     equal. Universal over all globals/states; no proof placeholder or new axiom. -/
-theorem semGlobalAddr_cache_hit (g : GlobalId) (addr : Addr) (s : MachineState)
-    (h : s.lookupGlobal g = some addr) :
+theorem semGlobalAddr_cache_hit (g : GlobalId) (addr : Addr) (id : AllocId)
+    (s : MachineState) (h : s.lookupGlobal g = some (addr, id)) :
     ∃ v s',
       Sem.run (semGlobalAddr g) s = .ok (v, s')
-      ∧ s'.lookupValue v = some (.ptr addr)
-      ∧ s'.lookupGlobal g = some addr := by
+      ∧ s'.lookupValue v = some (.ptr addr (some id))
+      ∧ s'.lookupGlobal g = some (addr, id) := by
   refine ⟨ValueId.mk s.nextValueId,
-          { s with locals := s.locals.set (ValueId.mk s.nextValueId) (.ptr addr),
+          { s with locals := s.locals.set (ValueId.mk s.nextValueId) (.ptr addr (some id)),
                    nextValueId := s.nextValueId + 1 }, ?_, ?_, ?_⟩
   · unfold semGlobalAddr
     simp only [Sem.run_bind, run_getState, Except.bind, h]
-    exact run_bindFresh (.ptr addr) s
-  · exact lookupValue_bindFresh (.ptr addr) s
+    exact run_bindFresh (.ptr addr (some id)) s
+  · exact lookupValue_bindFresh (.ptr addr (some id)) s
   · simpa [MachineState.lookupGlobal] using h
 
 -- =================================================================
@@ -619,27 +372,197 @@ theorem semGlobalAddr_cache_hit (g : GlobalId) (addr : Addr) (s : MachineState)
 
 /-- **Fat-pointer round trip, value level (headline form).**
     `PtrFromParts (PtrData p) (PtrMetadata p) = p` for every fat-pointer
-    value `p = .fatPtr data metadata` — decompose-then-recombine is the
-    identity, with NO side condition: both projections are total on
-    `.fatPtr`, and the data lane always re-injects (a 0 data lane reads
-    back as `.nullPtr` and re-injects as address 0). -/
-theorem fatPtr_roundTrip_value (data : Nat) (metadata : Value) :
+    value `p = .fatPtr data prov metadata` whose null data lane carries no
+    provenance (`data = 0 → prov = none`, which every constructor of a fat
+    pointer keeps): both projections are total on `.fatPtr`, and the data
+    lane always re-injects with its provenance (a 0 data lane reads back as
+    `.nullPtr` and re-injects as address 0 with none). -/
+theorem fatPtr_roundTrip_value (data : Nat) (prov : Option AllocId) (metadata : Value)
+    (hNull : data = 0 → prov = none) :
     (do
-      let d ← fatPtrDataValue (.fatPtr data metadata)
-      let m ← fatPtrMetadataValue (.fatPtr data metadata)
-      fatPtrFromPartsValue d m) = some (Value.fatPtr data metadata) := by
-  cases data <;> rfl
+      let d ← fatPtrDataValue (.fatPtr data prov metadata)
+      let m ← fatPtrMetadataValue (.fatPtr data prov metadata)
+      fatPtrFromPartsValue d m) = some (Value.fatPtr data prov metadata) := by
+  cases data with
+  | zero => rw [hNull rfl]; rfl
+  | succ _ => rfl
 
 /-- **Fat-pointer round trip, value level (projection form).** Any value
     on which BOTH projections are defined is a fat pointer, and
     recombining the projections yields it back exactly. -/
 theorem fatPtrFromParts_data_metadata (p d m : Value)
+    (hNull : ∀ prov metadata, p = .fatPtr 0 prov metadata → prov = none)
     (hd : fatPtrDataValue p = some d) (hm : fatPtrMetadataValue p = some m) :
     fatPtrFromPartsValue d m = some p := by
   cases p <;> simp only [fatPtrDataValue, fatPtrMetadataValue,
-    Option.some.injEq] at hd hm
-  case fatPtr data metadata =>
+    Option.some.injEq] at hd hm <;> try contradiction
+  case fatPtr data prov metadata =>
     subst d; subst m
-    cases data <;> rfl
+    cases data with
+    | zero => rw [hNull prov metadata rfl]; rfl
+    | succ _ => rfl
+
+
+-- =================================================================
+-- The reference placement and exposed provenance (SPEC "A pointer operand
+-- names the allocation it was derived from")
+-- =================================================================
+
+-- Lean 4.8 core has no `List.find?` inversion lemmas; these supply the facts
+-- the provenance lookups need.
+
+theorem find?_eq_none_of_forall {α : Type _} {p : α → Bool} {l : List α}
+    (h : ∀ a ∈ l, p a = false) : l.find? p = none := by
+  induction l with
+  | nil => simp [List.find?]
+  | cons x xs ih =>
+    rw [List.find?_cons, h x ((trustIrListMemConsSelf x xs))]
+    exact ih fun a ha => h a (List.mem_cons_of_mem x ha)
+
+theorem mem_append_iff' {α : Type _} {a : α} : ∀ {l1 l2 : List α}, a ∈ l1 ++ l2 ↔ a ∈ l1 ∨ a ∈ l2
+  | [], l2 => by simp
+  | x :: xs, l2 => by
+    rw [List.cons_append, List.mem_cons, List.mem_cons, mem_append_iff', or_assoc]
+
+theorem mem_reverse_iff' {α : Type _} {a : α} : ∀ {l : List α}, a ∈ l.reverse ↔ a ∈ l
+  | [] => by simp
+  | x :: xs => by
+    rw [List.reverse_cons, mem_append_iff', mem_reverse_iff']
+    simp only [List.mem_cons, List.not_mem_nil, or_false]
+    exact Or.comm
+
+/-- `find?` finds SOMETHING when an element passes. -/
+theorem find?_isSome_of_mem {α : Type _} {p : α → Bool} {l : List α} {a : α}
+    (hMem : a ∈ l) (hp : p a = true) : ∃ b, l.find? p = some b := by
+  induction l with
+  | nil => cases hMem
+  | cons x xs ih =>
+    rw [List.find?_cons]
+    cases hx : p x
+    · simp only []
+      rcases List.mem_cons.mp hMem with rfl | h
+      · rw [hp] at hx; exact Bool.noConfusion hx
+      · exact ih h
+    · exact ⟨x, rfl⟩
+
+local macro "addr_omega" : tactic => `(tactic| ((try simp only [Addr] at *) <;> omega))
+
+/-- **Exposed provenance, containment.** Under the layout invariant, an
+    address inside an allocation's footprint recovers exactly that
+    allocation, live or dead (`Memory.provenanceAt`, the interpreter's
+    `try_pointer_from_address`). -/
+theorem provenanceAt_inside (mem : Memory) (alloc : Allocation) (addr : Addr)
+    (hWF : mem.layoutWF) (hMem : alloc ∈ mem.allocations)
+    (hBase : alloc.base ≤ addr) (hIn : addr < alloc.base + alloc.size) :
+    mem.provenanceAt addr = some alloc.id := by
+  obtain ⟨-, -, -, hDisj, -⟩ := hWF
+  unfold Memory.provenanceAt
+  dsimp only
+  have hMemR : alloc ∈ mem.allocations.reverse := mem_reverse_iff'.mpr hMem
+  have hp : (decide (alloc.base ≤ addr) && decide (addr < alloc.base + alloc.size)) = true := by
+    simp [hBase, hIn]
+  obtain ⟨b, hb⟩ := find?_isSome_of_mem
+    (p := fun a => decide (a.base ≤ addr) && decide (addr < a.base + a.size)) hMemR hp
+  rw [hb]
+  have hbMem : b ∈ mem.allocations := mem_reverse_iff'.mp (mem_of_find?_some hb)
+  have hbp := find?_some_pred hb
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hbp
+  by_cases hab : b = alloc
+  · rw [hab]
+  · rcases hDisj b hbMem alloc hMem hab with ⟨h1, h2⟩ | ⟨h1, h2⟩ <;> addr_omega
+
+/-- Factor pointer decoding over an arbitrary eight-byte image before
+    instantiating it with a concrete encoder expression. Provenance is still
+    resolved from the actual receiving memory. -/
+theorem decodeValueAt_pointer_image (memory : Memory) (bytes : List UInt8)
+    (size : bytes.length = 8) :
+    decodeValueAt memory .Ptr bytes = .ok (memory.resolveAddr (decodeIntBytes bytes)) := by
+  simp only [decodeValueAt, decodeImageAt, Ty.isFloat, decodeValue, size,
+    beq_self_eq_true, ite_true, Bool.false_eq_true, ite_false, Memory.resolveDecoded]
+  by_cases zero : decodeIntBytes bytes = 0 <;> simp [zero, Memory.resolveAddr]
+
+/-- **Load after store of a pointer recovers its provenance (exposed
+    provenance through bytes).** A pointer to an address inside an
+    allocation, stored as its eight-byte image and read back, decodes —
+    whatever provenance the stored value carried — to that address with that
+    allocation's provenance: the image holds the address only, and the
+    decode recovers the allocation by `Memory.provenanceAt`, as the
+    interpreter's `decode_leaf` does. -/
+theorem load_after_store_ptr_recovers_inside (mem : Memory) (slot a : Addr)
+    (prov : Option AllocId) (alloc : Allocation)
+    (hWF : mem.layoutWF) (hMem : alloc ∈ mem.allocations)
+    (hBase : alloc.base ≤ a) (hIn : a < alloc.base + alloc.size)
+    (hNZ : a ≠ 0) (hLt : a < 2 ^ 64) :
+    ∃ enc, encodeValueAt .Ptr (.ptr a prov) = .ok enc ∧
+      (mem.writeBytes slot enc).readBytes slot 8 = some enc ∧
+      decodeValueAt (mem.writeBytes slot enc) .Ptr enc = .ok (.ptr a (some alloc.id)) := by
+  refine ⟨encodeIntBytes (Int.ofNat a) 8, rfl, ?_, ?_⟩
+  · have h := writeBytes_readBytes_general mem slot (encodeIntBytes (Int.ofNat a) 8)
+    rwa [encodeIntBytes_length] at h
+  · have hProv : (mem.writeBytes slot (encodeIntBytes (Int.ofNat a) 8)).provenanceAt a
+        = some alloc.id := provenanceAt_inside mem alloc a hWF hMem hBase hIn
+    have hLen : (encodeIntBytes (Int.ofNat a) 8).length = 8 := encodeIntBytes_length _ _
+    have hA : (a == 0) = false := by simpa using hNZ
+    rw [decodeValueAt_pointer_image _ _ hLen, decode_encode_address a hLt]
+    simp only [Memory.resolveAddr, hA, hProv, Bool.false_eq_true, if_false, ite_false]
+
+-- =================================================================
+-- Bulk memory: MemCopy preserves bytes (WS3.20, F-057)
+-- =================================================================
+
+/-- The actual MemCopy operation preserves every source byte and its init
+    state. The snapshot is captured before writing, including overlap. -/
+theorem memcopy_preserves_bytes (mem : Memory) (dst src n i : Nat) (hi : i < n) :
+    (mem.writeImage dst (mem.readImage src n)).bytes (dst + i) = mem.bytes (src + i) :=
+  Memory.bytes_copyImage mem dst src n i hi
+
+/-- Bytes below the actual destination interval remain unchanged. -/
+theorem memcopy_untouched_below (mem : Memory) (dst src n a : Nat) (ha : a < dst) :
+    (mem.writeImage dst (mem.readImage src n)).bytes a = mem.bytes a := by
+  apply Memory.bytes_writeImage_outside
+  exact Or.inl ha
+
+/-- Bytes after the actual destination interval remain unchanged. -/
+theorem memcopy_untouched_above (mem : Memory) (dst src n a : Nat) (ha : dst + n ≤ a) :
+    (mem.writeImage dst (mem.readImage src n)).bytes a = mem.bytes a := by
+  apply Memory.bytes_writeImage_outside
+  right
+  simpa using ha
+
+-- =================================================================
+-- Sealed handle slots (WS3.7, F-047 memory half)
+-- =================================================================
+
+/-- A v43 handle occupies exactly one 64-bit word (8 bytes) at the model's
+    pointer-width pin: the width a sealed handle slot is loaded and stored at. -/
+theorem handle_slot_width (name runtime : String) :
+    (Ty.Handle name runtime).bitWidth = some (8 * 8) := by
+  simp [Ty.bitWidth, Ty.bitWidthAtPointerBits]
+
+/-- **The sealed-slot round trip at a v43 handle (WS3.7, F-047).**
+
+    The validator's sealed-slot rule (`crates/trust-ir-build/src/validate/
+    handle_slots.rs`) admits a handle in memory only in a function-local
+    `alloca` slot that is stored and loaded at EXACTLY the handle type, whose
+    pointer never escapes, and whose every load is dominated by a store. What
+    that rule needs from the model is no handle semantics at all: it is
+    `load ∘ store = id` at one handle-width word — the handle's own 8 bytes
+    written at the slot address read back unchanged, so a reload yields the
+    handle that was stored and never a word some other store forged.
+
+    An instance of `writeBytes_readBytes_general` at the handle width
+    (`handle_slot_width`); no new axiom (see `AxiomAudit`). -/
+theorem load_store_roundtrip_handle (name runtime : String) (mem : Memory) (addr : Addr)
+    (word : List UInt8)
+    (hWord : (Ty.Handle name runtime).bitWidth = some (8 * word.length)) :
+    (mem.writeBytes addr word).readBytes addr 8 = some word := by
+  rw [handle_slot_width] at hWord
+  have hLen : word.length = 8 := by
+    have h := Option.some.inj hWord
+    omega
+  rw [← hLen]
+  exact writeBytes_readBytes_general mem addr word
 
 end TrustIr
+
+#trustIrAxiomsExact TrustIr.fatPtr_roundTrip_value == []

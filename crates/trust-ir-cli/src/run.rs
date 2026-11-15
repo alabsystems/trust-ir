@@ -9,19 +9,56 @@
 //! The reference interpreter executes exactly ONE `Module`, resolving calls by
 //! `FuncId` inside it, so a program emitted one-module-per-function
 //! ("emit-each") must first be LINKED into a single executable image. The
-//! linker here merges modules at the semantic level the interpreter needs:
+//! linker is the library merge, [`trust_ir_build::merge_into`] under
+//! [`MergePolicy::EXECUTION_IMAGE`] (roadmap WS4.11), applied to each input in
+//! turn:
 //!
-//!   * functions are keyed by NAME; a bodied definition wins over a bodyless
-//!     declaration; duplicate bodied definitions must be structurally
-//!     identical after ID remapping (they are deduped); conflicting bodies
-//!     are an error;
-//!   * every per-module arena reference (`TyId`, `FuncTyId`, `StructId`,
+//!   * functions and globals are keyed by LINK-TIME SYMBOL; a definition
+//!     resolves a bodyless declaration, and of two declarations the earlier
+//!     stands (`DuplicateDecl::FirstStands`, this linker's pre-WS4.11 rule:
+//!     a declaration adds nothing to an existing entry) — either way the two
+//!     must agree on signature and calling convention; duplicate definitions
+//!     dedup only when FULLY identical after the remap, and any other
+//!     duplicate is an error naming the first differing field (`conflicting
+//!     definitions of @f: body_gate differs`) — input order never picks a
+//!     codegen license;
+//!   * every per-module table reference (`TyId`, `FuncTyId`, `StructId`,
 //!     `EnumId`, `RecordId`, `ClosureTyId`, `PredId`, `UnivId`, `GlobalId`,
-//!     `FuncId`, file indices) is remapped into merged,
-//!     structurally-deduplicated arenas;
-//!   * globals are keyed by name and must agree structurally;
-//!   * proof obligations/certificates are NOT carried over — the linked
-//!     image is an execution artifact, not a verification artifact.
+//!     `FuncId`, `ImportId`, file indices) is remapped by the merge's
+//!     exhaustive walk; equal types are one id, and a nominal type is unified
+//!     only with a structurally identical one, never by name;
+//!   * the linked image carries NO PROOF CLAIMS — it is an execution
+//!     artifact, not a verification artifact. Obligations, certificates,
+//!     diagnostics, spec modules and imports are not carried over, and
+//!     neither is anything that claims one: `Function.summary` (a `proved`
+//!     summary with nothing behind it is `InvalidFunctionSummary`), every
+//!     `ProofAnnotation::ProofRef` (function- and node-level; each would
+//!     dangle as `ProofRefUnresolved`) and every call-site `ProofContext`
+//!     (each would dangle as `ProofContextUnknownObligation`). The stripped
+//!     counts are printed. Claim-style annotations, `body_gate` and
+//!     `display_path` are still copied. Proof claims are re-earned by
+//!     `trust-ir validate --link`, never by this runner. (A contract-only
+//!     declaration — bodyless, non-external linkage, valid only because it
+//!     carries a summary — keeps the claim-free EMPTY summary instead, so the
+//!     strip never makes a valid input `EmptyFunction`.)
+//!
+//! The runner's one link policy of its own is the 64-bit word pun between a
+//! declaration and its definition (`respell_word_punned_declarations`).
+//!
+//! Before linking, every `Module.imports` row of every input is
+//! AUTHENTICATED (default ON): each input is hashed once
+//! ([`trust_ir::imports::HashedModule`]), a row's recorded digest must equal
+//! the digest of one linked input, and that input must pass
+//! [`trust_ir::Module::verify_import_hashed`] (name, producer, target). A row
+//! that no input matches is refused, naming the inputs and their digests.
+//! `--unauthenticated-imports` skips the check and reports every row
+//! UNCHECKED (execution only; never agreement).
+//!
+//! With `--validate` the image is validated TWICE: as linked (the artifact
+//! verdict, a user error when refused) and again after the interpreter
+//! lowering below (a refusal there is an `internal:` defect of this tool,
+//! [`crate::EXIT_INTERNAL`]). The second pass is what keeps the image the
+//! interpreter actually executes validated.
 //!
 //! Functions that remain bodyless after linking are true externs. A small,
 //! name-classified set is synthesized as executable builtin bodies in plain
@@ -40,34 +77,66 @@
 //!     CLI maps the block id back to the extern's name — a pure program
 //!     reaching one is a finding (panic path taken, or emitted IR diverging
 //!     from the native binary).
+//!
+//! The entry points of a pinned trusted runtime — the handle runtimes
+//! (`trust_ir_build::TRUSTED_HANDLE_RUNTIMES`) and the reference-counting
+//! runtimes (`trust_ir_build::TRUSTED_RC_RUNTIMES`) — are NEVER synthesized:
+//! a body would make the image DEFINE a pinned symbol, which the validator
+//! refuses (`HandleEntryPointDefinedLocally` / `RcEntryPointDefinedLocally`),
+//! and a trap stub would misreport a trusted-runtime call as a finding. They
+//! stay bodyless; only their `entry` block id is moved into the reserved range
+//! starting at [`RUNTIME_ENTRY_BLOCK_BASE`] (a declaration's entry is never
+//! read by the validator), which is how an entry point named by `--entry` is
+//! recognised. A call into one is served ONLY by an installed host model:
+//!
+//!   * `--host none` (the default): the interpreter's `UnsupportedCall`
+//!     naming the declaration (WS2.12), which the CLI turns into a named
+//!     refusal — the run fails closed, never a trap;
+//!   * `--host pinned` (WS2.13): `trust_ir_build::PinnedHandleHost`, the
+//!     reference model of both pinned tables, is installed. A run it served
+//!     is HOST-ASSISTED (`InterpretOutcome::host_calls > 0`, reported on
+//!     stderr) — evidence about the model's reading of the trusted runtime,
+//!     `TRUST.md` items 9 and 13, never in-format execution evidence. The
+//!     model serves a declaration only under the EXACT pinned signature; any
+//!     other declaration of a pinned symbol is refused by name as unserved.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use trust_ir::ImportVerificationError;
 use trust_ir::constant::Constant;
-use trust_ir::inst::{
-    AllocOrigin, BinOp, BindingFrameDef, BindingSlot, CastOp, ICmpOp, Inst, SwitchCase, UnOp,
-};
+use trust_ir::imports::HashedModule;
+use trust_ir::inst::{AllocOrigin, BinOp, CastOp, ICmpOp, Inst, UnOp};
+use trust_ir::interpret::InterpretErrorCode;
 use trust_ir::interpret::{
     InterpretError, InterpretOptions, InterpretOutcome, InterpretValue, InterpretValueKind,
     Interpreter,
 };
 use trust_ir::node::InstrNode;
-use trust_ir::ty::{ClosureTy, FatPtrKind, FuncTy, Ty};
+use trust_ir::ty::{FuncTy, Ty};
+use trust_ir::value::ImportId;
 use trust_ir::value::{
-    BlockId, ClosureTyId, EnumId, FuncId, FuncTyId, GlobalId, PredId, RecordId, SourceSpan,
-    StructId, TyId, UnivId, ValueId,
+    BlockId, FreshIds, FuncId, GlobalId, IdRun, IdSpaceExhausted, TypedId, ValueId,
 };
-use trust_ir::{Block, Function, Global, Linkage, Module, Pred};
+use trust_ir::{Block, Function, Global, Linkage, Module};
+use trust_ir_build::PinnedHandleHost;
+use trust_ir_build::{MergePolicy, merge_into};
 
-use crate::{EXIT_IO, EXIT_OK, EXIT_USER, Format, decode_module, read_input};
+use crate::{EXIT_INTERNAL, EXIT_IO, EXIT_OK, EXIT_USER, Format, decode_module, read_input};
 
 /// First block id of the reserved trap-stub range. A synthesized trap stub's
 /// single block gets id `TRAP_BLOCK_BASE + k`; an interpreter error located in
 /// that range is mapped back to stub `k`'s extern name for the diagnostic.
 /// Real producer blocks are small dense indices, far below this.
 const TRAP_BLOCK_BASE: u32 = 0xF000_0000;
+
+/// First block id of the reserved trusted-runtime range. A pinned handle
+/// runtime entry point stays BODYLESS; its `entry` is set to
+/// `RUNTIME_ENTRY_BLOCK_BASE + k`, so the interpreter's missing-block error on
+/// entering it is mapped back to entry point `k`'s symbol. Disjoint from the
+/// trap range, and far above any producer block index.
+const RUNTIME_ENTRY_BLOCK_BASE: u32 = 0xE000_0000;
 
 /// Host stack for the interpreter thread. `execute_function_inner` recurses on
 /// the Rust stack per interpreted call frame, so deep IR recursion (Ackermann,
@@ -111,1045 +180,31 @@ fn collect_module_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 // Linker: merge N modules into one executable image
 // ---------------------------------------------------------------------------
 
-/// Memoization state for one source-module arena entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Memo<T> {
-    Unvisited,
-    /// Currently being remapped (cycle guard for recursive arenas).
-    Visiting,
-    Done(T),
+/// The id of table slot `index` (the next slot, when `index` is the table's
+/// length), by the one table-id rule ([`trust_ir::value::table_id`]): a table
+/// longer than its `u32` id space can name is refused by name — a truncating
+/// `as u32` would alias two slots. Only the message is the CLI's.
+fn next_table_id<I: TypedId>(index: usize) -> Result<I, String> {
+    trust_ir::value::table_id(index).map_err(|refusal| {
+        format!(
+            "the image's {} table exceeds the u32 id space ({index} entries): {refusal}",
+            refusal.space
+        )
+    })
 }
 
-/// Per-source-module remap context. All tables map LOCAL arena indices to
-/// MERGED ids.
-struct ModuleCtx<'a> {
-    source: &'a Module,
-    /// Diagnostic label (the module's file path).
-    label: String,
-    /// Local function index -> merged `FuncId` (assigned by name, phase A).
-    func_map: Vec<FuncId>,
-    ty_memo: Vec<Memo<TyId>>,
-    pred_memo: Vec<Memo<PredId>>,
-    univ_memo: Vec<Memo<UnivId>>,
-    functy_memo: Vec<Memo<FuncTyId>>,
-    struct_memo: Vec<Memo<StructId>>,
-    enum_memo: Vec<Memo<EnumId>>,
-    record_memo: Vec<Memo<RecordId>>,
-    closure_memo: Vec<Memo<ClosureTyId>>,
-    global_memo: Vec<Memo<GlobalId>>,
-    /// Local file index -> merged file index.
-    file_map: Vec<u32>,
-}
-
-impl<'a> ModuleCtx<'a> {
-    fn new(label: String, source: &'a Module, func_map: Vec<FuncId>) -> Self {
-        Self {
-            source,
-            label,
-            func_map,
-            ty_memo: vec![Memo::Unvisited; source.types.len()],
-            pred_memo: vec![Memo::Unvisited; source.predicates.len()],
-            univ_memo: vec![Memo::Unvisited; source.universes.len()],
-            functy_memo: vec![Memo::Unvisited; source.func_types.len()],
-            struct_memo: vec![Memo::Unvisited; source.structs.len()],
-            enum_memo: vec![Memo::Unvisited; source.enums.len()],
-            record_memo: vec![Memo::Unvisited; source.records.len()],
-            closure_memo: vec![Memo::Unvisited; source.closure_types.len()],
-            global_memo: vec![Memo::Unvisited; source.globals.len()],
-            file_map: Vec::new(),
-        }
-    }
-
-    fn err(&self, message: impl std::fmt::Display) -> String {
-        format!("link {}: {message}", self.label)
-    }
-}
-
-/// The linker: merged arenas plus structural dedup tables.
-struct Linker {
-    merged: Module,
-    /// Function name -> merged id (phase A).
-    func_ids: HashMap<String, FuncId>,
-    /// Merged function slots, parallel to the `FuncId` space. Filled in
-    /// phase B; every slot is `Some` once all modules are placed.
-    functions: Vec<Option<Function>>,
-    functy_dedup: HashMap<(Vec<Ty>, Vec<Ty>, bool), FuncTyId>,
-    type_dedup: HashMap<Ty, TyId>,
-    global_ids: HashMap<String, GlobalId>,
-    struct_ids: HashMap<String, StructId>,
-    enum_ids: HashMap<String, EnumId>,
-    record_ids: HashMap<String, RecordId>,
-}
-
-impl Linker {
-    fn new() -> Self {
-        Self {
-            merged: Module::new("linked"),
-            func_ids: HashMap::new(),
-            functions: Vec::new(),
-            functy_dedup: HashMap::new(),
-            type_dedup: HashMap::new(),
-            global_ids: HashMap::new(),
-            struct_ids: HashMap::new(),
-            enum_ids: HashMap::new(),
-            record_ids: HashMap::new(),
-        }
-    }
-
-    // -- arena remaps (memoized per source module, deduped in merged) -------
-
-    fn intern_type(&mut self, ty: Ty) -> TyId {
-        if let Some(id) = self.type_dedup.get(&ty) {
-            return *id;
-        }
-        let id = TyId::new(self.merged.types.len() as u32);
-        self.merged.types.push(ty.clone());
-        self.type_dedup.insert(ty, id);
-        id
-    }
-
-    fn ty_id(&mut self, ctx: &mut ModuleCtx<'_>, id: TyId) -> Result<TyId, String> {
-        let i = id.as_usize();
-        match ctx.ty_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => {
-                return Err(ctx.err(format!("ty.{i} participates in a type-arena cycle")));
-            }
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("ty.{i} is out of range"))),
-        }
-        ctx.ty_memo[i] = Memo::Visiting;
-        let ty = ctx.source.types[i].clone();
-        let remapped = self.ty(ctx, &ty)?;
-        let mapped = self.intern_type(remapped);
-        ctx.ty_memo[i] = Memo::Done(mapped);
-        Ok(mapped)
-    }
-
-    fn univ_id(&mut self, ctx: &mut ModuleCtx<'_>, id: UnivId) -> Result<UnivId, String> {
-        let i = id.as_usize();
-        match ctx.univ_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => {
-                return Err(ctx.err(format!("univ.{i} participates in a universe-arena cycle")));
-            }
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("univ.{i} is out of range"))),
-        }
-        ctx.univ_memo[i] = Memo::Visiting;
-        let universe = ctx.source.universes[i].clone();
-        if !universe.is_canonical() {
-            return Err(ctx.err(format!("univ.{i} is not canonical")));
-        }
-        if ctx.source.universes[..i].contains(&universe) {
-            return Err(ctx.err(format!("univ.{i} duplicates an earlier universe")));
-        }
-        let mapped = self
-            .merged
-            .intern_universe(universe)
-            .ok_or_else(|| ctx.err(format!("univ.{i} cannot be interned")))?;
-        ctx.univ_memo[i] = Memo::Done(mapped);
-        Ok(mapped)
-    }
-
-    fn pred_id(&mut self, ctx: &mut ModuleCtx<'_>, id: PredId) -> Result<PredId, String> {
-        let i = id.as_usize();
-        match ctx.pred_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => {
-                return Err(ctx.err(format!("pred.{i} participates in a predicate-arena cycle")));
-            }
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("pred.{i} is out of range"))),
-        }
-        ctx.pred_memo[i] = Memo::Visiting;
-        let pred = ctx.source.predicates[i].clone();
-        if !pred.is_canonical() {
-            return Err(ctx.err(format!("pred.{i} is not canonical")));
-        }
-        if ctx.source.predicates[..i].contains(&pred) {
-            return Err(ctx.err(format!("pred.{i} duplicates an earlier predicate")));
-        }
-        let remapped = match pred {
-            Pred::InUniverse(universe, space) => {
-                Pred::InUniverse(self.univ_id(ctx, universe)?, space)
-            }
-            Pred::Conj(children) => {
-                if children.iter().any(|child| child.as_usize() >= i) {
-                    return Err(ctx.err(format!("pred.{i} cites a non-antecedent predicate")));
-                }
-                Pred::Conj(
-                    children
-                        .into_iter()
-                        .map(|child| self.pred_id(ctx, child))
-                        .collect::<Result<_, _>>()?,
-                )
-            }
-            Pred::Disj(children) => {
-                if children.iter().any(|child| child.as_usize() >= i) {
-                    return Err(ctx.err(format!("pred.{i} cites a non-antecedent predicate")));
-                }
-                Pred::Disj(
-                    children
-                        .into_iter()
-                        .map(|child| self.pred_id(ctx, child))
-                        .collect::<Result<_, _>>()?,
-                )
-            }
-            other => other,
-        };
-        let mapped = self
-            .merged
-            .intern_pred(remapped)
-            .ok_or_else(|| ctx.err(format!("pred.{i} cannot be interned")))?;
-        ctx.pred_memo[i] = Memo::Done(mapped);
-        Ok(mapped)
-    }
-
-    fn functy_id(&mut self, ctx: &mut ModuleCtx<'_>, id: FuncTyId) -> Result<FuncTyId, String> {
-        let i = id.as_usize();
-        match ctx.functy_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => {
-                return Err(ctx.err(format!("functy.{i} participates in a signature cycle")));
-            }
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("functy.{i} is out of range"))),
-        }
-        ctx.functy_memo[i] = Memo::Visiting;
-        let functy = ctx.source.func_types[i].clone();
-        let params = self.tys(ctx, &functy.params)?;
-        let returns = self.tys(ctx, &functy.returns)?;
-        let key = (params.clone(), returns.clone(), functy.is_vararg);
-        let mapped = if let Some(existing) = self.functy_dedup.get(&key) {
-            *existing
-        } else {
-            let mapped = FuncTyId::new(self.merged.func_types.len() as u32);
-            self.merged.func_types.push(FuncTy {
-                params,
-                returns,
-                is_vararg: functy.is_vararg,
-            });
-            self.functy_dedup.insert(key, mapped);
-            mapped
-        };
-        ctx.functy_memo[i] = Memo::Done(mapped);
-        Ok(mapped)
-    }
-
-    /// Struct remap: reserve-then-fill so self-referential layouts (via
-    /// pointer indirection) terminate; keyed by name across modules with a
-    /// post-fill structural-equality check.
-    fn struct_id(&mut self, ctx: &mut ModuleCtx<'_>, id: StructId) -> Result<StructId, String> {
-        let i = id.as_usize();
-        match ctx.struct_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => unreachable!("struct memo is reserved before field remap"),
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("struct.{i} is out of range"))),
-        }
-        let def = ctx.source.structs[i].clone();
-        let (mapped, fresh) = match self.struct_ids.get(&def.name) {
-            Some(existing) => (*existing, false),
-            None => {
-                let mapped = StructId::new(self.merged.structs.len() as u32);
-                let mut placeholder = def.clone();
-                placeholder.id = mapped;
-                placeholder.fields = Vec::new();
-                self.merged.structs.push(placeholder);
-                self.struct_ids.insert(def.name.clone(), mapped);
-                (mapped, true)
-            }
-        };
-        ctx.struct_memo[i] = Memo::Done(mapped);
-        let mut remapped = def;
-        remapped.id = mapped;
-        for field in &mut remapped.fields {
-            field.ty = self.ty(ctx, &field.ty)?;
-        }
-        if fresh {
-            self.merged.structs[mapped.as_usize()] = remapped;
-        } else if self.merged.structs[mapped.as_usize()] != remapped {
-            return Err(ctx.err(format!(
-                "conflicting definitions of struct {}",
-                remapped.name
-            )));
-        }
-        Ok(mapped)
-    }
-
-    fn enum_id(&mut self, ctx: &mut ModuleCtx<'_>, id: EnumId) -> Result<EnumId, String> {
-        let i = id.as_usize();
-        match ctx.enum_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => unreachable!("enum memo is reserved before variant remap"),
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("enum.{i} is out of range"))),
-        }
-        let def = ctx.source.enums[i].clone();
-        let (mapped, fresh) = match self.enum_ids.get(&def.name) {
-            Some(existing) => (*existing, false),
-            None => {
-                let mapped = EnumId::new(self.merged.enums.len() as u32);
-                let mut placeholder = def.clone();
-                placeholder.id = mapped;
-                placeholder.variants = Vec::new();
-                self.merged.enums.push(placeholder);
-                self.enum_ids.insert(def.name.clone(), mapped);
-                (mapped, true)
-            }
-        };
-        ctx.enum_memo[i] = Memo::Done(mapped);
-        let mut remapped = def;
-        remapped.id = mapped;
-        for variant in &mut remapped.variants {
-            variant.fields = self.tys(ctx, &variant.fields)?;
-        }
-        if fresh {
-            self.merged.enums[mapped.as_usize()] = remapped;
-        } else if self.merged.enums[mapped.as_usize()] != remapped {
-            return Err(ctx.err(format!("conflicting definitions of enum {}", remapped.name)));
-        }
-        Ok(mapped)
-    }
-
-    fn record_id(&mut self, ctx: &mut ModuleCtx<'_>, id: RecordId) -> Result<RecordId, String> {
-        let i = id.as_usize();
-        match ctx.record_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => unreachable!("record memo is reserved before field remap"),
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("record.{i} is out of range"))),
-        }
-        let def = ctx.source.records[i].clone();
-        let (mapped, fresh) = match self.record_ids.get(&def.name) {
-            Some(existing) => (*existing, false),
-            None => {
-                let mapped = RecordId::new(self.merged.records.len() as u32);
-                let mut placeholder = def.clone();
-                placeholder.id = mapped;
-                placeholder.fields = Vec::new();
-                self.merged.records.push(placeholder);
-                self.record_ids.insert(def.name.clone(), mapped);
-                (mapped, true)
-            }
-        };
-        ctx.record_memo[i] = Memo::Done(mapped);
-        let mut remapped = def;
-        remapped.id = mapped;
-        for field in &mut remapped.fields {
-            field.ty = self.ty(ctx, &field.ty)?;
-        }
-        if fresh {
-            self.merged.records[mapped.as_usize()] = remapped;
-        } else if self.merged.records[mapped.as_usize()] != remapped {
-            return Err(ctx.err(format!(
-                "conflicting definitions of record {}",
-                remapped.name
-            )));
-        }
-        Ok(mapped)
-    }
-
-    /// Closure types are unnamed, so cross-module structural dedup of a
-    /// CYCLIC closure type is not attempted: each module's closure type is
-    /// appended (reserve-then-fill). Duplicates across modules are therefore
-    /// possible; that only matters to `Ty` equality of values crossing
-    /// modules, which the emit-each corpus never exercises.
-    fn closure_id(
-        &mut self,
-        ctx: &mut ModuleCtx<'_>,
-        id: ClosureTyId,
-    ) -> Result<ClosureTyId, String> {
-        let i = id.as_usize();
-        match ctx.closure_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => unreachable!("closure memo is reserved before capture remap"),
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("closurety.{i} is out of range"))),
-        }
-        let def = ctx.source.closure_types[i].clone();
-        let mapped = ClosureTyId::new(self.merged.closure_types.len() as u32);
-        self.merged.closure_types.push(ClosureTy {
-            func: FuncTyId::new(0),
-            captures: Vec::new(),
-        });
-        ctx.closure_memo[i] = Memo::Done(mapped);
-        let func = self.functy_id(ctx, def.func)?;
-        let captures = self.tys(ctx, &def.captures)?;
-        self.merged.closure_types[mapped.as_usize()] = ClosureTy { func, captures };
-        Ok(mapped)
-    }
-
-    /// Globals are keyed by name; a name collision requires the remapped
-    /// definitions to agree exactly.
-    fn global_id(&mut self, ctx: &mut ModuleCtx<'_>, id: GlobalId) -> Result<GlobalId, String> {
-        let i = id.as_usize();
-        match ctx.global_memo.get(i) {
-            Some(Memo::Done(mapped)) => return Ok(*mapped),
-            Some(Memo::Visiting) => {
-                return Err(ctx.err(format!("global #{i} references itself")));
-            }
-            Some(Memo::Unvisited) => {}
-            None => return Err(ctx.err(format!("global #{i} is out of range"))),
-        }
-        ctx.global_memo[i] = Memo::Visiting;
-        let mut def = ctx.source.globals[i].clone();
-        def.ty = self.ty(ctx, &def.ty)?;
-        def.initializer = def
-            .initializer
-            .as_ref()
-            .map(|init| self.constant(ctx, init))
-            .transpose()?;
-        let mapped = if let Some(existing) = self.global_ids.get(&def.name) {
-            let existing = *existing;
-            if self.merged.globals[existing.as_usize()] != def {
-                return Err(ctx.err(format!("conflicting definitions of global @{}", def.name)));
-            }
-            existing
-        } else {
-            let mapped = GlobalId::new(self.merged.globals.len() as u32);
-            self.global_ids.insert(def.name.clone(), mapped);
-            self.merged.globals.push(def);
-            mapped
-        };
-        ctx.global_memo[i] = Memo::Done(mapped);
-        Ok(mapped)
-    }
-
-    fn func_id(&self, ctx: &ModuleCtx<'_>, id: FuncId) -> Result<FuncId, String> {
-        ctx.func_map
-            .get(id.as_usize())
-            .copied()
-            .ok_or_else(|| ctx.err(format!("func.{} is out of range", id.index())))
-    }
-
-    // -- structural remaps ---------------------------------------------------
-
-    fn tys(&mut self, ctx: &mut ModuleCtx<'_>, tys: &[Ty]) -> Result<Vec<Ty>, String> {
-        tys.iter().map(|ty| self.ty(ctx, ty)).collect()
-    }
-
-    fn ty(&mut self, ctx: &mut ModuleCtx<'_>, ty: &Ty) -> Result<Ty, String> {
-        Ok(match ty {
-            // Scalars and other id-free leaves pass through unchanged.
-            Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::I128
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::U128
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::Char
-            | Ty::Error
-            | Ty::F16
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Ptr
-            | Ty::Unit
-            | Ty::Never => ty.clone(),
-            Ty::Vector(elem, lanes) => Ty::Vector(Box::new(self.ty(ctx, elem)?), *lanes),
-            Ty::FatPtr(kind) => Ty::FatPtr(match kind {
-                FatPtrKind::Slice(elem) => FatPtrKind::Slice(self.ty_id(ctx, *elem)?),
-                FatPtrKind::Str => FatPtrKind::Str,
-                // Trait ids are producer-scoped opaque tags, not a module
-                // arena index; an emit-each producer uses one numbering.
-                FatPtrKind::TraitObject { trait_id } => FatPtrKind::TraitObject {
-                    trait_id: *trait_id,
-                },
-                // Id-less, exactly like `Str`: it carries no pointee `TyId`
-                // (deliberately — the tail type is not what the kind is about),
-                // so there is nothing for the arena remap to rewrite.
-                FatPtrKind::ContainerLen => FatPtrKind::ContainerLen,
-            }),
-            Ty::Struct(id) => Ty::Struct(self.struct_id(ctx, *id)?),
-            Ty::Array(elem, len) => Ty::Array(self.ty_id(ctx, *elem)?, *len),
-            Ty::Tuple(elems) => Ty::Tuple(self.tys(ctx, elems)?),
-            Ty::Enum(id) => Ty::Enum(self.enum_id(ctx, *id)?),
-            Ty::Func(id) => Ty::Func(self.functy_id(ctx, *id)?),
-            Ty::Ref(inner) => Ty::Ref(Box::new(self.ty(ctx, inner)?)),
-            Ty::RefMut(inner) => Ty::RefMut(Box::new(self.ty(ctx, inner)?)),
-            Ty::PtrConst(inner) => Ty::PtrConst(Box::new(self.ty(ctx, inner)?)),
-            Ty::PtrMut(inner) => Ty::PtrMut(Box::new(self.ty(ctx, inner)?)),
-            Ty::Rc(inner) => Ty::Rc(Box::new(self.ty(ctx, inner)?)),
-            Ty::Set(elem, repr) => Ty::Set(self.ty_id(ctx, *elem)?, *repr),
-            Ty::Sequence(elem) => Ty::Sequence(self.ty_id(ctx, *elem)?),
-            Ty::Record(id) => Ty::Record(self.record_id(ctx, *id)?),
-            Ty::Closure(id) => Ty::Closure(self.closure_id(ctx, *id)?),
-            // Refinement types carry a base `TyId` plus a `PredId` into the
-            // module's content-interned predicate table. Reject nested
-            // refinements before remapping; both accepted ids are then
-            // remapped by content (`intern_pred`/`intern_universe` dedupe on
-            // merge).
-            Ty::Refine(base, pred) => {
-                let base_index = base.as_usize();
-                let Some(base_ty) = ctx.source.types.get(base_index) else {
-                    return Err(ctx.err(format!("ty.{base_index} is out of range")));
-                };
-                if matches!(base_ty, Ty::Refine(_, _)) {
-                    return Err(ctx.err(format!(
-                        "refinement base ty.{base_index} is itself a Refine"
-                    )));
-                }
-                Ty::Refine(self.ty_id(ctx, *base)?, self.pred_id(ctx, *pred)?)
-            }
-        })
-    }
-
-    fn constant(&mut self, ctx: &mut ModuleCtx<'_>, value: &Constant) -> Result<Constant, String> {
-        Ok(match value {
-            Constant::Int(_)
-            | Constant::U128(_)
-            | Constant::Bytes { .. }
-            | Constant::Float(_)
-            | Constant::Bool(_)
-            | Constant::PhantomData => value.clone(),
-            // Symbol addresses resolve by NAME against the linked image, so
-            // the payload passes through unchanged.
-            Constant::SymbolAddr { .. } => value.clone(),
-            Constant::Aggregate(items) => Constant::Aggregate(self.constants(ctx, items)?),
-            Constant::Array(items) => Constant::Array(self.constants(ctx, items)?),
-            Constant::Vector(items) => Constant::Vector(self.constants(ctx, items)?),
-            Constant::Sequence(items) => Constant::Sequence(self.constants(ctx, items)?),
-            Constant::Set(items) => Constant::Set(self.constants(ctx, items)?),
-            Constant::Record(fields) => Constant::Record(
-                fields
-                    .iter()
-                    .map(|(name, value)| Ok((name.clone(), self.constant(ctx, value)?)))
-                    .collect::<Result<_, String>>()?,
-            ),
-            Constant::Closure { func, captures } => Constant::Closure {
-                func: self.func_id(ctx, *func)?,
-                captures: self.constants(ctx, captures)?,
-            },
-            Constant::FnDef(func) => Constant::FnDef(self.func_id(ctx, *func)?),
-        })
-    }
-
-    fn constants(
-        &mut self,
-        ctx: &mut ModuleCtx<'_>,
-        values: &[Constant],
-    ) -> Result<Vec<Constant>, String> {
-        values
-            .iter()
-            .map(|value| self.constant(ctx, value))
-            .collect()
-    }
-
-    fn span(&self, ctx: &ModuleCtx<'_>, span: &SourceSpan) -> SourceSpan {
-        SourceSpan {
-            file: ctx
-                .file_map
-                .get(span.file as usize)
-                .copied()
-                .unwrap_or(span.file),
-            line: span.line,
-            col: span.col,
-        }
-    }
-
-    /// Remap one instruction. Exhaustive on purpose: a future `Inst` variant
-    /// that carries a cross-module id must fail compilation here, not silently
-    /// pass stale ids through.
-    fn inst(&mut self, ctx: &mut ModuleCtx<'_>, inst: &Inst) -> Result<Inst, String> {
-        Ok(match inst {
-            Inst::BinOp { op, ty, lhs, rhs } => Inst::BinOp {
-                op: *op,
-                ty: self.ty(ctx, ty)?,
-                lhs: *lhs,
-                rhs: *rhs,
-            },
-            Inst::UnOp { op, ty, operand } => Inst::UnOp {
-                op: *op,
-                ty: self.ty(ctx, ty)?,
-                operand: *operand,
-            },
-            Inst::Overflow { op, ty, lhs, rhs } => Inst::Overflow {
-                op: *op,
-                ty: self.ty(ctx, ty)?,
-                lhs: *lhs,
-                rhs: *rhs,
-            },
-            Inst::ICmp { op, ty, lhs, rhs } => Inst::ICmp {
-                op: *op,
-                ty: self.ty(ctx, ty)?,
-                lhs: *lhs,
-                rhs: *rhs,
-            },
-            Inst::FCmp { op, ty, lhs, rhs } => Inst::FCmp {
-                op: *op,
-                ty: self.ty(ctx, ty)?,
-                lhs: *lhs,
-                rhs: *rhs,
-            },
-            Inst::Cast {
-                op,
-                src_ty,
-                dst_ty,
-                operand,
-            } => Inst::Cast {
-                op: *op,
-                src_ty: self.ty(ctx, src_ty)?,
-                dst_ty: self.ty(ctx, dst_ty)?,
-                operand: *operand,
-            },
-            Inst::Load {
-                ty,
-                ptr,
-                volatile,
-                align,
-            } => Inst::Load {
-                ty: self.ty(ctx, ty)?,
-                ptr: *ptr,
-                volatile: *volatile,
-                align: *align,
-            },
-            Inst::Store {
-                ty,
-                ptr,
-                value,
-                volatile,
-                align,
-            } => Inst::Store {
-                ty: self.ty(ctx, ty)?,
-                ptr: *ptr,
-                value: *value,
-                volatile: *volatile,
-                align: *align,
-            },
-            Inst::Alloca { ty, count, align } => Inst::Alloca {
-                ty: self.ty(ctx, ty)?,
-                count: *count,
-                align: *align,
-            },
-            Inst::HeapAlloc {
-                ty,
-                count,
-                align,
-                origin,
-            } => Inst::HeapAlloc {
-                ty: self.ty(ctx, ty)?,
-                count: *count,
-                align: *align,
-                origin: *origin,
-            },
-            Inst::GEP {
-                pointee_ty,
-                base,
-                indices,
-                inbounds,
-            } => Inst::GEP {
-                pointee_ty: self.ty(ctx, pointee_ty)?,
-                base: *base,
-                indices: indices.clone(),
-                inbounds: *inbounds,
-            },
-            Inst::PtrData { ptr_ty, ptr } => Inst::PtrData {
-                ptr_ty: self.ty(ctx, ptr_ty)?,
-                ptr: *ptr,
-            },
-            Inst::PtrMetadata {
-                ptr_ty,
-                metadata_ty,
-                ptr,
-            } => Inst::PtrMetadata {
-                ptr_ty: self.ty(ctx, ptr_ty)?,
-                metadata_ty: self.ty(ctx, metadata_ty)?,
-                ptr: *ptr,
-            },
-            Inst::PtrFromParts {
-                ptr_ty,
-                metadata_ty,
-                data,
-                metadata,
-            } => Inst::PtrFromParts {
-                ptr_ty: self.ty(ctx, ptr_ty)?,
-                metadata_ty: self.ty(ctx, metadata_ty)?,
-                data: *data,
-                metadata: *metadata,
-            },
-            Inst::AtomicLoad { ty, ptr, ordering } => Inst::AtomicLoad {
-                ty: self.ty(ctx, ty)?,
-                ptr: *ptr,
-                ordering: *ordering,
-            },
-            Inst::AtomicStore {
-                ty,
-                ptr,
-                value,
-                ordering,
-            } => Inst::AtomicStore {
-                ty: self.ty(ctx, ty)?,
-                ptr: *ptr,
-                value: *value,
-                ordering: *ordering,
-            },
-            Inst::AtomicRMW {
-                op,
-                ty,
-                ptr,
-                value,
-                ordering,
-            } => Inst::AtomicRMW {
-                op: *op,
-                ty: self.ty(ctx, ty)?,
-                ptr: *ptr,
-                value: *value,
-                ordering: *ordering,
-            },
-            Inst::CmpXchg {
-                ty,
-                ptr,
-                expected,
-                desired,
-                success,
-                failure,
-            } => Inst::CmpXchg {
-                ty: self.ty(ctx, ty)?,
-                ptr: *ptr,
-                expected: *expected,
-                desired: *desired,
-                success: *success,
-                failure: *failure,
-            },
-            Inst::Fence { ordering } => Inst::Fence {
-                ordering: *ordering,
-            },
-            Inst::Br { .. }
-            | Inst::CondBr { .. }
-            | Inst::Return { .. }
-            | Inst::Assume { .. }
-            | Inst::Assert { .. }
-            | Inst::Unreachable
-            | Inst::NullPtr
-            | Inst::Borrow { .. }
-            | Inst::BorrowMut { .. }
-            | Inst::EndBorrow { .. }
-            | Inst::Retain { .. }
-            | Inst::Release { .. }
-            | Inst::IsUnique { .. }
-            | Inst::Dealloc { .. }
-            | Inst::BindSlot { .. }
-            | Inst::CloseFrame { .. }
-            | Inst::CoroSuspend { .. }
-            | Inst::Resume { .. }
-            | Inst::LandingPad { .. } => inst.clone(),
-            Inst::Switch {
-                value,
-                default,
-                default_args,
-                cases,
-                exhaustive_enum_unreachable,
-            } => Inst::Switch {
-                value: *value,
-                default: *default,
-                default_args: default_args.clone(),
-                cases: cases
-                    .iter()
-                    .map(|case| {
-                        Ok(SwitchCase {
-                            value: self.constant(ctx, &case.value)?,
-                            target: case.target,
-                            args: case.args.clone(),
-                        })
-                    })
-                    .collect::<Result<_, String>>()?,
-                exhaustive_enum_unreachable: *exhaustive_enum_unreachable,
-            },
-            Inst::Call { callee, args } => Inst::Call {
-                callee: self.func_id(ctx, *callee)?,
-                args: args.clone(),
-            },
-            Inst::CallIndirect {
-                callee,
-                sig,
-                args,
-                calling_conv,
-            } => Inst::CallIndirect {
-                callee: *callee,
-                sig: self.functy_id(ctx, *sig)?,
-                args: args.clone(),
-                calling_conv: *calling_conv,
-            },
-            Inst::ExtractField {
-                ty,
-                aggregate,
-                field,
-            } => Inst::ExtractField {
-                ty: self.ty(ctx, ty)?,
-                aggregate: *aggregate,
-                field: *field,
-            },
-            Inst::InsertField {
-                ty,
-                aggregate,
-                field,
-                value,
-            } => Inst::InsertField {
-                ty: self.ty(ctx, ty)?,
-                aggregate: *aggregate,
-                field: *field,
-                value: *value,
-            },
-            Inst::ExtractElement { ty, array, index } => Inst::ExtractElement {
-                ty: self.ty(ctx, ty)?,
-                array: *array,
-                index: *index,
-            },
-            Inst::InsertElement {
-                ty,
-                array,
-                index,
-                value,
-            } => Inst::InsertElement {
-                ty: self.ty(ctx, ty)?,
-                array: *array,
-                index: *index,
-                value: *value,
-            },
-            Inst::Const { ty, value } => Inst::Const {
-                ty: self.ty(ctx, ty)?,
-                value: self.constant(ctx, value)?,
-            },
-            Inst::GlobalAddr { global } => Inst::GlobalAddr {
-                global: self.global_id(ctx, *global)?,
-            },
-            Inst::Undef { ty } => Inst::Undef {
-                ty: self.ty(ctx, ty)?,
-            },
-            Inst::Copy { ty, operand } => Inst::Copy {
-                ty: self.ty(ctx, ty)?,
-                operand: *operand,
-            },
-            Inst::Select {
-                ty,
-                cond,
-                then_val,
-                else_val,
-            } => Inst::Select {
-                ty: self.ty(ctx, ty)?,
-                cond: *cond,
-                then_val: *then_val,
-                else_val: *else_val,
-            },
-            Inst::SeqMapAddK { ty, seq, k } => Inst::SeqMapAddK {
-                ty: self.ty(ctx, ty)?,
-                seq: *seq,
-                k: *k,
-            },
-            Inst::SeqMapNot { ty, seq } => Inst::SeqMapNot {
-                ty: self.ty(ctx, ty)?,
-                seq: *seq,
-            },
-            Inst::SeqMap { ty, seq, fwd } => Inst::SeqMap {
-                ty: self.ty(ctx, ty)?,
-                seq: *seq,
-                fwd: self.func_id(ctx, *fwd)?,
-            },
-            Inst::OpenFrame { def } => Inst::OpenFrame {
-                def: BindingFrameDef {
-                    id: def.id,
-                    name: def.name.clone(),
-                    slots: def
-                        .slots
-                        .iter()
-                        .map(|slot| {
-                            Ok(BindingSlot {
-                                name: slot.name.clone(),
-                                ty: self.ty(ctx, &slot.ty)?,
-                            })
-                        })
-                        .collect::<Result<_, String>>()?,
-                },
-            },
-            Inst::LoadSlot { frame, slot, ty } => Inst::LoadSlot {
-                frame: *frame,
-                slot: *slot,
-                ty: self.ty(ctx, ty)?,
-            },
-            Inst::Invoke {
-                callee,
-                args,
-                normal_dest,
-                normal_args,
-                unwind_dest,
-            } => Inst::Invoke {
-                callee: self.func_id(ctx, *callee)?,
-                args: args.clone(),
-                normal_dest: *normal_dest,
-                normal_args: normal_args.clone(),
-                unwind_dest: *unwind_dest,
-            },
-            Inst::DialectOp(op) => {
-                let mut remapped = op.as_ref().clone();
-                remapped.result_tys = self.tys(ctx, &remapped.result_tys)?;
-                Inst::DialectOp(Box::new(remapped))
-            }
-        })
-    }
-
-    fn node(&mut self, ctx: &mut ModuleCtx<'_>, node: &InstrNode) -> Result<InstrNode, String> {
-        Ok(InstrNode {
-            inst: self.inst(ctx, &node.inst)?,
-            results: node.results.clone(),
-            // Proof annotations are claim-style metadata with no execution
-            // semantics; any `ProofRef` inside points at module obligations,
-            // which the run image drops, so they are inert here.
-            proofs: node.proofs.clone(),
-            span: node.span.as_ref().map(|span| self.span(ctx, span)),
-            proof_context: node.proof_context.clone(),
-            // Function-local SSA/block ids are preserved by the linker. The
-            // enclosing scope table is carried by `function()` below, so this
-            // index remains meaningful in the linked image.
-            scope: node.scope,
-        })
-    }
-
-    fn function(
-        &mut self,
-        ctx: &mut ModuleCtx<'_>,
-        func: &Function,
-        merged_id: FuncId,
-    ) -> Result<Function, String> {
-        let mut remapped = Function::new(
-            merged_id,
-            func.name.clone(),
-            self.functy_id(ctx, func.ty)?,
-            func.entry,
-        );
-        remapped.calling_conv = func.calling_conv;
-        remapped.linkage = func.linkage;
-        remapped.proofs = func.proofs.clone();
-        remapped.attrs = func.attrs.clone();
-        remapped.summary = func.summary.clone();
-        remapped.producer = func.producer.clone();
-        // SSA ids remain function-local and unchanged, so names copy directly.
-        remapped.value_names = func.value_names.clone();
-        // Scope parents/indices are function-local too; only their source-file
-        // indices cross a module boundary and need the same remap as node spans.
-        remapped.scopes = func.scopes.as_ref().map(|scopes| {
-            scopes
-                .iter()
-                .map(|scope| trust_ir::ScopeData {
-                    parent: scope.parent,
-                    span: scope.span.as_ref().map(|span| self.span(ctx, span)),
-                })
-                .collect()
-        });
-        for block in &func.blocks {
-            let mut merged_block = Block::new(block.id);
-            for (value, ty) in &block.params {
-                merged_block.params.push((*value, self.ty(ctx, ty)?));
-            }
-            for node in &block.body {
-                merged_block.body.push(self.node(ctx, node)?);
-            }
-            remapped.blocks.push(merged_block);
-        }
-        Ok(remapped)
-    }
-
-    /// Merge a remapped function into its slot: a definition beats a
-    /// declaration, duplicate identical definitions are deduped, and
-    /// conflicting definitions are an error.
-    fn place_function(
-        &mut self,
-        ctx: &ModuleCtx<'_>,
-        merged_id: FuncId,
-        func: Function,
-    ) -> Result<(), String> {
-        // Resolve signature relationship before taking the slot borrow.
-        let existing_ty = self.functions[merged_id.as_usize()]
-            .as_ref()
-            .map(|existing| existing.ty);
-        let same_ty = existing_ty == Some(func.ty);
-        // ABI-compatible but differently-spelled signatures arise when the
-        // frontend coarsens a closure-env pointer to a 64-bit integer on one
-        // side (a `dyn` vtable shim declares `call_once` as `(u64, u64)` while
-        // its body is `(ptr, u64)` — same registers). Tolerate this ONLY
-        // between a declaration and a definition; the definition's signature
-        // wins. A call site that spells the args the declaration's way lives
-        // in the shim, which is dead in a monomorphized program; were one
-        // reachable, the interpreter's strict per-argument type check would
-        // surface it honestly rather than silently mis-execute.
-        let abi_compat = match existing_ty {
-            Some(existing_ty) if !same_ty => self.abi_compatible_functy(existing_ty, func.ty),
-            _ => false,
-        };
-        let slot = &mut self.functions[merged_id.as_usize()];
-        match slot {
-            None => *slot = Some(func),
-            Some(existing) => {
-                let existing_bodied = !existing.blocks.is_empty();
-                let func_bodied = !func.blocks.is_empty();
-                if !same_ty {
-                    if abi_compat && !(existing_bodied && func_bodied) {
-                        // Keep whichever side has a body (its signature is
-                        // authoritative); a bodyless declaration only adds a
-                        // name. If both are bodyless, keep the first.
-                        if func_bodied && !existing_bodied {
-                            *slot = Some(func);
-                        }
-                        return Ok(());
-                    }
-                    return Err(ctx.err(format!(
-                        "signature mismatch for @{}: functy.{} vs functy.{}",
-                        func.name,
-                        existing.ty.index(),
-                        func.ty.index()
-                    )));
-                }
-                match (existing_bodied, func_bodied) {
-                    // Definition replaces declaration.
-                    (false, true) => *slot = Some(func),
-                    // Declaration adds nothing to an existing entry.
-                    (true, false) | (false, false) => {}
-                    (true, true) => {
-                        if *existing != func {
-                            return Err(
-                                ctx.err(format!("conflicting definitions of @{}", func.name))
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Two function signatures are ABI-compatible when they have the same
-    /// param/return arity and every corresponding lane is either identical or
-    /// a 64-bit machine word under a different spelling (`Ptr` / `U64` / `I64`
-    /// / `Usize` / `Isize` all occupy one integer register on the pinned
-    /// 64-bit target). This is exactly the pun a real backend erases. It is
-    /// used only to let a bodyless declaration merge with a definition that
-    /// spells a lane differently — the definition's signature wins.
-    fn abi_compatible_functy(&self, a: FuncTyId, b: FuncTyId) -> bool {
-        let (Some(a), Some(b)) = (
-            self.merged.func_types.get(a.as_usize()),
-            self.merged.func_types.get(b.as_usize()),
-        ) else {
-            return false;
-        };
-        a.is_vararg == b.is_vararg
-            && a.params.len() == b.params.len()
-            && a.returns.len() == b.returns.len()
-            && a.params
-                .iter()
-                .zip(&b.params)
-                .all(|(x, y)| abi_compatible_ty(x, y))
-            && a.returns
-                .iter()
-                .zip(&b.returns)
-                .all(|(x, y)| abi_compatible_ty(x, y))
-    }
+/// The proof claims the linker dropped, counted per INPUT function / node
+/// (a declaration and its definition each count). The image is an execution
+/// artifact: the obligations these claims name are not carried over, so each
+/// would be a dangling or unbacked claim in the image.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StrippedClaims {
+    /// `Function.summary` rows.
+    summaries: usize,
+    /// `ProofAnnotation::ProofRef`s, function- and node-level.
+    proof_refs: usize,
+    /// Call-site `ProofContext`s.
+    proof_contexts: usize,
 }
 
 /// The 64-bit machine-word ABI class: a `Ptr` and a pointer-width integer
@@ -1158,79 +213,135 @@ fn is_word_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Ptr | Ty::U64 | Ty::I64 | Ty::Usize | Ty::Isize)
 }
 
-/// Whether two lane types are ABI-compatible: identical, or both 64-bit words.
-fn abi_compatible_ty(a: &Ty, b: &Ty) -> bool {
-    a == b || (is_word_ty(a) && is_word_ty(b))
+/// The runner's ONE link policy beyond the library merge: a bodyless
+/// declaration whose signature differs from the symbol's canonical signature
+/// (the first DEFINITION's, else the first declaration's) only by spelling a
+/// 64-bit machine word differently (`Ptr` / `U64` / `I64` / `Usize` /
+/// `Isize`) is respelled to the canonical lanes, so the library merge sees
+/// one signature.
+///
+/// This arises when the frontend coarsens a closure-env pointer to a 64-bit
+/// integer on one side (a `dyn` vtable shim declares `call_once` as
+/// `(u64, u64)` while its body is `(ptr, u64)` — same registers). It is
+/// tolerated ONLY for a declaration, never between two definitions; the
+/// definition's signature wins. A call site that spells the args the
+/// declaration's way lives in the shim, which is dead in a monomorphized
+/// program; were one reachable, the interpreter's strict per-argument type
+/// check would surface it honestly rather than silently mis-execute. Lanes
+/// that are not both words must be structurally equal across the two modules
+/// (`ty_structurally_eq_across`), or nothing is respelled and the merge
+/// refuses the `ty` conflict by name.
+fn respell_word_punned_declarations(
+    modules: &[(String, Module)],
+) -> Result<Vec<(String, std::borrow::Cow<'_, Module>)>, String> {
+    // name -> (module index, function index) of the canonical signature.
+    let mut canonical: HashMap<&str, (usize, usize)> = HashMap::new();
+    for bodied_pass in [true, false] {
+        for (mi, (_, module)) in modules.iter().enumerate() {
+            for (fi, func) in module.functions.iter().enumerate() {
+                if func.blocks.is_empty() != bodied_pass {
+                    canonical.entry(func.name.as_str()).or_insert((mi, fi));
+                }
+            }
+        }
+    }
+    modules
+        .iter()
+        .enumerate()
+        .map(|(mi, (label, module))| {
+            let mut respelled: Option<Module> = None;
+            for (fi, func) in module.functions.iter().enumerate() {
+                if !func.blocks.is_empty() {
+                    continue;
+                }
+                let (cmi, cfi) = canonical[func.name.as_str()];
+                if (cmi, cfi) == (mi, fi) {
+                    continue;
+                }
+                let canon_module = &modules[cmi].1;
+                let canon = &canon_module.functions[cfi];
+                let (Some(decl_sig), Some(canon_sig)) =
+                    (module.func_type(func.ty), canon_module.func_type(canon.ty))
+                else {
+                    continue;
+                };
+                let lanes_agree = |a: &[Ty], b: &[Ty]| {
+                    a.len() == b.len()
+                        && a.iter().zip(b).all(|(x, y)| {
+                            (is_word_ty(x) && is_word_ty(y))
+                                || trust_ir::ty_structurally_eq_across(module, x, canon_module, y)
+                        })
+                };
+                let respell = |a: &[Ty], b: &[Ty]| -> Vec<Ty> {
+                    a.iter()
+                        .zip(b)
+                        .map(|(x, y)| {
+                            if is_word_ty(x) && is_word_ty(y) {
+                                y.clone()
+                            } else {
+                                x.clone()
+                            }
+                        })
+                        .collect()
+                };
+                if decl_sig.abi.is_some() || canon_sig.abi.is_some() {
+                    // Byte placement and producer custody stay exact. Word
+                    // respelling is only the legacy, unrecorded contract.
+                    continue;
+                }
+                if decl_sig.is_vararg != canon_sig.is_vararg
+                    || !lanes_agree(&decl_sig.params, &canon_sig.params)
+                    || !lanes_agree(&decl_sig.returns, &canon_sig.returns)
+                {
+                    continue;
+                }
+                let sig = FuncTy {
+                    abi: None,
+                    params: respell(&decl_sig.params, &canon_sig.params),
+                    returns: respell(&decl_sig.returns, &canon_sig.returns),
+                    is_vararg: decl_sig.is_vararg,
+                };
+                if sig == *decl_sig {
+                    continue;
+                }
+                let target = respelled.get_or_insert_with(|| module.clone());
+                let ty = target
+                    .intern_func_type(sig)
+                    .map_err(|exhausted| format!("link {label}: {exhausted}"))?;
+                target.functions[fi].ty = ty;
+            }
+            let module = match respelled {
+                Some(owned) => std::borrow::Cow::Owned(owned),
+                None => std::borrow::Cow::Borrowed(module),
+            };
+            Ok((label.clone(), module))
+        })
+        .collect()
 }
 
-/// Link the given `(label, module)` pairs into one executable image.
-fn link_modules(modules: &[(String, Module)]) -> Result<Module, String> {
-    let mut linker = Linker::new();
-
-    // Phase A: assign merged FuncIds by function name, first-seen order.
-    for (_, module) in modules {
-        for func in &module.functions {
-            if !linker.func_ids.contains_key(&func.name) {
-                let id = FuncId::new(linker.functions.len() as u32);
-                linker.func_ids.insert(func.name.clone(), id);
-                linker.functions.push(None);
-            }
-        }
+/// Link the given `(label, module)` pairs into one executable image, and
+/// report the proof claims it stripped (the image carries none).
+///
+/// Every module is merged into the image by the library merge
+/// ([`trust_ir_build::merge_into`] under
+/// [`MergePolicy::EXECUTION_IMAGE`]): functions and globals keyed by
+/// link-time symbol, a definition resolving a declaration, the earlier of two
+/// declarations standing, identical duplicate definitions deduped and any
+/// other duplicate refused naming the differing field, nominal types unified
+/// only when structurally identical, and every proof claim stripped. The only policy of the runner's own is
+/// [`respell_word_punned_declarations`].
+fn link_modules(modules: &[(String, Module)]) -> Result<(Module, StrippedClaims), String> {
+    let mut image = Module::new("linked");
+    let mut stripped = StrippedClaims::default();
+    for (label, module) in respell_word_punned_declarations(modules)? {
+        let remap = merge_into(&mut image, &module, &MergePolicy::EXECUTION_IMAGE)
+            .map_err(|error| format!("link {label}: {error}"))?;
+        let counts = remap.stripped();
+        stripped.summaries += counts.summaries;
+        stripped.proof_refs += counts.proof_refs;
+        stripped.proof_contexts += counts.proof_contexts;
     }
-
-    // Phase B: remap and merge every module.
-    for (label, module) in modules {
-        let func_map = module
-            .functions
-            .iter()
-            .map(|func| linker.func_ids[&func.name])
-            .collect();
-        let mut ctx = ModuleCtx::new(label.clone(), module, func_map);
-
-        match (&linker.merged.target_info, &module.target_info) {
-            (None, Some(target)) => linker.merged.target_info = Some(target.clone()),
-            (Some(existing), Some(target)) if existing != target => {
-                return Err(ctx.err(format!(
-                    "target mismatch: image is {existing:?}, module declares {target:?}"
-                )));
-            }
-            _ => {}
-        }
-        ctx.file_map = module
-            .files
-            .iter()
-            .map(|file| linker.merged.intern_file(file.clone()))
-            .collect();
-
-        // Predicates and universes are type semantics, not proof sidecars.
-        // Remap every entry eagerly so even an unused dangling/cyclic table is
-        // refused and the linked image preserves deterministic content IDs.
-        for i in 0..module.universes.len() {
-            linker.univ_id(&mut ctx, UnivId::new(i as u32))?;
-        }
-        for i in 0..module.predicates.len() {
-            linker.pred_id(&mut ctx, PredId::new(i as u32))?;
-        }
-
-        // Eagerly remap globals so name-addressed consumers (SymbolAddr) see
-        // every global even if no GlobalAddr references it.
-        for i in 0..module.globals.len() {
-            linker.global_id(&mut ctx, GlobalId::new(i as u32))?;
-        }
-
-        for (index, func) in module.functions.iter().enumerate() {
-            let merged_id = ctx.func_map[index];
-            let remapped = linker.function(&mut ctx, func, merged_id)?;
-            linker.place_function(&ctx, merged_id, remapped)?;
-        }
-    }
-
-    let mut functions = Vec::with_capacity(linker.functions.len());
-    for slot in linker.functions {
-        functions.push(slot.expect("phase A created a slot per named function"));
-    }
-    linker.merged.functions = functions;
-    Ok(linker.merged)
+    Ok((image, stripped))
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,30 +369,44 @@ fn link_modules(modules: &[(String, Module)]) -> Result<Module, String> {
 /// make this exact, including null).
 ///
 /// Returns the number of rewritten compares.
-fn legalize_icmp(module: &mut Module) -> u64 {
+///
+/// Fresh SSA ids come from the one fresh-id rule
+/// ([`Function::fresh_value_ids`]), all of a function's at once, before the
+/// function is touched: a function whose compares need more ids than remain
+/// is REFUSED by name, unchanged ([`LoweringRefusal`]), never wrapped onto an
+/// id it already defines. A function with nothing to legalize needs no id and
+/// is never refused.
+fn legalize_icmp(module: &mut Module) -> Result<u64, LoweringRefusal> {
     let mut rewritten = 0;
     for func in &mut module.functions {
-        // Fresh SSA ids start after every id the function defines.
-        let mut next_value = 0u32;
-        for block in &func.blocks {
-            for (value, _) in &block.params {
-                next_value = next_value.max(value.index() + 1);
-            }
-            for node in &block.body {
-                for result in &node.results {
-                    next_value = next_value.max(result.index() + 1);
-                }
+        // How many fresh ids this function's rewrites need, by the same
+        // classification the rewrite below uses.
+        let mut needed = 0_u32;
+        for node in func.blocks.iter().flat_map(|block| &block.body) {
+            if let Some(ids) = icmp_legalization_ids(node) {
+                needed = needed
+                    .checked_add(ids)
+                    .ok_or_else(|| LoweringRefusal::value_ids(&func.name))?;
             }
         }
-        let mut fresh = || {
-            let value = ValueId::new(next_value);
-            next_value += 1;
-            value
-        };
+        if needed == 0 {
+            continue;
+        }
+        let mut run = func
+            .fresh_value_ids()
+            .take_run(needed)
+            .map_err(|exhausted| LoweringRefusal::new(&func.name, exhausted))?;
+        let name = func.name.clone();
+        let mut fresh = || run.take().ok_or_else(|| LoweringRefusal::value_ids(&name));
         for block in &mut func.blocks {
             let body = std::mem::take(&mut block.body);
             let mut new_body = Vec::with_capacity(body.len());
             for node in body {
+                // The same classification the id count read.
+                if icmp_legalization_ids(&node).is_none() {
+                    new_body.push(node);
+                    continue;
+                }
                 let Inst::ICmp {
                     op,
                     ref ty,
@@ -1292,10 +417,6 @@ fn legalize_icmp(module: &mut Module) -> u64 {
                     new_body.push(node);
                     continue;
                 };
-                if !matches!(ty, Ty::Bool | Ty::Ptr) {
-                    new_body.push(node);
-                    continue;
-                }
                 let is_ptr = *ty == Ty::Ptr;
                 let [result] = node.results.as_slice() else {
                     new_body.push(node);
@@ -1310,7 +431,7 @@ fn legalize_icmp(module: &mut Module) -> u64 {
                     new_body.push(aux);
                 };
                 if is_ptr {
-                    let lhs_addr = fresh();
+                    let lhs_addr = fresh()?;
                     emit(
                         Inst::Cast {
                             op: CastOp::PtrToInt,
@@ -1320,7 +441,7 @@ fn legalize_icmp(module: &mut Module) -> u64 {
                         },
                         lhs_addr,
                     );
-                    let rhs_addr = fresh();
+                    let rhs_addr = fresh()?;
                     emit(
                         Inst::Cast {
                             op: CastOp::PtrToInt,
@@ -1342,7 +463,7 @@ fn legalize_icmp(module: &mut Module) -> u64 {
                     rewritten += 1;
                     continue;
                 }
-                let k_false = fresh();
+                let k_false = fresh()?;
                 emit(
                     Inst::Const {
                         ty: Ty::Bool,
@@ -1350,7 +471,7 @@ fn legalize_icmp(module: &mut Module) -> u64 {
                     },
                     k_false,
                 );
-                let k_true = fresh();
+                let k_true = fresh()?;
                 emit(
                     Inst::Const {
                         ty: Ty::Bool,
@@ -1358,7 +479,7 @@ fn legalize_icmp(module: &mut Module) -> u64 {
                     },
                     k_true,
                 );
-                let not_rhs = fresh();
+                let not_rhs = fresh()?;
                 emit(
                     Inst::Select {
                         ty: Ty::Bool,
@@ -1390,7 +511,57 @@ fn legalize_icmp(module: &mut Module) -> u64 {
             block.body = new_body;
         }
     }
-    rewritten
+    Ok(rewritten)
+}
+
+/// How many fresh value ids [`legalize_icmp`] needs to rewrite `node`, or
+/// `None` when it leaves `node` alone: a `ptr` compare takes two (`ptrtoint`
+/// of each operand), a `bool` compare three (`false`, `true`, `!rhs`). The
+/// ONE classification both the id count and the rewrite read.
+fn icmp_legalization_ids(node: &InstrNode) -> Option<u32> {
+    let Inst::ICmp { ty, .. } = &node.inst else {
+        return None;
+    };
+    if node.results.len() != 1 {
+        return None;
+    }
+    match ty {
+        Ty::Ptr => Some(2),
+        Ty::Bool => Some(3),
+        _ => None,
+    }
+}
+
+/// The runner could not lower a function for the interpreter: it needs a
+/// fresh id and none is left. A limitation of `trust-ir run` on valid IR
+/// (one function with ids up to `u32::MAX`), not a format rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoweringRefusal {
+    function: String,
+    exhausted: IdSpaceExhausted,
+}
+
+impl LoweringRefusal {
+    fn new(function: &str, exhausted: IdSpaceExhausted) -> Self {
+        Self {
+            function: function.to_string(),
+            exhausted,
+        }
+    }
+
+    fn value_ids(function: &str) -> Self {
+        Self::new(function, IdSpaceExhausted::of::<ValueId>())
+    }
+}
+
+impl std::fmt::Display for LoweringRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot lower @{} for the interpreter: {}",
+            self.function, self.exhausted
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1424,7 +595,7 @@ fn legalize_icmp(module: &mut Module) -> u64 {
 fn devirtualize_symbol_addrs(
     module: &mut Module,
     entry: &str,
-    traps: &mut Vec<String>,
+    traps: &mut TrapBlocks,
 ) -> Result<bool, String> {
     let has_symbol_addr = module
         .globals
@@ -1455,30 +626,36 @@ fn devirtualize_symbol_addrs(
         .globals
         .iter()
         .enumerate()
-        .map(|(index, global)| (global.name.clone(), GlobalId::new(index as u32)))
-        .collect();
+        .map(|(index, global)| Ok((global.name.clone(), next_table_id(index)?)))
+        .collect::<Result<_, String>>()?;
 
     // Function name -> (function, anchor global). Anchors are created on
     // demand and double as the address key for the dispatch ladders.
     let mut anchors: HashMap<String, (FuncId, GlobalId)> = HashMap::new();
-    let mut anchor_for = |module: &mut Module, name: &str| -> Option<(FuncId, GlobalId)> {
-        if let Some(entry) = anchors.get(name) {
-            return Some(*entry);
-        }
-        let func = *func_by_name.get(name)?;
-        let global = GlobalId::new(module.globals.len() as u32);
-        module.globals.push(Global {
-            name: format!("__fnaddr.{name}"),
-            ty: Ty::U8,
-            mutable: false,
-            initializer: Some(Constant::Int(0)),
-            linkage: Linkage::Internal,
-            tls: None,
-            align: None,
-        });
-        anchors.insert(name.to_string(), (func, global));
-        Some((func, global))
-    };
+    let mut anchor_for =
+        |module: &mut Module, name: &str| -> Result<Option<(FuncId, GlobalId)>, String> {
+            if let Some(entry) = anchors.get(name) {
+                return Ok(Some(*entry));
+            }
+            let Some(func) = func_by_name.get(name).copied() else {
+                return Ok(None);
+            };
+            let global = next_table_id(module.globals.len())?;
+            module.globals.push(Global {
+                name: format!("__fnaddr.{name}"),
+                ty: Ty::U8,
+                mutable: false,
+                initializer: Some(Constant::Int(0)),
+                linkage: Linkage::Internal,
+                tls: None,
+                align: None,
+                section: None,
+                visibility: Default::default(),
+                retained: false,
+            });
+            anchors.insert(name.to_string(), (func, global));
+            Ok(Some((func, global)))
+        };
 
     // -- 1+2: global initializers -------------------------------------------
     // `(global, byte offset, address-source global)` startup patches.
@@ -1544,7 +721,7 @@ fn devirtualize_symbol_addrs(
                 ));
             }
             let symbol = symbol.clone();
-            let source = if let Some((_, anchor)) = anchor_for(module, &symbol) {
+            let source = if let Some((_, anchor)) = anchor_for(module, &symbol)? {
                 anchor
             } else if let Some(target) = global_by_name.get(&symbol) {
                 *target
@@ -1554,7 +731,7 @@ fn devirtualize_symbol_addrs(
                     module.globals[index].name
                 ));
             };
-            patches.push((GlobalId::new(index as u32), offsets[slot], source));
+            patches.push((next_table_id(index)?, offsets[slot], source));
             *value = Constant::Int(0);
             *field = Ty::U64;
         }
@@ -1581,7 +758,7 @@ fn devirtualize_symbol_addrs(
                     ));
                 }
                 let symbol = symbol.clone();
-                let source = if let Some((_, anchor)) = anchor_for(module, &symbol) {
+                let source = if let Some((_, anchor)) = anchor_for(module, &symbol)? {
                     anchor
                 } else if let Some(target) = global_by_name.get(&symbol) {
                     *target
@@ -1600,45 +777,26 @@ fn devirtualize_symbol_addrs(
     let anchored: Vec<(FuncId, GlobalId)> = anchors.values().copied().collect();
     if !anchored.is_empty() {
         for func_index in 0..module.functions.len() {
-            devirtualize_calls_in_function(module, func_index, &anchored, traps);
+            devirtualize_calls_in_function(module, func_index, &anchored, traps)
+                .map_err(|refusal| refusal.to_string())?;
         }
     }
 
     // -- 2b: the startup patcher, called first by the entry ------------------
     if !patches.is_empty() {
-        let init_sig = intern_functy(
-            module,
-            FuncTy {
+        let init_sig = module
+            .intern_func_type(FuncTy {
+                abi: None,
                 params: Vec::new(),
                 returns: Vec::new(),
                 is_vararg: false,
-            },
-        );
-        let init_id = FuncId::new(module.functions.len() as u32);
+            })
+            .map_err(|exhausted| exhausted.to_string())?;
+        let init_id = next_table_id(module.functions.len())?;
         let mut init = Function::new(init_id, "__trust_ir_run_init", init_sig, BlockId::new(0));
-        let mut bb = BodyBuilder::new();
-        let block = bb.add_block();
-        bb.switch_to(block);
-        for (target, offset, source) in &patches {
-            let base = bb.push(Inst::GlobalAddr { global: *target });
-            let off = bb.const_int(Ty::I64, i128::from(*offset));
-            let slot = bb.push(Inst::GEP {
-                pointee_ty: Ty::U8,
-                base,
-                indices: vec![off],
-                inbounds: false,
-            });
-            let addr = bb.push(Inst::GlobalAddr { global: *source });
-            bb.push_void(Inst::Store {
-                ty: Ty::Ptr,
-                ptr: slot,
-                value: addr,
-                volatile: false,
-                align: None,
-            });
-        }
-        bb.ret(Vec::new());
-        init.blocks = bb.blocks;
+        init.blocks = startup_patcher_body(&patches).map_err(|exhausted| {
+            LoweringRefusal::new("__trust_ir_run_init", exhausted).to_string()
+        })?;
         module.functions.push(init);
 
         let Some(entry_func) = module
@@ -1670,44 +828,67 @@ fn devirtualize_symbol_addrs(
     Ok(true)
 }
 
-/// Does this constant (recursively) contain a `SymbolAddr`?
-fn constant_mentions_symbol_addr(constant: &Constant) -> bool {
-    match constant {
-        Constant::SymbolAddr { .. } => true,
-        Constant::Aggregate(items)
-        | Constant::Array(items)
-        | Constant::Vector(items)
-        | Constant::Sequence(items)
-        | Constant::Set(items) => items.iter().any(constant_mentions_symbol_addr),
-        Constant::Record(fields) => fields
-            .iter()
-            .any(|(_, value)| constant_mentions_symbol_addr(value)),
-        Constant::Closure { captures, .. } => captures.iter().any(constant_mentions_symbol_addr),
-        _ => false,
+/// The body of the synthesized startup patcher: store each anchor's real
+/// address into its zeroed slot, then return.
+fn startup_patcher_body(
+    patches: &[(GlobalId, u64, GlobalId)],
+) -> Result<Vec<Block>, IdSpaceExhausted> {
+    let mut bb = BodyBuilder::new();
+    let block = bb.add_block()?;
+    bb.switch_to(block);
+    for (target, offset, source) in patches {
+        let base = bb.push(Inst::GlobalAddr { global: *target })?;
+        let off = bb.const_int(Ty::I64, i128::from(*offset))?;
+        let slot = bb.push(Inst::GEP {
+            pointee_ty: Ty::U8,
+            base,
+            indices: vec![off],
+            inbounds: false,
+        })?;
+        let addr = bb.push(Inst::GlobalAddr { global: *source })?;
+        bb.push_void(Inst::Store {
+            ty: Ty::Ptr,
+            ptr: slot,
+            value: addr,
+            volatile: false,
+            align: None,
+        });
     }
+    bb.ret(Vec::new());
+    Ok(bb.blocks)
 }
 
-/// Intern (or append) a function type in the module's arena.
-fn intern_functy(module: &mut Module, functy: FuncTy) -> FuncTyId {
-    for (index, existing) in module.func_types.iter().enumerate() {
-        if *existing == functy {
-            return FuncTyId::new(index as u32);
-        }
-    }
-    let id = FuncTyId::new(module.func_types.len() as u32);
-    module.func_types.push(functy);
-    id
+/// Does this constant (recursively) contain a `SymbolAddr`? Walked by the
+/// crate's own child enumeration, so every carrier — a `Splat`'s one element
+/// included — is visited, and a new variant cannot be missed by a wildcard.
+fn constant_mentions_symbol_addr(constant: &Constant) -> bool {
+    constant
+        .try_visit_constants(|node| {
+            if matches!(node, Constant::SymbolAddr { .. }) {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        })
+        .is_break()
 }
 
 /// Rewrite every `CallIndirect` in `module.functions[func_index]` whose
 /// callee is a plain `Ty::Ptr` value into an anchor-address dispatch ladder
 /// over the anchored functions with the call's signature.
+///
+/// Fresh ids come from the one fresh-id rule, taken per rewritten call site
+/// before the site is touched: values one past the highest the function
+/// defines, and continuation/ladder blocks one past its highest block id AND
+/// below [`RUNTIME_ENTRY_BLOCK_BASE`] (a user block id is never minted into a
+/// reserved range). The dispatch-miss block is taken from the trap range
+/// (`traps`). A site that needs more ids than remain refuses the run by name.
 fn devirtualize_calls_in_function(
     module: &mut Module,
     func_index: usize,
     anchored: &[(FuncId, GlobalId)],
-    traps: &mut Vec<String>,
-) {
+    traps: &mut TrapBlocks,
+) -> Result<(), LoweringRefusal> {
     // Value types are computed once up front: rewrites never introduce new
     // ptr-typed callees, and split-off continuations keep the original result
     // ids (as block params), so the map stays valid across rewrites.
@@ -1719,27 +900,10 @@ fn devirtualize_calls_in_function(
             .collect()
     };
 
-    let mut next_block = module.functions[func_index]
-        .blocks
-        .iter()
-        .map(|block| block.id.index().saturating_add(1))
-        .max()
-        .unwrap_or(0);
-    let mut next_value = {
-        let func = &module.functions[func_index];
-        let mut max = 0u32;
-        for block in &func.blocks {
-            for (value, _) in &block.params {
-                max = max.max(value.index() + 1);
-            }
-            for node in &block.body {
-                for result in &node.results {
-                    max = max.max(result.index() + 1);
-                }
-            }
-        }
-        max
-    };
+    let name = module.functions[func_index].name.clone();
+    // Cursors only: nothing is refused until a rewrite takes an id.
+    let mut block_ids = module.functions[func_index].fresh_block_ids();
+    let mut value_ids = module.functions[func_index].fresh_value_ids();
 
     let mut block_index = 0;
     while block_index < module.functions[func_index].blocks.len() {
@@ -1792,16 +956,39 @@ fn devirtualize_calls_in_function(
             continue;
         }
 
-        fn take_value(counter: &mut u32) -> ValueId {
-            let value = ValueId::new(*counter);
-            *counter += 1;
-            value
-        }
-        fn take_block(counter: &mut u32) -> BlockId {
-            let id = BlockId::new(*counter);
-            *counter += 1;
-            id
-        }
+        // Every id this site needs, taken before the function is touched: one
+        // continuation block, a call block per candidate and a chain block per
+        // candidate but the last (2n blocks); the `ptrtoint` of the callee,
+        // and per candidate its call results plus three compare values.
+        let refuse = |exhausted| LoweringRefusal::new(&name, exhausted);
+        let candidate_count = u32::try_from(candidates.len())
+            .map_err(|_| refuse(IdSpaceExhausted::of::<BlockId>()))?;
+        let block_count = candidate_count
+            .checked_mul(2)
+            .ok_or_else(|| refuse(IdSpaceExhausted::of::<BlockId>()))?;
+        let per_candidate = u32::try_from(results.len())
+            .ok()
+            .and_then(|count| count.checked_add(3))
+            .ok_or_else(|| refuse(IdSpaceExhausted::of::<ValueId>()))?;
+        let value_count = candidate_count
+            .checked_mul(per_candidate)
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| refuse(IdSpaceExhausted::of::<ValueId>()))?;
+        let mut site_blocks = block_ids
+            .take_run_below(block_count, RUNTIME_ENTRY_BLOCK_BASE)
+            .map_err(refuse)?;
+        let mut site_values = value_ids.take_run(value_count).map_err(refuse)?;
+        let miss_id = traps
+            .take(format!(
+                "<indirect-call dispatch miss in @{name} (functy.{})>",
+                sig.index()
+            ))
+            .map_err(refuse)?;
+        let mut take_block = || {
+            site_blocks
+                .take()
+                .ok_or_else(|| refuse(IdSpaceExhausted::of::<BlockId>()))
+        };
 
         // Split: `post` moves into the continuation block, whose params are
         // the original call results.
@@ -1811,7 +998,7 @@ fn devirtualize_calls_in_function(
             block.body.pop();
             post
         };
-        let cont_id = take_block(&mut next_block);
+        let cont_id = take_block()?;
         let mut cont = Block::new(cont_id);
         cont.params = results
             .iter()
@@ -1820,19 +1007,18 @@ fn devirtualize_calls_in_function(
             .collect();
         cont.body = post;
 
-        let miss_id = BlockId::new(TRAP_BLOCK_BASE + traps.len() as u32);
-        traps.push(format!(
-            "<indirect-call dispatch miss in @{} (functy.{})>",
-            module.functions[func_index].name,
-            sig.index()
-        ));
         let mut miss = Block::new(miss_id);
         miss.body.push(InstrNode::new(Inst::Unreachable));
 
         // Emit the compare ladder. The first test lives in the split block;
         // later tests get their own chain blocks.
         let mut new_blocks: Vec<Block> = Vec::new();
-        let addr = take_value(&mut next_value);
+        let mut take_value = || {
+            site_values
+                .take()
+                .ok_or_else(|| refuse(IdSpaceExhausted::of::<ValueId>()))
+        };
+        let addr = take_value()?;
         {
             let mut node = InstrNode::new(Inst::Cast {
                 op: CastOp::PtrToInt,
@@ -1850,7 +1036,7 @@ fn devirtualize_calls_in_function(
             let is_last = position + 1 == candidates.len();
 
             // The direct-call block for this candidate.
-            let call_id = take_block(&mut next_block);
+            let call_id = take_block()?;
             let mut call_block = Block::new(call_id);
             let mut call_results = Vec::with_capacity(results.len());
             let mut call_node = InstrNode::new(Inst::Call {
@@ -1858,7 +1044,7 @@ fn devirtualize_calls_in_function(
                 args: args.clone(),
             });
             for _ in &results {
-                let value = take_value(&mut next_value);
+                let value = take_value()?;
                 call_node.results.push(value);
                 call_results.push(value);
             }
@@ -1871,23 +1057,19 @@ fn devirtualize_calls_in_function(
             let else_target = if is_last {
                 miss_id
             } else {
-                let id = take_block(&mut next_block);
+                let id = take_block()?;
                 new_blocks.push(Block::new(id));
                 id
             };
 
             // The compare itself, in the current chain position.
-            let emit_into = |body: &mut Vec<InstrNode>, next_value: &mut u32| {
-                let mut fresh = || {
-                    let value = ValueId::new(*next_value);
-                    *next_value += 1;
-                    value
-                };
-                let anchor_ptr = fresh();
+            let anchor_ptr = take_value()?;
+            let anchor_addr = take_value()?;
+            let matches_target = take_value()?;
+            let emit_into = |body: &mut Vec<InstrNode>| {
                 let mut node = InstrNode::new(Inst::GlobalAddr { global: *anchor });
                 node.results.push(anchor_ptr);
                 body.push(node);
-                let anchor_addr = fresh();
                 let mut node = InstrNode::new(Inst::Cast {
                     op: CastOp::PtrToInt,
                     src_ty: Ty::Ptr,
@@ -1896,7 +1078,6 @@ fn devirtualize_calls_in_function(
                 });
                 node.results.push(anchor_addr);
                 body.push(node);
-                let matches_target = fresh();
                 let mut node = InstrNode::new(Inst::ICmp {
                     op: ICmpOp::Eq,
                     ty: Ty::U64,
@@ -1914,12 +1095,9 @@ fn devirtualize_calls_in_function(
                 }));
             };
             match chain.take() {
-                None => emit_into(
-                    &mut module.functions[func_index].blocks[block_index].body,
-                    &mut next_value,
-                ),
+                None => emit_into(&mut module.functions[func_index].blocks[block_index].body),
                 Some(mut block) => {
-                    emit_into(&mut block.body, &mut next_value);
+                    emit_into(&mut block.body);
                     new_blocks.push(block);
                 }
             }
@@ -1940,6 +1118,7 @@ fn devirtualize_calls_in_function(
         func.blocks.extend(new_blocks);
         block_index += 1;
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2053,13 +1232,101 @@ impl BuiltinKind {
 /// Extract the length-prefixed identifier following `10intrinsics` in a Rust
 /// v0-mangled `core::intrinsics::<name>` symbol, e.g.
 /// `_RINvNtC..4core10intrinsics5ctpopyE..` -> `Some("ctpop")`.
+///
+/// `None` when the name carries no well-formed identifier there — no
+/// `10intrinsics`, no decimal length, or a length the rest of the name does
+/// not hold (a length is DATA from the extern's name, so no offset is ever
+/// computed from it: the tail is sliced by the length alone). The caller
+/// classifies `None` as a trap stub, like any unknown extern.
 fn v0_intrinsic_name(name: &str) -> Option<String> {
-    let start = name.find("10intrinsics")? + "10intrinsics".len();
-    let rest = name.get(start..)?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let (_, rest) = name.split_once("10intrinsics")?;
+    let digit_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (digits, tail) = rest.split_at_checked(digit_end)?;
     let len: usize = digits.parse().ok()?;
-    rest.get(digits.len()..digits.len() + len)
-        .map(str::to_string)
+    tail.get(..len).map(str::to_string)
+}
+
+/// Name of the reserved trap-stub block range in refusals.
+const TRAP_RANGE: &str = "trap-block range";
+
+/// Name of the reserved trusted-runtime entry range in refusals.
+const RUNTIME_ENTRY_RANGE: &str = "trusted-runtime entry range";
+
+/// The last id of the trusted-runtime entry range: the ranges are
+/// `[RUNTIME_ENTRY_BLOCK_BASE, TRAP_BLOCK_BASE)` and `[TRAP_BLOCK_BASE,
+/// u32::MAX]`, disjoint by construction.
+const RUNTIME_ENTRY_BLOCK_LAST: u32 = TRAP_BLOCK_BASE - 1;
+
+/// A reserved block-id range and the name each id taken from it stands for:
+/// `names[k]` owns `first + k` BY CONSTRUCTION — an id is taken from the
+/// bounded run, then its name is pushed, and a used-up range is refused by
+/// name, never overflowing into the neighbouring range.
+struct ReservedBlocks {
+    ids: IdRun<BlockId>,
+    names: Vec<String>,
+    space: &'static str,
+}
+
+impl ReservedBlocks {
+    fn span(first: u32, last: u32, space: &'static str) -> Result<Self, String> {
+        let ids = IdRun::span(first, last)
+            .ok_or_else(|| format!("internal: the {space} [{first:#x}, {last:#x}] is empty"))?;
+        Ok(Self {
+            ids,
+            names: Vec::new(),
+            space,
+        })
+    }
+
+    fn take(&mut self, name: String) -> Result<BlockId, IdSpaceExhausted> {
+        let id = self
+            .ids
+            .take()
+            .ok_or(IdSpaceExhausted { space: self.space })?;
+        self.names.push(name);
+        Ok(id)
+    }
+}
+
+/// The trap-stub range `[TRAP_BLOCK_BASE, u32::MAX]`, shared by dispatch-miss
+/// blocks (devirtualization) and extern stubs (synthesis).
+type TrapBlocks = ReservedBlocks;
+
+fn trap_blocks() -> Result<TrapBlocks, String> {
+    ReservedBlocks::span(TRAP_BLOCK_BASE, u32::MAX, TRAP_RANGE)
+}
+
+/// Refuse, by name, a DEFINED function any of whose block ids — or its
+/// `entry` — lies in the runner's reserved range `[RUNTIME_ENTRY_BLOCK_BASE,
+/// u32::MAX]`, where synthesized trap stubs and trusted-runtime entries live.
+/// Such a user block could share an id with a synthesized one and a reached
+/// reserved id could not be attributed. A limitation of `trust-ir run` on a
+/// valid module, not a format rule.
+fn refuse_reserved_block_ids(module: &Module) -> Result<(), String> {
+    for func in module
+        .functions
+        .iter()
+        .filter(|func| !func.blocks.is_empty())
+    {
+        let offending = func
+            .block_ids()
+            .chain(std::iter::once(func.entry))
+            .find(|id| id.index() >= RUNTIME_ENTRY_BLOCK_BASE);
+        if let Some(id) = offending {
+            return Err(format!(
+                "cannot run @{}: block id {} ({:#x}) lies in the runner's reserved block-id range \
+                 [{RUNTIME_ENTRY_BLOCK_BASE:#x}, {:#x}] (trap stubs and trusted-runtime entry \
+                 points); this is a limitation of `trust-ir run`, not a format rule",
+                func.name,
+                id.index(),
+                id.index(),
+                u32::MAX
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Report of what synthesis attached to the linked image.
@@ -2072,21 +1339,62 @@ struct SynthesisReport {
     /// How many bodyless externs became trap STUB functions (a subset of
     /// `traps`, which also carries dispatch-miss blocks).
     stub_count: usize,
+    /// Pinned trusted-runtime entry points left BODYLESS; index `k` owns the
+    /// entry block id `RUNTIME_ENTRY_BLOCK_BASE + k`.
+    runtime_entries: Vec<String>,
 }
 
 impl SynthesisReport {
     /// Resolve an interpreter error block id back to a trap-stub name.
     fn trap_name(&self, block: BlockId) -> Option<&str> {
-        let index = block.index().checked_sub(TRAP_BLOCK_BASE)? as usize;
+        let index = usize::try_from(block.index().checked_sub(TRAP_BLOCK_BASE)?).ok()?;
         self.traps.get(index).map(String::as_str)
+    }
+
+    /// Resolve an interpreter error block id back to a pinned trusted-runtime
+    /// entry point the program entered (it has no body in the image).
+    fn runtime_entry_name(&self, block: BlockId) -> Option<&str> {
+        if block.index() > RUNTIME_ENTRY_BLOCK_LAST {
+            return None;
+        }
+        let index = usize::try_from(block.index().checked_sub(RUNTIME_ENTRY_BLOCK_BASE)?).ok()?;
+        self.runtime_entries.get(index).map(String::as_str)
+    }
+
+    /// Whether `name` is a pinned trusted-runtime entry point this synthesis
+    /// left bodyless.
+    fn is_runtime_entry(&self, name: &str) -> bool {
+        self.runtime_entries.iter().any(|entry| entry == name)
     }
 }
 
+/// Is `name` the link-time symbol of an entry point of a pinned trusted
+/// runtime — a handle runtime (`trust_ir_build::TRUSTED_HANDLE_RUNTIMES`) or
+/// a reference-counting runtime (`trust_ir_build::TRUSTED_RC_RUNTIMES`)? Such
+/// a symbol must stay bodyless in the image: the validator refuses a local
+/// definition of it (`HandleEntryPointDefinedLocally` /
+/// `RcEntryPointDefinedLocally`, so a trap stub would fail the post-lowering
+/// validation as this tool's own defect), and the runtime is part of the
+/// trusted base, not something this runner may stand in for.
+fn is_pinned_runtime_entry(name: &str) -> bool {
+    trust_ir_build::TRUSTED_HANDLE_RUNTIMES
+        .iter()
+        .flat_map(|pin| pin.entry_points.iter())
+        .any(|entry| entry.symbol == name)
+        || trust_ir_build::rc_entry_for_symbol(name).is_some()
+}
+
 /// Small function-body assembler for synthesized builtins.
+///
+/// Ids come from the one fresh-id rule: values from `0`, blocks from `0`
+/// and below [`RUNTIME_ENTRY_BLOCK_BASE`] (a synthesized body never takes a
+/// reserved id). Every minting method is total and refuses — never wraps —
+/// once its space is used up.
 struct BodyBuilder {
     blocks: Vec<Block>,
     cur: usize,
-    next_value: u32,
+    values: FreshIds<ValueId>,
+    block_ids: FreshIds<BlockId>,
 }
 
 impl BodyBuilder {
@@ -2094,56 +1402,72 @@ impl BodyBuilder {
         Self {
             blocks: Vec::new(),
             cur: 0,
-            next_value: 0,
+            values: FreshIds::new(),
+            block_ids: FreshIds::new(),
         }
     }
 
-    fn add_block(&mut self) -> BlockId {
-        let id = BlockId::new(self.blocks.len() as u32);
+    fn add_block(&mut self) -> Result<BlockId, IdSpaceExhausted> {
+        let exhausted = IdSpaceExhausted::of::<BlockId>();
+        let id = self
+            .block_ids
+            .take_run_below(1, RUNTIME_ENTRY_BLOCK_BASE)?
+            .take()
+            .ok_or(exhausted)?;
         self.blocks.push(Block::new(id));
-        id
+        Ok(id)
     }
 
     fn switch_to(&mut self, block: BlockId) {
         self.cur = block.as_usize();
     }
 
-    fn fresh(&mut self) -> ValueId {
-        let value = ValueId::new(self.next_value);
-        self.next_value += 1;
-        value
+    fn fresh(&mut self) -> Result<ValueId, IdSpaceExhausted> {
+        self.values.take()
     }
 
-    fn param(&mut self, block: BlockId, ty: Ty) -> ValueId {
-        let value = self.fresh();
+    fn param(&mut self, block: BlockId, ty: Ty) -> Result<ValueId, IdSpaceExhausted> {
+        let value = self.fresh()?;
         self.blocks[block.as_usize()].params.push((value, ty));
-        value
+        Ok(value)
     }
 
     fn push_void(&mut self, inst: Inst) {
         self.blocks[self.cur].body.push(InstrNode::new(inst));
     }
 
-    fn push(&mut self, inst: Inst) -> ValueId {
-        let value = self.fresh();
+    fn push(&mut self, inst: Inst) -> Result<ValueId, IdSpaceExhausted> {
+        let value = self.fresh()?;
         let mut node = InstrNode::new(inst);
         node.results.push(value);
         self.blocks[self.cur].body.push(node);
-        value
+        Ok(value)
     }
 
-    fn const_int(&mut self, ty: Ty, value: i128) -> ValueId {
+    fn const_int(&mut self, ty: Ty, value: i128) -> Result<ValueId, IdSpaceExhausted> {
         self.push(Inst::Const {
             ty,
             value: Constant::Int(value),
         })
     }
 
-    fn binop(&mut self, op: BinOp, ty: Ty, lhs: ValueId, rhs: ValueId) -> ValueId {
+    fn binop(
+        &mut self,
+        op: BinOp,
+        ty: Ty,
+        lhs: ValueId,
+        rhs: ValueId,
+    ) -> Result<ValueId, IdSpaceExhausted> {
         self.push(Inst::BinOp { op, ty, lhs, rhs })
     }
 
-    fn icmp(&mut self, op: ICmpOp, ty: Ty, lhs: ValueId, rhs: ValueId) -> ValueId {
+    fn icmp(
+        &mut self,
+        op: ICmpOp,
+        ty: Ty,
+        lhs: ValueId,
+        rhs: ValueId,
+    ) -> Result<ValueId, IdSpaceExhausted> {
         self.push(Inst::ICmp { op, ty, lhs, rhs })
     }
 
@@ -2168,7 +1492,7 @@ impl BodyBuilder {
     /// Byte-granular heap allocation of `count` bytes, 16-aligned. The static
     /// 16-byte alignment stands in for the runtime `align` argument of the
     /// Rust allocator ABI; it covers every scalar the interpreter can store.
-    fn heap_alloc_bytes(&mut self, count: ValueId) -> ValueId {
+    fn heap_alloc_bytes(&mut self, count: ValueId) -> Result<ValueId, IdSpaceExhausted> {
         self.push(Inst::HeapAlloc {
             ty: Ty::U8,
             count: Some(count),
@@ -2177,7 +1501,7 @@ impl BodyBuilder {
         })
     }
 
-    fn gep_u8(&mut self, base: ValueId, index: ValueId) -> ValueId {
+    fn gep_u8(&mut self, base: ValueId, index: ValueId) -> Result<ValueId, IdSpaceExhausted> {
         self.push(Inst::GEP {
             pointee_ty: Ty::U8,
             base,
@@ -2186,7 +1510,7 @@ impl BodyBuilder {
         })
     }
 
-    fn load_u8(&mut self, ptr: ValueId) -> ValueId {
+    fn load_u8(&mut self, ptr: ValueId) -> Result<ValueId, IdSpaceExhausted> {
         self.push(Inst::Load {
             ty: Ty::U8,
             ptr,
@@ -2206,24 +1530,40 @@ impl BodyBuilder {
     }
 
     /// Width-adjust an integer value between integer types (bit-level:
-    /// `Trunc` down, `ZExt` up, pass-through when equal).
-    fn adjust_int(&mut self, value: ValueId, from: &Ty, to: &Ty) -> Option<ValueId> {
+    /// `Trunc` down, `ZExt` up, pass-through when equal). `Unfit` when either
+    /// type is not an integer.
+    fn adjust_int(&mut self, value: ValueId, from: &Ty, to: &Ty) -> Result<ValueId, BodyRefusal> {
         if from == to {
-            return Some(value);
+            return Ok(value);
         }
-        let from_bits = int_bits(from)?;
-        let to_bits = int_bits(to)?;
+        let from_bits = int_bits(from).ok_or(BodyRefusal::Unfit)?;
+        let to_bits = int_bits(to).ok_or(BodyRefusal::Unfit)?;
         let op = match to_bits.cmp(&from_bits) {
             std::cmp::Ordering::Less => CastOp::Trunc,
             std::cmp::Ordering::Greater => CastOp::ZExt,
             std::cmp::Ordering::Equal => CastOp::Bitcast,
         };
-        Some(self.push(Inst::Cast {
+        Ok(self.push(Inst::Cast {
             op,
             src_ty: from.clone(),
             dst_ty: to.clone(),
             operand: value,
-        }))
+        })?)
+    }
+}
+
+/// Why a builtin body was not built: its declared signature does not fit the
+/// builtin's shape (the extern becomes a trap stub), or an id space ran out
+/// (the run is refused by name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyRefusal {
+    Unfit,
+    Exhausted(IdSpaceExhausted),
+}
+
+impl From<IdSpaceExhausted> for BodyRefusal {
+    fn from(exhausted: IdSpaceExhausted) -> Self {
+        Self::Exhausted(exhausted)
     }
 }
 
@@ -2280,20 +1620,45 @@ fn tuple_field_offsets(fields: &[Ty]) -> Option<Vec<u64>> {
 }
 
 /// Synthesize bodies for every function that is still bodyless after linking.
-/// Returns the trap table (continuing `trap_names` from earlier passes) and
-/// the builtin census. Never fails: an extern whose signature does not fit
-/// its classified builtin falls back to a trap stub (with a note on stderr).
-fn synthesize_builtins(module: &mut Module, trap_names: Vec<String>) -> SynthesisReport {
-    let mut report = SynthesisReport {
-        traps: trap_names,
-        builtins: Vec::new(),
-        stub_count: 0,
-    };
+/// Returns the trap table (continuing `traps` from earlier passes) and the
+/// builtin census. An extern whose signature does not fit its classified
+/// builtin falls back to a trap stub (with a note on stderr). Refused by name
+/// only when an id space runs out: a reserved range, or a synthesized body's
+/// own ids.
+fn synthesize_builtins(
+    module: &mut Module,
+    mut traps: TrapBlocks,
+) -> Result<SynthesisReport, LoweringRefusal> {
+    let mut runtime_entries = ReservedBlocks::span(
+        RUNTIME_ENTRY_BLOCK_BASE,
+        RUNTIME_ENTRY_BLOCK_LAST,
+        RUNTIME_ENTRY_RANGE,
+    )
+    .map_err(|_| {
+        LoweringRefusal::new(
+            "<runtime entries>",
+            IdSpaceExhausted {
+                space: RUNTIME_ENTRY_RANGE,
+            },
+        )
+    })?;
+    let mut builtins = Vec::new();
+    let mut stub_count = 0;
     for index in 0..module.functions.len() {
         if !module.functions[index].blocks.is_empty() {
             continue;
         }
         let name = module.functions[index].name.clone();
+        if is_pinned_runtime_entry(&name) {
+            // NEVER synthesized (module docs): stays a bodyless declaration.
+            // Only its entry id moves into the reserved range, so reaching it
+            // is reported by name; the validator ignores a declaration's entry.
+            let entry = runtime_entries
+                .take(name.clone())
+                .map_err(|exhausted| LoweringRefusal::new(&name, exhausted))?;
+            module.functions[index].entry = entry;
+            continue;
+        }
         let Some(sig) = module.func_type(module.functions[index].ty).cloned() else {
             // Dangling signature: leave bodyless; the interpreter reports it
             // if the function is ever called.
@@ -2302,12 +1667,13 @@ fn synthesize_builtins(module: &mut Module, trap_names: Vec<String>) -> Synthesi
         let kind = BuiltinKind::classify(&name);
         let body = match kind {
             BuiltinKind::Trap => None,
-            _ => build_builtin_body(kind, &sig),
+            _ => build_builtin_body(kind, &sig)
+                .map_err(|exhausted| LoweringRefusal::new(&name, exhausted))?,
         };
         match body {
             Some((entry, blocks)) => {
                 let label = builtin_label(kind);
-                report.builtins.push((name, label));
+                builtins.push((name, label));
                 let func = &mut module.functions[index];
                 func.entry = entry;
                 func.blocks = blocks;
@@ -2321,22 +1687,34 @@ fn synthesize_builtins(module: &mut Module, trap_names: Vec<String>) -> Synthesi
                         render_sig(&sig)
                     );
                 }
-                let trap_index = report.traps.len() as u32;
-                let block_id = BlockId::new(TRAP_BLOCK_BASE + trap_index);
+                let refuse = |exhausted| LoweringRefusal::new(&name, exhausted);
+                let param_count = u32::try_from(sig.params.len())
+                    .map_err(|_| refuse(IdSpaceExhausted::of::<ValueId>()))?;
+                let mut param_ids = FreshIds::<ValueId>::new()
+                    .take_run(param_count)
+                    .map_err(refuse)?;
+                let block_id = traps.take(name.clone()).map_err(refuse)?;
                 let mut block = Block::new(block_id);
-                for (next_value, ty) in (0u32..).zip(&sig.params) {
-                    block.params.push((ValueId::new(next_value), ty.clone()));
+                for ty in &sig.params {
+                    let value = param_ids
+                        .take()
+                        .ok_or_else(|| refuse(IdSpaceExhausted::of::<ValueId>()))?;
+                    block.params.push((value, ty.clone()));
                 }
                 block.body.push(InstrNode::new(Inst::Unreachable));
                 let func = &mut module.functions[index];
                 func.entry = block_id;
                 func.blocks = vec![block];
-                report.traps.push(func.name.clone());
-                report.stub_count += 1;
+                stub_count += 1;
             }
         }
     }
-    report
+    Ok(SynthesisReport {
+        traps: traps.names,
+        builtins,
+        stub_count,
+        runtime_entries: runtime_entries.names,
+    })
 }
 
 fn builtin_label(kind: BuiltinKind) -> &'static str {
@@ -2368,287 +1746,304 @@ fn render_sig(sig: &FuncTy) -> String {
 }
 
 /// Build the block list for one builtin against its declared signature.
-/// Returns `None` when the signature does not fit the builtin's shape.
-fn build_builtin_body(kind: BuiltinKind, sig: &FuncTy) -> Option<(BlockId, Vec<Block>)> {
+/// Returns `Ok(None)` when the signature does not fit the builtin's shape, and
+/// refuses only when a synthesized body's own id space runs out.
+fn build_builtin_body(
+    kind: BuiltinKind,
+    sig: &FuncTy,
+) -> Result<Option<(BlockId, Vec<Block>)>, IdSpaceExhausted> {
+    match emit_builtin_body(kind, sig) {
+        Ok(body) => Ok(Some(body)),
+        Err(BodyRefusal::Unfit) => Ok(None),
+        Err(BodyRefusal::Exhausted(exhausted)) => Err(exhausted),
+    }
+}
+
+/// [`build_builtin_body`]'s emitter: `Unfit` for a signature that does not fit.
+fn emit_builtin_body(
+    kind: BuiltinKind,
+    sig: &FuncTy,
+) -> Result<(BlockId, Vec<Block>), BodyRefusal> {
+    use BodyRefusal::Unfit;
     let mut bb = BodyBuilder::new();
     match kind {
-        BuiltinKind::Trap => None,
+        BuiltinKind::Trap => Err(Unfit),
         BuiltinKind::NoOp => {
             if !sig.returns.is_empty() {
-                return None;
+                return Err(Unfit);
             }
-            let entry = bb.add_block();
+            let entry = bb.add_block()?;
             for ty in &sig.params {
-                bb.param(entry, ty.clone());
+                bb.param(entry, ty.clone())?;
             }
             bb.switch_to(entry);
             bb.ret(Vec::new());
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::ConstFalse => {
             if sig.returns.as_slice() != [Ty::Bool] {
-                return None;
+                return Err(Unfit);
             }
-            let entry = bb.add_block();
+            let entry = bb.add_block()?;
             for ty in &sig.params {
-                bb.param(entry, ty.clone());
+                bb.param(entry, ty.clone())?;
             }
             bb.switch_to(entry);
             let result = bb.push(Inst::Const {
                 ty: Ty::Bool,
                 value: Constant::Bool(false),
-            });
+            })?;
             bb.ret(vec![result]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Ctpop | BuiltinKind::Ctlz | BuiltinKind::Cttz => {
             let [param_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let [ret_ty] = sig.returns.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
-            let bits = int_bits(param_ty)?;
-            int_bits(ret_ty)?;
+            let bits = int_bits(param_ty).ok_or(Unfit)?;
+            int_bits(ret_ty).ok_or(Unfit)?;
             let param_ty = param_ty.clone();
             let ret_ty = ret_ty.clone();
-            let entry = bb.add_block();
-            let x = bb.param(entry, param_ty.clone());
+            let entry = bb.add_block()?;
+            let x = bb.param(entry, param_ty.clone())?;
             bb.switch_to(entry);
             let counted = match kind {
                 BuiltinKind::Ctpop => bb.push(Inst::UnOp {
                     op: UnOp::CtPop,
                     ty: param_ty.clone(),
                     operand: x,
-                }),
+                })?,
                 BuiltinKind::Ctlz => {
                     // Smear the leading one downward, then count the ones:
                     // ctlz(x) = bits - ctpop(smear(x)); handles x == 0.
                     let mut smeared = x;
                     let mut shift = 1u32;
                     while shift < bits {
-                        let amount = bb.const_int(param_ty.clone(), i128::from(shift));
-                        let shifted = bb.binop(BinOp::LShr, param_ty.clone(), smeared, amount);
-                        smeared = bb.binop(BinOp::Or, param_ty.clone(), smeared, shifted);
+                        let amount = bb.const_int(param_ty.clone(), i128::from(shift))?;
+                        let shifted = bb.binop(BinOp::LShr, param_ty.clone(), smeared, amount)?;
+                        smeared = bb.binop(BinOp::Or, param_ty.clone(), smeared, shifted)?;
                         shift *= 2;
                     }
                     let pop = bb.push(Inst::UnOp {
                         op: UnOp::CtPop,
                         ty: param_ty.clone(),
                         operand: smeared,
-                    });
-                    let width = bb.const_int(param_ty.clone(), i128::from(bits));
-                    bb.binop(BinOp::Sub, param_ty.clone(), width, pop)
+                    })?;
+                    let width = bb.const_int(param_ty.clone(), i128::from(bits))?;
+                    bb.binop(BinOp::Sub, param_ty.clone(), width, pop)?
                 }
                 BuiltinKind::Cttz => {
                     // cttz(x) = ctpop((x - 1) & !x); handles x == 0 (wraps to
                     // all-ones & all-ones = all-ones, ctpop = bits).
-                    let one = bb.const_int(param_ty.clone(), 1);
-                    let minus_one = bb.binop(BinOp::Sub, param_ty.clone(), x, one);
+                    let one = bb.const_int(param_ty.clone(), 1)?;
+                    let minus_one = bb.binop(BinOp::Sub, param_ty.clone(), x, one)?;
                     let inverted = bb.push(Inst::UnOp {
                         op: UnOp::Not,
                         ty: param_ty.clone(),
                         operand: x,
-                    });
-                    let mask = bb.binop(BinOp::And, param_ty.clone(), minus_one, inverted);
+                    })?;
+                    let mask = bb.binop(BinOp::And, param_ty.clone(), minus_one, inverted)?;
                     bb.push(Inst::UnOp {
                         op: UnOp::CtPop,
                         ty: param_ty.clone(),
                         operand: mask,
-                    })
+                    })?
                 }
-                _ => unreachable!(),
+                _ => return Err(Unfit),
             };
             let result = bb.adjust_int(counted, &param_ty, &ret_ty)?;
             bb.ret(vec![result]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::FunnelShl => {
             let [a_ty, b_ty, c_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let [ret_ty] = sig.returns.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             if a_ty != b_ty {
-                return None;
+                return Err(Unfit);
             }
-            let bits = int_bits(a_ty)?;
-            int_bits(c_ty)?;
-            int_bits(ret_ty)?;
+            let bits = int_bits(a_ty).ok_or(Unfit)?;
+            int_bits(c_ty).ok_or(Unfit)?;
+            int_bits(ret_ty).ok_or(Unfit)?;
             let word = a_ty.clone();
-            let entry = bb.add_block();
-            let a = bb.param(entry, word.clone());
-            let b = bb.param(entry, word.clone());
-            let c = bb.param(entry, c_ty.clone());
+            let entry = bb.add_block()?;
+            let a = bb.param(entry, word.clone())?;
+            let b = bb.param(entry, word.clone())?;
+            let c = bb.param(entry, c_ty.clone())?;
             bb.switch_to(entry);
             // fshl(a, b, c): sh = c & (bits-1);
             // result = (a << sh) | ((b >> 1) >> ((bits-1) - sh)).
             // Branch-free and shift-in-range for every c (sh == 0 included).
             let c_word = bb.adjust_int(c, c_ty, &word)?;
-            let mask = bb.const_int(word.clone(), i128::from(bits - 1));
-            let sh = bb.binop(BinOp::And, word.clone(), c_word, mask);
-            let hi = bb.binop(BinOp::Shl, word.clone(), a, sh);
-            let one = bb.const_int(word.clone(), 1);
-            let b_half = bb.binop(BinOp::LShr, word.clone(), b, one);
-            let inv = bb.binop(BinOp::Sub, word.clone(), mask, sh);
-            let lo = bb.binop(BinOp::LShr, word.clone(), b_half, inv);
-            let combined = bb.binop(BinOp::Or, word.clone(), hi, lo);
+            let mask = bb.const_int(word.clone(), i128::from(bits - 1))?;
+            let sh = bb.binop(BinOp::And, word.clone(), c_word, mask)?;
+            let hi = bb.binop(BinOp::Shl, word.clone(), a, sh)?;
+            let one = bb.const_int(word.clone(), 1)?;
+            let b_half = bb.binop(BinOp::LShr, word.clone(), b, one)?;
+            let inv = bb.binop(BinOp::Sub, word.clone(), mask, sh)?;
+            let lo = bb.binop(BinOp::LShr, word.clone(), b_half, inv)?;
+            let combined = bb.binop(BinOp::Or, word.clone(), hi, lo)?;
             let result = bb.adjust_int(combined, &word, ret_ty)?;
             bb.ret(vec![result]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::ExactDiv => {
             let [a_ty, b_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let [ret_ty] = sig.returns.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             if a_ty != b_ty || a_ty != ret_ty {
-                return None;
+                return Err(Unfit);
             }
-            let signed = int_is_signed(a_ty)?;
+            let signed = int_is_signed(a_ty).ok_or(Unfit)?;
             let word = a_ty.clone();
-            let entry = bb.add_block();
-            let a = bb.param(entry, word.clone());
-            let b = bb.param(entry, word.clone());
+            let entry = bb.add_block()?;
+            let a = bb.param(entry, word.clone())?;
+            let b = bb.param(entry, word.clone())?;
             bb.switch_to(entry);
             // exact_div is precondition-guarded (b != 0, a % b == 0) at the
             // Rust level; the runtime value is just the quotient.
             let op = if signed { BinOp::SDiv } else { BinOp::UDiv };
-            let quotient = bb.binop(op, word.clone(), a, b);
+            let quotient = bb.binop(op, word.clone(), a, b)?;
             bb.ret(vec![quotient]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Alloc => {
             let [size_ty, _align_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             if sig.returns.as_slice() != [Ty::Ptr] {
-                return None;
+                return Err(Unfit);
             }
-            int_bits(size_ty)?;
-            let entry = bb.add_block();
-            let size = bb.param(entry, size_ty.clone());
-            bb.param(entry, sig.params[1].clone());
+            int_bits(size_ty).ok_or(Unfit)?;
+            let entry = bb.add_block()?;
+            let size = bb.param(entry, size_ty.clone())?;
+            bb.param(entry, sig.params[1].clone())?;
             bb.switch_to(entry);
-            let ptr = bb.heap_alloc_bytes(size);
+            let ptr = bb.heap_alloc_bytes(size)?;
             bb.ret(vec![ptr]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::AllocZeroed => {
             let [size_ty, _align_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             if sig.returns.as_slice() != [Ty::Ptr] {
-                return None;
+                return Err(Unfit);
             }
-            int_bits(size_ty)?;
+            int_bits(size_ty).ok_or(Unfit)?;
             let size_ty = size_ty.clone();
-            let entry = bb.add_block();
-            let loop_head = bb.add_block();
-            let loop_body = bb.add_block();
-            let exit = bb.add_block();
-            let size = bb.param(entry, size_ty.clone());
-            bb.param(entry, sig.params[1].clone());
-            let i = bb.param(loop_head, size_ty.clone());
+            let entry = bb.add_block()?;
+            let loop_head = bb.add_block()?;
+            let loop_body = bb.add_block()?;
+            let exit = bb.add_block()?;
+            let size = bb.param(entry, size_ty.clone())?;
+            bb.param(entry, sig.params[1].clone())?;
+            let i = bb.param(loop_head, size_ty.clone())?;
             bb.switch_to(entry);
-            let ptr = bb.heap_alloc_bytes(size);
-            let zero = bb.const_int(size_ty.clone(), 0);
+            let ptr = bb.heap_alloc_bytes(size)?;
+            let zero = bb.const_int(size_ty.clone(), 0)?;
             bb.br(loop_head, vec![zero]);
             bb.switch_to(loop_head);
-            let in_range = bb.icmp(ICmpOp::Ult, size_ty.clone(), i, size);
+            let in_range = bb.icmp(ICmpOp::Ult, size_ty.clone(), i, size)?;
             bb.cond_br(in_range, loop_body, exit);
             bb.switch_to(loop_body);
-            let slot = bb.gep_u8(ptr, i);
-            let zero_byte = bb.const_int(Ty::U8, 0);
+            let slot = bb.gep_u8(ptr, i)?;
+            let zero_byte = bb.const_int(Ty::U8, 0)?;
             bb.store_u8(slot, zero_byte);
-            let one = bb.const_int(size_ty.clone(), 1);
-            let next = bb.binop(BinOp::Add, size_ty.clone(), i, one);
+            let one = bb.const_int(size_ty.clone(), 1)?;
+            let next = bb.binop(BinOp::Add, size_ty.clone(), i, one)?;
             bb.br(loop_head, vec![next]);
             bb.switch_to(exit);
             bb.ret(vec![ptr]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Dealloc => {
             let [Ty::Ptr, size_ty, align_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             if !sig.returns.is_empty() {
-                return None;
+                return Err(Unfit);
             }
             let (size_ty, align_ty) = (size_ty.clone(), align_ty.clone());
-            let entry = bb.add_block();
-            let ptr = bb.param(entry, Ty::Ptr);
-            bb.param(entry, size_ty);
-            bb.param(entry, align_ty);
+            let entry = bb.add_block()?;
+            let ptr = bb.param(entry, Ty::Ptr)?;
+            bb.param(entry, size_ty)?;
+            bb.param(entry, align_ty)?;
             bb.switch_to(entry);
             bb.push_void(Inst::Dealloc { ptr });
             bb.ret(Vec::new());
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Realloc => {
             let [Ty::Ptr, old_ty, align_ty, new_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             if sig.returns.as_slice() != [Ty::Ptr] || old_ty != new_ty {
-                return None;
+                return Err(Unfit);
             }
-            int_bits(old_ty)?;
+            int_bits(old_ty).ok_or(Unfit)?;
             let size_ty = old_ty.clone();
             let align_ty = align_ty.clone();
-            let entry = bb.add_block();
-            let loop_head = bb.add_block();
-            let loop_body = bb.add_block();
-            let exit = bb.add_block();
-            let old_ptr = bb.param(entry, Ty::Ptr);
-            let old_size = bb.param(entry, size_ty.clone());
-            bb.param(entry, align_ty);
-            let new_size = bb.param(entry, size_ty.clone());
-            let i = bb.param(loop_head, size_ty.clone());
+            let entry = bb.add_block()?;
+            let loop_head = bb.add_block()?;
+            let loop_body = bb.add_block()?;
+            let exit = bb.add_block()?;
+            let old_ptr = bb.param(entry, Ty::Ptr)?;
+            let old_size = bb.param(entry, size_ty.clone())?;
+            bb.param(entry, align_ty)?;
+            let new_size = bb.param(entry, size_ty.clone())?;
+            let i = bb.param(loop_head, size_ty.clone())?;
             bb.switch_to(entry);
-            let new_ptr = bb.heap_alloc_bytes(new_size);
-            let shrinking = bb.icmp(ICmpOp::Ult, size_ty.clone(), old_size, new_size);
+            let new_ptr = bb.heap_alloc_bytes(new_size)?;
+            let shrinking = bb.icmp(ICmpOp::Ult, size_ty.clone(), old_size, new_size)?;
             let copy_len = bb.push(Inst::Select {
                 ty: size_ty.clone(),
                 cond: shrinking,
                 then_val: old_size,
                 else_val: new_size,
-            });
-            let zero = bb.const_int(size_ty.clone(), 0);
+            })?;
+            let zero = bb.const_int(size_ty.clone(), 0)?;
             bb.br(loop_head, vec![zero]);
             bb.switch_to(loop_head);
-            let in_range = bb.icmp(ICmpOp::Ult, size_ty.clone(), i, copy_len);
+            let in_range = bb.icmp(ICmpOp::Ult, size_ty.clone(), i, copy_len)?;
             bb.cond_br(in_range, loop_body, exit);
             bb.switch_to(loop_body);
-            let src = bb.gep_u8(old_ptr, i);
-            let byte = bb.load_u8(src);
-            let dst = bb.gep_u8(new_ptr, i);
+            let src = bb.gep_u8(old_ptr, i)?;
+            let byte = bb.load_u8(src)?;
+            let dst = bb.gep_u8(new_ptr, i)?;
             bb.store_u8(dst, byte);
-            let one = bb.const_int(size_ty.clone(), 1);
-            let next = bb.binop(BinOp::Add, size_ty.clone(), i, one);
+            let one = bb.const_int(size_ty.clone(), 1)?;
+            let next = bb.binop(BinOp::Add, size_ty.clone(), i, one)?;
             bb.br(loop_head, vec![next]);
             bb.switch_to(exit);
             bb.push_void(Inst::Dealloc { ptr: old_ptr });
             bb.ret(vec![new_ptr]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Memcpy | BuiltinKind::Memmove => {
             let [Ty::Ptr, Ty::Ptr, len_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let returns_dst = match sig.returns.as_slice() {
                 [] => false,
                 [Ty::Ptr] => true,
-                _ => return None,
+                _ => return Err(Unfit),
             };
-            int_bits(len_ty)?;
+            int_bits(len_ty).ok_or(Unfit)?;
             let len_ty = len_ty.clone();
-            let entry = bb.add_block();
-            let dst = bb.param(entry, Ty::Ptr);
-            let src = bb.param(entry, Ty::Ptr);
-            let len = bb.param(entry, len_ty.clone());
+            let entry = bb.add_block()?;
+            let dst = bb.param(entry, Ty::Ptr)?;
+            let src = bb.param(entry, Ty::Ptr)?;
+            let len = bb.param(entry, len_ty.clone())?;
             let finish = |bb: &mut BodyBuilder, dst| {
                 if returns_dst {
                     bb.ret(vec![dst]);
@@ -2659,23 +2054,23 @@ fn build_builtin_body(kind: BuiltinKind, sig: &FuncTy) -> Option<(BlockId, Vec<B
             if kind == BuiltinKind::Memcpy {
                 // Forward byte loop (the regions must not overlap, per the
                 // memcpy contract).
-                let loop_head = bb.add_block();
-                let loop_body = bb.add_block();
-                let exit = bb.add_block();
-                let i = bb.param(loop_head, len_ty.clone());
+                let loop_head = bb.add_block()?;
+                let loop_body = bb.add_block()?;
+                let exit = bb.add_block()?;
+                let i = bb.param(loop_head, len_ty.clone())?;
                 bb.switch_to(entry);
-                let zero = bb.const_int(len_ty.clone(), 0);
+                let zero = bb.const_int(len_ty.clone(), 0)?;
                 bb.br(loop_head, vec![zero]);
                 bb.switch_to(loop_head);
-                let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len);
+                let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len)?;
                 bb.cond_br(in_range, loop_body, exit);
                 bb.switch_to(loop_body);
-                let from = bb.gep_u8(src, i);
-                let byte = bb.load_u8(from);
-                let to = bb.gep_u8(dst, i);
+                let from = bb.gep_u8(src, i)?;
+                let byte = bb.load_u8(from)?;
+                let to = bb.gep_u8(dst, i)?;
                 bb.store_u8(to, byte);
-                let one = bb.const_int(len_ty.clone(), 1);
-                let next = bb.binop(BinOp::Add, len_ty.clone(), i, one);
+                let one = bb.const_int(len_ty.clone(), 1)?;
+                let next = bb.binop(BinOp::Add, len_ty.clone(), i, one)?;
                 bb.br(loop_head, vec![next]);
                 bb.switch_to(exit);
                 finish(&mut bb, dst);
@@ -2683,89 +2078,89 @@ fn build_builtin_body(kind: BuiltinKind, sig: &FuncTy) -> Option<(BlockId, Vec<B
                 // Overlap-safe: bounce through a temporary buffer. The
                 // temporary needs `len > 0` (a zero-byte allocation is
                 // rejected by the interpreter), so branch around it.
-                let empty_exit = bb.add_block();
-                let copy_in = bb.add_block();
-                let in_head = bb.add_block();
-                let in_body = bb.add_block();
-                let out_start = bb.add_block();
-                let out_head = bb.add_block();
-                let out_body = bb.add_block();
-                let done = bb.add_block();
-                let i = bb.param(in_head, len_ty.clone());
-                let j = bb.param(out_head, len_ty.clone());
+                let empty_exit = bb.add_block()?;
+                let copy_in = bb.add_block()?;
+                let in_head = bb.add_block()?;
+                let in_body = bb.add_block()?;
+                let out_start = bb.add_block()?;
+                let out_head = bb.add_block()?;
+                let out_body = bb.add_block()?;
+                let done = bb.add_block()?;
+                let i = bb.param(in_head, len_ty.clone())?;
+                let j = bb.param(out_head, len_ty.clone())?;
                 bb.switch_to(entry);
-                let zero = bb.const_int(len_ty.clone(), 0);
-                let is_empty = bb.icmp(ICmpOp::Eq, len_ty.clone(), len, zero);
+                let zero = bb.const_int(len_ty.clone(), 0)?;
+                let is_empty = bb.icmp(ICmpOp::Eq, len_ty.clone(), len, zero)?;
                 bb.cond_br(is_empty, empty_exit, copy_in);
                 bb.switch_to(empty_exit);
                 finish(&mut bb, dst);
                 bb.switch_to(copy_in);
-                let tmp = bb.heap_alloc_bytes(len);
-                let zero_in = bb.const_int(len_ty.clone(), 0);
+                let tmp = bb.heap_alloc_bytes(len)?;
+                let zero_in = bb.const_int(len_ty.clone(), 0)?;
                 bb.br(in_head, vec![zero_in]);
                 bb.switch_to(in_head);
-                let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len);
+                let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len)?;
                 bb.cond_br(in_range, in_body, out_start);
                 bb.switch_to(in_body);
-                let from = bb.gep_u8(src, i);
-                let byte = bb.load_u8(from);
-                let to = bb.gep_u8(tmp, i);
+                let from = bb.gep_u8(src, i)?;
+                let byte = bb.load_u8(from)?;
+                let to = bb.gep_u8(tmp, i)?;
                 bb.store_u8(to, byte);
-                let one = bb.const_int(len_ty.clone(), 1);
-                let next = bb.binop(BinOp::Add, len_ty.clone(), i, one);
+                let one = bb.const_int(len_ty.clone(), 1)?;
+                let next = bb.binop(BinOp::Add, len_ty.clone(), i, one)?;
                 bb.br(in_head, vec![next]);
                 bb.switch_to(out_start);
-                let zero_out = bb.const_int(len_ty.clone(), 0);
+                let zero_out = bb.const_int(len_ty.clone(), 0)?;
                 bb.br(out_head, vec![zero_out]);
                 bb.switch_to(out_head);
-                let out_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), j, len);
+                let out_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), j, len)?;
                 bb.cond_br(out_range, out_body, done);
                 bb.switch_to(out_body);
-                let from = bb.gep_u8(tmp, j);
-                let byte = bb.load_u8(from);
-                let to = bb.gep_u8(dst, j);
+                let from = bb.gep_u8(tmp, j)?;
+                let byte = bb.load_u8(from)?;
+                let to = bb.gep_u8(dst, j)?;
                 bb.store_u8(to, byte);
-                let one = bb.const_int(len_ty.clone(), 1);
-                let next = bb.binop(BinOp::Add, len_ty.clone(), j, one);
+                let one = bb.const_int(len_ty.clone(), 1)?;
+                let next = bb.binop(BinOp::Add, len_ty.clone(), j, one)?;
                 bb.br(out_head, vec![next]);
                 bb.switch_to(done);
                 bb.push_void(Inst::Dealloc { ptr: tmp });
                 finish(&mut bb, dst);
             }
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Memset => {
             let [Ty::Ptr, fill_ty, len_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let returns_dst = match sig.returns.as_slice() {
                 [] => false,
                 [Ty::Ptr] => true,
-                _ => return None,
+                _ => return Err(Unfit),
             };
-            int_bits(fill_ty)?;
-            int_bits(len_ty)?;
+            int_bits(fill_ty).ok_or(Unfit)?;
+            int_bits(len_ty).ok_or(Unfit)?;
             let (fill_ty, len_ty) = (fill_ty.clone(), len_ty.clone());
-            let entry = bb.add_block();
-            let loop_head = bb.add_block();
-            let loop_body = bb.add_block();
-            let exit = bb.add_block();
-            let dst = bb.param(entry, Ty::Ptr);
-            let fill = bb.param(entry, fill_ty.clone());
-            let len = bb.param(entry, len_ty.clone());
-            let i = bb.param(loop_head, len_ty.clone());
+            let entry = bb.add_block()?;
+            let loop_head = bb.add_block()?;
+            let loop_body = bb.add_block()?;
+            let exit = bb.add_block()?;
+            let dst = bb.param(entry, Ty::Ptr)?;
+            let fill = bb.param(entry, fill_ty.clone())?;
+            let len = bb.param(entry, len_ty.clone())?;
+            let i = bb.param(loop_head, len_ty.clone())?;
             bb.switch_to(entry);
             let byte = bb.adjust_int(fill, &fill_ty, &Ty::U8)?;
-            let zero = bb.const_int(len_ty.clone(), 0);
+            let zero = bb.const_int(len_ty.clone(), 0)?;
             bb.br(loop_head, vec![zero]);
             bb.switch_to(loop_head);
-            let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len);
+            let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len)?;
             bb.cond_br(in_range, loop_body, exit);
             bb.switch_to(loop_body);
-            let slot = bb.gep_u8(dst, i);
+            let slot = bb.gep_u8(dst, i)?;
             bb.store_u8(slot, byte);
-            let one = bb.const_int(len_ty.clone(), 1);
-            let next = bb.binop(BinOp::Add, len_ty.clone(), i, one);
+            let one = bb.const_int(len_ty.clone(), 1)?;
+            let next = bb.binop(BinOp::Add, len_ty.clone(), i, one)?;
             bb.br(loop_head, vec![next]);
             bb.switch_to(exit);
             if returns_dst {
@@ -2773,80 +2168,80 @@ fn build_builtin_body(kind: BuiltinKind, sig: &FuncTy) -> Option<(BlockId, Vec<B
             } else {
                 bb.ret(Vec::new());
             }
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::RandomBytes => {
             // CCRandomGenerateBytes(bytes: ptr, count: len_ty) -> ret_ty:
             // deterministically zero-fill `count` bytes at `bytes`, then
             // return kCCSuccess (0). Same byte loop shape as `memset`.
             let [Ty::Ptr, len_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let [ret_ty] = sig.returns.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
-            int_bits(len_ty)?;
-            int_bits(ret_ty)?;
+            int_bits(len_ty).ok_or(Unfit)?;
+            int_bits(ret_ty).ok_or(Unfit)?;
             let (len_ty, ret_ty) = (len_ty.clone(), ret_ty.clone());
-            let entry = bb.add_block();
-            let loop_head = bb.add_block();
-            let loop_body = bb.add_block();
-            let exit = bb.add_block();
-            let dst = bb.param(entry, Ty::Ptr);
-            let len = bb.param(entry, len_ty.clone());
-            let i = bb.param(loop_head, len_ty.clone());
+            let entry = bb.add_block()?;
+            let loop_head = bb.add_block()?;
+            let loop_body = bb.add_block()?;
+            let exit = bb.add_block()?;
+            let dst = bb.param(entry, Ty::Ptr)?;
+            let len = bb.param(entry, len_ty.clone())?;
+            let i = bb.param(loop_head, len_ty.clone())?;
             bb.switch_to(entry);
-            let zero = bb.const_int(len_ty.clone(), 0);
+            let zero = bb.const_int(len_ty.clone(), 0)?;
             bb.br(loop_head, vec![zero]);
             bb.switch_to(loop_head);
-            let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len);
+            let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len)?;
             bb.cond_br(in_range, loop_body, exit);
             bb.switch_to(loop_body);
-            let slot = bb.gep_u8(dst, i);
-            let zero_byte = bb.const_int(Ty::U8, 0);
+            let slot = bb.gep_u8(dst, i)?;
+            let zero_byte = bb.const_int(Ty::U8, 0)?;
             bb.store_u8(slot, zero_byte);
-            let one = bb.const_int(len_ty.clone(), 1);
-            let next = bb.binop(BinOp::Add, len_ty.clone(), i, one);
+            let one = bb.const_int(len_ty.clone(), 1)?;
+            let next = bb.binop(BinOp::Add, len_ty.clone(), i, one)?;
             bb.br(loop_head, vec![next]);
             bb.switch_to(exit);
-            let success = bb.const_int(ret_ty, 0);
+            let success = bb.const_int(ret_ty, 0)?;
             bb.ret(vec![success]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
         BuiltinKind::Memcmp => {
             let [Ty::Ptr, Ty::Ptr, len_ty] = sig.params.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
             let [ret_ty] = sig.returns.as_slice() else {
-                return None;
+                return Err(Unfit);
             };
-            int_bits(len_ty)?;
-            int_bits(ret_ty)?;
+            int_bits(len_ty).ok_or(Unfit)?;
+            int_bits(ret_ty).ok_or(Unfit)?;
             let (len_ty, ret_ty) = (len_ty.clone(), ret_ty.clone());
-            let entry = bb.add_block();
-            let loop_head = bb.add_block();
-            let loop_body = bb.add_block();
-            let advance = bb.add_block();
-            let differ = bb.add_block();
-            let equal = bb.add_block();
-            let lhs = bb.param(entry, Ty::Ptr);
-            let rhs = bb.param(entry, Ty::Ptr);
-            let len = bb.param(entry, len_ty.clone());
-            let i = bb.param(loop_head, len_ty.clone());
-            let byte_l = bb.param(differ, Ty::U8);
-            let byte_r = bb.param(differ, Ty::U8);
+            let entry = bb.add_block()?;
+            let loop_head = bb.add_block()?;
+            let loop_body = bb.add_block()?;
+            let advance = bb.add_block()?;
+            let differ = bb.add_block()?;
+            let equal = bb.add_block()?;
+            let lhs = bb.param(entry, Ty::Ptr)?;
+            let rhs = bb.param(entry, Ty::Ptr)?;
+            let len = bb.param(entry, len_ty.clone())?;
+            let i = bb.param(loop_head, len_ty.clone())?;
+            let byte_l = bb.param(differ, Ty::U8)?;
+            let byte_r = bb.param(differ, Ty::U8)?;
             bb.switch_to(entry);
-            let zero = bb.const_int(len_ty.clone(), 0);
+            let zero = bb.const_int(len_ty.clone(), 0)?;
             bb.br(loop_head, vec![zero]);
             bb.switch_to(loop_head);
-            let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len);
+            let in_range = bb.icmp(ICmpOp::Ult, len_ty.clone(), i, len)?;
             bb.cond_br(in_range, loop_body, equal);
             bb.switch_to(loop_body);
-            let lp = bb.gep_u8(lhs, i);
-            let lv = bb.load_u8(lp);
-            let rp = bb.gep_u8(rhs, i);
-            let rv = bb.load_u8(rp);
-            let same = bb.icmp(ICmpOp::Eq, Ty::U8, lv, rv);
+            let lp = bb.gep_u8(lhs, i)?;
+            let lv = bb.load_u8(lp)?;
+            let rp = bb.gep_u8(rhs, i)?;
+            let rv = bb.load_u8(rp)?;
+            let same = bb.icmp(ICmpOp::Eq, Ty::U8, lv, rv)?;
             bb.push_void(Inst::CondBr {
                 cond: same,
                 then_target: advance,
@@ -2855,24 +2250,24 @@ fn build_builtin_body(kind: BuiltinKind, sig: &FuncTy) -> Option<(BlockId, Vec<B
                 else_args: vec![lv, rv],
             });
             bb.switch_to(advance);
-            let one = bb.const_int(len_ty.clone(), 1);
-            let next = bb.binop(BinOp::Add, len_ty.clone(), i, one);
+            let one = bb.const_int(len_ty.clone(), 1)?;
+            let next = bb.binop(BinOp::Add, len_ty.clone(), i, one)?;
             bb.br(loop_head, vec![next]);
             bb.switch_to(differ);
-            let below = bb.icmp(ICmpOp::Ult, Ty::U8, byte_l, byte_r);
-            let minus_one = bb.const_int(ret_ty.clone(), -1);
-            let plus_one = bb.const_int(ret_ty.clone(), 1);
+            let below = bb.icmp(ICmpOp::Ult, Ty::U8, byte_l, byte_r)?;
+            let minus_one = bb.const_int(ret_ty.clone(), -1)?;
+            let plus_one = bb.const_int(ret_ty.clone(), 1)?;
             let verdict = bb.push(Inst::Select {
                 ty: ret_ty.clone(),
                 cond: below,
                 then_val: minus_one,
                 else_val: plus_one,
-            });
+            })?;
             bb.ret(vec![verdict]);
             bb.switch_to(equal);
-            let same_result = bb.const_int(ret_ty.clone(), 0);
+            let same_result = bb.const_int(ret_ty.clone(), 0)?;
             bb.ret(vec![same_result]);
-            Some((entry, bb.blocks))
+            Ok((entry, bb.blocks))
         }
     }
 }
@@ -2892,6 +2287,10 @@ fn render_return(value: &InterpretValue) -> String {
         }
         InterpretValueKind::Bool(b) => u8::from(*b).to_string(),
         InterpretValueKind::FloatBits(bits) => match value.ty {
+            // WS2.15: an `F16` return is its binary16 pattern in the low 16
+            // bits; render the value it denotes (before this it fell to the
+            // `f64` arm and printed a tiny binary64 subnormal).
+            Ty::F16 => format!("{:?}", trust_ir::interpret::f16_bits_to_f64(*bits as u16)),
             Ty::F32 => format!("{:?}", f32::from_bits(*bits as u32)),
             _ => format!("{:?}", f64::from_bits(*bits)),
         },
@@ -2900,11 +2299,78 @@ fn render_return(value: &InterpretValue) -> String {
             format!("ptr(alloc {}, offset {})", ptr.allocation, ptr.offset)
         }
         InterpretValueKind::Unit => "()".to_string(),
+        // A runtime handle is opaque: its id names a row of the run's host
+        // state, nothing else. It has no in-format value to print.
+        InterpretValueKind::Handle { id } => format!("handle(#{id}, {})", value.ty),
+        // A tensor (PKG-U13a): its type, its extents, then its elements in
+        // row-major order. A zero-extent contraction is one uniform node of
+        // any count, so a long tensor prints its first elements and its count.
+        InterpretValueKind::Tensor { dims, elems } => {
+            const SHOWN: usize = 64;
+            let mut shown: Vec<String> = elems.iter().take(SHOWN).map(render_return).collect();
+            if elems.len() > SHOWN as u64 {
+                shown.push(format!("... ({} elements)", elems.len()));
+            }
+            format!("{} dims {dims:?} [{}]", value.ty, shown.join(", "))
+        }
         other => format!("{other:?}"),
     }
 }
 
-fn report_interpret_error(error: &InterpretError, synthesis: &SynthesisReport) {
+/// Which host model `run` installs in the reference interpreter (`--host`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum HostChoice {
+    /// No host: every bodyless declaration is refused (fail-closed).
+    #[default]
+    None,
+    /// `trust_ir_build::PinnedHandleHost`, the reference model of the pinned
+    /// handle and RC runtimes (WS2.13). Host-assisted execution.
+    Pinned,
+}
+
+/// The named refusal for entering a pinned trusted-runtime entry point the
+/// reference interpreter did not serve (module docs): with no host, nothing
+/// serves it; with the pinned host, the declaration is not the exact pinned
+/// one (the validator refuses such a module; `run` without `--validate`
+/// reaches it).
+fn unhosted_runtime_entry(name: &str, host: HostChoice) -> String {
+    match host {
+        HostChoice::None => format!(
+            "reached trusted-runtime entry point @{name} — the reference interpreter has no host \
+             implementation (TRUST.md items 9 and 13; `run` installs no host model unless \
+             `--host pinned` selects the reference model)"
+        ),
+        HostChoice::Pinned => format!(
+            "reached trusted-runtime entry point @{name}, which the pinned reference host model \
+             does not serve: its declaration does not carry the exact pinned signature and \
+             calling convention (`trust-ir handles`; `--validate` refuses such a module by name)"
+        ),
+    }
+}
+
+fn report_interpret_error(error: &InterpretError, synthesis: &SynthesisReport, host: HostChoice) {
+    // A pinned trusted-runtime entry point is bodyless in the image; unless
+    // an installed host model served it, calling it is the interpreter's
+    // `UnsupportedCall` naming the declaration (WS2.12). Named refusal,
+    // fail-closed. Only a name the synthesis pass recorded as a pinned entry
+    // point gets it; any other unhosted callee keeps the raw diagnostic.
+    if let Some(name) = error
+        .unhosted_callee()
+        .filter(|name| synthesis.is_runtime_entry(name))
+    {
+        eprintln!("error: {}", unhosted_runtime_entry(name, host));
+        return;
+    }
+    // Belt and braces: an interpreter that entered the declaration instead
+    // would report its missing block at the reserved entry id.
+    if error.code == InterpretErrorCode::MissingBlock
+        && let Some(name) = error
+            .block
+            .and_then(|block| synthesis.runtime_entry_name(block))
+    {
+        eprintln!("error: {}", unhosted_runtime_entry(name, host));
+        return;
+    }
     if let Some(name) = error.block.and_then(|block| synthesis.trap_name(block)) {
         eprintln!(
             "trap: reached extern builtin stub @{name} — the program called a bodyless \
@@ -2916,15 +2382,107 @@ fn report_interpret_error(error: &InterpretError, synthesis: &SynthesisReport) {
     eprintln!("interpreter error: {error}");
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The `run` flags that shape the pipeline (everything but the inputs, the
+/// entry and its arguments).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RunOptions {
+    pub(crate) fuel: u64,
+    pub(crate) max_call_depth: u64,
+    /// Validate the image as linked AND after lowering.
+    pub(crate) validate: bool,
+    /// Authenticate every import row against the linked inputs (default ON;
+    /// `--unauthenticated-imports` turns it off).
+    pub(crate) authenticate_imports: bool,
+    /// The host model installed in the interpreter (`--host`).
+    pub(crate) host: HostChoice,
+}
+
+/// Authenticate every `Module.imports` row of every input against the linked
+/// inputs themselves (module docs). Each input is hashed ONCE
+/// ([`HashedModule`]); a row binds to the first input whose computed
+/// `stable_digest` equals its recorded digest, and that input must then pass
+/// [`Module::verify_import_hashed`] (C2–C6: algorithm, name, producer,
+/// target). Returns the number of rows authenticated, or the refusal text.
+///
+/// Identity is the `trust_ir.module.v2` domain today; once the
+/// `ModuleImport.scheme` discriminator lands (WS4.10) the match must hash
+/// each input under each row's scheme.
+fn authenticate_imports(modules: &[(String, Module)]) -> Result<usize, String> {
+    // Nothing to authenticate: hash nothing. Hashing runs the binary writer,
+    // which has no carrier for some VALID content (a WS4.19
+    // `ScopeData.inlined_at` chain link, a completeness claim; before v51
+    // also an `Inst::MakeAggregate` ahead of its wire tag) and panics on
+    // it — a module carrying such content but no import rows must
+    // still run. When there ARE rows, every input is a candidate, so an input
+    // without a wire identity is refused by name rather than by panic.
+    if modules.iter().all(|(_, module)| module.imports.is_empty()) {
+        return Ok(0);
+    }
+    for (label, module) in modules {
+        if let Some(blocker) = trust_ir_build::wire_identity_blocker(module) {
+            return Err(format!(
+                "{label}: has no wire identity to authenticate import rows against: {blocker}; \
+                 pass --unauthenticated-imports (the image then carries no proof claims either way)"
+            ));
+        }
+    }
+    let hashed: Vec<HashedModule<'_>> = modules
+        .iter()
+        .map(|(_, module)| HashedModule::new(module))
+        .collect();
+    let mut rows = 0;
+    for (label, module) in modules {
+        for (index, import) in module.imports.iter().enumerate() {
+            let id: ImportId = next_table_id(index)?;
+            let Some(candidate) = hashed.iter().find(|h| h.digest() == import.digest) else {
+                // C2 before "no match": a non-SHA-256 record can match no
+                // input by construction, and its own refusal is the precise one
+                // (`verify_import_hashed` checks the algorithm before the
+                // digest, so any candidate yields it). `hashed` holds `module`.
+                if let Err(error @ ImportVerificationError::UnsupportedDigestAlgorithm { .. }) =
+                    module.verify_import_hashed(id, &hashed[0])
+                {
+                    return Err(format!(
+                        "{label}: import.{index} {:?}: {error}",
+                        import.name
+                    ));
+                }
+                let inputs: Vec<String> = hashed
+                    .iter()
+                    .map(|h| format!("{}={}", h.module().name, h.digest()))
+                    .collect();
+                return Err(format!(
+                    "{label}: import.{index} {:?} pins digest {}, which matches no linked input \
+                     (inputs: {}); link the exact dependency artifact, or pass \
+                     --unauthenticated-imports (the image then carries no proof claims either way)",
+                    import.name,
+                    import.digest,
+                    inputs.join(", ")
+                ));
+            };
+            module
+                .verify_import_hashed(id, candidate)
+                .map_err(|error| format!("{label}: import.{index} {:?}: {error}", import.name))?;
+            rows += 1;
+        }
+    }
+    Ok(rows)
+}
+
+/// Print a validator refusal list in the `  [i] <Debug>` shape the harnesses
+/// parse.
+fn print_validation_errors(errors: &[trust_ir_build::validate::ValidationError]) {
+    for (i, error) in errors.iter().enumerate() {
+        eprintln!("  [{i}] {error:?}");
+    }
+}
+
 pub(crate) fn cmd_run(
     paths: &[PathBuf],
     fmt: Option<Format>,
     entry: &str,
-    fuel: u64,
-    max_call_depth: u64,
-    mem_budget: u64,
-    do_validate: bool,
+    entry_args: &[String],
+    options: RunOptions,
 ) -> u8 {
     // 1. Load every module.
     let module_paths = match collect_module_paths(paths) {
@@ -2946,40 +2504,112 @@ pub(crate) fn cmd_run(
         modules.push((path.display().to_string(), module));
     }
 
-    // 2. Link into one executable image.
-    let mut image = match link_modules(&modules) {
-        Ok(image) => image,
+    // 2. Authenticate every import row against the inputs (default ON). The
+    //    runner binds by NAME below, so without this a root pinning one
+    //    dependency would silently run against another.
+    let import_rows: usize = modules.iter().map(|(_, m)| m.imports.len()).sum();
+    if options.authenticate_imports {
+        match authenticate_imports(&modules) {
+            Ok(rows) if rows > 0 => eprintln!(
+                "imports: {rows} row(s) authenticated against the linked inputs by digest"
+            ),
+            Ok(_) => {}
+            Err(message) => {
+                eprintln!("error: {message}");
+                return EXIT_USER;
+            }
+        }
+    } else if import_rows > 0 {
+        eprintln!(
+            "imports: {import_rows} row(s) UNCHECKED (execution only; this is not agreement)"
+        );
+    }
+
+    // 3. Link into one executable image. It carries no proof claims.
+    let (mut image, stripped) = match link_modules(&modules) {
+        Ok(linked) => linked,
         Err(message) => {
             eprintln!("error: {message}");
             return EXIT_USER;
         }
     };
     drop(modules);
+    eprintln!(
+        "stripped {} summaries / {} ProofRefs / {} call proof contexts (an execution image \
+         carries no proof claims; re-earn them with `trust-ir validate --link`)",
+        stripped.summaries, stripped.proof_refs, stripped.proof_contexts
+    );
 
-    // 3. Devirtualize SymbolAddr vtables (dyn dispatch), legalize bool/ptr
+    // 4. The artifact verdict: validate the image AS LINKED, before any
+    //    interpreter lowering touches it. Its refusals are user errors.
+    if options.validate {
+        let report = trust_ir_build::validate::validate_module_report(&image);
+        let errors = report.errors();
+        if !errors.is_empty() {
+            eprintln!(
+                "validation of linked image failed (as linked; {} errors):",
+                errors.len()
+            );
+            print_validation_errors(errors);
+            return EXIT_USER;
+        }
+        eprintln!("linked image is well-formed (as linked)");
+    }
+
+    // 5. Devirtualize SymbolAddr vtables (dyn dispatch), legalize bool/ptr
     //    compares (interpreter-vs-validator gap; see the pass docs), then
     //    synthesize builtins / trap stubs for remaining externs. The trap
     //    table is shared: dispatch-miss blocks and extern stubs both map an
     //    error block id back to a name.
-    let mut trap_names = Vec::new();
-    if let Err(message) = devirtualize_symbol_addrs(&mut image, entry, &mut trap_names) {
+    //    Every fresh id these passes mint comes from the one fresh-id rule,
+    //    and every synthesized block id from a bounded reserved range; a
+    //    defined function that already uses a reserved id is refused first,
+    //    so no user block can share an id with a synthesized one.
+    if let Err(message) = refuse_reserved_block_ids(&image) {
         eprintln!("error: {message}");
         return EXIT_USER;
     }
-    let legalized = legalize_icmp(&mut image);
+    let mut traps = match trap_blocks() {
+        Ok(traps) => traps,
+        Err(message) => {
+            eprintln!("{message}");
+            return EXIT_INTERNAL;
+        }
+    };
+    if let Err(message) = devirtualize_symbol_addrs(&mut image, entry, &mut traps) {
+        eprintln!("error: {message}");
+        return EXIT_USER;
+    }
+    let legalized = match legalize_icmp(&mut image) {
+        Ok(legalized) => legalized,
+        Err(refusal) => {
+            eprintln!("error: {refusal}");
+            return EXIT_USER;
+        }
+    };
     if legalized > 0 {
         eprintln!("legalized {legalized} bool/ptr icmp(s)");
     }
-    let synthesis = synthesize_builtins(&mut image, trap_names);
-    let defined = image.functions.len() - synthesis.stub_count - synthesis.builtins.len();
+    let synthesis = match synthesize_builtins(&mut image, traps) {
+        Ok(synthesis) => synthesis,
+        Err(refusal) => {
+            eprintln!("error: {refusal}");
+            return EXIT_USER;
+        }
+    };
+    let defined = image.functions.len()
+        - synthesis.stub_count
+        - synthesis.builtins.len()
+        - synthesis.runtime_entries.len();
     eprintln!(
-        "linked {} module(s): {} function(s) ({} defined, {} builtin, {} trap stub(s)), \
-         {} global(s)",
+        "linked {} module(s): {} function(s) ({} defined, {} builtin, {} trap stub(s), {} \
+         trusted-runtime entry point(s)), {} global(s)",
         module_paths.len(),
         image.functions.len(),
         defined,
         synthesis.builtins.len(),
         synthesis.stub_count,
+        synthesis.runtime_entries.len(),
         image.globals.len()
     );
     if !synthesis.builtins.is_empty() {
@@ -2991,63 +2621,75 @@ pub(crate) fn cmd_run(
         eprintln!("builtins: {}", listed.join(", "));
     }
 
-    // 4. Optional validation of the linked image.
-    if do_validate {
-        let report = trust_ir_build::validate::validate_module_report(&image);
-        let errors = report.errors();
+    // 6. The image the interpreter actually executes is validated too. The
+    //    input already passed step 4, so a refusal here is this tool's own
+    //    lowering defect, never a verdict about the input.
+    if options.validate {
+        let errors = lowered_image_errors(&image);
         if !errors.is_empty() {
             eprintln!(
-                "validation of linked image failed ({} errors):",
+                "internal: CLI interpreter lowering produced an invalid image ({} errors):",
                 errors.len()
             );
-            for (i, error) in errors.iter().enumerate() {
-                eprintln!("  [{i}] {error:?}");
-            }
-            return EXIT_USER;
+            print_validation_errors(&errors);
+            return EXIT_INTERNAL;
         }
-        eprintln!("linked image is well-formed");
+        eprintln!("lowered image is well-formed");
     }
 
-    // 5. Resolve the entry point.
+    // 7. Resolve the entry point.
     let Some(func) = image.function_by_name(entry) else {
         eprintln!("error: no function named @{entry} in the linked image");
         return EXIT_USER;
     };
     let func_id = func.id;
     if func.blocks.is_empty() {
-        eprintln!("error: entry @{entry} has no body in any input module");
-        return EXIT_USER;
-    }
-    match image.func_type(func.ty) {
-        Some(sig) if !sig.params.is_empty() => {
-            eprintln!(
-                "error: entry @{entry} takes {} parameter(s) ({}); `run` only executes \
-                 nullary entry points",
-                sig.params.len(),
-                render_sig(sig)
-            );
+        // A pinned trusted-runtime entry point named as the entry is the same
+        // named refusal as reaching one from a call — unless a host model is
+        // installed, in which case the interpreter executes the declaration
+        // as a host call (WS2.12) and the model decides.
+        let hosted_runtime_entry =
+            options.host != HostChoice::None && synthesis.runtime_entry_name(func.entry).is_some();
+        if !hosted_runtime_entry {
+            if synthesis.runtime_entry_name(func.entry).is_some() {
+                eprintln!("error: {}", unhosted_runtime_entry(entry, options.host));
+            } else {
+                eprintln!("error: entry @{entry} has no body in any input module");
+            }
             return EXIT_USER;
         }
-        Some(_) => {}
+    }
+    let args = match image.func_type(func.ty) {
+        Some(sig) => match parse_entry_args(sig, entry_args) {
+            Ok(args) => args,
+            Err(message) => {
+                eprintln!("error: entry @{entry} {}: {message}", render_sig(sig));
+                return EXIT_USER;
+            }
+        },
         None => {
             eprintln!("error: entry @{entry} references an undefined signature");
             return EXIT_USER;
         }
-    }
+    };
 
-    // 6. Execute on a dedicated big-stack thread (the interpreter recurses on
+    // 8. Execute on a dedicated big-stack thread (the interpreter recurses on
     //    the host stack per interpreted call).
-    let options = InterpretOptions {
-        fuel,
-        max_call_depth,
-        mem_budget,
+    let interpret_options = InterpretOptions {
+        fuel: options.fuel,
+        max_call_depth: options.max_call_depth,
+        ..InterpretOptions::default()
     };
     let worker = std::thread::Builder::new()
         .name("trust-ir-run".to_string())
         .stack_size(RUN_STACK_BYTES)
         .spawn(move || -> Result<InterpretOutcome, InterpretError> {
-            let interpreter = Interpreter::with_module(&image).with_options(options);
-            interpreter.execute_func(func_id, [])
+            let pinned = PinnedHandleHost::new();
+            let mut interpreter = Interpreter::with_module(&image).with_options(interpret_options);
+            if options.host == HostChoice::Pinned {
+                interpreter = interpreter.with_host(&pinned);
+            }
+            interpreter.execute_func(func_id, args)
         });
     let worker = match worker {
         Ok(handle) => handle,
@@ -3062,10 +2704,20 @@ pub(crate) fn cmd_run(
                 println!("{}", render_return(value));
             }
             eprintln!("executed {} step(s)", outcome.steps);
+            if outcome.host_calls > 0 {
+                // Counted by the interpreter, not the host. A consumer must
+                // not present this run as in-format execution evidence.
+                eprintln!(
+                    "host-assisted: {} call(s) served by the pinned reference host model \
+                     (a trusted model of the runtime, TRUST.md items 9 and 13; this run is not \
+                     in-format execution evidence)",
+                    outcome.host_calls
+                );
+            }
             EXIT_OK
         }
         Ok(Err(error)) => {
-            report_interpret_error(&error, &synthesis);
+            report_interpret_error(&error, &synthesis, options.host);
             EXIT_USER
         }
         Err(_) => {
@@ -3075,19 +2727,526 @@ pub(crate) fn cmd_run(
     }
 }
 
-/// Load one module file: explicit `--format` wins, otherwise the extension
-/// decides (matching the rest of the CLI).
+/// The post-lowering verdict (`run --validate` step 6): the validator's
+/// errors on the image the interpreter executes.
+fn lowered_image_errors(image: &Module) -> Vec<trust_ir_build::validate::ValidationError> {
+    trust_ir_build::validate::validate_module_report(image)
+        .errors()
+        .to_vec()
+}
+
+/// Parse the `--arg` values against the entry signature (`run --arg`).
+///
+/// Fail-closed at every step: the arity must match EXACTLY, every param type
+/// must be one this front can spell (integers, `bool`, `f32`/`f64`), and every
+/// integer is range-checked for its width and signedness before it becomes an
+/// [`InterpretValue`] — `InterpretValue::int` itself MASKS to the width, so a
+/// value that does not fit would otherwise wrap silently.
+fn parse_entry_args(sig: &FuncTy, raw: &[String]) -> Result<Vec<InterpretValue>, String> {
+    // Types first: an entry whose params this front cannot spell is refused
+    // whatever was supplied, naming the first such param.
+    for (index, ty) in sig.params.iter().enumerate() {
+        if !is_scalar_entry_param(ty) {
+            return Err(format!(
+                "param {} has type {ty}; only scalar entry arguments are supported \
+                 (integers, bool, f32, f64)",
+                index + 1
+            ));
+        }
+    }
+    if sig.is_vararg {
+        return Err("a variadic entry cannot be run".to_string());
+    }
+    if raw.len() != sig.params.len() {
+        return Err(format!(
+            "takes {} parameter(s) but {} --arg value(s) were supplied",
+            sig.params.len(),
+            raw.len()
+        ));
+    }
+    sig.params
+        .iter()
+        .zip(raw)
+        .enumerate()
+        .map(|(index, (ty, text))| {
+            parse_entry_arg(ty, text)
+                .map_err(|message| format!("param {} ({ty}) --arg {text:?}: {message}", index + 1))
+        })
+        .collect()
+}
+
+/// Integer shape `(bits, signed)` of an entry param, or `None`. Mirrors the
+/// interpreter's 64-bit model of the pointer-width integers. `char` is NOT an
+/// integer here: its valid range is a Unicode-scalar claim, not a width.
+fn entry_int_shape(ty: &Ty) -> Option<(u32, bool)> {
+    Some(match ty {
+        Ty::I8 => (8, true),
+        Ty::I16 => (16, true),
+        Ty::I32 => (32, true),
+        Ty::I64 | Ty::Isize => (64, true),
+        Ty::I128 => (128, true),
+        Ty::U8 => (8, false),
+        Ty::U16 => (16, false),
+        Ty::U32 => (32, false),
+        Ty::U64 | Ty::Usize => (64, false),
+        Ty::U128 => (128, false),
+        _ => return None,
+    })
+}
+
+fn is_scalar_entry_param(ty: &Ty) -> bool {
+    entry_int_shape(ty).is_some() || matches!(ty, Ty::Bool | Ty::F32 | Ty::F64)
+}
+
+fn parse_entry_arg(ty: &Ty, text: &str) -> Result<InterpretValue, String> {
+    if let Some((bits, signed)) = entry_int_shape(ty) {
+        let value = parse_entry_int(text, ty, bits, signed)?;
+        return InterpretValue::int(ty.clone(), value).map_err(|error| error.to_string());
+    }
+    match ty {
+        Ty::Bool => match text {
+            "true" => Ok(InterpretValue::bool(true)),
+            "false" => Ok(InterpretValue::bool(false)),
+            _ => Err("expected `true` or `false`".to_string()),
+        },
+        Ty::F32 => {
+            let value: f32 = text
+                .parse()
+                .map_err(|_| "expected an f32 literal".to_string())?;
+            check_float_range(text, value.is_infinite(), value == 0.0, "f32")?;
+            Ok(InterpretValue {
+                ty: Ty::F32,
+                kind: InterpretValueKind::FloatBits(u64::from(value.to_bits())),
+            })
+        }
+        Ty::F64 => {
+            let value: f64 = text
+                .parse()
+                .map_err(|_| "expected an f64 literal".to_string())?;
+            check_float_range(text, value.is_infinite(), value == 0.0, "f64")?;
+            Ok(InterpretValue {
+                ty: Ty::F64,
+                kind: InterpretValueKind::FloatBits(value.to_bits()),
+            })
+        }
+        other => Err(format!("unsupported param type {other}")),
+    }
+}
+
+/// Refuse a float literal the parse silently moved out of its magnitude: a
+/// FINITE spelling that rounds to infinity (`1e39` at `f32`), or a NONZERO
+/// spelling that rounds all the way to zero (`1e-50` at `f32`). Both would
+/// otherwise run the entry on a value the caller never wrote — the float
+/// counterpart of the integer range check. Ordinary rounding (including to a
+/// subnormal) is not a range error; `inf` / `infinity` / `nan` spellings pass.
+fn check_float_range(
+    text: &str,
+    is_infinite: bool,
+    is_zero: bool,
+    ty_name: &str,
+) -> Result<(), String> {
+    let unsigned = text.trim_start_matches(['+', '-']).to_ascii_lowercase();
+    if is_infinite && unsigned != "inf" && unsigned != "infinity" {
+        return Err(format!(
+            "out of range for {ty_name}: the literal overflows to infinity"
+        ));
+    }
+    let mantissa = unsigned.split('e').next().unwrap_or("");
+    if is_zero && mantissa.bytes().any(|b| (b'1'..=b'9').contains(&b)) {
+        return Err(format!(
+            "out of range for {ty_name}: the nonzero literal underflows to zero"
+        ));
+    }
+    Ok(())
+}
+
+/// Parse a decimal or `0x`-hex integer (optionally `-`-prefixed) and check it
+/// fits `bits` at the given signedness. Returns the value as the `i128` whose
+/// low `bits` are the two's-complement image `InterpretValue::int` stores
+/// (for `u128` above `i128::MAX` that is the wrapped bit pattern).
+fn parse_entry_int(text: &str, ty: &Ty, bits: u32, signed: bool) -> Result<i128, String> {
+    let (min_magnitude_neg, max_pos): (u128, u128) = if signed {
+        let half = 1u128 << (bits - 1);
+        (half, half - 1)
+    } else {
+        (
+            0,
+            if bits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            },
+        )
+    };
+    let out_of_range = || {
+        let range = if signed {
+            format!("-{min_magnitude_neg}..={max_pos}")
+        } else {
+            format!("0..={max_pos}")
+        };
+        // Name the PARAM's type: `isize`/`usize` run at 64 bits here, and the
+        // message must not relabel them as `i64`/`u64`.
+        format!("out of range for {ty}: {range}")
+    };
+    let (negative, body) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (radix, digits) = match body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        Some(hex) => (16, hex),
+        None => (10, body),
+    };
+    // `from_str_radix` accepts a leading `+`; a sign after our own `-` or
+    // after `0x` is not an integer spelling this front admits.
+    let malformed = || "expected a decimal or 0x-hex integer".to_string();
+    if digits.is_empty() || digits.starts_with(['+', '-']) {
+        return Err(malformed());
+    }
+    let magnitude = u128::from_str_radix(digits, radix).map_err(|error| {
+        if *error.kind() == std::num::IntErrorKind::PosOverflow {
+            out_of_range()
+        } else {
+            malformed()
+        }
+    })?;
+    if negative {
+        if magnitude > min_magnitude_neg {
+            return Err(out_of_range());
+        }
+        // `magnitude <= 2^127` here, so the wrapping negation is exact.
+        Ok((magnitude as i128).wrapping_neg())
+    } else {
+        if magnitude > max_pos {
+            return Err(out_of_range());
+        }
+        // For `u128` above `i128::MAX` this is the wrapped bit pattern, which
+        // is exactly the image `InterpretValue::int` stores.
+        Ok(magnitude as i128)
+    }
+}
+
+/// Load one module file: explicit `--format` wins, otherwise the name and the
+/// content's magic decide ([`Format::resolve`], matching the rest of the CLI).
 fn load_one(path: &Path, fmt: Option<Format>) -> Result<Module, (u8, String)> {
-    let format = Format::resolve(fmt, path).map_err(|message| (EXIT_USER, message))?;
     let bytes = read_input(path).map_err(|e| (EXIT_IO, format!("read {}: {e}", path.display())))?;
+    let format = Format::resolve(fmt, path, &bytes).map_err(|message| (EXIT_USER, message))?;
     decode_module(format, &bytes)
         .map_err(|message| (EXIT_IO, format!("{}: {message}", path.display())))
 }
 
 #[cfg(test)]
+#[path = "../../trust-ir-conformance/tests/generate/signature_abi.rs"]
+mod signature_abi_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use trust_ir::{ScopeData, Space, Universe};
+    use trust_ir::proof::ProofAnnotation;
+    use trust_ir::value::{FuncTyId, PredId, SourceSpan, TyId, UnivId};
+    use trust_ir::{Pred, ScopeData, Space, Universe};
+
+    /// r11 item 1, FAILING-FIRST (the surface is unchanged): a length prefix
+    /// no offset can hold. The old parser computed `digits.len() + len` and
+    /// panicked in debug (it wrapped to an empty range and answered `None` in
+    /// release only by accident). The one parse rule never adds to the
+    /// length: the tail is sliced by it. Mutation check: restoring the add
+    /// panics here.
+    #[test]
+    fn v0_intrinsic_name_refuses_a_length_no_offset_can_hold() {
+        let too_long = "_RNvNtCsbu97CrmFxuv_4core10intrinsics18446744073709551615x";
+        assert_eq!(v0_intrinsic_name(too_long), None);
+        assert_eq!(BuiltinKind::classify(too_long), BuiltinKind::Trap);
+        // Controls: a length the name does not hold, and the exact length.
+        assert_eq!(v0_intrinsic_name("_RNvNtC_4core10intrinsics99x"), None);
+        assert_eq!(
+            v0_intrinsic_name("_RNvNtC_4core10intrinsics5ctpop"),
+            Some("ctpop".to_string())
+        );
+        assert_eq!(v0_intrinsic_name("_RNvNtC_4core10intrinsicsx"), None);
+    }
+
+    /// One `bool` compare in a function defining `ValueId(u32::MAX)`.
+    fn icmp_at_value_id_max(with_compare: bool) -> Module {
+        let mut module = Module::new("r11_icmp");
+        let signature = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![Ty::Bool, Ty::Bool],
+                returns: vec![Ty::Bool],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let mut function = Function::new(FuncId::new(0), "f", signature, BlockId::new(0));
+        let mut body = Vec::new();
+        if with_compare {
+            body.push(
+                InstrNode::new(Inst::ICmp {
+                    op: ICmpOp::Eq,
+                    ty: Ty::Bool,
+                    lhs: ValueId::new(u32::MAX),
+                    rhs: ValueId::new(0),
+                })
+                .with_result(ValueId::new(1)),
+            );
+        }
+        let returned = if with_compare { 1 } else { 0 };
+        body.push(InstrNode::new(Inst::Return {
+            values: vec![ValueId::new(returned)],
+        }));
+        function.blocks = vec![Block {
+            id: BlockId::new(0),
+            params: vec![
+                (ValueId::new(u32::MAX), Ty::Bool),
+                (ValueId::new(0), Ty::Bool),
+            ],
+            body,
+        }];
+        module.functions.push(function);
+        module
+    }
+
+    /// r11 item 2 (port of probe P2, evidence kind ii): before r11 the seed
+    /// `index() + 1` panicked in debug, and in release wrapped past
+    /// `u32::MAX` to 0, so fresh ids were computed as if the `u32::MAX`
+    /// definition did not exist. Now the function is refused by name and
+    /// left UNCHANGED (its ids are taken as one run before it is touched).
+    /// Mutation check: re-seeding with `saturating_add(1)` mints `u32::MAX`
+    /// again (a duplicate definition) instead of refusing.
+    #[test]
+    fn legalize_icmp_refuses_when_no_fresh_value_id_exists() {
+        let mut module = icmp_at_value_id_max(true);
+        let before = module.clone();
+        assert_eq!(
+            legalize_icmp(&mut module),
+            Err(LoweringRefusal::value_ids("f"))
+        );
+        assert_eq!(module, before, "the function is untouched");
+    }
+
+    /// Laziness: the same function with no compare needs no id.
+    #[test]
+    fn legalize_icmp_leaves_a_max_id_function_without_bool_compares_alone() {
+        let mut module = icmp_at_value_id_max(false);
+        let before = module.clone();
+        assert_eq!(legalize_icmp(&mut module), Ok(0));
+        assert_eq!(module, before);
+    }
+
+    /// `target: () -> ()` (anchored at global 0) and `caller(ptr)` whose
+    /// entry `call_indirect`s its parameter, plus an unreachable `extra`
+    /// block.
+    fn devirt_module(param: u32, extra: Option<u32>) -> (Module, Vec<(FuncId, GlobalId)>) {
+        let mut module = Module::new("r11_devirt");
+        let unit = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![],
+                returns: vec![],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let takes_ptr = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![Ty::Ptr],
+                returns: vec![],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let mut target = Function::new(FuncId::new(0), "target", unit, BlockId::new(0));
+        target.blocks = vec![Block {
+            id: BlockId::new(0),
+            params: vec![],
+            body: vec![InstrNode::new(Inst::Return { values: vec![] })],
+        }];
+        let mut caller = Function::new(FuncId::new(1), "caller", takes_ptr, BlockId::new(0));
+        caller.blocks = vec![Block {
+            id: BlockId::new(0),
+            params: vec![(ValueId::new(param), Ty::Ptr)],
+            body: vec![
+                InstrNode::new(Inst::CallIndirect {
+                    callee: ValueId::new(param),
+                    sig: unit,
+                    args: vec![],
+                    calling_conv: Default::default(),
+                }),
+                InstrNode::new(Inst::Return { values: vec![] }),
+            ],
+        }];
+        if let Some(extra) = extra {
+            caller.blocks.push(Block {
+                id: BlockId::new(extra),
+                params: vec![],
+                body: vec![InstrNode::new(Inst::Unreachable)],
+            });
+        }
+        module.functions.push(target);
+        module.functions.push(caller);
+        (module, vec![(FuncId::new(0), GlobalId::new(0))])
+    }
+
+    /// r11 sibling j/o (port of probes P3/P4, evidence kind ii): before r11 a
+    /// block at `u32::MAX` made the ladder mint `u32::MAX` AGAIN
+    /// (`saturating_add`) — a duplicate block id, measured
+    /// `[0, u32::MAX, u32::MAX, 0xF000_0000, 0]` — and a block at the first
+    /// trap id duplicated the miss block. Ladder blocks now come from a run
+    /// below `RUNTIME_ENTRY_BLOCK_BASE` and the miss block from the trap
+    /// range: every id is unique, and a function with no room below the
+    /// reserved ranges is refused by name. (`cmd_run` refuses a user block
+    /// INSIDE a reserved range at the input boundary before this pass runs.)
+    #[test]
+    fn devirtualize_never_mints_a_duplicate_block() {
+        let (mut module, anchored) = devirt_module(0, Some(7));
+        let mut traps = trap_blocks().expect("trap range");
+        devirtualize_calls_in_function(&mut module, 1, &anchored, &mut traps)
+            .expect("room for the ladder");
+        let mut ids: Vec<u32> = module.functions[1]
+            .block_ids()
+            .map(BlockId::index)
+            .collect();
+        assert_eq!(ids, vec![0, 7, 8, TRAP_BLOCK_BASE, 9]);
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 5, "unique block ids");
+        assert_eq!(traps.names.len(), 1);
+
+        let (mut crowded, anchored) = devirt_module(0, Some(RUNTIME_ENTRY_BLOCK_BASE - 1));
+        let before = crowded.clone();
+        let mut traps = trap_blocks().expect("trap range");
+        assert_eq!(
+            devirtualize_calls_in_function(&mut crowded, 1, &anchored, &mut traps),
+            Err(LoweringRefusal::new(
+                "caller",
+                IdSpaceExhausted::of::<BlockId>()
+            ))
+        );
+        assert_eq!(crowded, before, "the site is untouched");
+    }
+
+    /// r11 sibling j (port of probe P4, evidence kind ii): a callee at
+    /// `ValueId(u32::MAX)` has no fresh value for the ladder; before r11 the
+    /// seed panicked in debug and wrapped to ids 0.. in release (duplicates
+    /// of `%0`-style ids). Refused by name, site untouched. Mutation check:
+    /// seeding with `index() + 1` panics here.
+    #[test]
+    fn devirtualize_refuses_value_id_exhaustion() {
+        let (mut module, anchored) = devirt_module(u32::MAX, None);
+        let before = module.clone();
+        let mut traps = trap_blocks().expect("trap range");
+        assert_eq!(
+            devirtualize_calls_in_function(&mut module, 1, &anchored, &mut traps),
+            Err(LoweringRefusal::value_ids("caller"))
+        );
+        assert_eq!(module, before);
+    }
+
+    /// The two reserved ranges are disjoint by construction and each is
+    /// refused by name when used up, never overflowing into its neighbour.
+    #[test]
+    fn runtime_and_trap_ranges_never_overlap() {
+        let mut traps = trap_blocks().expect("trap range");
+        assert_eq!(traps.take("a".into()), Ok(BlockId::new(TRAP_BLOCK_BASE)));
+        let mut runtime = ReservedBlocks::span(
+            RUNTIME_ENTRY_BLOCK_BASE,
+            RUNTIME_ENTRY_BLOCK_LAST,
+            RUNTIME_ENTRY_RANGE,
+        )
+        .expect("runtime range");
+        assert_eq!(
+            runtime.ids.remaining(),
+            TRAP_BLOCK_BASE - RUNTIME_ENTRY_BLOCK_BASE
+        );
+        assert_eq!(
+            runtime.take("r".into()),
+            Ok(BlockId::new(RUNTIME_ENTRY_BLOCK_BASE))
+        );
+        // The last two ids of each range, then the refusal.
+        let mut tail = ReservedBlocks::span(u32::MAX - 1, u32::MAX, TRAP_RANGE).expect("tail");
+        assert_eq!(tail.take("x".into()), Ok(BlockId::new(u32::MAX - 1)));
+        assert_eq!(tail.take("y".into()), Ok(BlockId::new(u32::MAX)));
+        assert_eq!(
+            tail.take("z".into()),
+            Err(IdSpaceExhausted { space: TRAP_RANGE })
+        );
+        assert_eq!(tail.names, vec!["x".to_string(), "y".to_string()]);
+        let mut runtime_tail = ReservedBlocks::span(
+            RUNTIME_ENTRY_BLOCK_LAST,
+            RUNTIME_ENTRY_BLOCK_LAST,
+            RUNTIME_ENTRY_RANGE,
+        )
+        .expect("one id");
+        assert_eq!(
+            runtime_tail.take("last".into()),
+            Ok(BlockId::new(TRAP_BLOCK_BASE - 1))
+        );
+        assert_eq!(
+            runtime_tail.take("next".into()),
+            Err(IdSpaceExhausted {
+                space: RUNTIME_ENTRY_RANGE
+            })
+        );
+        // The report never reads a trap id as a runtime entry, or back.
+        let report = SynthesisReport {
+            traps: vec!["t".into()],
+            builtins: vec![],
+            stub_count: 1,
+            runtime_entries: vec!["r".into()],
+        };
+        assert_eq!(report.trap_name(BlockId::new(TRAP_BLOCK_BASE)), Some("t"));
+        assert_eq!(
+            report.runtime_entry_name(BlockId::new(TRAP_BLOCK_BASE)),
+            None
+        );
+        assert_eq!(
+            report.runtime_entry_name(BlockId::new(RUNTIME_ENTRY_BLOCK_BASE)),
+            Some("r")
+        );
+        assert_eq!(
+            report.trap_name(BlockId::new(RUNTIME_ENTRY_BLOCK_BASE)),
+            None
+        );
+    }
+
+    /// Review 2026-09-23: a `SymbolAddr` inside a `Splat` (a uniform address
+    /// table such as `[&HOOK; 4]`, whose only spelling is a splat under
+    /// SPEC_RATIFICATIONS §3.1) is seen by the devirtualizer's scan, like one
+    /// inside any other carrier. It used to fall through a `_ => false` arm.
+    #[test]
+    fn symbol_addr_scan_sees_every_constant_carrier() {
+        let hook = Constant::symbol_addr("hook");
+        for carrier in [
+            Constant::splat(hook.clone(), 4),
+            Constant::Splat {
+                elem: Box::new(Constant::Aggregate(vec![Constant::Int(0), hook.clone()])),
+                len: 1 << 40,
+            },
+            Constant::Array(vec![Constant::Int(1), hook.clone()]),
+            Constant::Record(vec![("f".into(), hook.clone())]),
+            hook.clone(),
+        ] {
+            assert!(constant_mentions_symbol_addr(&carrier), "{carrier:?}");
+        }
+        assert!(!constant_mentions_symbol_addr(&Constant::splat(
+            Constant::Int(0),
+            4
+        )));
+    }
+
+    /// WS2.15: an `F16` return renders the binary16 VALUE, not the `f64`
+    /// reinterpretation of its 16-bit pattern.
+    #[test]
+    fn render_return_reads_an_f16_pattern_at_binary16() {
+        let value = InterpretValue {
+            ty: Ty::F16,
+            kind: InterpretValueKind::FloatBits(0x4380),
+        };
+        assert_eq!(render_return(&value), "3.75");
+        let f32_value = InterpretValue {
+            ty: Ty::F32,
+            kind: InterpretValueKind::FloatBits(u64::from(3.75f32.to_bits())),
+        };
+        assert_eq!(render_return(&f32_value), "3.75");
+    }
 
     fn test_global(name: &str, ty: Ty) -> Global {
         Global {
@@ -3098,6 +3257,9 @@ mod tests {
             linkage: Linkage::External,
             tls: None,
             align: None,
+            section: None,
+            visibility: Default::default(),
+            retained: false,
         }
     }
 
@@ -3105,22 +3267,123 @@ mod tests {
         let mut module = Module::new(name);
         let universe = module
             .intern_universe(Universe::range(10, 20).expect("canonical range"))
+            .expect("Module::intern_universe: test fixture")
             .expect("universe interns");
         let member = module
             .intern_pred(Pred::InUniverse(universe, Space::Member))
+            .expect("Module::intern_pred: test fixture")
             .expect("membership predicate interns");
         let nonzero = module
             .intern_pred(Pred::NonZero)
+            .expect("Module::intern_pred: test fixture")
             .expect("nonzero predicate interns");
         let both = module
             .intern_pred(Pred::Conj(vec![member, nonzero]))
+            .expect("Module::intern_pred: test fixture")
             .expect("conjunction interns");
-        let base = module.add_type(Ty::I32);
-        let refined = module.add_type(Ty::Refine(base, both));
+        let base = module
+            .add_type(Ty::I32)
+            .expect("Module::add_type: test fixture");
+        let refined = module
+            .add_type(Ty::Refine(base, both))
+            .expect("Module::add_type: test fixture");
         module
             .globals
             .push(test_global(global_name, Ty::Array(refined, 4)));
         module
+    }
+
+    /// The linker rebuilds each `Function` field by field, so a field added to
+    /// `Function` does NOT break this build — it silently arrives as
+    /// `Function::new`'s default. Only a test can hold that line.
+    ///
+    /// For `body_gate` the drop would be a SOUNDNESS event, not cosmetic:
+    /// `Ungated` means "a codegen consumer MUST refuse this body", while the
+    /// default `None` means "no licensing claim", which a consumer may permit.
+    /// Losing it in a merge launders a below-tier body into the permitted
+    /// state without anyone stating so.
+    #[test]
+    fn linking_preserves_the_codegen_license_and_display_path() {
+        use trust_ir::BodyGate;
+
+        let build = |name: &str, gate: BodyGate| {
+            let mut module = Module::new(name);
+            let ft = module
+                .add_func_type(FuncTy {
+                    abi: None,
+                    params: vec![],
+                    returns: vec![],
+                    is_vararg: false,
+                })
+                .expect("Module::add_func_type: test fixture");
+            let mut func = Function::new(FuncId::new(0), name, ft, BlockId::new(0));
+            func.body_gate = Some(gate);
+            func.display_path = Some(format!("crate::{name}"));
+            let mut block = Block::new(BlockId::new(0));
+            block
+                .body
+                .push(InstrNode::new(Inst::Return { values: vec![] }));
+            func.blocks.push(block);
+            module
+                .try_add_function(func)
+                .expect("Module::try_add_function: test fixture");
+            (name.to_string(), module)
+        };
+
+        let modules = vec![
+            build("ungated_fn", BodyGate::Ungated),
+            build(
+                "gated_fn",
+                BodyGate::Gated {
+                    authority: "clean-kernel-tv".to_string(),
+                    evidence: None,
+                },
+            ),
+            // v61 evidence (review): the license survives the link, its
+            // evidence does not — the image carries no proof rows for it to
+            // cite, and the remap may renumber the ids its digest hashes.
+            build(
+                "evidenced_fn",
+                BodyGate::Gated {
+                    authority: "clean-kernel-tv".to_string(),
+                    evidence: Some(trust_ir::GateEvidence {
+                        obligation: trust_ir::ProofId::new(0),
+                        body_digest: trust_ir::proof::ProofDigest::sha256([7; 32]),
+                    }),
+                },
+            ),
+        ];
+        let linked = link_modules(&modules).expect("modules link").0;
+
+        let by_name = |n: &str| {
+            linked
+                .functions
+                .iter()
+                .find(|f| f.name == n)
+                .unwrap_or_else(|| panic!("{n} survived the link"))
+        };
+        assert_eq!(
+            by_name("ungated_fn").body_gate,
+            Some(BodyGate::Ungated),
+            "an Ungated body must NOT be laundered into the permitted `None` state by a merge"
+        );
+        assert_eq!(
+            by_name("gated_fn").body_gate,
+            Some(BodyGate::Gated {
+                authority: "clean-kernel-tv".to_string(),
+                evidence: None,
+            }),
+            "the gating authority must survive the link"
+        );
+        assert_eq!(
+            by_name("gated_fn").display_path.as_deref(),
+            Some("crate::gated_fn")
+        );
+        assert_eq!(
+            by_name("evidenced_fn").body_gate,
+            Some(BodyGate::gated("clean-kernel-tv")),
+            "the license's authority survives the link and its evidence is dropped"
+        );
     }
 
     #[test]
@@ -3129,12 +3392,15 @@ mod tests {
             ("a".to_string(), refined_array_module("a", "ga")),
             ("b".to_string(), refined_array_module("b", "gb")),
         ];
-        let linked = link_modules(&modules).expect("refined modules link");
-        let linked_again = link_modules(&modules).expect("repeat link succeeds");
+        let linked = link_modules(&modules).expect("refined modules link").0;
+        let linked_again = link_modules(&modules).expect("repeat link succeeds").0;
         assert_eq!(linked, linked_again, "linking must be deterministic");
         assert_eq!(linked.universes.len(), 1, "equal universes are shared");
         assert_eq!(linked.predicates.len(), 3, "equal predicates are shared");
-        assert_eq!(linked.types.len(), 2, "base and refined types are shared");
+        // Positional tables are appended whole (the library merge keeps each
+        // input's own rows, so a merge into an empty image is the identity);
+        // every REFERENCE to an equal row points at the first one.
+        assert_eq!(linked.types.len(), 4, "each input's rows are appended");
         assert_eq!(linked.globals[0].ty, linked.globals[1].ty);
 
         let Ty::Array(refined, 4) = linked.globals[0].ty else {
@@ -3149,7 +3415,8 @@ mod tests {
             Pred::Conj(vec![PredId::new(0), PredId::new(1)])
         );
 
-        let bytes = trust_ir::binary::serialize_module(&linked);
+        let bytes =
+            trust_ir::binary::serialize_module(&linked).expect("serialize_module: test fixture");
         let roundtrip = trust_ir::binary::deserialize_module(&bytes).expect("linked image decodes");
         assert_eq!(
             roundtrip, linked,
@@ -3163,18 +3430,129 @@ mod tests {
         );
     }
 
+    /// Amendment D (§20): a module dropping `Owned` through its glue. The
+    /// glue is function 0, defined or (in a module that only uses it)
+    /// declared; function 1 drops through its pointer parameter.
+    fn drop_glue_module(name: &str, glue: &str, defined: bool) -> Module {
+        let mut module = Module::new(name);
+        let owned = Ty::Struct(module.add_struct(trust_ir::StructDef {
+            id: trust_ir::StructId::new(0),
+            name: "Owned".into(),
+            fields: vec![trust_ir::FieldDef {
+                name: "data".into(),
+                ty: Ty::Ptr,
+                offset: None,
+            }],
+            size: None,
+            align: None,
+            repr: Default::default(),
+            origin: None,
+        }));
+        let sig = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![Ty::Ptr],
+                returns: vec![],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let mut glue_fn = Function::new(FuncId::new(0), glue, sig, BlockId::new(0));
+        if defined {
+            let mut block = Block::new(BlockId::new(0));
+            block.params.push((ValueId::new(0), Ty::Ptr));
+            block
+                .body
+                .push(InstrNode::new(Inst::Return { values: vec![] }));
+            glue_fn.blocks.push(block);
+        }
+        module.functions.push(glue_fn);
+        let mut user = Function::new(FuncId::new(1), format!("user_{name}"), sig, BlockId::new(0));
+        let mut block = Block::new(BlockId::new(0));
+        block.params.push((ValueId::new(0), Ty::Ptr));
+        block.body.push(InstrNode::new(Inst::Drop {
+            ty: owned.clone(),
+            ptr: ValueId::new(0),
+        }));
+        block
+            .body
+            .push(InstrNode::new(Inst::Return { values: vec![] }));
+        user.blocks.push(block);
+        module.functions.push(user);
+        module
+            .set_drop_glue(owned, FuncId::new(0))
+            .expect("one row");
+        module
+    }
+
+    #[test]
+    fn run_links_drop_glue_tables() {
+        // The table is CARRIED through the link (dropping it would turn
+        // every resolved drop back into an unresolved one): both modules'
+        // rows remap to the one merged glue and the one merged `Owned`,
+        // and the identical rows collapse to one.
+        let modules = vec![
+            ("a".to_string(), drop_glue_module("a", "drop_owned", true)),
+            ("b".to_string(), drop_glue_module("b", "drop_owned", false)),
+        ];
+        let linked = link_modules(&modules).expect("drop-glue modules link").0;
+        let glue = linked
+            .functions
+            .iter()
+            .find(|f| f.name == "drop_owned")
+            .expect("the glue is linked")
+            .id;
+        assert_eq!(
+            linked.drop_glue,
+            vec![trust_ir::DropGlueEntry {
+                glue,
+                ty: Ty::Struct(trust_ir::StructId::new(0)),
+            }]
+        );
+        let bytes =
+            trust_ir::binary::serialize_module(&linked).expect("serialize_module: test fixture");
+        let back = trust_ir::binary::deserialize_module(&bytes).expect("linked image decodes");
+        assert_eq!(back, linked, "the table survives the binary round trip");
+        let report = trust_ir_build::validate::validate_module_report(&linked);
+        assert!(report.errors().is_empty(), "{:?}", report.errors());
+        assert!(
+            report.unresolved_drops().is_empty(),
+            "every linked drop resolves"
+        );
+    }
+
+    #[test]
+    fn run_refuses_two_modules_stating_different_glue_for_one_type() {
+        let modules = vec![
+            ("a".to_string(), drop_glue_module("a", "drop_owned", true)),
+            (
+                "b".to_string(),
+                drop_glue_module("b", "drop_owned_too", true),
+            ),
+        ];
+        let error = link_modules(&modules).expect_err("two glues for one type");
+        assert!(error.contains("drop_glue row"), "{error}");
+        assert!(error.contains("already has drop glue"), "{error}");
+    }
+
     #[test]
     fn linker_preserves_debug_metadata_and_remaps_scope_files() {
         let mut prefix = Module::new("prefix");
-        prefix.intern_file("src/prefix.rs");
+        prefix
+            .intern_file("src/prefix.rs")
+            .expect("Module::intern_file: test fixture");
 
         let mut source = Module::new("source");
-        let source_file = source.intern_file("src/source.rs");
-        let signature = source.add_func_type(FuncTy {
-            params: vec![Ty::I32],
-            returns: vec![Ty::I32],
-            is_vararg: false,
-        });
+        let source_file = source
+            .intern_file("src/source.rs")
+            .expect("Module::intern_file: test fixture");
+        let signature = source
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![Ty::I32],
+                returns: vec![Ty::I32],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
         let mut function = Function::new(FuncId::new(0), "identity", signature, BlockId::new(0));
         function.value_names = Some(vec![(ValueId::new(7), "input".to_string())]);
         function.scopes = Some(vec![ScopeData {
@@ -3184,6 +3562,7 @@ mod tests {
                 line: 1,
                 col: 0,
             }),
+            inlined_at: None,
         }]);
         let mut entry = Block::new(BlockId::new(0));
         entry.params.push((ValueId::new(7), Ty::I32));
@@ -3199,13 +3578,16 @@ mod tests {
             .with_scope(0),
         );
         function.blocks.push(entry);
-        source.add_function(function);
+        source
+            .try_add_function(function)
+            .expect("Module::try_add_function: test fixture");
 
         let linked = link_modules(&[
             ("prefix".to_string(), prefix),
             ("source".to_string(), source),
         ])
-        .expect("debug-bearing modules link");
+        .expect("debug-bearing modules link")
+        .0;
         assert_eq!(
             linked.files,
             vec!["src/prefix.rs".to_string(), "src/source.rs".to_string()]
@@ -3231,6 +3613,7 @@ mod tests {
         let mut bad_base = Module::new("bad-base");
         let pred = bad_base
             .intern_pred(Pred::NonZero)
+            .expect("Module::intern_pred: test fixture")
             .expect("predicate interns");
         bad_base
             .globals
@@ -3238,7 +3621,7 @@ mod tests {
         let err = link_modules(&[("bad-base".to_string(), bad_base)])
             .expect_err("dangling base must fail closed");
         assert!(
-            err.contains("ty.99 is out of range"),
+            err.contains("dangling id 99 in the types table"),
             "unexpected error: {err}"
         );
 
@@ -3249,19 +3632,21 @@ mod tests {
         let err = link_modules(&[("bad-universe".to_string(), bad_universe)])
             .expect_err("unused dangling universe must fail closed");
         assert!(
-            err.contains("univ.99 is out of range"),
+            err.contains("dangling id 99 in the universes table"),
             "unexpected error: {err}"
         );
 
         let mut bad_pred = Module::new("bad-pred");
-        let base = bad_pred.add_type(Ty::I32);
+        let base = bad_pred
+            .add_type(Ty::I32)
+            .expect("Module::add_type: test fixture");
         bad_pred
             .globals
             .push(test_global("bad_pred", Ty::Refine(base, PredId::new(99))));
         let err = link_modules(&[("bad-pred".to_string(), bad_pred)])
             .expect_err("dangling predicate must fail closed");
         assert!(
-            err.contains("pred.99 is out of range"),
+            err.contains("dangling id 99 in the predicates table"),
             "unexpected error: {err}"
         );
     }
@@ -3271,16 +3656,23 @@ mod tests {
         let mut module = Module::new("nested-refine");
         let pred = module
             .intern_pred(Pred::NonZero)
+            .expect("Module::intern_pred: test fixture")
             .expect("predicate interns");
-        let base = module.add_type(Ty::I32);
-        let inner = module.add_type(Ty::Refine(base, pred));
+        let base = module
+            .add_type(Ty::I32)
+            .expect("Module::add_type: test fixture");
+        let inner = module
+            .add_type(Ty::Refine(base, pred))
+            .expect("Module::add_type: test fixture");
         module
             .globals
             .push(test_global("nested", Ty::Refine(inner, pred)));
         let err = link_modules(&[("nested-refine".to_string(), module)])
             .expect_err("Refine-on-Refine must fail closed");
         assert!(
-            err.contains("refinement base ty.1 is itself a Refine"),
+            err.contains(
+                "types row 1 cannot be merged: a refinement's base is itself a refinement"
+            ),
             "unexpected error: {err}"
         );
     }
@@ -3389,12 +3781,14 @@ mod tests {
             (Ty::I64, -84_i128, 4, -21_i128),
         ] {
             let sig = FuncTy {
+                abi: None,
                 params: vec![word.clone(), word.clone()],
                 returns: vec![word.clone()],
                 is_vararg: false,
             };
-            let (entry, blocks) =
-                build_builtin_body(BuiltinKind::ExactDiv, &sig).expect("exact_div body builds");
+            let (entry, blocks) = build_builtin_body(BuiltinKind::ExactDiv, &sig)
+                .expect("fresh ids")
+                .expect("exact_div body builds");
             let mut module = Module::new("exact_div_test");
             let ft = FuncTyId::new(0);
             module.func_types.push(sig);
@@ -3422,18 +3816,21 @@ mod tests {
     #[test]
     fn compare_bytes_body_has_memcmp_semantics() {
         let sig = FuncTy {
+            abi: None,
             params: vec![Ty::Ptr, Ty::Ptr, Ty::U64],
             returns: vec![Ty::I32],
             is_vararg: false,
         };
-        let (entry, blocks) =
-            build_builtin_body(BuiltinKind::Memcmp, &sig).expect("compare_bytes body builds");
+        let (entry, blocks) = build_builtin_body(BuiltinKind::Memcmp, &sig)
+            .expect("fresh ids")
+            .expect("compare_bytes body builds");
         // Two 3-byte buffers written into interpreter memory, compared.
         let mut module = Module::new("compare_bytes_test");
         let cmp_ft = FuncTyId::new(0);
         module.func_types.push(sig);
         let harness_ft = FuncTyId::new(1);
         module.func_types.push(FuncTy {
+            abi: None,
             params: Vec::new(),
             returns: vec![Ty::I32],
             is_vararg: false,
@@ -3444,25 +3841,27 @@ mod tests {
 
         // harness(): a=[1,2,3], b=[1,2,4] -> compare_bytes returns -1.
         let mut bb = BodyBuilder::new();
-        let hb = bb.add_block();
+        let hb = bb.add_block().expect("fresh id");
         bb.switch_to(hb);
-        let three = bb.const_int(Ty::U64, 3);
-        let a = bb.heap_alloc_bytes(three);
-        let b = bb.heap_alloc_bytes(three);
+        let three = bb.const_int(Ty::U64, 3).expect("fresh id");
+        let a = bb.heap_alloc_bytes(three).expect("fresh id");
+        let b = bb.heap_alloc_bytes(three).expect("fresh id");
         for (i, (av, bv)) in [(1, 1), (2, 2), (3, 4)].into_iter().enumerate() {
-            let off = bb.const_int(Ty::U64, i as i128);
-            let ap = bb.gep_u8(a, off);
-            let abyte = bb.const_int(Ty::U8, av);
+            let off = bb.const_int(Ty::U64, i as i128).expect("fresh id");
+            let ap = bb.gep_u8(a, off).expect("fresh id");
+            let abyte = bb.const_int(Ty::U8, av).expect("fresh id");
             bb.store_u8(ap, abyte);
-            let bp = bb.gep_u8(b, off);
-            let bbyte = bb.const_int(Ty::U8, bv);
+            let bp = bb.gep_u8(b, off).expect("fresh id");
+            let bbyte = bb.const_int(Ty::U8, bv).expect("fresh id");
             bb.store_u8(bp, bbyte);
         }
-        let n = bb.const_int(Ty::U64, 3);
-        let res = bb.push(Inst::Call {
-            callee: FuncId::new(0),
-            args: vec![a, b, n],
-        });
+        let n = bb.const_int(Ty::U64, 3).expect("fresh id");
+        let res = bb
+            .push(Inst::Call {
+                callee: FuncId::new(0),
+                args: vec![a, b, n],
+            })
+            .expect("fresh id");
         bb.ret(vec![res]);
         let mut harness = Function::new(FuncId::new(1), "harness", harness_ft, hb);
         harness.blocks = bb.blocks;
@@ -3482,17 +3881,20 @@ mod tests {
     #[test]
     fn random_bytes_body_zero_fills_and_returns_success() {
         let sig = FuncTy {
+            abi: None,
             params: vec![Ty::Ptr, Ty::U64],
             returns: vec![Ty::I32],
             is_vararg: false,
         };
-        let (entry, blocks) =
-            build_builtin_body(BuiltinKind::RandomBytes, &sig).expect("random_bytes body builds");
+        let (entry, blocks) = build_builtin_body(BuiltinKind::RandomBytes, &sig)
+            .expect("fresh ids")
+            .expect("random_bytes body builds");
         let mut module = Module::new("random_bytes_test");
         let rng_ft = FuncTyId::new(0);
         module.func_types.push(sig);
         let harness_ft = FuncTyId::new(1);
         module.func_types.push(FuncTy {
+            abi: None,
             params: Vec::new(),
             // (return code, first output byte)
             returns: vec![Ty::I32, Ty::U8],
@@ -3504,24 +3906,26 @@ mod tests {
 
         // harness(): buf=[0xFF; 4]; rc = random_bytes(buf, 4); return (rc, buf[0]).
         let mut bb = BodyBuilder::new();
-        let hb = bb.add_block();
+        let hb = bb.add_block().expect("fresh id");
         bb.switch_to(hb);
-        let four = bb.const_int(Ty::U64, 4);
-        let buf = bb.heap_alloc_bytes(four);
+        let four = bb.const_int(Ty::U64, 4).expect("fresh id");
+        let buf = bb.heap_alloc_bytes(four).expect("fresh id");
         for i in 0..4i128 {
-            let off = bb.const_int(Ty::U64, i);
-            let slot = bb.gep_u8(buf, off);
-            let ff = bb.const_int(Ty::U8, 0xFF);
+            let off = bb.const_int(Ty::U64, i).expect("fresh id");
+            let slot = bb.gep_u8(buf, off).expect("fresh id");
+            let ff = bb.const_int(Ty::U8, 0xFF).expect("fresh id");
             bb.store_u8(slot, ff);
         }
-        let count = bb.const_int(Ty::U64, 4);
-        let rc = bb.push(Inst::Call {
-            callee: FuncId::new(0),
-            args: vec![buf, count],
-        });
-        let zero_off = bb.const_int(Ty::U64, 0);
-        let first_slot = bb.gep_u8(buf, zero_off);
-        let first = bb.load_u8(first_slot);
+        let count = bb.const_int(Ty::U64, 4).expect("fresh id");
+        let rc = bb
+            .push(Inst::Call {
+                callee: FuncId::new(0),
+                args: vec![buf, count],
+            })
+            .expect("fresh id");
+        let zero_off = bb.const_int(Ty::U64, 0).expect("fresh id");
+        let first_slot = bb.gep_u8(buf, zero_off).expect("fresh id");
+        let first = bb.load_u8(first_slot).expect("fresh id");
         bb.ret(vec![rc, first]);
         let mut harness = Function::new(FuncId::new(1), "harness", harness_ft, hb);
         harness.blocks = bb.blocks;
@@ -3569,12 +3973,314 @@ mod tests {
     }
 
     #[test]
-    fn abi_compatible_ty_treats_pointer_and_word_ints_alike() {
-        assert!(abi_compatible_ty(&Ty::Ptr, &Ty::U64));
-        assert!(abi_compatible_ty(&Ty::Usize, &Ty::Ptr));
-        assert!(abi_compatible_ty(&Ty::I64, &Ty::Ptr));
-        assert!(abi_compatible_ty(&Ty::U32, &Ty::U32));
-        assert!(!abi_compatible_ty(&Ty::U32, &Ty::Ptr));
-        assert!(!abi_compatible_ty(&Ty::F64, &Ty::U64));
+    fn word_class_is_pointer_and_pointer_width_ints() {
+        for word in [Ty::Ptr, Ty::U64, Ty::I64, Ty::Usize, Ty::Isize] {
+            assert!(is_word_ty(&word), "{word:?} is a machine word");
+        }
+        for not_word in [Ty::U32, Ty::F64, Ty::Bool] {
+            assert!(!is_word_ty(&not_word), "{not_word:?} is not a machine word");
+        }
+    }
+
+    /// One module with a bodyless declaration `f(u64, u64) -> ()` calling
+    /// nothing, or a definition `f(ptr, u64) -> ()`.
+    fn word_pun_module(name: &str, first: Ty, bodied: bool) -> Module {
+        let mut module = Module::new(name);
+        let ft = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![first, Ty::U64],
+                returns: vec![],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let mut func = Function::new(FuncId::new(0), "f", ft, BlockId::new(0));
+        if bodied {
+            let mut block = Block::new(BlockId::new(0));
+            block.params = vec![(ValueId::new(0), Ty::Ptr), (ValueId::new(1), Ty::U64)];
+            block
+                .body
+                .push(InstrNode::new(Inst::Return { values: vec![] }));
+            func.blocks.push(block);
+        } else {
+            func.linkage = Linkage::External;
+        }
+        module
+            .try_add_function(func)
+            .expect("Module::try_add_function: test fixture");
+        module
+    }
+
+    /// The runner's own link policy: a declaration that spells a 64-bit word
+    /// lane differently from the definition is respelled to the definition's
+    /// signature, in either input order; two DEFINITIONS that pun are still a
+    /// conflict the library merge refuses by name.
+    #[test]
+    fn a_word_punned_declaration_resolves_against_its_definition() {
+        for order in [[false, true], [true, false]] {
+            let modules: Vec<(String, Module)> = order
+                .iter()
+                .enumerate()
+                .map(|(i, &bodied)| {
+                    let first = if bodied { Ty::Ptr } else { Ty::U64 };
+                    (
+                        format!("m{i}"),
+                        word_pun_module(&format!("m{i}"), first, bodied),
+                    )
+                })
+                .collect();
+            let (image, _) = link_modules(&modules).expect("the word pun links");
+            assert_eq!(image.functions.len(), 1);
+            let f = &image.functions[0];
+            assert!(!f.blocks.is_empty(), "the definition wins");
+            assert_eq!(
+                image.func_types[f.ty.as_usize()].params,
+                vec![Ty::Ptr, Ty::U64]
+            );
+        }
+        let both = vec![
+            ("a".to_string(), word_pun_module("a", Ty::Ptr, true)),
+            ("b".to_string(), word_pun_module("b", Ty::U64, true)),
+        ];
+        let err = link_modules(&both).expect_err("two punning definitions conflict");
+        assert!(
+            err.contains("conflicting definitions of @f: ty differs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A one-module program over the pinned `Nat` runtime: the whole row of pinned
+    /// declarations (bodyless, `External`, C) and `program` calling
+    /// `from_u64`.
+    fn nat_runtime_module() -> Module {
+        let pin = &trust_ir_build::TRUSTED_HANDLE_RUNTIMES[0];
+        let target = trust_ir::TargetInfo {
+            triple: "aarch64-apple-darwin".into(),
+            pointer_size: 8,
+            endianness: trust_ir::Endianness::Little,
+            abi: Some("aapcs64".into()),
+            struct_passing: trust_ir::StructPassingPolicy::NativeC,
+        };
+        let mut mb = trust_ir_build::ModuleBuilder::new_with_target_info("nat", target);
+        let decls = mb
+            .declare_handle_runtime(pin)
+            .expect("pinned declarations on an empty module");
+        let from_u64 = decls.entry("from_u64").expect("pinned role");
+        let nullary = mb.add_func_type(vec![], vec![]);
+        let mut fb = mb.function("program", nullary);
+        let entry = fb.create_block();
+        fb.switch_to_block(entry);
+        let seven = fb.uconst(Ty::U64, 7);
+        fb.call(from_u64, vec![seven]);
+        fb.ret(vec![]);
+        fb.build();
+        mb.build().expect("ModuleBuilder::build: test fixture")
+    }
+
+    /// WS4.6 item 4: synthesis never gives a pinned trusted-runtime entry
+    /// point a body. They stay bodyless, their entry ids move into the
+    /// reserved range, and the report maps each id back to its symbol.
+    #[test]
+    fn synthesis_leaves_pinned_runtime_entry_points_bodyless_and_named() {
+        let (mut image, _) =
+            link_modules(&[("nat".to_string(), nat_runtime_module())]).expect("links");
+        let report =
+            synthesize_builtins(&mut image, trap_blocks().expect("trap range")).expect("fresh ids");
+        assert_eq!(report.stub_count, 0);
+        assert!(report.builtins.is_empty());
+        // The whole pinned row is declared, so every one of its entry points
+        // is collected (derived: WS3.2 widened the row from five roles).
+        assert_eq!(
+            report.runtime_entries.len(),
+            trust_ir_build::TRUSTED_HANDLE_RUNTIMES[0]
+                .entry_points
+                .len()
+        );
+        for (k, name) in report.runtime_entries.iter().enumerate() {
+            assert!(is_pinned_runtime_entry(name));
+            let func = image.function_by_name(name).expect("declared");
+            assert!(func.blocks.is_empty(), "@{name} must stay bodyless");
+            assert_eq!(func.entry.index(), RUNTIME_ENTRY_BLOCK_BASE + k as u32);
+            assert_eq!(report.runtime_entry_name(func.entry), Some(name.as_str()));
+            assert_eq!(report.trap_name(func.entry), None);
+        }
+        assert!(!is_pinned_runtime_entry("program"));
+        assert!(
+            lowered_image_errors(&image).is_empty(),
+            "the lowered image validates: {:?}",
+            lowered_image_errors(&image)
+        );
+    }
+
+    /// WS4.6 item 3, mutation control for the POST-lowering pass: the old
+    /// lowering (a trap stub for every bodyless extern, pinned ones included)
+    /// is exactly what that pass must catch — one
+    /// `HandleEntryPointDefinedLocally` per pinned entry point (the whole row:
+    /// derived, since WS3.2 widened it from five roles), and nothing else.
+    /// This is the verdict `cmd_run` turns into `internal:` / `EXIT_INTERNAL`.
+    #[test]
+    fn post_lowering_pass_refuses_stubbed_pinned_entry_points() {
+        let (mut image, _) =
+            link_modules(&[("nat".to_string(), nat_runtime_module())]).expect("links");
+        for func in &mut image.functions {
+            if func.blocks.is_empty() {
+                let block_id = BlockId::new(TRAP_BLOCK_BASE);
+                let mut block = Block::new(block_id);
+                let sig = image.func_types[func.ty.as_usize()].clone();
+                for (value, ty) in (0u32..).zip(&sig.params) {
+                    block.params.push((ValueId::new(value), ty.clone()));
+                }
+                block.body.push(InstrNode::new(Inst::Unreachable));
+                func.entry = block_id;
+                func.blocks = vec![block];
+            }
+        }
+        let errors = lowered_image_errors(&image);
+        let defined_locally = errors
+            .iter()
+            .filter(|error| format!("{error:?}").starts_with("HandleEntryPointDefinedLocally"))
+            .count();
+        let pinned = trust_ir_build::TRUSTED_HANDLE_RUNTIMES[0]
+            .entry_points
+            .len();
+        assert_eq!(defined_locally, pinned, "{errors:?}");
+        assert_eq!(errors.len(), pinned, "{errors:?}");
+        assert_eq!(EXIT_INTERNAL, 3);
+    }
+
+    /// WS4.6 item 2: the linker strips `summary`, every `ProofRef` and every
+    /// call `ProofContext`, keeps claim-style annotations, and counts what it
+    /// stripped per input function / node.
+    #[test]
+    fn linker_strips_proof_claims_and_keeps_claim_style_annotations() {
+        use trust_ir::FunctionSummary;
+        use trust_ir::proof::ProofContext;
+        use trust_ir::value::ProofId;
+
+        let mut module = Module::new("claims");
+        let ty = module
+            .add_func_type(FuncTy {
+                abi: None,
+                params: vec![],
+                returns: vec![],
+                is_vararg: false,
+            })
+            .expect("Module::add_func_type: test fixture");
+        let mut func = Function::new(FuncId::new(0), "f", ty, BlockId::new(0));
+        func.proofs = vec![
+            ProofAnnotation::Pure,
+            ProofAnnotation::ProofRef(ProofId::new(3)),
+        ];
+        func.summary = Some(FunctionSummary::new().proved());
+        let mut block = Block::new(BlockId::new(0));
+        let mut node = InstrNode::new(Inst::Return { values: vec![] });
+        node.proofs = vec![
+            ProofAnnotation::NoPanic,
+            ProofAnnotation::ProofRef(ProofId::new(4)),
+        ];
+        node.proof_context = Some(ProofContext {
+            assumes: vec![ProofId::new(4)],
+            establishes: vec![],
+        });
+        block.body.push(node);
+        func.blocks.push(block);
+        module
+            .try_add_function(func)
+            .expect("Module::try_add_function: test fixture");
+
+        let (image, stripped) = link_modules(&[("claims".to_string(), module)]).expect("links");
+        assert_eq!(
+            stripped,
+            StrippedClaims {
+                summaries: 1,
+                proof_refs: 2,
+                proof_contexts: 1,
+            }
+        );
+        let f = &image.functions[0];
+        assert_eq!(f.summary, None);
+        assert_eq!(f.proofs, vec![ProofAnnotation::Pure]);
+        let node = &f.blocks[0].body[0];
+        assert_eq!(node.proofs, vec![ProofAnnotation::NoPanic]);
+        assert_eq!(node.proof_context, None);
+    }
+
+    fn typed_signature_module(name: &str, symbol: &str, revision: Option<&str>) -> Module {
+        let mut module = signature_abi_fixture::module().expect("typed ABI fixture IDs fit");
+        module.name = name.into();
+        if let Some(revision) = revision {
+            module.func_types[0].abi.as_mut().unwrap().frontend.revision = revision.into();
+        } else {
+            module.func_types[0].abi = None;
+        }
+        module
+            .try_add_function(Function::new(
+                FuncId::new(0),
+                symbol,
+                FuncTyId::new(0),
+                BlockId::new(0),
+            ))
+            .expect("one function fits");
+        module
+    }
+
+    #[test]
+    fn linker_preserves_typed_signature_identity_and_refuses_declaration_drift() {
+        let a = typed_signature_module("a", "a", Some("revision-a"));
+        let b = typed_signature_module("b", "b", Some("revision-b"));
+        let c = typed_signature_module("c", "c", Some("revision-a"));
+        let (image, _) = link_modules(&[("a".into(), a.clone()), ("b".into(), b), ("c".into(), c)])
+            .expect("distinct symbols link");
+        assert_eq!(image.functions[0].ty, image.functions[2].ty);
+        assert_ne!(image.functions[0].ty, image.functions[1].ty);
+        for (index, revision) in [(0, "revision-a"), (1, "revision-b"), (2, "revision-a")] {
+            let signature = image.func_type(image.functions[index].ty).unwrap();
+            assert_eq!(signature.abi.as_ref().unwrap().frontend.revision, revision);
+        }
+        for revision in [Some("revision-b"), None] {
+            let drift = typed_signature_module("drift", "a", revision);
+            assert!(link_modules(&[("a".into(), a.clone()), ("drift".into(), drift)]).is_err());
+        }
+    }
+
+    #[test]
+    fn typed_signature_declarations_never_undergo_legacy_word_respelling() {
+        for (canonical_revision, declaration_revision) in [
+            (Some("revision-a"), Some("revision-a")),
+            (Some("revision-a"), None),
+            (None, Some("revision-a")),
+        ] {
+            let canonical = typed_signature_module("canonical", "f", canonical_revision);
+            let mut declaration = typed_signature_module("declaration", "f", declaration_revision);
+            declaration.func_types[0].params[0] = Ty::U64;
+            let before = declaration.func_types.clone();
+            let inputs = [
+                ("canonical".into(), canonical),
+                ("declaration".into(), declaration),
+            ];
+            let respelled = respell_word_punned_declarations(&inputs).expect("inspect signatures");
+            assert_eq!(
+                respelled[1].1.func_types, before,
+                "typed declarations keep their exact descriptor and pointer roles: {canonical_revision:?}, {declaration_revision:?}",
+            );
+            assert!(link_modules(&inputs).is_err());
+        }
+    }
+
+    #[test]
+    fn unrecorded_signature_declarations_keep_legacy_word_respelling() {
+        let canonical = typed_signature_module("canonical", "f", None);
+        let mut declaration = typed_signature_module("declaration", "f", None);
+        declaration.func_types[0].params[0] = Ty::U64;
+        let inputs = [
+            ("canonical".into(), canonical),
+            ("declaration".into(), declaration),
+        ];
+        let respelled = respell_word_punned_declarations(&inputs).expect("legacy word lanes agree");
+        let declaration = &respelled[1].1;
+        let signature = declaration.func_type(declaration.functions[0].ty).unwrap();
+        assert_eq!(signature.params[0], Ty::Ptr);
+        assert_eq!(signature.abi, None);
+        assert!(link_modules(&inputs).is_ok());
     }
 }

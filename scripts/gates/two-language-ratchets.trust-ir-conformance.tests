@@ -1,0 +1,14 @@
+# Gate 11: the two-language ratchets (roadmap WS8.6). Every area target checks
+# its rows as a bijection against
+# crates/trust-ir-conformance/tests/two_language/RATCHETS.tsv; the targets are
+# declared explicitly ([[test]] in crates/trust-ir-conformance/Cargo.toml).
+two_language_harness  # WS8.6: the harness's own mutation self-tests + ledger well-formedness
+two_language_b0  # WS8.6: smoke (b0 rows)
+two_language_b1  # WS8.6: one module, two producers (b1 rows)
+two_language_b2  # WS8.6: contracts and obligations (b2 rows)
+two_language_b3  # WS8.6: kernel-certified translation validation (b3 rows)
+two_language_b4  # WS8.6: cross-crate linking (b4 rows)
+two_language_b5  # WS8.6: the Nat handle (b5 rows)
+two_language_b6  # WS8.6: data carriers (b6 rows)
+two_language_b7  # WS8.6: codec and semantics gaps (b7 rows)
+two_language_field_ratchets  # WS8.6: compile-time field-absence ratchets (field rows)

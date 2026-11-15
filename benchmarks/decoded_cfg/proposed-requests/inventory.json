@@ -1,0 +1,1000 @@
+{
+  "original_product_source": "1fe526c1848377ce9423297f10458c6bd06f7870",
+  "helper_source": "benchmarks/function_lookup/generate.py",
+  "helper_sha256": "df5db63e73bbf5491e922b228a7a9871eed6abf194043caca09ca671fb3556d8",
+  "cases": [
+    {
+      "path": "cfg_32_1_0_dense.json",
+      "sha256": "e0b8097277a85352ad864cfc7e5e670e8dae389365d0fdce57975e86bbcd3151",
+      "bytes": 1283,
+      "bits": 32,
+      "blocks": 1,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        0,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_2_0_dense.json",
+      "sha256": "24e69b0e813c8a78da7fd054e83019cea2c413ef4d37f59d1cadcdc04f8067ce",
+      "bytes": 1420,
+      "bits": 32,
+      "blocks": 2,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        1,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_2_0_sparse.json",
+      "sha256": "9541d2d7c65cf2bc20510ce10220dd3b01bd5602d5a7f838d900b20421e1587f",
+      "bytes": 1440,
+      "bits": 32,
+      "blocks": 2,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4_0_dense.json",
+      "sha256": "9c0ed26c1943473c12eba8f7a7d204a6e8eb8dbdcefe2f6c98445fedd1b1cc63",
+      "bytes": 2352,
+      "bits": 32,
+      "blocks": 4,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        3,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4_0_sparse.json",
+      "sha256": "c489852d97889762e50cef24d763cef199f115147407f74c0280f871b8d200b2",
+      "bytes": 2385,
+      "bits": 32,
+      "blocks": 4,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4_1_dense.json",
+      "sha256": "3efa8137807f6b1b180aa98cfb1e86dc451a7d0f0abdff38401806c4aec81cb3",
+      "bytes": 2352,
+      "bits": 32,
+      "blocks": 4,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        3,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4_1_sparse.json",
+      "sha256": "3ee95cd5dccda5d22ec20718a2a7d04601cb3195a2648e0a93e654b242e1965f",
+      "bytes": 2385,
+      "bits": 32,
+      "blocks": 4,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4_1000_dense.json",
+      "sha256": "af5bbd419175416915a4b029570fc6f5e33357701519f518f7fbe1e4c3bb6a3c",
+      "bytes": 2361,
+      "bits": 32,
+      "blocks": 4,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        3,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4_1000_sparse.json",
+      "sha256": "517d122b2265470bd3e8bb89b88cf202bd5100f92d4e8f1cd2966db29078f8b3",
+      "bytes": 2394,
+      "bits": 32,
+      "blocks": 4,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_8_0_dense.json",
+      "sha256": "a6ed439d3ed325e5199795199107fad9c813be9c7cca5db255f00c5ca53e6934",
+      "bytes": 2967,
+      "bits": 32,
+      "blocks": 8,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        7,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_8_0_sparse.json",
+      "sha256": "4a3ea5fb519f0f01b2d8fad255ccf476e7e9d83791fabad8096bd8e498d2b056",
+      "bytes": 3008,
+      "bits": 32,
+      "blocks": 8,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_8_1_dense.json",
+      "sha256": "d911b2aecab9e7ab9e4043c0b44dcf1d287cc0ab9bc3609f63bab64b6e4940e4",
+      "bytes": 2967,
+      "bits": 32,
+      "blocks": 8,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        7,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_8_1_sparse.json",
+      "sha256": "7edff4d55340fd022c238b04a1a26ea216c85e623fc49ac7140c2b05a9e2b848",
+      "bytes": 3008,
+      "bits": 32,
+      "blocks": 8,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_8_1000_dense.json",
+      "sha256": "d7902f9aee03782364f0e32f7b6429fac906fb099b087d910c7e98bfd63eb6d9",
+      "bytes": 2976,
+      "bits": 32,
+      "blocks": 8,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        7,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_8_1000_sparse.json",
+      "sha256": "8798d21f42de34f39c6d9aac73939cb55fc4f2873958dc74e809d1a652f2ac64",
+      "bytes": 3017,
+      "bits": 32,
+      "blocks": 8,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_64_0_dense.json",
+      "sha256": "801fd6d6c6334f9d84b565d9c7b99d203fb5f635549c5f1e1e3f827e66100645",
+      "bytes": 11713,
+      "bits": 32,
+      "blocks": 64,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        63,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_64_0_sparse.json",
+      "sha256": "0715f0e2cc32ded8b3d4a3f519d1574a4bac1d3334bd50709027e19fd2e46852",
+      "bytes": 11875,
+      "bits": 32,
+      "blocks": 64,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_64_1_dense.json",
+      "sha256": "2301661829ff4c90fe7e8fae2cb8baabd30f0d48a830f05bbbef30914a5fcce3",
+      "bytes": 11713,
+      "bits": 32,
+      "blocks": 64,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        63,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_64_1_sparse.json",
+      "sha256": "3a2f61a0c8902ff54defc698a494cb67f558bac3bfee2e56700d1326eb9d9256",
+      "bytes": 11875,
+      "bits": 32,
+      "blocks": 64,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_64_1000_dense.json",
+      "sha256": "1d95e7030ce6c28f0dd050da6060406792bd34c6b35cbbca82bedd04ab7e3dc8",
+      "bytes": 11722,
+      "bits": 32,
+      "blocks": 64,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        63,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_64_1000_sparse.json",
+      "sha256": "0d5436fc26ecb34d5bc1b98774225d45ebf37063cf3f3bdbb1038bb46e3b7c2e",
+      "bytes": 11884,
+      "bits": 32,
+      "blocks": 64,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_512_0_dense.json",
+      "sha256": "2185510c1447f295fa5507818b853df60183651f16509e177f4e35bcbefeb94b",
+      "bytes": 83831,
+      "bits": 32,
+      "blocks": 512,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        511,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_512_0_sparse.json",
+      "sha256": "061f1b5e947ea167cccee21ea65035f77b7b95452f318d66625cf65827150655",
+      "bytes": 84960,
+      "bits": 32,
+      "blocks": 512,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_512_1_dense.json",
+      "sha256": "8e0bbceb53fbf1e7ec7bb6c541adb33f8074ed3330f0b9418d31dcd7f0911767",
+      "bytes": 83831,
+      "bits": 32,
+      "blocks": 512,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        511,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_512_1_sparse.json",
+      "sha256": "18d2afe0a92f7a610cf536e676fe4b4e5131c635417af8ac9f2b9975ee5e9bba",
+      "bytes": 84960,
+      "bits": 32,
+      "blocks": 512,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_512_1000_dense.json",
+      "sha256": "45aaaa45c1cf8c6f620463f9ec500888af13a985604a14b4897d20617b5d0b69",
+      "bytes": 83840,
+      "bits": 32,
+      "blocks": 512,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        511,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_512_1000_sparse.json",
+      "sha256": "2cc0f4fc00df22e3f5319b7d19ce420b513e8d2962b42e01863c52e3d83028be",
+      "bytes": 84969,
+      "bits": 32,
+      "blocks": 512,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4096_0_dense.json",
+      "sha256": "41ddd9fa489aee10c2e0ddca0bd094aa6746a6c1c7f3d438f31fb0fa67986a46",
+      "bytes": 681386,
+      "bits": 32,
+      "blocks": 4096,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        4095,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4096_0_sparse.json",
+      "sha256": "446293e72bed04b9b7a7fcd8e000ea2a1a585d44e6a13a0ec353b4a20b34fce1",
+      "bytes": 690502,
+      "bits": 32,
+      "blocks": 4096,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4096_1_dense.json",
+      "sha256": "4ebea3a07d2608a2ab258de6bb6a62b422a17889af2daf9dbfeb8fbb89569a2b",
+      "bytes": 681386,
+      "bits": 32,
+      "blocks": 4096,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        4095,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4096_1_sparse.json",
+      "sha256": "226c5d40e57497f7873c912061a7cc8ec775c2dea643942ced8e850e9ae10400",
+      "bytes": 690502,
+      "bits": 32,
+      "blocks": 4096,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4096_1000_dense.json",
+      "sha256": "c8b04055bf0a86fb6170e0018b5cf71ccac7593ee9b8ef09b0a6582728bfe44b",
+      "bytes": 681395,
+      "bits": 32,
+      "blocks": 4096,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        4095,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_32_4096_1000_sparse.json",
+      "sha256": "a3913373f6d8b366287842e162963f361fc6a85f79844b4406101df86e9e23e9",
+      "bytes": 690511,
+      "bits": 32,
+      "blocks": 4096,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_1_0_dense.json",
+      "sha256": "a11e3cc8973077ae164bf6bdd152a8e7895585bd28d613493e7affabae269185",
+      "bytes": 1281,
+      "bits": 64,
+      "blocks": 1,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        0,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_2_0_dense.json",
+      "sha256": "5fa80c21e41c0776a42e87fb79e055b8c5e9c87efd230d5d66eedeff91e82136",
+      "bytes": 1418,
+      "bits": 64,
+      "blocks": 2,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        1,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_2_0_sparse.json",
+      "sha256": "5cf0ac56214b0baaf4cb8d31464660de1fefff9a718899c982b376cb56515e6f",
+      "bytes": 1438,
+      "bits": 64,
+      "blocks": 2,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4_0_dense.json",
+      "sha256": "b575af9bfd27a68176db4d7c05adcf50e865cfb9de311c7c15db3f14b3716ff2",
+      "bytes": 2350,
+      "bits": 64,
+      "blocks": 4,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        3,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4_0_sparse.json",
+      "sha256": "466ca5ae7465b44b72f3ec956027c89ceedead6cb00510e97550b8b07861cd93",
+      "bytes": 2383,
+      "bits": 64,
+      "blocks": 4,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4_1_dense.json",
+      "sha256": "ae3a556eec5e29140d18c81a530b264f68ebf1247a9e5752b8b24dee60316c13",
+      "bytes": 2350,
+      "bits": 64,
+      "blocks": 4,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        3,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4_1_sparse.json",
+      "sha256": "6b0a92d31fe691f1c70f2fe7637c4e4fe5cf561546ad8d9bc87c0f2f678cbb0d",
+      "bytes": 2383,
+      "bits": 64,
+      "blocks": 4,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4_1000_dense.json",
+      "sha256": "b0c52331464efe9bba21e4ce0b8b3fa928ec7cb0c399e365a3d63a33d417e1a8",
+      "bytes": 2359,
+      "bits": 64,
+      "blocks": 4,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        3,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4_1000_sparse.json",
+      "sha256": "cc0959d3ac2ad79ce2fd48d694f5915dc87dca4ca0653ef0f1f55a3f503414e4",
+      "bytes": 2392,
+      "bits": 64,
+      "blocks": 4,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_8_0_dense.json",
+      "sha256": "bea3118ae0b975ffb32fe2c8bf6a5cde0a73a178be42e4953caa0b35e5631b57",
+      "bytes": 2965,
+      "bits": 64,
+      "blocks": 8,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        7,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_8_0_sparse.json",
+      "sha256": "5b615d34c86c4775feb673bd719c07fd54655abd216f16f94f1ee2965dcde0c8",
+      "bytes": 3006,
+      "bits": 64,
+      "blocks": 8,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_8_1_dense.json",
+      "sha256": "8c07ab4f41eedadef52562479df4e84ea4f0f7676a96ab16aeb7e3506194fd74",
+      "bytes": 2965,
+      "bits": 64,
+      "blocks": 8,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        7,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_8_1_sparse.json",
+      "sha256": "9dba7bd1049863aa89f605ccd37c9b8dd813bcadef51319e50da7caf02eca731",
+      "bytes": 3006,
+      "bits": 64,
+      "blocks": 8,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_8_1000_dense.json",
+      "sha256": "1fb56a7cb6bc4959ed569cf5f6f51d4e4e9e59b1df15880737095abc739ba138",
+      "bytes": 2974,
+      "bits": 64,
+      "blocks": 8,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        7,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_8_1000_sparse.json",
+      "sha256": "14b77d42320f6f2d3f7332f99e3f3c345389c8e70118be1ff9b4ec2bbef9ba9b",
+      "bytes": 3015,
+      "bits": 64,
+      "blocks": 8,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_64_0_dense.json",
+      "sha256": "9caf0ef13e349c3b20b212562570f1363dbacea6755ac628268e0a5e30fe53ce",
+      "bytes": 11711,
+      "bits": 64,
+      "blocks": 64,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        63,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_64_0_sparse.json",
+      "sha256": "c7985e558613031cf0200a763e392fd85b21c3a3b8564d3cf19007e7e45ac90e",
+      "bytes": 11873,
+      "bits": 64,
+      "blocks": 64,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_64_1_dense.json",
+      "sha256": "5ca55613520e89400814c3c9fcbfa24d65a0b3515ecdfc2f16bd2b9c063d41d6",
+      "bytes": 11711,
+      "bits": 64,
+      "blocks": 64,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        63,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_64_1_sparse.json",
+      "sha256": "8cbf096dad6b9afaafae7640920c9cf75bf977ad07c558528734df0d274cc3fb",
+      "bytes": 11873,
+      "bits": 64,
+      "blocks": 64,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_64_1000_dense.json",
+      "sha256": "409d80a6521e9f564655f50ebb2e47cee1d735ff7baaea031bc59bcc4352a806",
+      "bytes": 11720,
+      "bits": 64,
+      "blocks": 64,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        63,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_64_1000_sparse.json",
+      "sha256": "d97df24c25ee978b4b23f48fa4dfe0e1667e002eb8832095c7ad30a8647bab9d",
+      "bytes": 11882,
+      "bits": 64,
+      "blocks": 64,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_512_0_dense.json",
+      "sha256": "9f7315c8d1deec5dd61c316d7e7416569cd9619021d4a74db2e5103cb55f1f28",
+      "bytes": 83829,
+      "bits": 64,
+      "blocks": 512,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        511,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_512_0_sparse.json",
+      "sha256": "93eedaf8af4534628948725cd500d78047945e1aa72b381c6ecfd745dc3744b1",
+      "bytes": 84958,
+      "bits": 64,
+      "blocks": 512,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_512_1_dense.json",
+      "sha256": "ac6312d9daea4872c108170eff1263a0f57e45d8189cf17a4ca9be0b62c0f03a",
+      "bytes": 83829,
+      "bits": 64,
+      "blocks": 512,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        511,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_512_1_sparse.json",
+      "sha256": "ace77ebdad295c252db77155c22fe2a6b925dfd8d8b81d43ec6454e89aebb5d7",
+      "bytes": 84958,
+      "bits": 64,
+      "blocks": 512,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_512_1000_dense.json",
+      "sha256": "b132d70301a58fa3e03fbb37f91055c35697c48f6ea201a0f633fcd777c9aebd",
+      "bytes": 83838,
+      "bits": 64,
+      "blocks": 512,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        511,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_512_1000_sparse.json",
+      "sha256": "9032dd6805f82426f6a2d19a0640acc6f621391565f649e142a2a9307c975f78",
+      "bytes": 84967,
+      "bits": 64,
+      "blocks": 512,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4096_0_dense.json",
+      "sha256": "d16a4e99e10544e3e58e3e0dc560fe8e6f43394859d6d2a39b470b3789b5d438",
+      "bytes": 681384,
+      "bits": 64,
+      "blocks": 4096,
+      "iterations": 0,
+      "sparse": false,
+      "queries": [
+        4095,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4096_0_sparse.json",
+      "sha256": "a3a98aaa89df0ddde1317e80be980db063ccdfeb589abae2064b75de7706eac0",
+      "bytes": 690500,
+      "bits": 64,
+      "blocks": 4096,
+      "iterations": 0,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4096_1_dense.json",
+      "sha256": "09079b1a8d5ecd655b3a4fa375ebe5cd9752f689be62f36a6901bc9d11b1ce55",
+      "bytes": 681384,
+      "bits": 64,
+      "blocks": 4096,
+      "iterations": 1,
+      "sparse": false,
+      "queries": [
+        4095,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4096_1_sparse.json",
+      "sha256": "a886b65cc4f408319956e344df2225f350fe6ea4c6c519015465d6ed2c2c9752",
+      "bytes": 690500,
+      "bits": 64,
+      "blocks": 4096,
+      "iterations": 1,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4096_1000_dense.json",
+      "sha256": "081c16a2bb4ce75e6b079e2b563a7b21d17c56e254def3c4fef4463809a6448c",
+      "bytes": 681393,
+      "bits": 64,
+      "blocks": 4096,
+      "iterations": 1000,
+      "sparse": false,
+      "queries": [
+        4095,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    },
+    {
+      "path": "cfg_64_4096_1000_sparse.json",
+      "sha256": "4aa3983ea29eba7d802ace140df55e7703fcacac4aa4bd5c09a03a571016cb0e",
+      "bytes": 690509,
+      "bits": 64,
+      "blocks": 4096,
+      "iterations": 1000,
+      "sparse": true,
+      "queries": [
+        4294967295,
+        4294967294,
+        0
+      ],
+      "expected_i32": 42
+    }
+  ],
+  "validated": false,
+  "native_executed": false,
+  "performance_authority": false
+}

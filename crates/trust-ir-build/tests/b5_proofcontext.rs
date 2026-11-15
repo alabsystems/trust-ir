@@ -43,7 +43,7 @@ fn caller_callee_module() -> Module {
     fb.ret(vec![r]);
     fb.build();
 
-    let mut m = mb.build();
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
     for (id, kind) in [
         (0u32, ObligationKind::Postcondition),
         (1u32, ObligationKind::Precondition),

@@ -1,0 +1,986 @@
+{
+ "exit": 0,
+ "output_lines": [
+  "Summary: 33 proved, 0 failed, 0 runtime-checked, 0 assumed, 0 mandated, 0 contract-panic, 0 inconclusive (33 total)",
+  "Publication boundary: 59 obligation(s) passed the compiler, 33 published, 26 WITHHELD for want of clean-kernel or publishable native proof evidence (0 relabelled unknown (visible in --json with the reason); 26 deleted as a redundant alias (identity disclosed separately; no proof credit)). See docs/TCB.md \"The publication boundary\".",
+  "Compiler requests omitted from the published proof rows: 26 (diagnostics only; not discharged by this report)",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_reflexive_unbounded obligation=obligation:trust_ir_laws__laws__coverage_reflexive_unbounded:postcondition:0 kind=postcond claim_sha256=7354941faaa5452ead199b556287281ff0dd1e25d8a22620687cb161e3ec78a0",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_reflexive_unwind obligation=obligation:trust_ir_laws__laws__coverage_reflexive_unwind:postcondition:0 kind=postcond claim_sha256=64e387bacea25407a0440a7b5985544d40f9b84f51a8db1e06756bbc7a93b081",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_reflexive_model obligation=obligation:trust_ir_laws__laws__coverage_reflexive_model:postcondition:0 kind=postcond claim_sha256=4e548c43e1b0b145fdc8eaf8ba3c35e9c764ada1c88916936ba694ea91042bb0",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_unbounded obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_unbounded:postcondition:0 kind=postcond claim_sha256=d0dd774124f947529d24b4dd0851b1ef9c631041edc56605fc9824e59d4a2f5e",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_unwind obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_unwind:postcondition:0 kind=postcond claim_sha256=97f8652015334e0764d132febdecac4e78566e2595cdbaaee16746b31ff2336a",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_model obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_model:postcondition:0 kind=postcond claim_sha256=f069bc77cb767057b5b46d3ab399ece2238f54a172c32d6bdda473feb27d03d4",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unbounded_supplies_unrecorded obligation=obligation:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0 kind=postcond claim_sha256=624cff2b20dacdab41d1f2b3ca0c9df2cf768c4b9e9cf072227c5ce0a3535178",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unwind_is_magnitude_order obligation=obligation:trust_ir_laws__laws__coverage_unwind_is_magnitude_order:postcondition:0 kind=postcond claim_sha256=5eb7851bc30d978daf2b320788882d7bb270785d0477a7adca36eb76c0517a23",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_model_is_magnitude_order obligation=obligation:trust_ir_laws__laws__coverage_model_is_magnitude_order:postcondition:0 kind=postcond claim_sha256=8d0c4e329b20ecd83f6538069f9b0ff1432fb4c61560541e7f4f1121e7a5d718",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unwind_never_supplies_model obligation=obligation:trust_ir_laws__laws__coverage_unwind_never_supplies_model:postcondition:0 kind=postcond claim_sha256=b59a0788c56c11be6473c519d144183cd8db97267c4c98d3bf3382bb12fdebc0",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_model_never_supplies_unwind obligation=obligation:trust_ir_laws__laws__coverage_model_never_supplies_unwind:postcondition:0 kind=postcond claim_sha256=d1017d656dd8ddc75d92624ccc55567f67e990af3cd119540782d9bf1c592be1",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unwind_never_supplies_unbounded obligation=obligation:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0 kind=postcond claim_sha256=1921ef94cfe20bbcf4096310f92f1c230693ed0034e17f340e4e15d5e1d0dd1a",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_model_never_supplies_unbounded obligation=obligation:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0 kind=postcond claim_sha256=16ac3e9434d8bbe3b69d1c36ff48167a5af1bcf77ec85be1b165858ccf475d55",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unbounded obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0 kind=postcond claim_sha256=6b1c89c900884ec42db125311d9c43fb563203335996f23c997b2e3a15d2f917",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unwind obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unwind:postcondition:0 kind=postcond claim_sha256=684020c8950ec7ad69a8ef4fc3b99684340038d3c9935b1dc3ae972a99b0bdd7",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_model obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_never_supplies_model:postcondition:0 kind=postcond claim_sha256=3a1e7a989a1772dd42196038b6eb0d5f254eeb0b7969c26f8f89789b30ac330c",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unbounded obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0 kind=postcond claim_sha256=c8f5527cab7b2d4d63c7b6c3a7544cde622696a75ed1ab41ae106079c7af3472",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unwind obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0 kind=postcond claim_sha256=b66fdb2294d048da83ef98174d3d5bcd80a1faabcc2559e52caa6f070e7ec0cb",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_model obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0 kind=postcond claim_sha256=515709ef568b6c4d48785d92ee622b6622d9770444860a4e033cfc46497b9d99",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unrecorded obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0 kind=postcond claim_sha256=9dcb921cc4d32c987dcc1154338ba4cb1bb1484fee36559fa46018196391fc0d",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_any obligation=obligation:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0 kind=postcond claim_sha256=f0c31951cb6102ca21ddf06157013a014e24c0bc027c8fc4240f5cadd81e9690",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::u64_ge_is_transitive obligation=obligation:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:0 kind=postcond claim_sha256=e3a9f27435f72339ce7afdff04656ff76def389b0bedabf2a3419d332f2baf40",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_gated_admitted_under_any_policy obligation=obligation:trust_ir_laws__laws__license_gated_admitted_under_any_policy:postcondition:0 kind=postcond claim_sha256=a7fcb66cfb7f77c3657c354cc46d6b60cc8c98812d97ea1f68e4fb4d106b6450",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_ungated_refused_under_any_policy obligation=obligation:trust_ir_laws__laws__license_ungated_refused_under_any_policy:postcondition:0 kind=postcond claim_sha256=0b166a67285f98c6367007bd6a4e059c6c34276811fe1a977574b1acd73ef4f8",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_absent_refused_under_refuse obligation=obligation:trust_ir_laws__laws__license_absent_refused_under_refuse:postcondition:0 kind=postcond claim_sha256=f7e91ecf09649ec7989d912b9d5b6f855942b21290bbc5fd25ce59eb961964e1",
+  "  [UNKNOWN; proof withheld at publication] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"a2d7cbb7e69e1fe7a56633f70aee6b4850ba5aec6b4d6cc4e6bcd15cc754b1ba\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::license_absent_admitted_under_permit obligation=obligation:trust_ir_laws__laws__license_absent_admitted_under_permit:postcondition:0 kind=postcond claim_sha256=efa632a34ceaa6c48e9399217668d6acd45c64fde11581e930698b9e1a60f90c",
+  "Coverage: 38/38 eligible function bodies verified (complete)",
+  "Result: PASS"
+ ],
+ "provenance": {
+  "date": "2026-09-29",
+  "gate": "scripts/verified_contracts.py (gate 13), a real kept run (--keep)",
+  "regenerate": "scripts/tests/fixtures/verified_lane/refresh.py",
+  "run": "base",
+  "toolchain": "rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0) | commit-hash: 321aaeda75478038420d97830f14724c33c8dc39 | host: aarch64-apple-darwin | trust: 0.1.0",
+  "tree": "f913733d0cae9aec53928a566358941c9c78bd50"
+ },
+ "report": {
+  "cargo_proof_inventory": {
+   "completed": {
+    "primary_roots": [
+     {
+      "semantics": {
+       "unit_rustflags": [
+        "-Z",
+        "trust-verify-level=2",
+        "-Z",
+        "trust-verify-timeout-ms=5000",
+        "-Z",
+        "trust-verify-function-budget-ms=3000",
+        "-Z",
+        "trust-verify-memory-ceiling-bytes=3221225472"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  "functions": [
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::GateShape as core::clone::Clone>::clone",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::GateShape as core::cmp::Eq>::assert_fields_are_eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::GateShape as core::cmp::PartialEq>::eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::clone::Clone>::clone",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::cmp::Eq>::assert_fields_are_eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::cmp::PartialEq>::eq",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::<trust_ir_laws::UnlicensedBodyPolicy as core::default::Default>::default",
+    "obligations": [],
+    "summary": {
+     "verdict": "NoObligations"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::GateShape::name",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__GateShape__name:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::GateShape::of",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__GateShape__of:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::UnlicensedBodyPolicy::name",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__UnlicensedBodyPolicy__name:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::coverage_supports",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__coverage_supports:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_model_is_magnitude_order",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_model_is_magnitude_order:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_model_never_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_model_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_model_never_supplies_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_model_never_supplies_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_reflexive_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_reflexive_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_reflexive_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_reflexive_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_reflexive_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_reflexive_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_unrecorded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_unrecorded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unbounded_supplies_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unbounded_supplies_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_any",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_any:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unrecorded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unrecorded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_demand_met_by_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_demand_met_by_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unrecorded_never_supplies_unwind",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unrecorded_never_supplies_unwind:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unwind_is_magnitude_order",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unwind_is_magnitude_order:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unwind_never_supplies_model",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unwind_never_supplies_model:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::coverage_unwind_never_supplies_unbounded",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__coverage_unwind_never_supplies_unbounded:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_absent_admitted_under_permit",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_absent_admitted_under_permit:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_absent_refused_under_refuse",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_absent_refused_under_refuse:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_gated_admitted_under_any_policy",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_gated_admitted_under_any_policy:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::license_ungated_refused_under_any_policy",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__license_ungated_refused_under_any_policy:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::laws::u64_ge_is_transitive",
+    "obligations": [
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:1",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     },
+     {
+      "description": "postcondition",
+      "kind": "postcondition",
+      "obligation_id": "vc:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:2",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Postcondition"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   },
+   {
+    "function": "cargo-target(package=\"trust-ir-laws\",proof_unit_role=\"primary\")::trust_ir_laws::license_admits_body",
+    "obligations": [
+     {
+      "description": "unreachable code reached",
+      "kind": "unreachable",
+      "obligation_id": "vc:trust_ir_laws__license_admits_body:assertion:0",
+      "outcome": {
+       "status": "proved",
+       "strength": {
+        "assurance": "Certified",
+        "grade": {
+         "validation": "KernelRechecked"
+        }
+       }
+      },
+      "solver": "trust-full-verifier",
+      "transport_evidence": {
+       "typed_kind": "Unreachable"
+      }
+     }
+    ],
+    "summary": {
+     "verdict": "Verified"
+    }
+   }
+  ],
+  "verification_gate": {
+   "conditional_on_assumption_rows": false,
+   "conditional_on_dependency_entries": true,
+   "conditional_on_runtime_checks": false,
+   "conditional_on_unknown_rows": false,
+   "conditional_on_visitation_entries": false,
+   "counts": {
+    "assumed": 0,
+    "contract_panics": 0,
+    "failed": 0,
+    "mandated": 0,
+    "proved": 33,
+    "runtime_checked": 0,
+    "total": 33,
+    "unknown": 0
+   },
+   "coverage": {
+    "coverage_complete": true,
+    "eligible": 38,
+    "processed": 38
+   },
+   "decision": "pass",
+   "exit_code": 0,
+   "lane": "strict",
+   "verification_level": "L2"
+  }
+ },
+ "rss_bound_bytes": 500252672
+}

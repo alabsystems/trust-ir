@@ -544,6 +544,7 @@ pub fn build_lowering_resolution_cert(
         function,
         source: None,
         site: None,
+        spec: None,
     };
     let lineage = clean_cic_lineage_digest(&obligation);
     let certificate = ProofCertificate {
@@ -560,8 +561,11 @@ pub fn build_lowering_resolution_cert(
                 // The reflection proof is fully constructive: empty structural
                 // axiom closure, so NOTHING need be allowed.
                 allowed_axioms: vec![],
+                binding: None,
             }),
         },
+
+        assurance: None,
     };
     Some(LoweringResolutionCert {
         obligation,

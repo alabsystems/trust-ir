@@ -10,18 +10,23 @@ use trust_ir_build::{ValidationError, validate_module, validate_spec_anchor_func
 
 fn module_with_action_function() -> Module {
     let mut module = Module::new("typed_anchor");
-    let ty = module.add_func_type(FuncTy {
-        params: vec![],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ty = module
+        .add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut function = Function::new(FuncId::new(0), "crate::Machine::step", ty, BlockId::new(0));
     let mut entry = Block::new(BlockId::new(0));
     entry
         .body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     function.blocks.push(entry);
-    module.add_function(function);
+    module
+        .try_add_function(function)
+        .expect("Module::try_add_function: test fixture");
 
     let mut spec = SpecModule::new("crate::Machine");
     spec.actions.push("Step".to_string());
@@ -40,7 +45,9 @@ fn module_with_action_function() -> Module {
 
 fn module_with_projection_function(signature: FuncTy) -> Module {
     let mut module = module_with_action_function();
-    let ty = module.add_func_type(signature);
+    let ty = module
+        .add_func_type(signature)
+        .expect("Module::add_func_type: test fixture");
     let mut projection = Function::new(
         FuncId::new(1),
         "crate::Machine::project",
@@ -52,7 +59,9 @@ fn module_with_projection_function(signature: FuncTy) -> Module {
         .body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     projection.blocks.push(entry);
-    module.add_function(projection);
+    module
+        .try_add_function(projection)
+        .expect("Module::try_add_function: test fixture");
     module.spec_modules[0].anchors[0].project = Some("crate::Machine::project".to_string());
     module.spec_modules[0].anchors[0].projection_target =
         Some(SpecProjectionTarget::Function(FuncId::new(1)));
@@ -63,6 +72,7 @@ fn valid_projection_signature() -> FuncTy {
     FuncTy {
         params: vec![Ty::Ref(Box::new(Ty::I32))],
         returns: vec![Ty::I32],
+        abi: None,
         is_vararg: false,
     }
 }
@@ -165,31 +175,37 @@ fn typed_spec_projection_rejects_missing_target_and_every_bad_signature_shape() 
         FuncTy {
             params: vec![Ty::I32],
             returns: vec![Ty::I32],
+            abi: None,
             is_vararg: false,
         },
         FuncTy {
             params: vec![Ty::RefMut(Box::new(Ty::I32))],
             returns: vec![Ty::I32],
+            abi: None,
             is_vararg: false,
         },
         FuncTy {
             params: vec![Ty::Ref(Box::new(Ty::I32)), Ty::I32],
             returns: vec![Ty::I32],
+            abi: None,
             is_vararg: false,
         },
         FuncTy {
             params: vec![Ty::Ref(Box::new(Ty::I32))],
             returns: vec![],
+            abi: None,
             is_vararg: false,
         },
         FuncTy {
             params: vec![Ty::Ref(Box::new(Ty::I32))],
             returns: vec![Ty::I32, Ty::I32],
+            abi: None,
             is_vararg: false,
         },
         FuncTy {
             params: vec![Ty::Ref(Box::new(Ty::I32))],
             returns: vec![Ty::I32],
+            abi: None,
             is_vararg: true,
         },
     ];

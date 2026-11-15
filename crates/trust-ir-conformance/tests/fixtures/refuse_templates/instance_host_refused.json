@@ -1,0 +1,173 @@
+{
+  "header": {
+    "identity": "core::mem::size_of::<T>",
+    "params": [
+      "Type"
+    ],
+    "holes": [
+      {
+        "kind": {
+          "Const": {
+            "ty": "Usize"
+          }
+        },
+        "key": {
+          "namespace": "rust",
+          "bytes": [
+            99,
+            111,
+            114,
+            101,
+            58,
+            58,
+            109,
+            101,
+            109,
+            58,
+            58,
+            83,
+            105,
+            122,
+            101,
+            100,
+            84,
+            121,
+            112,
+            101,
+            80,
+            114,
+            111,
+            112,
+            101,
+            114,
+            116,
+            105,
+            101,
+            115,
+            58,
+            58,
+            83,
+            73,
+            90,
+            69
+          ]
+        },
+        "args": [
+          {
+            "Type": {
+              "Ext": {
+                "Param": 0
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "module": {
+    "name": "core",
+    "functions": [
+      {
+        "id": 0,
+        "name": "!template_body",
+        "ty": 0,
+        "entry": 0,
+        "blocks": [
+          {
+            "id": 0,
+            "params": [],
+            "body": [
+              {
+                "inst": {
+                  "Const": {
+                    "ty": "Usize",
+                    "value": {
+                      "Ext": {
+                        "Hole": 0
+                      }
+                    }
+                  }
+                },
+                "results": [
+                  0
+                ],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              },
+              {
+                "inst": {
+                  "Return": {
+                    "values": [
+                      0
+                    ]
+                  }
+                },
+                "results": [],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              }
+            ]
+          }
+        ],
+        "proofs": [],
+        "calling_conv": "C",
+        "linkage": "External",
+        "attrs": {
+          "readonly": false,
+          "readnone": false,
+          "inlinehint": false,
+          "cold": false,
+          "params": [],
+          "naked": false,
+          "target_features": []
+        },
+        "summary": null,
+        "producer": null,
+        "value_names": null,
+        "scopes": null,
+        "source_provenance": null,
+        "body_gate": null,
+        "display_path": null,
+        "section": null,
+        "visibility": "Default"
+      }
+    ],
+    "structs": [],
+    "enums": [],
+    "records": [],
+    "closure_types": [],
+    "globals": [],
+    "func_types": [
+      {
+        "params": [],
+        "returns": [
+          "Usize"
+        ],
+        "is_vararg": false
+      }
+    ],
+    "types": [],
+    "proof_obligations": [],
+    "proof_certificates": [],
+    "target_info": {
+      "triple": "aarch64-apple-darwin",
+      "pointer_size": 8,
+      "endianness": "Little",
+      "abi": null,
+      "struct_passing": "NativeC"
+    },
+    "files": [],
+    "obligation_diagnostics": [],
+    "spec_modules": [],
+    "universes": [],
+    "predicates": [],
+    "global_asm": [],
+    "imports": [],
+    "tuple_layouts": [],
+    "completeness": null,
+    "drop_glue": [],
+    "closure_layouts": []
+  }
+}

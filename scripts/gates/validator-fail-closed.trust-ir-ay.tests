@@ -1,0 +1,3 @@
+# Gate 9 (trust-ir-ay half): the bit-blast validator capability and the SMT
+# sited VC refuse what they cannot bind (WS5.4).
+ws5_4_discharge_loop  # WS5.4: Assert-site discharge, kind gate (1a), formula admission (1b), crit.unex01

@@ -1,0 +1,4 @@
+# Gate 12 (lean-exec-differential), trust-ir-build's targets. ci_gates.sh runs
+# this registry with TRUST_IR_REQUIRE_LEAN=1 whenever $HOME/.elan/bin/lake
+# exists, so a missing Lean fails the target instead of skipping it.
+tensor_contraction_equals_loop_nest  # PKG-U13a: lake-built SemR TensorContraction replayed through Clean's reference kernel; matmul contraction = loop nest for every shape, closure in Ax0, forged statement refused

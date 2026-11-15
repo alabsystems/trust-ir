@@ -18,7 +18,11 @@ use common::{
 
 fn write_module(dir: &Path, module: &trust_ir::Module) -> PathBuf {
     let path = dir.join("module.tmbc");
-    fs::write(&path, trust_ir::binary::serialize_module(module)).expect("write module");
+    fs::write(
+        &path,
+        trust_ir::binary::serialize_module(module).expect("serialize_module: test fixture"),
+    )
+    .expect("write module");
     path
 }
 
@@ -124,7 +128,11 @@ fn without_forbid_trusted_flag_behavior_unchanged() {
         ("evidence.tmbc", build_trusted_evidence_module()),
     ] {
         let path = dir.path().join(name);
-        fs::write(&path, trust_ir::binary::serialize_module(&module)).expect("write module");
+        fs::write(
+            &path,
+            trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture"),
+        )
+        .expect("write module");
         let output = trust_ir_cmd()
             .arg("validate")
             .arg(&path)
@@ -137,4 +145,42 @@ fn without_forbid_trusted_flag_behavior_unchanged() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// KIND 4 (2026-09-24): the must-refuse corpus row `trusted_status_row` — a
+/// justified `Trusted` obligation `validate_module` accepts — fails this
+/// census through the real binary, on the CHECKED-IN bytes. The corpus's own
+/// harness (`trust-ir-conformance/tests/refuse_corpus.rs`) measures the
+/// library-level census; this is the CLI entry point the manifest names.
+#[test]
+fn the_must_refuse_corpus_trusted_row_fails_the_census() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../trust-ir-conformance/tests/fixtures/refuse/trusted_status_row.tmbc");
+    assert!(path.is_file(), "{} is the corpus row", path.display());
+    let plain = trust_ir_cmd()
+        .arg("validate")
+        .arg(&path)
+        .output()
+        .expect("run trust-ir");
+    assert!(
+        plain.status.success(),
+        "the row is structurally well-formed\nstderr: {}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    let output = trust_ir_cmd()
+        .arg("validate")
+        .arg("--forbid-trusted")
+        .arg(&path)
+        .output()
+        .expect("run trust-ir");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("trusted census failed"), "{stderr}");
+    assert!(stderr.contains("status Trusted"), "{stderr}");
 }

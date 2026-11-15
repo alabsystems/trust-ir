@@ -1,0 +1,136 @@
+{
+  "header": {
+    "identity": "core::pass::<T>",
+    "params": [
+      "Host"
+    ],
+    "holes": [
+      {
+        "kind": {
+          "Type": {
+            "contract": "Opaque"
+          }
+        },
+        "key": {
+          "namespace": "rust",
+          "bytes": [
+            38,
+            84
+          ]
+        },
+        "args": [
+          {
+            "Host": 0
+          }
+        ]
+      }
+    ]
+  },
+  "module": {
+    "name": "core",
+    "functions": [
+      {
+        "id": 0,
+        "name": "!template_body",
+        "ty": 0,
+        "entry": 0,
+        "blocks": [
+          {
+            "id": 0,
+            "params": [
+              [
+                0,
+                {
+                  "Ext": {
+                    "Hole": 0
+                  }
+                }
+              ]
+            ],
+            "body": [
+              {
+                "inst": {
+                  "Return": {
+                    "values": [
+                      0
+                    ]
+                  }
+                },
+                "results": [],
+                "proofs": [],
+                "span": null,
+                "proof_context": null
+              }
+            ]
+          }
+        ],
+        "proofs": [],
+        "calling_conv": "C",
+        "linkage": "External",
+        "attrs": {
+          "readonly": false,
+          "readnone": false,
+          "inlinehint": false,
+          "cold": false,
+          "params": [],
+          "naked": false,
+          "target_features": []
+        },
+        "summary": null,
+        "producer": null,
+        "value_names": null,
+        "scopes": null,
+        "source_provenance": null,
+        "body_gate": null,
+        "display_path": null,
+        "section": null,
+        "visibility": "Default"
+      }
+    ],
+    "structs": [],
+    "enums": [],
+    "records": [],
+    "closure_types": [],
+    "globals": [],
+    "func_types": [
+      {
+        "params": [
+          {
+            "Ext": {
+              "Hole": 0
+            }
+          }
+        ],
+        "returns": [
+          {
+            "Ext": {
+              "Hole": 0
+            }
+          }
+        ],
+        "is_vararg": false
+      }
+    ],
+    "types": [],
+    "proof_obligations": [],
+    "proof_certificates": [],
+    "target_info": {
+      "triple": "aarch64-apple-darwin",
+      "pointer_size": 8,
+      "endianness": "Little",
+      "abi": null,
+      "struct_passing": "NativeC"
+    },
+    "files": [],
+    "obligation_diagnostics": [],
+    "spec_modules": [],
+    "universes": [],
+    "predicates": [],
+    "global_asm": [],
+    "imports": [],
+    "tuple_layouts": [],
+    "completeness": null,
+    "drop_glue": [],
+    "closure_layouts": []
+  }
+}

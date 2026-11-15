@@ -1,0 +1,31 @@
+# The installed Trust seal's false-refutation shapes, one function each (see
+# scripts/verified_survey.py, SHAPES). A standalone workspace, never a member:
+#   targo trust check --allow-l0-gaps --manifest-path <this dir>/Cargo.toml
+# Measured on trustc 321aaeda7 (2026-09-29, load ~40 on 14 cores): 11 proved,
+# 14 failed, 7 unknown; every failure is FALSE (the source comments say why),
+# and every function but `boxed` (the shape-c control, which proves) refutes.
+# 2026-10-01, with `Nest::width` added (load ~46): 11 proved, 14 failed, 12
+# unknown; `Nest::width`'s `assertion` and `hardened_panic_boundary` rows at
+# `elem` are refuted (demoted to unknown, naming `refuted obligation`); at
+# load ~85 its five rows TIMED OUT instead.
+# The budget is wall-clock, so under heavier load (~57) dec_first_nonzero's
+# rows TIME OUT instead of refuting — run it on a quiet machine. When a Trust
+# fix makes a shape prove here, the ledger rows of that shape are the rows to
+# re-examine (and delete in a commit citing the fix).
+[package]
+name = "false_refutation_repro"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+
+[trust]
+# No budget key: Trust retired `function_budget_ms` (its DECISION_QUEUE
+# BUDGET-1a), and a targo that carries the retirement refuses the key, so
+# this workspace did not resolve at all; as at the workspace root, a
+# `targo trust` run here uses the toolchain's builtin clocks. The measurements
+# above were taken with the retired 3000 ms budget.

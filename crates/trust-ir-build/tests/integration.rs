@@ -29,7 +29,7 @@ fn build_display_add_program() {
     fb.ret(vec![sum]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let output = format!("{}", module);
 
     // Verify header
@@ -80,7 +80,7 @@ fn build_display_multiple_functions() {
         fb.build();
     }
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let output = format!("{}", module);
 
     assert!(output.contains("fn @identity"));
@@ -103,7 +103,7 @@ fn build_validate_display_pipeline() {
     fb.ret(vec![result]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Validate each function
     for func in &module.functions {
@@ -146,6 +146,7 @@ fn build_with_structs() {
         align: Some(8),
 
         repr: Default::default(),
+        origin: None,
     });
 
     let ft = mb.add_func_type(vec![Ty::Struct(sid)], vec![Ty::I32]);
@@ -157,11 +158,13 @@ fn build_with_structs() {
     fb.ret(vec![first]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let output = format!("{}", module);
 
     assert!(output.contains("struct @Pair"));
-    assert!(output.contains("i32, i64"));
+    // WS4.5: struct fields print `name: ty @off` — both names and both offsets
+    // are carried, where the old text was the bare list `i32, i64`.
+    assert!(output.contains("first: i32 @0, second: i64 @8"), "{output}");
     assert!(output.contains("size=16"));
     assert!(output.contains("align=8"));
     assert!(output.contains("extractfield i32 %0, 0"));
@@ -179,6 +182,9 @@ fn build_with_globals() {
         linkage: trust_ir::Linkage::External,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
     mb.add_global(Global {
         name: "PI".to_string(),
@@ -188,9 +194,12 @@ fn build_with_globals() {
         linkage: trust_ir::Linkage::External,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     assert_eq!(module.globals.len(), 2);
     assert_eq!(module.globals[0].name, "counter");
     assert!(module.globals[0].mutable);
@@ -230,7 +239,7 @@ fn build_complex_control_flow() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Validate
     for func in &module.functions {
@@ -264,7 +273,7 @@ fn build_proof_annotated_program() {
     fb.ret(vec![val]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     for func in &module.functions {
         let errors = validate_function(func);
@@ -296,7 +305,7 @@ fn build_atomic_program() {
     fb.ret(vec![old_val]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     for func in &module.functions {
         let errors = validate_function(func);
@@ -335,7 +344,7 @@ fn build_overflow_checked_program() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     for func in &module.functions {
         let errors = validate_function(func);
@@ -384,7 +393,7 @@ fn display_shows_func_type_reference() {
     fb.ret(vec![sum]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let output = format!("{}", module);
     // Function should reference functy.1 (the second func type)
     assert!(output.contains("fn @use_ft1(functy.1)"));
@@ -414,7 +423,7 @@ fn build_infinite_loop() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -460,7 +469,7 @@ fn build_counted_loop() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -517,7 +526,7 @@ fn build_switch_dispatch() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -553,7 +562,7 @@ fn build_program_with_multiple_casts() {
     fb.ret(vec![float_val]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -590,6 +599,7 @@ fn build_struct_with_proof_annotations() {
         align: Some(8),
 
         repr: Default::default(),
+        origin: None,
     });
 
     let ft = mb.add_func_type(vec![Ty::Struct(sid)], vec![Ty::I32]);
@@ -614,7 +624,7 @@ fn build_struct_with_proof_annotations() {
     fb.ret(vec![val]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -643,7 +653,7 @@ fn build_all_constant_types() {
     fb.ret(vec![]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let output = format!("{}", module);
 
     assert!(output.contains("const i64 42"));
@@ -670,7 +680,7 @@ fn build_copy_and_select() {
     fb.ret(vec![selected]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -712,7 +722,7 @@ fn build_fixed_width_integer_vector_ir() {
     fb.ret(vec![selected, mask]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(errors.is_empty(), "errors: {errors:?}");
 
@@ -746,7 +756,7 @@ fn build_repeated_lane_pack_helpers_emit_existing_vector_dialect() {
     fb.ret(vec![v4, v2]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(errors.is_empty(), "errors: {errors:?}");
 
@@ -852,7 +862,7 @@ fn build_vector_dialect_helpers_emit_lane_and_mask_ops() {
     ]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(errors.is_empty(), "errors: {errors:?}");
 
@@ -924,7 +934,7 @@ fn validate_module_rejects_vector_dialect_operand_types_from_call_results() {
     fb.ret(vec![]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|error| matches!(
@@ -979,7 +989,7 @@ fn build_chc_x86_v4_i32_canonical_builder_api() {
     fb.ret(vec![mul, selected, slt, sle, sgt, sge]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(errors.is_empty(), "errors: {errors:?}");
 
@@ -1036,7 +1046,7 @@ fn build_chc_x86_v2_i64_signed_compare_mask_builder_api() {
     fb.ret(vec![selected, eq, ne, slt, sle, sgt, sge]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(errors.is_empty(), "errors: {errors:?}");
 
@@ -1075,7 +1085,7 @@ fn validate_rejects_chc_x86_v4_i32_physical_mask_select_condition() {
     fb.ret(vec![selected]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|error| matches!(
@@ -1106,6 +1116,9 @@ fn validate_rejects_malformed_vector_surfaces() {
         linkage: trust_ir::Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
     mb.add_global(Global {
         name: "BAD_MASK".to_string(),
@@ -1118,6 +1131,9 @@ fn validate_rejects_malformed_vector_surfaces() {
         linkage: trust_ir::Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
     mb.add_struct(StructDef {
         id: trust_ir::value::StructId::new(0),
@@ -1131,9 +1147,10 @@ fn validate_rejects_malformed_vector_surfaces() {
         align: None,
 
         repr: Default::default(),
+        origin: None,
     });
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -1169,9 +1186,9 @@ fn validate_rejects_malformed_vector_surfaces() {
         errors.iter().any(|e| matches!(
             e,
             trust_ir_build::validate::ValidationError::ConstTypeMismatch { location, expected, actual }
-                if location == "global 'BAD_MASK'"
-                    && expected == "<2 x bool>"
-                    && actual == "vector[2]"
+                if location == "global 'BAD_MASK'[1]"
+                    && expected == "bool"
+                    && actual == "int"
         )),
         "expected invalid vector constant, got {errors:?}"
     );
@@ -1205,7 +1222,7 @@ fn build_assume_assert_no_results() {
     fb.ret(vec![]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let block = &module.functions[0].blocks[0];
 
     // assume and assert should have no results
@@ -1229,7 +1246,7 @@ fn build_unreachable_terminator() {
     fb.unreachable();
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1264,6 +1281,7 @@ fn full_round_trip_complex_program() {
         align: Some(8),
 
         repr: Default::default(),
+        origin: None,
     });
 
     // Add global
@@ -1275,6 +1293,9 @@ fn full_round_trip_complex_program() {
         linkage: trust_ir::Linkage::External,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
     // Function: dot product
@@ -1298,7 +1319,7 @@ fn full_round_trip_complex_program() {
     fb.ret(vec![result]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Validate
     for func in &module.functions {
@@ -1314,7 +1335,13 @@ fn full_round_trip_complex_program() {
     assert!(output.contains("module \"full_program\""));
 
     // Struct
-    assert!(output.contains("struct @Vec2 { f64, f64 } size=16 align=8"));
+    // WS4.5: fields carry their names.
+    assert!(
+        output.contains("struct @Vec2 {")
+            && output.contains("f64")
+            && output.contains("size=16 align=8"),
+        "{output}"
+    );
 
     // Function
     assert!(output.contains("fn @dot(functy.0)"));
@@ -1367,7 +1394,7 @@ fn validate_builder_output_always_valid() {
         fb.build();
     }
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(
@@ -1398,7 +1425,7 @@ fn build_atomic_increment() {
     fb.ret(vec![old]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Validate
     for func in &module.functions {
@@ -1430,7 +1457,7 @@ fn build_fcmp_program() {
     fb.ret(vec![result]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty());
@@ -1462,7 +1489,7 @@ fn build_multiple_proof_types() {
     fb.ret(vec![result]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let output = format!("{}", module);
     assert!(output.contains("assert %3"));
     assert!(output.contains("sdiv i32 %0, %1"));
@@ -1485,7 +1512,7 @@ fn build_dealloc_program() {
     fb.ret(vec![]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1513,7 +1540,7 @@ fn build_borrow_program() {
     fb.ret(vec![ptr]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1543,7 +1570,7 @@ fn build_arc_program() {
     fb.ret(vec![unique]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1602,7 +1629,7 @@ fn build_switch_via_builder() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1632,7 +1659,7 @@ fn build_call_indirect_program() {
     fb.ret(vec![result]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1658,7 +1685,7 @@ fn build_atomic_rmw_program() {
     fb.ret(vec![old]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1702,7 +1729,7 @@ fn build_cmpxchg_program() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1730,7 +1757,7 @@ fn build_extract_insert_element_program() {
     fb.ret(vec![old_val]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1759,7 +1786,7 @@ fn build_alloc_store_load_dealloc_lifecycle() {
     fb.ret(vec![loaded]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1799,7 +1826,7 @@ fn build_swift_arc_pattern() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1830,7 +1857,7 @@ fn build_rust_borrow_pattern() {
 
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     for func in &module.functions {
         let errors = validate_function(func);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -1858,7 +1885,7 @@ fn validate_rejects_trunc_to_wider_type() {
     fb.ret(vec![widened]);
     fb.build();
 
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     let errors = validate_module(&module);
     assert!(
         errors.iter().any(|e| matches!(
@@ -1887,7 +1914,7 @@ fn validate_rejects_entry_params_disagreeing_with_signature() {
     fb.ret(vec![]);
     fb.build();
 
-    let mut module = mb.build();
+    let mut module = mb.build().expect("ModuleBuilder::build: test fixture");
     // Tamper: change the entry param type to i64 so it no longer matches.
     module.functions[0].blocks[0].params = vec![(ValueId::new(0), Ty::I64)];
 

@@ -62,16 +62,22 @@ fn assert_one_consumption_failure(module: &Module, what: &str, site: &str) {
 
 /// `fn key_of(x: required_ty)` + `fn row_lookup(k: carrier_ty) { call @key_of(k) }`
 fn call_pair(m: &mut Module, carrier_ty: Ty, required_ty: Ty) {
-    let key_of_ty = m.add_func_type(FuncTy {
-        params: vec![required_ty.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let row_ty = m.add_func_type(FuncTy {
-        params: vec![carrier_ty.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let key_of_ty = m
+        .add_func_type(FuncTy {
+            params: vec![required_ty.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let row_ty = m
+        .add_func_type(FuncTy {
+            params: vec![carrier_ty.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut key_of = Function::new(FuncId::new(0), "key_of", key_of_ty, BlockId::new(0));
     let mut b = Block::new(BlockId::new(0));
@@ -99,22 +105,31 @@ fn call_pair(m: &mut Module, carrier_ty: Ty, required_ty: Ty) {
 /// convention the consumption site demands.
 fn wp18(carrier_space: Option<Space>, required_space: Option<Space>) -> Module {
     let mut m = Module::new("wp18_perturbable");
-    let i64_ty = m.add_type(Ty::I64);
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
     let u = m
         .intern_universe(Universe::IntRange { lo: 1, hi: M })
+        .expect("Module::intern_universe: test fixture")
         .expect("canonical");
 
     let required = match required_space {
-        Some(s) => m.intern_pred(Pred::InUniverse(u, s)).expect("in range"),
+        Some(s) => m
+            .intern_pred(Pred::InUniverse(u, s))
+            .expect("Module::intern_pred: test fixture")
+            .expect("in range"),
         // Perturbation P1: the site asks only for the RAW NUMERIC fact.
         None => m
             .intern_pred(Pred::Interval { lo: 0, hi: M })
+            .expect("Module::intern_pred: test fixture")
             .expect("canonical"),
     };
     let carrier = match carrier_space {
-        Some(s) => m.intern_pred(Pred::InUniverse(u, s)).expect("in range"),
+        Some(s) => m
+            .intern_pred(Pred::InUniverse(u, s))
+            .expect("Module::intern_pred: test fixture")
+            .expect("in range"),
         None => m
             .intern_pred(Pred::Interval { lo: 0, hi: M })
+            .expect("Module::intern_pred: test fixture")
             .expect("canonical"),
     };
 
@@ -180,11 +195,14 @@ fn wp18_defect_then_perturbations() {
 /// `bb0(c,x,y): condbr c -> bb1(x)/bb1(y)`, `bb1(k: join_ty)`.
 fn wp28(edge_a: Ty, edge_b: Ty, join_ty: Ty) -> Module {
     let mut m = Module::new("wp28_perturbable");
-    let ft = m.add_func_type(FuncTy {
-        params: vec![Ty::Bool, edge_a.clone(), edge_b.clone()],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let ft = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Bool, edge_a.clone(), edge_b.clone()],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut f = Function::new(FuncId::new(0), "merge", ft, BlockId::new(0));
     let mut bb0 = Block::new(BlockId::new(0));
     bb0.params.push((ValueId::new(0), Ty::Bool));
@@ -212,9 +230,10 @@ fn wp28_defect_then_perturbations() {
     // ── THE DEFECT: one edge dropped the fact ─────────────────────────────
     {
         let mut m = Module::new("seed");
-        let i64_ty = m.add_type(Ty::I64);
+        let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
         let p = m
             .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         let (u, preds) = (m.universes.clone(), m.predicates.clone());
         let mut d = wp28(Ty::Refine(i64_ty, p), Ty::I64, Ty::Refine(i64_ty, p));
@@ -241,12 +260,14 @@ fn wp28_defect_then_perturbations() {
     // ── DEFECT: two genuinely different universes ─────────────────────────
     {
         let mut m = Module::new("seed2");
-        let i64_ty = m.add_type(Ty::I64);
+        let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
         let a = m
             .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         let b = m
             .intern_in_universe(Universe::IntRange { lo: 100, hi: 200 }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         let table = m.pred_table();
         assert!(!table.implies(b, a));
@@ -274,12 +295,14 @@ fn wp28_defect_then_perturbations() {
     // the entailment, not from "two ids at a join".
     {
         let mut m = Module::new("seed3");
-        let i64_ty = m.add_type(Ty::I64);
+        let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
         let a = m
             .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         let b = m
             .intern_in_universe(Universe::IntRange { lo: 2, hi: 5 }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         assert_ne!(a, b, "P4 must still involve two distinct predicate ids");
         let (u, preds) = (m.universes.clone(), m.predicates.clone());
@@ -300,12 +323,14 @@ fn wp28_defect_then_perturbations() {
     // id, so the join preserves the fact.
     {
         let mut m = Module::new("seed4");
-        let i64_ty = m.add_type(Ty::I64);
+        let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
         let a = m
             .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         let b = m
             .intern_in_universe(Universe::IntRange { lo: 1, hi: M }, Space::Member)
+            .expect("Module::intern_in_universe: test fixture")
             .expect("canonical");
         assert_eq!(a, b, "content interning must collapse two mints to one id");
         assert_eq!(m.universes.len(), 1);
@@ -350,19 +375,23 @@ fn no_raw_numeric_shape_promotes_into_a_membership_convention() {
     let mut m = Module::new("no_promotion");
     let u = m
         .intern_universe(Universe::IntRange { lo: 1, hi: M })
+        .expect("Module::intern_universe: test fixture")
         .expect("canonical");
     let required = m
         .intern_pred(Pred::InUniverse(u, Space::Member))
+        .expect("Module::intern_pred: test fixture")
         .expect("in range");
     // A finite set entirely INSIDE the universe.
     let subset_set = m
         .intern_pred(Pred::FiniteSet(
             [2i128, 3, 4].into_iter().map(Constant::Int).collect(),
         ))
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     // An interval NUMERICALLY IDENTICAL to the universe.
     let exact_interval = m
         .intern_pred(Pred::Interval { lo: 1, hi: M })
+        .expect("Module::intern_pred: test fixture")
         .expect("canonical");
     let table = m.pred_table();
     assert!(
@@ -383,7 +412,7 @@ fn no_raw_numeric_shape_promotes_into_a_membership_convention() {
     );
 
     // The consequence at a real consumption site.
-    let i64_ty = m.add_type(Ty::I64);
+    let i64_ty = m.add_type(Ty::I64).expect("Module::add_type: test fixture");
     call_pair(
         &mut m,
         Ty::Refine(i64_ty, subset_set),
@@ -398,18 +427,23 @@ fn no_raw_numeric_shape_promotes_into_a_membership_convention() {
     // The sanctioned way to say the same thing IS accepted — so the rule is a
     // spelling requirement, not an expressiveness dead end.
     let mut m2 = Module::new("no_promotion_sanctioned");
-    let i64_ty = m2.add_type(Ty::I64);
+    let i64_ty = m2
+        .add_type(Ty::I64)
+        .expect("Module::add_type: test fixture");
     let u = m2
         .intern_universe(Universe::IntRange { lo: 1, hi: M })
+        .expect("Module::intern_universe: test fixture")
         .expect("canonical");
     let required = m2
         .intern_pred(Pred::InUniverse(u, Space::Member))
+        .expect("Module::intern_pred: test fixture")
         .expect("in range");
     let carrier = m2
         .intern_in_universe(
             Universe::Members([2i128, 3, 4].into_iter().map(Constant::Int).collect()),
             Space::Member,
         )
+        .expect("Module::intern_in_universe: test fixture")
         .expect("canonical");
     assert_ne!(carrier, required);
     call_pair(

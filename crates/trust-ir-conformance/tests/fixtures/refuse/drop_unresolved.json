@@ -1,0 +1,124 @@
+{
+  "name": "refuse_drop_unresolved",
+  "functions": [
+    {
+      "id": 0,
+      "name": "f",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [
+            [
+              0,
+              "Ptr"
+            ]
+          ],
+          "body": [
+            {
+              "inst": {
+                "Drop": {
+                  "ty": {
+                    "Struct": 0
+                  },
+                  "ptr": 0
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Return": {
+                  "values": []
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [
+    {
+      "id": 0,
+      "name": "Box",
+      "fields": [
+        {
+          "name": "data",
+          "ty": "Ptr",
+          "offset": 0
+        }
+      ],
+      "size": 8,
+      "align": 8,
+      "repr": "Rust"
+    }
+  ],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [
+        "Ptr"
+      ],
+      "returns": [],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": {
+    "triple": "aarch64-apple-darwin",
+    "pointer_size": 8,
+    "endianness": "Little",
+    "abi": null,
+    "struct_passing": "NativeC"
+  },
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

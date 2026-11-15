@@ -10,8 +10,13 @@
 -- Reference: Wright & Felleisen, "A Syntactic Approach to Type Soundness", 1994
 
 import TrustIr.Semantics.Eval
+import TrustIr.Proofs.ConstantTypingEquations
 
 namespace TrustIr
+
+set_option smartUnfolding false
+
+attribute [local simp] exceptSem_pure exceptSem_ok_bind
 
 /-!
 # Meta-Theorems (Phase 5)
@@ -115,74 +120,229 @@ theorem unreachable_always_succeeds (s : MachineState) :
     exists result, Sem.run (stepInst .Unreachable) s = .ok result := by
   exact Exists.intro (.terminator .Stuck, s) rfl
 
-/-- A constant instruction always succeeds: it produces a fresh value
-    regardless of the current state. Constants have no preconditions
-    (no value lookups, no memory access, no permission checks). -/
-theorem const_always_succeeds (ty : Ty) (val : Constant) (s : MachineState) :
+mutual
+
+/-- State-independent typing evidence for the scalar and inline constants
+    the table-free converter supports. It states constructor/type matching,
+    exact vector census and the direct-field Uninit role, rather than assuming
+    that conversion or execution succeeds. Named types need module tables. -/
+inductive ConstInlineAdmitted : Bool → Ty → Constant → Prop where
+  | integer {allow ty value} (h : ty.isInteger = true) :
+      ConstInlineAdmitted allow ty (.int value)
+  | thinNull {allow} : ConstInlineAdmitted allow .Ptr (.int 0)
+  | fatNull {allow kind} :
+      ConstInlineAdmitted allow (.FatPtr kind) (.aggregate [.int 0, .int 0])
+  | unsigned128 {allow value} : ConstInlineAdmitted allow .U128 (.u128 value)
+  | boolean {allow value} : ConstInlineAdmitted allow .Bool (.bool value)
+  | float16 {allow value} : ConstInlineAdmitted allow .F16 (.float value)
+  | float32 {allow value} : ConstInlineAdmitted allow .F32 (.float value)
+  | float64 {allow value} : ConstInlineAdmitted allow .F64 (.float value)
+  | unit {allow} : ConstInlineAdmitted allow .Unit .phantomData
+  | function {allow signature target} :
+      ConstInlineAdmitted allow (.Func signature) (.fnDef target)
+  | tuple {allow tys cs} (fields : ConstFieldsAdmitted allow tys cs) :
+      ConstInlineAdmitted allow (.Tuple tys) (.aggregate cs)
+  | vector {allow count elemTy cs} (nonzero : count ≠ 0)
+      (census : cs.length = count) (scalar : (vectorScalarByteSize elemTy).isSome = true)
+      (lanes : ConstLanesAdmitted elemTy cs) :
+      ConstInlineAdmitted allow (.Vector count elemTy) (.vector cs)
+
+inductive ConstFieldsAdmitted : Bool → List Ty → List Constant → Prop where
+  | nil {allow} : ConstFieldsAdmitted allow [] []
+  | uninit {ty tys cs} (rest : ConstFieldsAdmitted true tys cs) :
+      ConstFieldsAdmitted true (ty :: tys) (.uninit :: cs)
+  | cons {allow ty tys c cs} (head : ConstInlineAdmitted false ty c)
+      (rest : ConstFieldsAdmitted allow tys cs) :
+      ConstFieldsAdmitted allow (ty :: tys) (c :: cs)
+
+inductive ConstLanesAdmitted : Ty → List Constant → Prop where
+  | nil {elemTy} : ConstLanesAdmitted elemTy []
+  | cons {elemTy c cs} (head : ConstInlineAdmitted false elemTy c)
+      (rest : ConstLanesAdmitted elemTy cs) : ConstLanesAdmitted elemTy (c :: cs)
+
+end
+
+theorem ConstFieldsAdmitted.census {allow tys cs} (h : ConstFieldsAdmitted allow tys cs) :
+    tys.length = cs.length := by
+  cases h with
+  | nil => rfl
+  | uninit rest =>
+    simpa only [List.length_cons] using congrArg Nat.succ (ConstFieldsAdmitted.census rest)
+  | cons _ rest =>
+    simpa only [List.length_cons] using congrArg Nat.succ (ConstFieldsAdmitted.census rest)
+
+theorem ConstInlineAdmitted.not_uninit {allow ty c} (h : ConstInlineAdmitted allow ty c) :
+    c ≠ .uninit := by
+  cases h <;> intro eq <;> cases eq
+
+mutual
+
+theorem ConstInlineAdmitted.pointerForms {allow ty c} (h : ConstInlineAdmitted allow ty c) :
+    constPointerFormsSupported ty c = true := by
+  cases h with
+  | integer h => cases ty <;> simp_all [Ty.isInteger, constPointerFormsSupported]
+  | tuple fields =>
+    unfold constPointerFormsSupported
+    simp [fields.census, ConstFieldsAdmitted.pointerForms fields]
+  | vector _ _ _ lanes =>
+    unfold constPointerFormsSupported
+    simp [ConstLanesAdmitted.pointerForms lanes]
+  | _ => simp [constPointerFormsSupported]
+termination_by sizeOf c
+decreasing_by all_goals (simp_wf <;> omega)
+
+theorem ConstFieldsAdmitted.pointerForms {allow tys cs} (h : ConstFieldsAdmitted allow tys cs) :
+    constFieldPointerFormsSupported tys cs = true := by
+  cases h with
+  | nil => simp [constFieldPointerFormsSupported]
+  | uninit rest =>
+    unfold constFieldPointerFormsSupported
+    exact ConstFieldsAdmitted.pointerForms rest
+  | cons head rest =>
+    have hh := ConstInlineAdmitted.pointerForms head
+    have ht := ConstFieldsAdmitted.pointerForms rest
+    rename_i c _
+    cases c <;> unfold constFieldPointerFormsSupported <;> simp_all
+termination_by sizeOf cs
+decreasing_by all_goals (simp_wf <;> omega)
+
+theorem ConstLanesAdmitted.pointerForms {elemTy cs} (h : ConstLanesAdmitted elemTy cs) :
+    constLanePointerFormsSupported elemTy cs = true := by
+  cases h with
+  | nil => simp [constLanePointerFormsSupported]
+  | cons head rest =>
+    unfold constLanePointerFormsSupported
+    simp [ConstInlineAdmitted.pointerForms head, ConstLanesAdmitted.pointerForms rest]
+termination_by sizeOf cs
+decreasing_by all_goals (simp_wf <;> omega)
+
+end
+
+mutual
+
+theorem ConstInlineAdmitted.checked {allow ty c} (h : ConstInlineAdmitted allow ty c)
+    (model : ByteModel) : constValueAtChecked ty c model allow = .ok (constValueAt ty c model) := by
+  have hp := h.pointerForms
+  cases h with
+  | integer h =>
+    rw [constValueAtChecked_eq]
+    cases ty <;> simp_all [Ty.isInteger]
+  | tuple fields =>
+    have hv := ConstFieldsAdmitted.checked fields model
+    rw [constValueAtChecked_eq]
+    simp [hp, fields.census, hv, constValueAt]
+  | @vector allow count elemTy cs hn hc hs lanes =>
+    have hv := ConstLanesAdmitted.checked lanes model
+    have hSome : (vectorScalarByteSize elemTy).isNone = false := by
+      cases hvv : vectorScalarByteSize elemTy <;> simp_all
+    rw [constValueAtChecked_eq]
+    simp [hp, hn, hc, hSome, hv, constValueAt]
+  | _ => rw [constValueAtChecked_eq]; simp [hp, constValueAt, constFloatAt, Value.ofConstant]
+termination_by sizeOf c
+decreasing_by all_goals (simp_wf <;> omega)
+
+theorem ConstFieldsAdmitted.checked {allow tys cs} (h : ConstFieldsAdmitted allow tys cs)
+    (model : ByteModel) : constFieldsAtChecked tys cs model allow = .ok (constFieldsAt tys cs model) := by
+  cases h with
+  | nil => rw [constFieldsAtChecked_eq]; simp [constFieldsAt, Value.ofConstantList]
+  | uninit rest =>
+    have hv := ConstFieldsAdmitted.checked rest model
+    rw [constFieldsAtChecked_eq]
+    simp [hv, constFieldsAt, constValueAt, Value.ofConstant]
+  | cons head rest =>
+    have hf := ConstInlineAdmitted.checked head model
+    have hv := ConstFieldsAdmitted.checked rest model
+    have hne := head.not_uninit
+    rw [constFieldsAtChecked_eq]
+    rename_i c _
+    cases c <;> simp_all [constFieldsAt]
+termination_by sizeOf cs
+decreasing_by all_goals (simp_wf <;> omega)
+
+theorem ConstLanesAdmitted.checked {elemTy cs} (h : ConstLanesAdmitted elemTy cs)
+    (model : ByteModel) : constLanesAtChecked elemTy cs model = .ok (constLanesAt elemTy cs model) := by
+  cases h with
+  | nil => rw [constLanesAtChecked_eq]; simp [constLanesAt]
+  | cons head rest =>
+    have hf := ConstInlineAdmitted.checked head model
+    have hv := ConstLanesAdmitted.checked rest model
+    rw [constLanesAtChecked_eq]
+    simp [hf, hv, constLanesAt]
+termination_by sizeOf cs
+decreasing_by all_goals (simp_wf <;> omega)
+
+end
+
+/-- Closed scalar equations keep downstream instruction proofs from
+    regenerating the general checked matcher's equations. -/
+theorem constValueAtChecked_i64 (value : Int) (model : ByteModel) (allow : Bool) :
+    constValueAtChecked .I64 (.int value) model allow = .ok (Value.intAt 64 value) := by
+  have h := ConstInlineAdmitted.checked
+    (ConstInlineAdmitted.integer (allow := allow) (ty := .I64) (value := value) rfl) model
+  cases model <;> simpa only [constValueAt, Ty.bitWidthFor, Ty.bitWidthAtModel, Ty.bitWidth] using h
+
+theorem constValueAtChecked_i32 (value : Int) (model : ByteModel) (allow : Bool) :
+    constValueAtChecked .I32 (.int value) model allow = .ok (Value.intAt 32 value) := by
+  have h := ConstInlineAdmitted.checked
+    (ConstInlineAdmitted.integer (allow := allow) (ty := .I32) (value := value) rfl) model
+  cases model <;> simpa only [constValueAt, Ty.bitWidthFor, Ty.bitWidthAtModel, Ty.bitWidth] using h
+
+/-- A statically admitted, symbol-free scalar/inline constant binds a fresh
+    value in every state. The premise is syntax/type/role evidence above;
+    there is no memory, value-lookup or permission precondition. -/
+theorem const_always_succeeds (ty : Ty) (val : Constant) (s : MachineState)
+    (hNoSym : val.hasSymbolAddr = false)
+    (hTyped : ConstInlineAdmitted true ty val) :
     exists result, Sem.run (stepInst (.Const ty val)) s = .ok result := by
-  simp [stepInst, Sem.run, Sem.bindFresh, StateT.run, StateT.get, StateT.set,
-        Sem.getState, Sem.setState, MachineState.bindValue, bind, pure,
-        Except.pure, Except.bind]
-  cases val with
-  | int i =>
-    cases ty.bitWidth with
-    | none => exact Exists.intro _ rfl
-    | some w => exact Exists.intro _ rfl
-  | float f => exact Exists.intro _ rfl
-  | bool b => exact Exists.intro _ rfl
-  | aggregate elts => exact Exists.intro _ rfl
-  | vector elts =>
-    cases ty with
-    | Vector lanes elemTy =>
-      cases elemTy.bitWidth with
-      | none => exact Exists.intro _ rfl
-      | some w => exact Exists.intro _ rfl
-    | I8 => exact Exists.intro _ rfl
-    | I16 => exact Exists.intro _ rfl
-    | I32 => exact Exists.intro _ rfl
-    | I64 => exact Exists.intro _ rfl
-    | I128 => exact Exists.intro _ rfl
-    | U8 => exact Exists.intro _ rfl
-    | U16 => exact Exists.intro _ rfl
-    | U32 => exact Exists.intro _ rfl
-    | U64 => exact Exists.intro _ rfl
-    | U128 => exact Exists.intro _ rfl
-    -- v25 B1 scalars: same one-step Const success as every other type.
-    | Isize => exact Exists.intro _ rfl
-    | Usize => exact Exists.intro _ rfl
-    | Char => exact Exists.intro _ rfl
-    | Error => exact Exists.intro _ rfl
-    | F16 => exact Exists.intro _ rfl
-    | F32 => exact Exists.intro _ rfl
-    | F64 => exact Exists.intro _ rfl
-    | Bool => exact Exists.intro _ rfl
-    | Ptr => exact Exists.intro _ rfl
-    | FatPtr _ => exact Exists.intro _ rfl
-    | Struct id => exact Exists.intro _ rfl
-    | Array id n => exact Exists.intro _ rfl
-    | Func id => exact Exists.intro _ rfl
-    | Unit => exact Exists.intro _ rfl
-    | Never => exact Exists.intro _ rfl
-    | Tuple tys => exact Exists.intro _ rfl
-    | Enum id => exact Exists.intro _ rfl
-    | Ref t => exact Exists.intro _ rfl
-    | RefMut t => exact Exists.intro _ rfl
-    | PtrConst t => exact Exists.intro _ rfl
-    | PtrMut t => exact Exists.intro _ rfl
-    | Rc t => exact Exists.intro _ rfl
-    | Set id repr => exact Exists.intro _ rfl
-    | Sequence id => exact Exists.intro _ rfl
-    | Record id => exact Exists.intro _ rfl
-    | Closure id => exact Exists.intro _ rfl
-    -- Refinements are representation-preserving. Constants execute at the
-    -- erased value boundary; the validator discharges the predicate carried
-    -- by `predId`, so `stepInst` does not inspect either table identifier.
-    | Refine baseId predId => exact Exists.intro _ rfl
-  -- ty supremacy aggregate constants (mirror of Ty.Set/Sequence/Record/Closure).
-  | sequence elts => exact Exists.intro _ rfl
-  | set elts => exact Exists.intro _ rfl
-  | record flds => exact Exists.intro _ rfl
-  | closure fn caps => exact Exists.intro _ rfl
+  have hChecked := hTyped.checked .le64
+  simp only [stepInst, hNoSym, Bool.false_eq_true, ↓reduceIte, hChecked, pure_bind]
+  exact Exists.intro _ rfl
+
+/- The outer forms whose field/element widths require a declaration table.
+   The available fixed census is checked even without that table. -/
+inductive ConstDefinitionForm : Ty → Constant → Prop where
+  | bytes {id count data utf8} (h : data.length = count) :
+      ConstDefinitionForm (.Array id count) (.bytes data utf8)
+  | array {id count cs} (h : cs.length = count) :
+      ConstDefinitionForm (.Array id count) (.array cs)
+  | arrayLegacy {id count cs} (h : cs.length = count) :
+      ConstDefinitionForm (.Array id count) (.aggregate cs)
+  | splat {id count c} : ConstDefinitionForm (.Array id count) (.splat c count)
+  | structure {id cs} : ConstDefinitionForm (.Struct id) (.aggregate cs)
+  | enumeration {id disc cs} : ConstDefinitionForm (.Enum id) (.aggregate (.int disc :: cs))
+  | sequence {id cs} : ConstDefinitionForm (.Sequence id) (.sequence cs)
+  | set {id repr cs} : ConstDefinitionForm (.Set id repr) (.set cs)
+  | record {id fs} : ConstDefinitionForm (.Record id) (.record fs)
+  | recordLegacy {id cs} : ConstDefinitionForm (.Record id) (.aggregate cs)
+  | closure {id target cs} : ConstDefinitionForm (.Closure id) (.closure target cs)
+
+/-- A well-shaped named form with no available table refuses an ambiguous
+    float width explicitly. Malformed families/censuses no longer satisfy this
+    claim merely because an unrelated float occurs in their payload. -/
+theorem const_width_ambiguous_refused (ty : Ty) (val : Constant) (s : MachineState)
+    (hNoSym : val.hasSymbolAddr = false)
+    (hw : constWidthAmbiguous ty val = true)
+    (hPointer : constPointerFormsSupported ty val = true)
+    (hForm : ConstDefinitionForm ty val) :
+    Sem.run (stepInst (.Const ty val)) s =
+      .error (.unsupported .float constWidthAmbiguousMsg) := by
+  cases hForm <;>
+    simp only [stepInst, hNoSym, Bool.false_eq_true, ↓reduceIte] <;>
+    rw [constValueAtChecked_eq] <;>
+    simp_all [constMissingDefinition] <;> rfl
+
+/-- The fail-closed half (WS2.18): a constant holding a link-time
+    `symbolAddr` anywhere is refused with `unsupported.link_time_address`,
+    never bound — mirroring the reference interpreter, whose
+    `constant_to_value` has no arm for it. -/
+theorem const_symbolAddr_refused (ty : Ty) (val : Constant) (s : MachineState)
+    (hSym : val.hasSymbolAddr = true) :
+    Sem.run (stepInst (.Const ty val)) s
+      = .error (.unsupported .linkTimeAddress
+          "Const: a link-time symbol address has no compile-time value") := by
+  simp only [stepInst]
+  rw [if_pos hSym]
+  rfl
 
 /-- NullPtr instruction always succeeds. -/
 theorem nullptr_always_succeeds (s : MachineState) :
@@ -190,15 +350,57 @@ theorem nullptr_always_succeeds (s : MachineState) :
   simp [stepInst, Sem.run, Sem.bindFresh, StateT.run, StateT.get, StateT.set,
         Sem.getState, Sem.setState, MachineState.bindValue, bind, pure,
         Except.pure, Except.bind]
-  exact Exists.intro _ rfl
+  trustIrCompilerProof { exact Exists.intro _ rfl } { exact ⟨_, _, rfl⟩ }
 
-/-- Undef instruction always succeeds. -/
+/-- Undef instruction always succeeds: it binds a POISON value, it is not
+    itself undefined behaviour (ub-numerics-policy §4, roadmap WS2.10). -/
 theorem undef_always_succeeds (ty : Ty) (s : MachineState) :
     exists result, Sem.run (stepInst (.Undef ty)) s = .ok result := by
   simp [stepInst, Sem.run, Sem.bindFresh, StateT.run, StateT.get, StateT.set,
         Sem.getState, Sem.setState, MachineState.bindValue, bind, pure,
         Except.pure, Except.bind]
-  exact Exists.intro _ rfl
+  trustIrCompilerProof { exact Exists.intro _ rfl } { exact ⟨_, _, rfl⟩ }
+
+/-- INSPECTING an `Undef` is undefined behaviour (roadmap WS2.10): the poison
+    guard every content-consuming instruction runs (`Sem.rejectPartial` —
+    arithmetic, comparison, cast, branch/switch/select condition, field
+    projection) throws `SemError.ub` on an `.undef` value of ANY type, exactly
+    as on a partially-initialized `.partial` image. The companion of
+    `undef_always_succeeds`: executing `undef` is fine, using it is not. -/
+theorem undef_inspect_is_ub (ty : Ty) (op : String) (s : MachineState) :
+    ∃ msg, Sem.run (Sem.rejectPartial (.undef ty) op) s = .error (.ub msg) :=
+  ⟨_, rfl⟩
+
+/-- Instruction-level instance of `undef_inspect_is_ub`: a `BinOp` whose left
+    operand is an `Undef` is undefined behaviour, whatever the operator, the
+    type and the right operand. -/
+theorem undef_binop_operand_is_ub (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
+    (s : MachineState) (t : Ty) (v : Value)
+    (hl : s.lookupValue lhs = some (.undef t))
+    (hr : s.lookupValue rhs = some v) :
+    ∃ msg, Sem.run (stepInst (.BinOp op ty lhs rhs)) s = .error (.ub msg) :=
+  ⟨_, by
+    cases choice : op.isMinMax <;>
+      simp [stepInst, semBinOp, semBinOpDeterministic, semFloatMinMax,
+          semFloatMinMaxValues, choice, Sem.lookupValue, Sem.rejectPartial, Sem.throwUB, hl, hr,
+          Sem.getState, Sem.run, StateT.run, StateT.get, bind, StateT.bind,
+          Except.bind, throw, throwThe, MonadExceptOf.throw, StateT.lift,
+          pure, Except.pure, StateT.pure] <;>
+      rfl⟩
+
+/-- Branching on an `Undef` condition is undefined behaviour (policy §4:
+    "branching on poison is UB"). -/
+theorem undef_condbr_is_ub (cond : ValueId) (t : Ty)
+    (thenTarget elseTarget : BlockId) (thenArgs elseArgs : List ValueId)
+    (s : MachineState) (hc : s.lookupValue cond = some (.undef t)) :
+    ∃ msg, Sem.run (semCondBr cond thenTarget thenArgs elseTarget elseArgs) s
+      = .error (.ub msg) :=
+  ⟨_, by
+    simp [semCondBr, Sem.lookupValue, Sem.rejectPartial, Sem.throwUB, hc,
+          Sem.getState, Sem.run, StateT.run, StateT.get, bind, StateT.bind,
+          Except.bind, throw, throwThe, MonadExceptOf.throw, StateT.lift,
+          pure, Except.pure, StateT.pure]
+    rfl⟩
 
 -- =================================================================
 -- Well-typedness predicate (for progress theorem)
@@ -208,17 +410,19 @@ theorem undef_always_succeeds (ty : Ty) (s : MachineState) :
     This connects the dynamic Value tag to the static Ty annotation. -/
 def value_has_type : Value -> Ty -> Prop
   | .int w _, ty      => ty.isInteger = true /\ ty.bitWidth = some w
-  | .float _, .F32    => True
+  -- An F32 value is a binary32 value (WS2.23: the executable model rounds
+  -- every F32 result to binary32 and refuses an F32 operand that is not one).
+  | .float f, .F32    => isExactIn .binary32 f = true
   | .float _, .F64    => True
   | .bool _, .Bool    => True
-  | .ptr _, .Ptr      => True
+  | .ptr _ _, .Ptr      => True
   | .nullPtr, .Ptr    => True
   -- Pointer-like reference types: runtime representation is .ptr
-  | .ptr _, .Ref _    => True
-  | .ptr _, .RefMut _ => True
-  | .ptr _, .PtrConst _ => True
-  | .ptr _, .PtrMut _ => True
-  | .ptr _, .Rc _     => True
+  | .ptr _ _, .Ref _    => True
+  | .ptr _ _, .RefMut _ => True
+  | .ptr _ _, .PtrConst _ => True
+  | .ptr _ _, .PtrMut _ => True
+  | .ptr _ _, .Rc _     => True
   | .nullPtr, .Ref _  => True
   | .nullPtr, .RefMut _ => True
   | .nullPtr, .PtrConst _ => True
@@ -226,8 +430,9 @@ def value_has_type : Value -> Ty -> Prop
   | .nullPtr, .Rc _   => True
   -- Unit type: represented as empty aggregate
   | .aggregate [], .Unit => True
-  -- Bounded executable vector subset: v4i32, v2i64, v4 bool, and v2 bool.
-  -- Other vector shapes are intentionally unsupported by this dynamic check.
+  -- Bounded executable vector subset (`Ty.executableVectorPayloadMatches`:
+  -- the integer lanes of `Ty.executableIntLane?` and the bool masks). Other
+  -- vector shapes are intentionally unsupported by this dynamic check.
   | .vector lanes, .Vector n elemTy =>
       Ty.executableVectorPayloadMatches (.Vector n elemTy) lanes = true
   | _, _              => False
@@ -357,8 +562,11 @@ theorem binop_progress (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
   -- We unfold through the monadic layers to a point where hLhs/hRhs can be applied.
   have hLhs' : s.locals.get lhs = some (.int w v1) := hLhs
   have hRhs' : s.locals.get rhs = some (.int w v2) := hRhs
+  have noChoice : op.isMinMax = false := by
+    cases op <;> simp_all [BinOp.isInteger, BinOp.isMinMax]
   simp only [stepInst, Sem.run, StateT.run, bind, StateT.bind,
-        semBinOp, Sem.lookupValue, Sem.getState, StateT.get,
+        semBinOp, noChoice, Bool.false_eq_true, ↓reduceIte, semBinOpDeterministic,
+        semBinOpValues, Sem.rejectPartial, Sem.lookupValue, Sem.getState, StateT.get,
         Sem.bindFresh, Sem.setState, StateT.set, StateT.pure, pure,
         MachineState.lookupValue, MachineState.bindValue,
         Except.pure, Except.bind, hLhs', hRhs']
@@ -372,14 +580,14 @@ theorem binop_progress (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
   -- witness is immediate. The Bool connectives join here rather than needing
   -- cases of their own precisely BECAUSE they are total -- the partial ops
   -- (UDiv/SDiv/shifts) are the ones that need their guards discharged below.
-  | Add | Sub | Mul | And | Or | Xor | BAnd | BOr | BXor =>
-    simp [semIntBinOp]; exact Exists.intro _ rfl
+  | Add | Sub | Mul | And | Or | Xor | BAnd | BOr | BXor | RotL | RotR =>
+    simp [semIntBinOp]; trustIrCompilerProof { exact Exists.intro _ rfl } { exact ⟨_, _, rfl⟩ }
   | Shl | LShr | AShr =>
     -- The shift amount is in range (hShift), so the UB guard is not taken.
     simp only [semIntBinOp]
-    rw [if_neg (by have := hShift (by decide); omega)]
+    rw [if_neg (show ¬ v2 ≥ (w : Int) from Int.not_le.mpr (hShift (by simp)))]
     exact Exists.intro _ rfl
-  | FAdd | FSub | FMul | FDiv | FRem =>
+  | FAdd | FSub | FMul | FDiv | FRem | FMin | FMax | FCopySign =>
     -- These are float ops, contradicting hOpInt : op.isInteger = true
     simp [BinOp.isInteger] at hOpInt
   | UDiv =>
@@ -394,7 +602,7 @@ theorem binop_progress (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
     -- monadic match takes the .ok branch.
     have hsd : ∃ r0, semIntBinOp .SDiv w v1 v2 = .ok r0 := by
       have hb' : (v2 == 0) = false := by simpa using h0
-      simp only [semIntBinOp, hb', if_false]
+      simp only [semIntBinOp, hb', Bool.false_eq_true, if_false]
       split
       · rename_i hbad
         rw [Bool.and_eq_true, beq_iff_eq, beq_iff_eq] at hbad
@@ -413,7 +621,7 @@ theorem binop_progress (op : BinOp) (ty : Ty) (lhs rhs : ValueId)
     have hov := hNoOvf (by decide)
     have hsr : ∃ r0, semIntBinOp .SRem w v1 v2 = .ok r0 := by
       have hb' : (v2 == 0) = false := by simpa using h0
-      simp only [semIntBinOp, hb', if_false]
+      simp only [semIntBinOp, hb', Bool.false_eq_true, if_false]
       split
       · rename_i hbad
         rw [Bool.and_eq_true, beq_iff_eq, beq_iff_eq] at hbad
@@ -481,7 +689,7 @@ theorem fuel_monotone (fuel1 fuel2 : Nat) (cfg : CFG) (pc : BlockId)
     -- stepN 0 = throw SemError.outOfFuel, and for StateT/Except,
     -- Sem.run (throw e) s = .error e. This holds definitionally.
     have : Sem.run (stepN 0 cfg pc args) s = .error SemError.outOfFuel := rfl
-    rw [this] at hterm; exact Except.noConfusion hterm
+    rw [this] at hterm; cases hterm
   | succ k ih =>
     -- fuel1 = k+1, fuel2 >= k+1, so fuel2 = j+1 for some j >= k
     obtain ⟨j, rfl⟩ : exists j, fuel2 = j + 1 := by
@@ -505,7 +713,7 @@ theorem fuel_monotone (fuel1 fuel2 : Nat) (cfg : CFG) (pc : BlockId)
       simp only [hcfg] at hterm ⊢
       -- hterm has throwThe ... = .ok result. This reduces to .error = .ok.
       change Except.error _ = Except.ok result at hterm
-      exact Except.noConfusion hterm
+      cases hterm
     | some block =>
       -- cfg pc = some block: both sides do stepBlock block args, then match.
       simp only [hcfg, bind, StateT.bind, Except.bind] at hterm ⊢
@@ -513,7 +721,7 @@ theorem fuel_monotone (fuel1 fuel2 : Nat) (cfg : CFG) (pc : BlockId)
       cases hstep : stepBlock block args s with
       | error e =>
         -- stepBlock failed → .error → contradicts hterm
-        simp only [hstep] at hterm
+        simp only [hstep] at hterm <;> cases hterm
       | ok p =>
         simp only [hstep] at hterm ⊢
         obtain ⟨stepResult, s'⟩ := p
@@ -525,7 +733,7 @@ theorem fuel_monotone (fuel1 fuel2 : Nat) (cfg : CFG) (pc : BlockId)
         | Stuck =>
           -- .Stuck: throwUB → .error → contradicts hterm
           change Except.error _ = Except.ok result at hterm
-          exact Except.noConfusion hterm
+          cases hterm
         | Continue nextPc nextArgs =>
           -- .Continue: recursive call stepN k vs stepN j on state s'.
           -- Apply IH with k <= j.
@@ -533,20 +741,25 @@ theorem fuel_monotone (fuel1 fuel2 : Nat) (cfg : CFG) (pc : BlockId)
         | CallReq fid callArgs =>
           -- .CallReq: throwTypeError → .error → contradicts hterm
           change Except.error _ = Except.ok result at hterm
-          exact Except.noConfusion hterm
+          cases hterm
         | CallIndirectReq addr fid callArgs =>
           -- .CallIndirectReq: throwTypeError → .error → contradicts hterm
           change Except.error _ = Except.ok result at hterm
-          exact Except.noConfusion hterm
+          cases hterm
         | InvokeReq callee callArgs normalDest normalArgs unwindDest =>
           -- .InvokeReq: fail-closed in stepN (throwUnsupported) → .error →
           -- contradicts hterm
           change Except.error _ = Except.ok result at hterm
-          exact Except.noConfusion hterm
+          cases hterm
+        | InvokeIndirectReq addr sig callArgs normalDest normalArgs unwindDest =>
+          -- .InvokeIndirectReq: fail-closed in stepN (throwUnsupported) →
+          -- .error → contradicts hterm
+          change Except.error _ = Except.ok result at hterm
+          cases hterm
         | SeqMapReq fid elems =>
           -- .SeqMapReq: throwUnsupported → .error → contradicts hterm
           change Except.error _ = Except.ok result at hterm
-          exact Except.noConfusion hterm
+          cases hterm
 
 /-- Corollary: fuel doubling preserves results. -/
 theorem fuel_double_preserving (fuel : Nat) (cfg : CFG) (pc : BlockId)
@@ -569,6 +782,7 @@ def StepResult.isTerminal : StepResult -> Bool
   | .CallReq _ _           => true  -- call transfers control to callee
   | .CallIndirectReq _ _ _ => true  -- indirect call transfers control
   | .InvokeReq _ _ _ _ _   => true  -- invoke transfers control to callee
+  | .InvokeIndirectReq _ _ _ _ _ _ => true  -- indirect invoke transfers control
   | .SeqMapReq _ _         => true  -- element application transfers control
 
 /-- After a terminal StepResult, stepN returns immediately
@@ -579,6 +793,7 @@ theorem terminal_step_classification (sr : StepResult)
     \/ (exists fid args, sr = .CallReq fid args)
     \/ (exists addr fid args, sr = .CallIndirectReq addr fid args)
     \/ (exists fid args nd nargs ud, sr = .InvokeReq fid args nd nargs ud)
+    \/ (exists addr sig args nd nargs ud, sr = .InvokeIndirectReq addr sig args nd nargs ud)
     \/ (exists fid elems, sr = .SeqMapReq fid elems) := by
   cases sr with
   | Ret vs => exact Or.inl (Exists.intro vs rfl)
@@ -592,9 +807,13 @@ theorem terminal_step_classification (sr : StepResult)
     exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl
       (Exists.intro fid (Exists.intro args (Exists.intro nd
         (Exists.intro nargs (Exists.intro ud rfl)))))))))
+  | InvokeIndirectReq addr sig args nd nargs ud =>
+    exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inl
+      (Exists.intro addr (Exists.intro sig (Exists.intro args (Exists.intro nd
+        (Exists.intro nargs (Exists.intro ud rfl)))))))))))
   | SeqMapReq fid elems =>
-    exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
-      (Exists.intro fid (Exists.intro elems rfl))))))
+    exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
+      (Exists.intro fid (Exists.intro elems rfl)))))))
 
 -- =================================================================
 -- Composition properties
@@ -645,3 +864,5 @@ theorem const_state_independent (ty : Ty) (val : Constant)
 -/
 
 end TrustIr
+
+#trustIrAxiomsExact TrustIr.undef_inspect_is_ub == []

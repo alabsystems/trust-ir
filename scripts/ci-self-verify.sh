@@ -17,12 +17,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 TARGO_RUNNER="$ROOT/scripts/run-targo.sh"
-TARGO_JOBS="${TRUST_IR_TARGO_JOBS:-1}"
-
-if [[ ! "$TARGO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'TRUST_IR_TARGO_JOBS must be a positive integer, got %q.\n' \
-        "$TARGO_JOBS" >&2
-    exit 2
+# Build parallelism: Targo's default (one job per CPU) unless
+# TRUST_IR_TARGO_JOBS caps it (e.g. 1 on a memory-constrained host).
+TARGO_JOBS_ARGS=()
+if [[ -n "${TRUST_IR_TARGO_JOBS:-}" ]]; then
+    if [[ ! "$TRUST_IR_TARGO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'TRUST_IR_TARGO_JOBS must be a positive integer, got %q.\n' \
+            "$TRUST_IR_TARGO_JOBS" >&2
+        exit 2
+    fi
+    TARGO_JOBS_ARGS=(-j "$TRUST_IR_TARGO_JOBS")
 fi
 
 log() {
@@ -66,10 +70,17 @@ check_git_deps_are_rev_pinned() {
     printf 'All git dependencies (if any) are rev-pinned.\n'
 }
 
-# Publication must fail closed when an exact private dependency revision has no
+# Publication must fail closed when a private dependency revision has no
 # reviewed public mapping. A direct URL/revision rewrite would create a snapshot
 # that looks publishable without proving that either dependency is available at
 # the advertised public authority.
+#
+# Since 2026-09-30 each pin is projected FORWARD onto its dependency's newest
+# attested publication, by the publication engine's own rule
+# (bin/pub_projection.py project_forward, loaded from its file). The structural
+# half below holds the call sites to that shape and exercises the ledger-row
+# verifier; publish/test_transforms.py drives forward_mapping's refusals and,
+# with the engine present, the whole T1 block against the real projection rule.
 check_publish_dependency_mappings_fail_closed() {
     log "checking that publication requires verified Clean and AY mappings"
 
@@ -87,13 +98,18 @@ if match is None:
 
 tree = ast.parse(match.group(1), filename=str(path))
 assignments = {}
+functions = {}
 for statement in tree.body:
+    if isinstance(statement, ast.FunctionDef):
+        functions[statement.name] = statement
     if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
         continue
     target = statement.targets[0]
-    if isinstance(target, ast.Name) and target.id in {"clean", "ay"}:
+    if isinstance(target, ast.Name) and target.id in {"clean", "ay", "projection"}:
         assignments[target.id] = statement.value
 
+# Each dependency comes from forward_mapping, fed its own development pin and
+# the canonical public authority, and collecting into the shared refusal list.
 expected = {
     "clean": ("clean", "clean_dev_rev", "git@github.com:alabsystems/clean.git", "clean_public_url"),
     "ay": ("ay", "ay_dev_rev", "git@github.com:alabsystems/ay.git", "ay_public_url"),
@@ -103,8 +119,8 @@ for name, (repo, dev_rev, release_url, public_url) in expected.items():
     valid = (
         isinstance(value, ast.Call)
         and isinstance(value.func, ast.Name)
-        and value.func.id == "verified_mapping"
-        and len(value.args) == 4
+        and value.func.id == "forward_mapping"
+        and len(value.args) == 7
         and isinstance(value.args[0], ast.Constant)
         and value.args[0].value == repo
         and isinstance(value.args[1], ast.Name)
@@ -113,11 +129,60 @@ for name, (repo, dev_rev, release_url, public_url) in expected.items():
         and value.args[2].value == release_url
         and isinstance(value.args[3], ast.Name)
         and value.args[3].id == public_url
+        and isinstance(value.args[6], ast.Name)
+        and value.args[6].id == "refusals"
     )
     if not valid:
         raise SystemExit(
-            f"publication mapping gate: {name} must come from its exact verified_mapping lookup"
+            f"publication mapping gate: {name} must come from its forward_mapping projection"
         )
+
+
+def calls(function, name):
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
+        for node in ast.walk(function)
+    )
+
+
+# The projection is the ENGINE's (loaded from its file, never re-implemented
+# or searched for on sys.path), the landed-on row is still ledger-verified, and
+# any refusal stops T1 before a single file is rewritten.
+projection = assignments.get("projection")
+loader = functions.get("load_engine_projection")
+forward = functions.get("forward_mapping")
+if not (
+    isinstance(projection, ast.Call)
+    and isinstance(projection.func, ast.Name)
+    and projection.func.id == "load_engine_projection"
+    and loader is not None
+    and "pub_projection.py" in ast.unparse(loader)
+    and "spec_from_file_location" in ast.unparse(loader)
+):
+    raise SystemExit(
+        "publication mapping gate: T1 must load the engine's bin/pub_projection.py from its file"
+    )
+if forward is None or not calls(forward, "verified_mapping"):
+    raise SystemExit("publication mapping gate: forward_mapping must verify the landed-on ledger row")
+positions = {}
+for index, statement in enumerate(tree.body):
+    source = ast.unparse(statement)
+    if isinstance(statement, ast.Assign) and statement.value in (assignments["ay"], assignments["clean"]):
+        positions.setdefault("projections", []).append(index)
+    elif isinstance(statement, ast.If) and source.startswith("if refusals:") and "SystemExit" in source:
+        positions.setdefault("stop", index)
+    elif not isinstance(statement, ast.FunctionDef) and ".write_text(" in source:
+        positions.setdefault("first_write", index)
+if not (
+    len(positions.get("projections", [])) == 2
+    and "stop" in positions
+    and "first_write" in positions
+    and max(positions["projections"]) < positions["stop"] < positions["first_write"]
+):
+    raise SystemExit(
+        "publication mapping gate: a forward refusal must stop T1 after both projections "
+        "and before the first write"
+    )
 
 if re.search(r'["\']verified["\']\s*:\s*False\b', match.group(1)):
     raise SystemExit("publication mapping gate: unverified dependency fallback is forbidden")
@@ -201,6 +266,34 @@ expect_rejected(
         "mappings": {"clean": {dev_rev: {**valid_entry, "policy_sha": "not-a-digest"}}},
     },
 )
+expect_rejected(
+    "a valid-looking mapping whose development revision is revoked",
+    {
+        "schema": 1,
+        "mappings": {"clean": {dev_rev: valid_entry}},
+        "revoked": {
+            "clean": {
+                dev_rev: {"reason": "test revocation", "revoked_at": "2026-08-13T00:00:00Z"}
+            }
+        },
+    },
+)
+expect_rejected(
+    "a valid-looking mapping beside a malformed revoked ledger",
+    {
+        "schema": 1,
+        "mappings": {"clean": {dev_rev: valid_entry}},
+        "revoked": [dev_rev],
+    },
+)
+expect_rejected(
+    "a valid-looking mapping beside a malformed per-repository revoked ledger",
+    {
+        "schema": 1,
+        "mappings": {"clean": {dev_rev: valid_entry}},
+        "revoked": {"clean": [dev_rev]},
+    },
+)
 
 namespace["ledger"] = {"schema": 1, "mappings": {"clean": {dev_rev: valid_entry}}}
 accepted = verified_mapping("clean", dev_rev, release_url, public_url)
@@ -212,56 +305,46 @@ if (
 ):
     raise SystemExit("publication mapping gate: verifier corrupted a valid mapping")
 
+# A revocation is per repository and per revision: another revision, or the
+# same revision of another repository, being revoked does not refuse this row.
+namespace["ledger"] = {
+    "schema": 1,
+    "mappings": {"clean": {dev_rev: valid_entry}},
+    "revoked": {
+        "clean": {"b" * 40: {"reason": "test revocation"}},
+        "ay": {dev_rev: {"reason": "test revocation"}},
+    },
+}
+if verified_mapping("clean", dev_rev, release_url, public_url).get("dev_rev") != dev_rev:
+    raise SystemExit("publication mapping gate: an unrelated revocation refused a live mapping")
+
 print("Clean and AY publication mappings are fail-closed and ledger-verified.")
 PY
+
+    # The forward step's behaviour, from the T1 block itself. It needs tomllib,
+    # which /usr/bin/python3 (3.9 on a stock Mac) lacks, so pick an interpreter
+    # the way publish/transforms.sh does. The end-to-end legs need the
+    # publication engine (PUBLICATION_DIR, else the sibling ../publication) and
+    # report themselves SKIPPED without it; the forward_mapping legs always run.
+    local py=""
+    for candidate in python3.14 python3.13 python3.12 python3.11 python3 \
+        /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+           "$candidate" -c 'import tomllib' >/dev/null 2>&1; then
+            py="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$py" ]]; then
+        printf 'publish/test_transforms.py needs Python >= 3.11 (tomllib); none found.\n' >&2
+        return 1
+    fi
+    run "$py" -B "$ROOT/publish/test_transforms.py"
 }
 
 check_no_ignored_rust_tests_or_docs() {
     log "checking Rust sources for ignored tests or non-executing rustdoc examples"
     python3 -B "$ROOT/scripts/check_no_ignored_rust.py" --root "$ROOT"
-}
-
-check_lean_proof_placeholders() {
-    log "checking Lean sources for proof placeholders or new axioms"
-
-    local lean_root="$ROOT/lean/trust_ir-semantics/TrustIr"
-    local placeholders
-    placeholders="$(
-        find "$lean_root" -name '*.lean' -type f -print0 |
-            xargs -0 grep -nHE \
-                '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)' \
-                || true
-    )"
-    if [[ -n "$placeholders" ]]; then
-        printf 'Lean proof placeholder(s) are forbidden:\n%s\n' "$placeholders" >&2
-        return 1
-    fi
-
-    # AYBridge is the one deliberate external soundness boundary. Keep its
-    # declaration explicit and reject every additional axiom so an unfinished
-    # proof cannot silently expand the trusted base.
-    local axioms unexpected=""
-    axioms="$(
-        find "$lean_root" -name '*.lean' -type f -print0 |
-            xargs -0 grep -nHE '^[[:space:]]*axiom[[:space:]]+' || true
-    )"
-    while IFS=: read -r file line declaration; do
-        [[ -z "$file" ]] && continue
-        # `IFS=:` consumes the declaration's trailing colon, so match the
-        # exact allowlisted name in the post-split field rather than comparing
-        # against an impossible colon-suffixed string.
-        if [[ "$file" == "$lean_root/Proofs/AYBridge.lean" \
-              && "$declaration" =~ ^[[:space:]]*axiom[[:space:]]+ay_sound_unsat[[:space:]]*$ ]]; then
-            continue
-        fi
-        unexpected+="$file:$line:$declaration"$'\n'
-    done <<< "$axioms"
-    if [[ -n "$unexpected" ]]; then
-        printf 'Unexpected Lean axiom declaration(s):\n%s' "$unexpected" >&2
-        return 1
-    fi
-
-    printf 'Lean sources contain no proof placeholders or unlisted axioms.\n'
 }
 
 maybe_run_lean() {
@@ -271,9 +354,16 @@ maybe_run_lean() {
     fi
 
     if command -v lake >/dev/null 2>&1; then
-        log "building Lean semantics package"
-        (cd lean/trust_ir-semantics && lake build)
-        return 0
+        # The same check as standing gate 14 (`lean-proofs`): the build, the
+        # replayed-placeholder scan, the whole-environment axiom census and
+        # the kernel replay, stated once in scripts/lean_proofs.py. A bare `lake build` passed a
+        # theorem with a placeholder (a warning) and any axiom a theorem off
+        # AxiomAudit's curated list depended on.
+        log "building and censusing the Lean semantics package"
+        python3 -B "$ROOT/scripts/lean_proofs.py" --root "$ROOT" --require
+        (cd lean/trust_ir-semantics && lake build TrustIrEval &&
+            lake lean TrustIrEval/SignatureAbiTests.lean -- --run)
+        return
     fi
 
     if [[ "${TRUST_IR_REQUIRE_LEAN:-0}" == "1" ]]; then
@@ -288,32 +378,64 @@ maybe_run_lean() {
 check_git_deps_are_rev_pinned
 check_publish_dependency_mappings_fail_closed
 check_no_ignored_rust_tests_or_docs
-check_lean_proof_placeholders
+for dep in clean ay; do
+    run python3 -B "$ROOT/scripts/pin_rewrite.py" census --root "$ROOT" --dep "$dep"
+done
 run python3 -B "$ROOT/scripts/pin_rewrite.py" static-guard --root "$ROOT"
-run python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'
+run python3 -B "$ROOT/scripts/wire_alloc.py" --root "$ROOT" check
+run python3 -B "$ROOT/scripts/check_enforcement_links.py" --root "$ROOT" check
+run bash "$ROOT/scripts/run_script_tests.sh"
 
 # Internal formatting, linting, and compilation all go through the Trust-owned
 # Targo frontend. `run-targo.sh` fails closed if canonical Targo is unavailable;
 # it never falls back to upstream Cargo.
 run "$TARGO_RUNNER" fmt --check --all
-run "$TARGO_RUNNER" check --locked --workspace --all-targets --all-features \
-    -j "$TARGO_JOBS"
-run "$TARGO_RUNNER" clippy --locked --workspace --all-targets --all-features \
-    -j "$TARGO_JOBS" -- -D warnings
+# tippy type-checks every target under every feature, so no separate `check`.
+run "$TARGO_RUNNER" tippy --locked --workspace --all-targets --all-features \
+    ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"} -- -D warnings
 
-# Default graph (resolves the exact Clean git revision; excludes the AY adapter).
-run "$TARGO_RUNNER" test --locked -j "$TARGO_JOBS"
-run "$TARGO_RUNNER" test --locked --all-features -j "$TARGO_JOBS"
-run "$TARGO_RUNNER" test --locked -p trust-ir-conformance \
-    --test conformance -j "$TARGO_JOBS"
+# Restrict resolution to the selected package. Workspace feature unification
+# can re-enable the TV anchor through other members despite --no-default-features.
+# Exercise the complete builder library and the nominal/retained/TV boundaries.
+# Lint the selected graph's test targets too: all-feature lint cannot see
+# helpers and tests compiled only when the TV anchor is disabled.
+run "$TARGO_RUNNER" tippy --locked -Zfeature-unification \
+    --config 'resolver.feature-unification="selected"' \
+    -p trust-ir-build --no-default-features --lib --tests \
+    ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"} -- -D warnings
+run "$TARGO_RUNNER" test --locked -Zfeature-unification \
+    --config 'resolver.feature-unification="selected"' \
+    -p trust-ir-build --no-default-features \
+    --lib --test nominal_level_map --test retained_image \
+    --test scoped_codec_without_tv_anchor \
+    ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"}
+# Match the builder's codec-only core graph. Lint its test targets too: the
+# default/all-feature graphs enable replay and exclude kernel-less request tests.
+run "$TARGO_RUNNER" tippy --locked -Zfeature-unification \
+    --config 'resolver.feature-unification="selected"' \
+    -p trust-ir --features binary,clean-expr-codec,diff,fmt,parser --lib --tests \
+    ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"} -- -D warnings
+# The nominal text controls are integration tests, so --lib alone excludes them.
+run "$TARGO_RUNNER" test --locked -Zfeature-unification \
+    --config 'resolver.feature-unification="selected"' \
+    -p trust-ir --features binary,clean-expr-codec,diff,fmt,parser \
+    --lib --test nominal_text_levels \
+    ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"}
 
-# The ay adapter is a non-default member with an external git dependency; test
-# it explicitly. Requires network/credentials to fetch the pinned ay rev.
+# Then exercise the default workspace graph. The ay
+# adapter is a non-default member with an external git dependency (network or
+# credentials for the pinned ay rev); `--workspace` tests it in the same
+# feature resolution as everything else instead of a separate `-p` rebuild.
 if [[ "${TRUST_IR_SKIP_AY:-0}" == "1" ]]; then
     log "skipping trust-ir-ay adapter tests because TRUST_IR_SKIP_AY=1"
+    run "$TARGO_RUNNER" test --locked ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"}
 else
-    run "$TARGO_RUNNER" test --locked -p trust-ir-ay -j "$TARGO_JOBS"
+    run "$TARGO_RUNNER" test --locked --workspace \
+        ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"}
 fi
+# Then every feature of the default members (this also runs the CLI's
+# `ay`-gated `cli_discharge`, so it fetches the pinned ay rev too).
+run "$TARGO_RUNNER" test --locked --all-features ${TARGO_JOBS_ARGS[@]+"${TARGO_JOBS_ARGS[@]}"}
 
 maybe_run_lean
 

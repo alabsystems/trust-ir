@@ -23,8 +23,9 @@ fn validator_rejects_out_of_range_span_file_index() {
         fb.ret(vec![]);
         fb.build();
     }
-    let mut m = mb.build();
-    m.intern_file("only.rs"); // 1 entry; index 0 valid, anything >= 1 dangles.
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
+    m.intern_file("only.rs")
+        .expect("Module::intern_file: test fixture"); // 1 entry; index 0 valid, anything >= 1 dangles.
 
     // Plant an out-of-range span on the first node of the entry block.
     m.functions[0].blocks[0].body[0].span = Some(SourceSpan {
@@ -55,7 +56,7 @@ fn empty_file_table_skips_span_index_check() {
         fb.ret(vec![]);
         fb.build();
     }
-    let mut m = mb.build();
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
     m.functions[0].blocks[0].body[0].span = Some(SourceSpan {
         file: 9,
         line: 1,

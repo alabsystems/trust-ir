@@ -14,18 +14,18 @@ writes it to disk via `trust_ir::binary::serialize_module`.
 
 ```bash
 # Supremacy: default 10,000 blocks, override with --states
-cargo run -p supremacy-fixture -- --states 10000 --output supremacy.tmbc
+targo --unverified run -p supremacy-fixture -- --states 10000 --output supremacy.tmbc
 
 # Raft
-cargo run -p raft-fixture -- --output raft.tmbc
+targo --unverified run -p raft-fixture -- --output raft.tmbc
 ```
 
 Each binary writes a binary-format (`.tmbc`) TrustIr module to the `--output`
 path and prints progress to stdout. Validate or inspect the result with the CLI:
 
 ```bash
-cargo run -p trust-ir-cli -- validate supremacy.tmbc
-cargo run -p trust-ir-cli -- dump supremacy.tmbc
+targo --unverified run -p trust-ir-cli -- validate supremacy.tmbc
+targo --unverified run -p trust-ir-cli -- dump supremacy.tmbc
 ```
 
 ## Notes

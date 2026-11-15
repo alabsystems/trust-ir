@@ -1,0 +1,20 @@
+; TrustIr template text format v1
+template "core::n::<N>"
+param $0 const usize
+hole ?0 global @global.0 key "rust" [99, 111, 114, 101, 58, 58, 110, 58, 58, 112, 114, 111, 109, 111, 116, 101, 100, 91, 48, 93] args (const usize $0)
+; TrustIr text format v1
+module "core"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = () -> (usize)
+
+global @"!template_hole::0" usize
+
+fn @"!template_body"(functy.0) {
+bb0:
+    %0 = const usize $0
+    %1 = global_addr @global.0
+    %2 = load usize, ptr %1
+    %3 = add usize %0, %2
+    ret %3
+}

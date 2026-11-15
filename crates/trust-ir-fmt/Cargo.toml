@@ -4,9 +4,12 @@
 # Copyright 2026 Andrew Yates | License: Apache-2.0
 #
 # `trust-ir-fmt` — standalone canonical text pretty-printer CLI for TrustIr
-# (issue #62). Reads TrustIr text from a file path (or `-` for stdin), parses
-# it, canonicalizes, and writes the canonical text to stdout. Pure Rust,
-# zero external dependencies beyond `trust-ir` itself.
+# (issue #62). Reads a TrustIr module from a file path (or `-` for stdin) in
+# any of the four formats — resolved by the shared rule
+# `trust_ir::codec::resolve_module_format` (roadmap WS4.9), `--format`
+# overrides — canonicalizes it, and writes the canonical text to stdout. Pure
+# Rust; beyond `trust-ir` itself it uses only the two serde codecs the
+# workspace already carries (serde_json, rmp-serde), no new dependency.
 
 [package]
 name = "trust-ir-fmt"
@@ -20,6 +23,10 @@ description = "Canonical TrustIr text pretty-printer CLI (diff stability)"
 [[bin]]
 name = "trust-ir-fmt"
 path = "src/main.rs"
+# No unit tests in the binary: skip building an empty test harness for it.
+test = false
 
 [dependencies]
-trust-ir = { workspace = true, features = ["fmt", "parser"] }
+trust-ir = { workspace = true, features = ["fmt", "parser", "binary", "serde"] }
+serde_json = "1.0"
+rmp-serde = "1.3"

@@ -1,0 +1,110 @@
+{
+ "entries": {
+  "advisory_preprocessing_budget": {
+   "function": "r7_refute_repro::boxed",
+   "lane": "targo trust check --allow-l0-gaps (advisory)",
+   "row": {
+    "description": "unsupported MIR `TrustPreprocessingBudget`: unverified: per-function verification budget (1 ms / 64000000 steps) exhausted during VC generation",
+    "kind": "unsupported_mir",
+    "obligation_id": "vc:boxed:unknown:0",
+    "outcome": {
+     "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: unverified: per-function verification budget (1 ms / 64000000 steps) exhausted during VC generation",
+     "status": "unknown"
+    },
+    "solver": "trust-verify-budget",
+    "transport_evidence": {
+     "typed_kind": {
+      "UnsupportedMir": {
+       "detail": "unverified: per-function verification budget (1 ms / 64000000 steps) exhausted during VC generation",
+       "kind": "TrustPreprocessingBudget"
+      }
+     }
+    }
+   },
+   "trust_table": "function_budget_ms = 1"
+  },
+  "strict_budget_build_error": {
+   "diagnostic": "error: Trust verification exceeded its per-function budget (1 ms / 64000000 steps) during VC generation of `count_args` \u2014 possible verifier non-termination. Raise `-Ztrust-verify-function-budget-ms` / `-steps` or simplify the function.",
+   "function": "r7_refute_repro::count_args",
+   "lane": "targo trust check (strict)",
+   "note": "the row names no stop; only the diagnostic does (the strict fail_closed branch of preprocessing_budget_exceeded)",
+   "row": {
+    "description": "assertion: native-verification-gap",
+    "kind": "assertion",
+    "outcome": {
+     "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: the function was not proved; native lowering or dispatch did not complete",
+     "status": "unknown"
+    },
+    "solver": "trust-native"
+   },
+   "trust_table": "function_budget_ms = 1"
+  },
+  "strict_native_bundle_budget_expired": {
+   "function": "r7_refute_repro::dec_first_nonzero",
+   "lane": "targo trust check (strict)",
+   "row": {
+    "description": "slice bounds check",
+    "kind": "slice_bounds_check",
+    "obligation_id": "vc:r7_refute_repro__dec_first_nonzero:bounds_check:0",
+    "outcome": {
+     "reason": "`#[trust(static)]` requires a static proof, but the solver returned unknown: native full verifier evidence status: Unsupported; compiler full verification requires typed TrustIr native evidence: per-function verification budget expired during native trust-ir bundle construction",
+     "status": "unknown"
+    },
+    "solver": "trust-full-verifier",
+    "transport_evidence": {
+     "typed_kind": "SliceBoundsCheck"
+    }
+   },
+   "trust_table": "function_budget_ms = 100"
+  },
+  "strict_timeout": {
+   "function": "r7_refute_repro::dec_first_nonzero",
+   "lane": "targo trust check (strict)",
+   "row": {
+    "description": "slice bounds check",
+    "kind": "slice_bounds_check",
+    "obligation_id": "vc:r7_refute_repro__dec_first_nonzero:bounds_check:0",
+    "outcome": {
+     "status": "timeout",
+     "timeout_ms": 300
+    },
+    "solver": "trust-full-verifier",
+    "transport_evidence": {
+     "typed_kind": "SliceBoundsCheck"
+    }
+   },
+   "trust_table": "function_budget_ms = 300"
+  }
+ },
+ "omitted": {
+  "laws_transitivity_mutant_elided_marker": {
+   "crate": "trust-ir-laws at f913733d, gate 13 mutant u64-ge-transitive-strict (`a >= c` made `a > c`), a real --keep run",
+   "function": "trust_ir_laws::laws::u64_ge_is_transitive",
+   "lane": "targo trust check --release (strict, the root [trust] table)",
+   "lines": [
+    "Compiler requests omitted from the published proof rows: 1 (diagnostics only; not discharged by this report)",
+    "  [UNKNOWN] function=cargo-target(package_id=\"path+file://<path>\",package=\"trust-ir-laws\",kind=[\"lib\"],target=\"trust_ir_laws\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"d4e4800c0c22f92dca2ed4f14cc33bb2f1dfbdb0d8eeb7b5ac9015ad31bd6401\",compile_target_spec_sha256=None,proof_unit_index=15,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"3e222bc49f939099d333288d8930dd45feb90e2de2407d4823f53afd55e0f5cd\")::trust_ir_laws::laws::u64_ge_is_transitive obligation=obligation:trust_ir_laws__laws__u64_ge_is_transitive:postcondition:0 kind=postcond claim_sha256=b09d946c4a0eb53cab5fb80202480bb7e2f4abe2696b99b40206fd85f2c46449"
+   ],
+   "note": "the only omitted request of this run that is NOT withheld (25 others are): the def-site whole-clause marker obligation:\u2026:postcondition:0, UNKNOWN at the compiler (reason: source-clause catalog marker awaits sealed private body authorities), elided as the alias of the ONE return path vc:\u2026:postcondition:0, which proved, while path :2 was refuted and published unknown. The header is this list's count restated for one entry; the run's real header printed 26.",
+   "trust_table": "the root manifest's [trust] table"
+  },
+  "strict_solver_timeout_twin": {
+   "function": "r7_refute_repro::dec_first_nonzero",
+   "lane": "targo trust check (strict)",
+   "lines": [
+    "Compiler requests omitted from the published proof rows: 1 (diagnostics only; not discharged by this report)",
+    "  [UNKNOWN] function=cargo-target(package_id=\"path+file://<path>\",package=\"r7_refute_repro\",kind=[\"lib\"],target=\"r7_refute_repro\",compile_target=\"aarch64-apple-darwin\",compile_mode=\"check\",compile_kind=\"host\",unit_identity_sha256=\"31ea2173b91bea7b2df957fb89f199420ba5338bf56f623858a0900192cb9fb5\",compile_target_spec_sha256=None,proof_unit_index=0,proof_unit_mode=\"check\",proof_unit_role=\"primary\",semantics_sha256=\"2568722d6860ff8f62884c87e10853f43746de1be9c04431c8780115cbdb7303\")::r7_refute_repro::dec_first_nonzero obligation=vc:r7_refute_repro__dec_first_nonzero:panic_boundary:10 kind=hardened_panic_boundary claim_sha256=f9a8e8d662f66961d0f3b13a891a5ba6aef22c6d543cf21bf244c987078187fd"
+   ],
+   "note": "at function_budget_ms = 3000 (no timeout_ms) vc:r7_refute_repro__dec_first_nonzero:panic_boundary:10 is a PUBLISHED failed row; at timeout_ms = 1 it is absent from report.json and appears only in this terminal list, as UNKNOWN, not withheld, with no budget word (publication elided it as the alias of its proved same-span sibling arithmetic_safety:9)",
+   "trust_table": "timeout_ms = 1"
+  }
+ },
+ "provenance": {
+  "crate": "the r7 false-refutation repro: a standalone [package] r7_refute_repro (edition 2024, [workspace]) with this src/lib.rs and a [trust] table as named per entry",
+  "crate_source": "/// (1) index walk bounded by a slice length: `i += 1` cannot overflow.\npub fn count_args(args: &[String]) -> usize {\n    let mut i = 0;\n    while i < args.len() {\n        i += 1;\n    }\n    i\n}\n\n/// (2) Box::new never yields null (allocation failure aborts).\npub fn boxed(x: u64) -> Box<u64> {\n    Box::new(x)\n}\n\n/// (3) guarded decrement: `d -= 1` only when `d > 0`.\npub fn dec_first_nonzero(digits: &mut [u8]) {\n    let mut i = 0;\n    while i < digits.len() {\n        if digits[i] > 0 {\n            digits[i] -= 1;\n            break;\n        }\n        digits[i] = 9;\n        i += 1;\n    }\n}\n",
+  "date": "2026-09-29",
+  "load": "load average 37-45 on 14 cores (other sessions)",
+  "toolchain": "rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0) | commit-hash: 321aaeda75478038420d97830f14724c33c8dc39 | host: aarch64-apple-darwin | trust: 0.1.0",
+  "what": "real rows of `targo trust check --report-dir` reports, projected by refresh.slim_row; each entry names the lane and the [trust] table that produced it"
+ }
+}

@@ -60,9 +60,9 @@ impl SpanMap {
         let mut files: HashMap<String, u32> = HashMap::new();
         for span in spans {
             if let Some(name) = file_of(tcx, span) {
-                if !files.contains_key(&name) {
-                    let idx = mb.intern_file(name.clone());
-                    files.insert(name, idx);
+                if let std::collections::hash_map::Entry::Vacant(entry) = files.entry(name) {
+                    let idx = mb.intern_file(entry.key().clone());
+                    entry.insert(idx);
                 }
             }
         }

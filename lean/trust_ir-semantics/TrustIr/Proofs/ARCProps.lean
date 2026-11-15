@@ -41,7 +41,12 @@ theorem arcRef_allows_read :
     Permission.canRead Permission.arcRef = true := by
   simp [Permission.canRead]
 
-/-- ArcRef permission forbids writing. -/
+/-- ArcRef permission forbids writing — in the `Permission.canWrite` TABLE.
+    A statement about the table only: no semantics consults `canWrite` (or
+    `canRead`), so a `Store` into an `arcRef` cell executes (the positive twin
+    `semRelease_cleanHeap_after_store_load_ok_example` stores into one). Whether
+    the model should enforce these columns is OPEN (docs/ub-numerics-policy.md
+    §7); only `canDealloc` is executed (`semDealloc`). -/
 theorem arcRef_forbids_write :
     Permission.canWrite Permission.arcRef = false := by
   simp [Permission.canWrite]
@@ -52,7 +57,10 @@ theorem arcRef_forbids_dealloc :
     Permission.canDealloc Permission.arcRef = false := by
   simp [Permission.canDealloc]
 
-/-- ArcRef is read-only: it allows read but not write. -/
+/-- ArcRef is read-only in the permission TABLE: `canRead` true, `canWrite`
+    false. Not an execution property — no semantics consults either column,
+    and a `Store` into an `arcRef` cell executes (see `arcRef_forbids_write`;
+    OPEN in docs/ub-numerics-policy.md §7). -/
 theorem arcRef_read_only :
     Permission.canRead Permission.arcRef = true ∧
       Permission.canWrite Permission.arcRef = false := by

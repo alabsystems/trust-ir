@@ -14,7 +14,10 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": {
         "requires": [
@@ -36,11 +39,22 @@
         "params": [
           "x"
         ],
-        "proved": true
+        "proved": true,
+        "decreases": [],
+        "backed_by": {
+          "module": 0,
+          "symbol": "reciprocal",
+          "obligation": 3
+        }
       },
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     },
     {
       "id": 1,
@@ -80,7 +94,10 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": {
         "requires": [],
@@ -95,11 +112,18 @@
         "params": [
           "x"
         ],
-        "proved": true
+        "proved": false,
+        "decreases": [],
+        "backed_by": null
       },
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [],
@@ -121,9 +145,64 @@
   "types": [],
   "proof_obligations": [],
   "proof_certificates": [],
-  "target_info": null,
+  "target_info": {
+    "triple": "aarch64-apple-darwin",
+    "pointer_size": 8,
+    "endianness": "Little",
+    "abi": "aapcs64",
+    "struct_passing": "NativeC"
+  },
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [
+    {
+      "name": "trusted_prelude",
+      "digest": {
+        "algorithm": "Sha256",
+        "bytes": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ]
+      },
+      "producer": "Clean"
+    }
+  ],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

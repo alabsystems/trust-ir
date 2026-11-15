@@ -27,7 +27,7 @@ trust-ir = { path = "../trust-ir" }
 # pin in seven declarations, so this rev must equal Clean's. Bumping AY past
 # Clean is refused by scripts/bump-dep-pin.sh — use the `clean-ay` form once
 # Clean has moved.
-ay = { version = "0.22.0", git = "https://github.com/alabsystems/ay.git", rev = "5d586a5c2035e94c3f6ad00028e21ae5529cd2f3" }
+ay = { version = "0.28.0", git = "https://github.com/alabsystems/ay.git", rev = "9dfa20b5790b03c8ffe57fbbe67316ece665c5be" }
 
 # The BIT-BLAST proof route (`bvblast`). A DIRECT dependency because the `ay`
 # facade does NOT re-export it: `ay::proof_emission` publishes only the
@@ -44,7 +44,7 @@ ay = { version = "0.22.0", git = "https://github.com/alabsystems/ay.git", rev = 
 # catch; that guard inventories this line too. Adds no new transitive
 # dependency: ay-core / ay-sat / num-* / serde / thiserror are already resolved
 # through `ay`.
-ay-proof = { version = "0.22.0", git = "https://github.com/alabsystems/ay.git", rev = "5d586a5c2035e94c3f6ad00028e21ae5529cd2f3" }
+ay-proof = { version = "0.28.0", git = "https://github.com/alabsystems/ay.git", rev = "9dfa20b5790b03c8ffe57fbbe67316ece665c5be" }
 
 # Serializes ay's `SerializableProofBundle` — the offline-replayable UNSAT
 # payload captured by `vc::SmtReplayEvidence`. Already in the graph via ay
@@ -61,6 +61,11 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 trust-ir-build = { path = "../trust-ir-build" }
+# The verifier-side `Formula` vocabulary, so a test can hand ay the SMT-LIB
+# text `Formula::to_smtlib` emits (`tests/formula_const_array.rs`). A leaf
+# (serde + rustc-hash, both already in the graph); a dev-dependency only, so
+# the adapter itself still never depends on the contract crate.
+trust-ir-contract = { path = "../trust-ir-contract" }
 # `parser` for the corpus-measurement example (reads real frontend-emitted
 # `.trust_ir` text modules); `serde` so tests can round-trip a module.
 trust-ir = { path = "../trust-ir", features = ["parser"] }

@@ -1,0 +1,13 @@
+# SemR's type fragment: the Rust `Ty` variants whose semantics is SemR's
+# (`lean/semr/SemR.lean`) rather than lean/trust_ir-semantics', each beside the
+# SemR `Ty` constructor that carries it. `crates/trust-ir/tests/lean_schema_parity.rs`
+# (`ty_parity_reads_semr_for_its_type_fragment`) holds every row to both sides: the
+# Rust variant exists and SemR.lean declares the constructor; every Rust `Ty`
+# variant NOT listed here keeps the old gate (a constructor in
+# lean/trust_ir-semantics/TrustIr/Basic.lean, and in Template.lean's TemplateTy).
+# The instructions over a listed type are judged by SemR's differential through
+# FRAGMENT.tsv. An element type SemR refuses by name (`unsupported <feature>`,
+# e.g. a float tensor element) stays refused; the row is the type former.
+#
+# rust-variant	semr-constructor
+Tensor	tensor

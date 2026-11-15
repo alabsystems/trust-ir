@@ -1,0 +1,23 @@
+# SemR constructors available ONLY to quoted model checks. None is decoded
+# from a canonical wire module or credited by FRAGMENT.tsv's runtime parity
+# denominator. The schema census requires the disjoint union of both ledgers
+# to equal every SemR.Inst constructor; an unclassified constructor fails.
+#
+# quoted-op models an operation whose wire decoder remains refused.
+# abstract-cell is a private typed-cell model, NOT the canonical byte-memory
+# Alloca/Load/Store semantics, and grants no source, SSA or byte-refinement claim.
+# The native quoted_model_decoder_boundary_controls test binds every row to
+# a validated canonical module and an actual interpreter run. A quoted-op's
+# wire counterpart is refused; an abstract-cell's counterpart decodes to the
+# distinct public byte-memory constructors, never to a private cell.
+# quoted-closure is nominal construction and capture projection only: its canonical wire
+# image requires v63; its nonempty closure_types table and MakeClosure tag70
+# remain refused, even though current-v63 closed scalar images can decode.
+# It earns neither decoded-fragment credit nor closure-call admission.
+# Quoted PanicRelationCheck controls are separate evidence.
+# semr-constructor	canonical-variant	decoder-boundary	model-scope
+undef	Undef	inst.undef	quoted-op
+allocaCell	Alloca	decoded.memory	abstract-cell
+loadCell	Load	decoded.memory	abstract-cell
+storeCell	Store	decoded.memory	abstract-cell
+makeClosure	MakeClosure	closure_types	quoted-closure

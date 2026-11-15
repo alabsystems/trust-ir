@@ -37,9 +37,7 @@ class Finding:
 def _blank(masked: List[str], start: int, end: int) -> None:
     """Blank a source range while preserving newlines and byte offsets."""
 
-    for index in range(start, end):
-        if masked[index] not in "\r\n":
-            masked[index] = " "
+    masked[start:end] = [ch if ch in "\r\n" else " " for ch in masked[start:end]]
 
 
 def _quoted_literal_end(source: str, quote: int, delimiter: str) -> int:
@@ -56,8 +54,94 @@ def _quoted_literal_end(source: str, quote: int, delimiter: str) -> int:
     return len(source)
 
 
+# Every position at which `_mask_non_code_reference`'s loop can act: a
+# comment opener, a raw/byte/C-string start, a quote, a char-literal quote.
+# The leftmost match is the first index the reference loop would act at, so
+# jumping there and running ONE step of the same rules is the same scan.
+_MASK_STOP = re.compile(r"""//|/\*|(?:br|cr|r)#{0,255}"|[bc]?"|b?'""")
+
+
 def mask_non_code(source: str) -> str:
-    """Replace Rust comments and literals with spaces, preserving newlines."""
+    """Replace Rust comments and literals with spaces, preserving newlines.
+
+    The same scan as `_mask_non_code_reference` (the per-character loop it
+    replaced, kept as its oracle), with the stretches of plain code between
+    two places that loop can act at skipped by one regex search: measured
+    21 of the 27 s of `check_enforcement_links.py check` were the old loop."""
+
+    masked = list(source)
+    index = 0
+    n = len(source)
+    while index < n:
+        stop = _MASK_STOP.search(source, index)
+        if stop is None:
+            break
+        index = stop.start()
+        if source.startswith("//", index):
+            end = source.find("\n", index + 2)
+            if end < 0:
+                end = n
+            _blank(masked, index, end)
+            index = end
+            continue
+
+        if source.startswith("/*", index):
+            depth = 1
+            end = index + 2
+            while end < n and depth:
+                if source.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif source.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            _blank(masked, index, end)
+            index = end
+            continue
+
+        raw = RAW_STRING_START.match(source, index)
+        if raw is not None:
+            terminator = '"' + raw.group("hashes")
+            end = source.find(terminator, raw.end())
+            end = n if end < 0 else end + len(terminator)
+            _blank(masked, index, end)
+            index = end
+            continue
+
+        if source[index] == '"' or (
+            source[index] in "bc"
+            and index + 1 < n
+            and source[index + 1] == '"'
+        ):
+            quote = index if source[index] == '"' else index + 1
+            end = _quoted_literal_end(source, quote, '"')
+            _blank(masked, index, end)
+            index = end
+            continue
+
+        if source[index] == "'" or (
+            source[index] == "b"
+            and index + 1 < n
+            and source[index + 1] == "'"
+        ):
+            quote = index if source[index] == "'" else index + 1
+            end = _quoted_literal_end(source, quote, "'")
+            if end > quote + 1:
+                _blank(masked, index, end)
+                index = end
+                continue
+
+        index += 1
+
+    return "".join(masked)
+
+
+def _mask_non_code_reference(source: str) -> str:
+    """The character-by-character statement of `mask_non_code`, kept as its
+    differential oracle (scripts/tests/test_internal_gates.py holds the two
+    byte-identical over every Rust file of the tree and the edge cases)."""
 
     masked = list(source)
     index = 0

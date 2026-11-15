@@ -29,4 +29,37 @@
 #[path = "../tests/generate.rs"]
 pub mod fixtures;
 
+/// The must-refuse corpus builders (KIND 4): every `build_refuse_*` artifact
+/// of `tests/fixtures/refuse/`, byte-pinned and run by
+/// `tests/refuse_corpus.rs`. A module of its own, not part of [`fixtures`]:
+/// `trust-ir-build/tests/builder_doors.rs` includes `generate.rs` without the
+/// `binary` feature the byte-string builders need, and the test targets that
+/// include `generate.rs` directly use none of these.
+#[cfg(feature = "all")]
+#[path = "../tests/generate/refuse.rs"]
+pub mod refuse_fixtures;
+
+/// The level-S golden templates and their scripted hosts (amendment S):
+/// `tests/fixtures/templates/`, and the instances `trust-ir-build`'s
+/// instantiation tests run (that crate includes this file by path: it cannot
+/// depend on this one).
+#[cfg(feature = "all")]
+#[path = "../tests/generate/templates.rs"]
+pub mod template_fixtures;
+
+/// The level-S must-refuse builders: every artifact of
+/// `tests/fixtures/refuse_templates/`, byte-pinned and run by
+/// `tests/template_refuse_corpus.rs`.
+#[cfg(feature = "all")]
+#[path = "../tests/generate/refuse_templates.rs"]
+pub mod refuse_template_fixtures;
+
 pub mod subset;
+
+/// The must-refuse corpus runner (KIND 4): every row under
+/// `tests/fixtures/refuse/` is a wire artifact a conforming consumer must
+/// REFUSE, and this module hands a consumer the rows plus a verdict report so
+/// it never re-implements the corpus. `must-refuse` feature (forwards only
+/// `trust-ir/binary`).
+#[cfg(feature = "must-refuse")]
+pub mod refuse;

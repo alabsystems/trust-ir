@@ -1,0 +1,25 @@
+{
+  "sources": [
+    { "module": "SemR", "path": "SemR.lean" },
+    { "module": "SemRBoolBody", "path": "SemRBoolBody.lean" },
+    { "module": "SemRBoolWholeBody", "path": "SemRBoolWholeBody.lean" }
+  ],
+  "module": "SemRBoolWholeBody",
+  "roots": [
+    "SemR.start",
+    "SemR.runFunction",
+    "SemR.returnTo",
+    "SemR.runBlob",
+    "SemR.BoolBody.whole_body",
+    "SemR.BoolBody.whole_blob",
+    "SemR.BoolBody.WholeAndGoal",
+    "SemR.BoolBody.WholeOrGoal",
+    "SemR.BoolBody.whole_or_counterexample"
+  ],
+  "positive": [
+    { "proof": "SemR.BoolBody.whole_body", "goal": "SemR.BoolBody.WholeAndGoal" }
+  ],
+  "negative": [
+    { "proof": "SemR.BoolBody.whole_body", "goal": "SemR.BoolBody.WholeOrGoal" }
+  ]
+}

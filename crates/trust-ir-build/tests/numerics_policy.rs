@@ -36,7 +36,7 @@ where
         fb.ret(rets);
         fb.build()
     };
-    (mb.build(), fid)
+    (mb.build().expect("ModuleBuilder::build: test fixture"), fid)
 }
 
 fn run_signed(module: &Module, fid: FuncId) -> Result<i128, InterpretErrorCode> {
@@ -537,4 +537,443 @@ fn fp_to_ui_negative_is_ub() {
         run_signed(&m, f),
         Err(InterpretErrorCode::UndefinedBehavior)
     );
+}
+
+// ---------------------------------------------------------------------------
+// WS2.23: per-width float semantics and float memory images, cross-engine.
+//
+// `F32` is the IEEE binary32 operation (docs/ub-numerics-policy.md §2): the
+// interpreter runs it in `f32`; the Lean model computes in binary64 and rounds
+// ONCE to binary32 (`roundToFormat`, lean/trust_ir-semantics/TrustIr/
+// Semantics/FloatFormat.lean). The table below is the Rust half of ONE shared
+// table; the Lean half is the `f32_table_*` theorems in
+// lean/trust_ir-semantics/TrustIr/Semantics/FloatFixtures.lean, and
+// `f32_cross_engine_table_matches_lean_fixtures` checks the two agree row by
+// row (same name, same expected bits, no row on one side only).
+// ---------------------------------------------------------------------------
+
+/// One row's operation. Operands are bit patterns, so nothing is parsed.
+#[derive(Clone, Debug)]
+enum F32Row {
+    /// `BinOp op F32` over two binary32 operands.
+    Bin(BinOp, u32, u32),
+    /// `Cast FPTrunc F64 -> F32` of a binary64 operand.
+    Trunc(u64),
+    /// `Cast UIToFP src -> F32` of an unsigned integer.
+    UiToFp(Ty, i128),
+    /// `Cast SIToFP src -> F32` of a signed integer.
+    SiToFp(Ty, i128),
+}
+
+/// (row name == Lean `f32_table_<name>`, operation, expected binary32 bits).
+const F32_CROSS_ENGINE_TABLE: &[(&str, F32Row, u32)] = &[
+    (
+        "fadd_0_1_0_2",
+        F32Row::Bin(BinOp::FAdd, 0x3dcc_cccd, 0x3e4c_cccd),
+        0x3e99_999a,
+    ),
+    (
+        "fsub_one_minus_half_ulp",
+        F32Row::Bin(BinOp::FSub, 0x3f80_0000, 0x3380_0000),
+        0x3f7f_ffff,
+    ),
+    (
+        "fmul_0_1_squared",
+        F32Row::Bin(BinOp::FMul, 0x3dcc_cccd, 0x3dcc_cccd),
+        0x3c23_d70b,
+    ),
+    (
+        "fdiv_one_third",
+        F32Row::Bin(BinOp::FDiv, 0x3f80_0000, 0x4040_0000),
+        0x3eaa_aaab,
+    ),
+    (
+        "frem_5_25_by_2",
+        F32Row::Bin(BinOp::FRem, 0x40a8_0000, 0x4000_0000),
+        0x3fa0_0000,
+    ),
+    (
+        "fmul_overflow_to_inf",
+        F32Row::Bin(BinOp::FMul, 0x7f7f_ffff, 0x4000_0000),
+        0x7f80_0000,
+    ),
+    (
+        "fmul_to_subnormal",
+        F32Row::Bin(BinOp::FMul, 0x0080_0000, 0x3f00_0000),
+        0x0040_0000,
+    ),
+    (
+        "fdiv_half_least_subnormal_ties_to_zero",
+        F32Row::Bin(BinOp::FDiv, 0x0000_0001, 0x4000_0000),
+        0x0000_0000,
+    ),
+    (
+        "fdiv_three_halves_least_subnormal_ties_even",
+        F32Row::Bin(BinOp::FDiv, 0x0000_0003, 0x4000_0000),
+        0x0000_0002,
+    ),
+    (
+        "fadd_2p24_plus_one",
+        F32Row::Bin(BinOp::FAdd, 0x4b80_0000, 0x3f80_0000),
+        0x4b80_0000,
+    ),
+    (
+        "fptrunc_third",
+        F32Row::Trunc(0x3fd5_5555_5555_5555),
+        0x3eaa_aaab,
+    ),
+    // (2 - 2^-24)·2^127, the RNE overflow threshold: a tie that rounds to +inf.
+    (
+        "fptrunc_overflow_threshold_tie",
+        F32Row::Trunc(0x47ef_ffff_f000_0000),
+        0x7f80_0000,
+    ),
+    (
+        "fptrunc_below_overflow_threshold",
+        F32Row::Trunc(0x47ef_ffff_efff_ffff),
+        0x7f7f_ffff,
+    ),
+    // 2^-150 and 3·2^-150: halfway cases below the least subnormal, ties to even.
+    (
+        "fptrunc_half_least_subnormal",
+        F32Row::Trunc(0x3690_0000_0000_0000),
+        0x0000_0000,
+    ),
+    (
+        "fptrunc_three_halves_least_subnormal",
+        F32Row::Trunc(0x36a8_0000_0000_0000),
+        0x0000_0002,
+    ),
+    // 1 + 2^-24 ties to even (1.0); one sticky bit further rounds up — a
+    // truncating rounder gets the second one wrong.
+    (
+        "fptrunc_one_plus_half_ulp_ties_even",
+        F32Row::Trunc(0x3ff0_0000_1000_0000),
+        0x3f80_0000,
+    ),
+    (
+        "fptrunc_one_plus_half_ulp_sticky",
+        F32Row::Trunc(0x3ff0_0000_1000_0004),
+        0x3f80_0001,
+    ),
+    (
+        "fptrunc_negative_underflow_keeps_sign",
+        F32Row::Trunc(0xb690_0000_0000_0000),
+        0x8000_0000,
+    ),
+    (
+        "fptrunc_neg_zero",
+        F32Row::Trunc(0x8000_0000_0000_0000),
+        0x8000_0000,
+    ),
+    (
+        "fptrunc_neg_inf",
+        F32Row::Trunc(0xfff0_0000_0000_0000),
+        0xff80_0000,
+    ),
+    // 2^60 + 2^36 + 1 rounds UP to 2^60 + 2^37; through an f64 intermediate
+    // it lands on the halfway point and ties to even 2^60 (double rounding).
+    (
+        "uitofp_u64_no_double_rounding",
+        F32Row::UiToFp(Ty::U64, 1_152_921_573_326_323_713),
+        0x5d80_0001,
+    ),
+    (
+        "sitofp_i64_no_double_rounding",
+        F32Row::SiToFp(Ty::I64, -1_152_921_573_326_323_713),
+        0xdd80_0001,
+    ),
+    (
+        "uitofp_u32_max",
+        F32Row::UiToFp(Ty::U32, 4_294_967_295),
+        0x4f80_0000,
+    ),
+];
+
+fn run_f32_bits(module: &Module, fid: FuncId) -> u32 {
+    let bits = run_f64_bits(module, fid);
+    u32::try_from(bits).expect("an F32 return carries 32 bits")
+}
+
+fn f32_row_bits(row: &F32Row) -> u32 {
+    let (m, f) = build_nullary(vec![Ty::F32], |fb| match row {
+        &F32Row::Bin(op, lhs, rhs) => {
+            let a = fb.fconst(Ty::F32, f64::from(f32::from_bits(lhs)));
+            let b = fb.fconst(Ty::F32, f64::from(f32::from_bits(rhs)));
+            vec![fb.binop(op, Ty::F32, a, b)]
+        }
+        &F32Row::Trunc(bits) => {
+            let x = fb.fconst(Ty::F64, f64::from_bits(bits));
+            vec![fb.cast(CastOp::FPTrunc, Ty::F64, Ty::F32, x)]
+        }
+        F32Row::UiToFp(src, value) => {
+            let x = fb.iconst(src.clone(), *value);
+            vec![fb.cast(CastOp::UIToFP, src.clone(), Ty::F32, x)]
+        }
+        F32Row::SiToFp(src, value) => {
+            let x = fb.iconst(src.clone(), *value);
+            vec![fb.cast(CastOp::SIToFP, src.clone(), Ty::F32, x)]
+        }
+    });
+    run_f32_bits(&m, f)
+}
+
+fn float_fixtures_lean_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../lean/trust_ir-semantics/TrustIr/Semantics/FloatFixtures.lean");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read Lean float fixtures {}: {e}", path.display()))
+}
+
+#[test]
+fn f32_cross_engine_table_interpreter_bits() {
+    for (name, row, expected) in F32_CROSS_ENGINE_TABLE {
+        let got = f32_row_bits(row);
+        let expected = *expected;
+        assert_eq!(
+            got, expected,
+            "{name}: interpreter gave {got:#010x}, the shared table says {expected:#010x}"
+        );
+    }
+}
+
+#[test]
+fn f32_cross_engine_table_matches_lean_fixtures() {
+    let lean = float_fixtures_lean_source();
+    for (name, _, expected) in F32_CROSS_ENGINE_TABLE {
+        let theorem = format!("theorem f32_table_{name} :");
+        let at = lean
+            .find(&theorem)
+            .unwrap_or_else(|| panic!("{name}: Lean half `{theorem}` is missing"));
+        let expected_str = format!("\"ok:f32:{expected:#010x}\"");
+        let next_theorem = lean[at + theorem.len()..]
+            .find("theorem ")
+            .map_or(lean.len(), |i| at + theorem.len() + i);
+        assert!(
+            lean[at..next_theorem].contains(&expected_str),
+            "{name}: Lean half does not assert {expected_str}"
+        );
+    }
+    // No row on the Lean side only.
+    let lean_rows = lean.matches("theorem f32_table_").count();
+    assert_eq!(
+        lean_rows,
+        F32_CROSS_ENGINE_TABLE.len(),
+        "the Lean f32_table_* rows and F32_CROSS_ENGINE_TABLE differ in number"
+    );
+}
+
+/// Mutation control for the table: the rows above are not satisfiable by a
+/// truncating rounder or by rounding through an f64 intermediate.
+#[test]
+fn f32_cross_engine_table_discriminates_rounding_mutants() {
+    // A truncating (round-toward-zero) f64 -> f32.
+    let truncate = |x: f64| -> u32 {
+        let r = x as f32;
+        if f64::from(r).abs() > x.abs() {
+            f32::from_bits(r.to_bits() - 1).to_bits()
+        } else {
+            r.to_bits()
+        }
+    };
+    let sticky = f64::from_bits(0x3ff0_0000_1000_0004);
+    assert_ne!(
+        truncate(sticky),
+        0x3f80_0001,
+        "the sticky row must catch truncation"
+    );
+    // Double rounding through f64.
+    let via_f64 = (1_152_921_573_326_323_713_u64 as f64) as f32;
+    assert_ne!(
+        via_f64.to_bits(),
+        0x5d80_0001,
+        "the u64 row must catch double rounding"
+    );
+    // An encoder that ignores the width (the F64 pattern's top half).
+    assert_ne!((1.5f64.to_bits() >> 32) as u32, 1.5f32.to_bits());
+}
+
+/// `review/lean-float-memory-placeholder`: a float that goes through memory
+/// comes back bit-exact at its own width (the Lean half:
+/// `review_lean_float_memory_placeholder_*` in FloatFixtures.lean).
+#[test]
+fn review_lean_float_memory_placeholder_roundtrips() {
+    // store f64 1.5; load -> 1.5
+    let (m, f) = build_nullary(vec![Ty::F64], |fb| {
+        let p = fb.alloca(Ty::F64);
+        let x = fb.fconst(Ty::F64, 1.5);
+        fb.store(Ty::F64, p, x);
+        vec![fb.load(Ty::F64, p)]
+    });
+    assert_eq!(run_f64_bits(&m, f), 0x3ff8_0000_0000_0000);
+    // store f32 0.1f32; load -> 0x3dcccccd
+    let (m, f) = build_nullary(vec![Ty::F32], |fb| {
+        let p = fb.alloca(Ty::F32);
+        let x = fb.fconst(Ty::F32, f64::from(0.1f32));
+        fb.store(Ty::F32, p, x);
+        vec![fb.load(Ty::F32, p)]
+    });
+    assert_eq!(run_f32_bits(&m, f), 0x3dcc_cccd);
+    // The F32 image is four bytes of the binary32 pattern: reread as i32.
+    let (m, f) = build_nullary(vec![Ty::I32], |fb| {
+        let p = fb.alloca(Ty::F32);
+        let x = fb.fconst(Ty::F32, 1.5);
+        fb.store(Ty::F32, p, x);
+        vec![fb.load(Ty::I32, p)]
+    });
+    assert_eq!(run_signed(&m, f), Ok(0x3fc0_0000));
+    // Decode side: the integer-written bits of 1.5 load as F64 1.5.
+    let (m, f) = build_nullary(vec![Ty::F64], |fb| {
+        let p = fb.alloca(Ty::I64);
+        let x = fb.iconst(Ty::I64, 0x3ff8_0000_0000_0000);
+        fb.store(Ty::I64, p, x);
+        vec![fb.load(Ty::F64, p)]
+    });
+    assert_eq!(run_f64_bits(&m, f), 0x3ff8_0000_0000_0000);
+}
+
+/// `trust-ir-self-declared/lean-semantic-depth-ledger`, float row: the proof
+/// program's `fn avg(a: f32, b: f32) -> f32 { (a + b) / 2.0 }` at
+/// `a = 16777216, b = 1` is 8388608 in f32 (8388608.5 at f64). The Lean half
+/// is `lean_semantic_depth_ledger_float_avg_f32`.
+#[test]
+fn lean_semantic_depth_ledger_float_row() {
+    let (m, f) = build_nullary(vec![Ty::F32], |fb| {
+        let a = fb.fconst(Ty::F32, 16_777_216.0);
+        let b = fb.fconst(Ty::F32, 1.0);
+        let sum = fb.binop(BinOp::FAdd, Ty::F32, a, b);
+        let two = fb.fconst(Ty::F32, 2.0);
+        vec![fb.binop(BinOp::FDiv, Ty::F32, sum, two)]
+    });
+    assert_eq!(run_f32_bits(&m, f), 8_388_608.0f32.to_bits());
+    // A 128-bit source rounds once at F64 too: 2^100 + 2^47 + 1 -> 2^100 + 2^48
+    // (the Lean half: lean_semantic_depth_ledger_float_uitofp_f64_u128_rounds_once).
+    let (m, f) = build_nullary(vec![Ty::F64], |fb| {
+        let x = fb.iconst(Ty::U128, (1_i128 << 100) + (1_i128 << 47) + 1);
+        vec![fb.cast(CastOp::UIToFP, Ty::U128, Ty::F64, x)]
+    });
+    assert_eq!(run_f64_bits(&m, f), 0x4630_0000_0000_0001);
+}
+
+// ---------------------------------------------------------------------------
+// WS2.23 review: adversarial rows. Each pins the interpreter's (bit-faithful)
+// answer that the Lean model used to contradict; the Lean halves are the
+// `ws2_23_review_*` theorems in FloatFixtures.lean.
+// ---------------------------------------------------------------------------
+
+/// (1) A NaN's stored image is observable at an integer type. The interpreter
+/// keeps `FloatBits`, so a bitcast-made signalling NaN reloads as its own
+/// pattern 0x7f800001; the Lean model cannot see a NaN's payload, so a
+/// canonical-NaN image would have answered 0x7fc00000. Lean refuses the store
+/// (`ws2_23_review_snan_store_reload_refused`).
+#[test]
+fn ws2_23_review_snan_store_reload_keeps_payload() {
+    let (m, f) = build_nullary(vec![Ty::I32], |fb| {
+        let p = fb.alloca(Ty::F32);
+        let bits = fb.iconst(Ty::I32, 0x7f80_0001);
+        let x = fb.cast(CastOp::Bitcast, Ty::I32, Ty::F32, bits);
+        fb.store(Ty::F32, p, x);
+        vec![fb.load(Ty::I32, p)]
+    });
+    assert_eq!(run_signed(&m, f), Ok(0x7f80_0001));
+}
+
+/// (2) A tuple constant's F32 field is the literal rounded to binary32
+/// (the Lean half: `ws2_23_review_tuple_const_*`).
+#[test]
+fn ws2_23_review_tuple_const_f32_field_rounds() {
+    use trust_ir::constant::Constant;
+    let (m, f) = build_nullary(vec![Ty::F32, Ty::F64], |fb| {
+        let t = fb.const_value(
+            Ty::Tuple(vec![Ty::F32, Ty::F64]),
+            Constant::Aggregate(vec![Constant::Float(0.1), Constant::Float(0.1)]),
+        );
+        let a = fb.extract_field(Ty::F32, t, 0);
+        let b = fb.extract_field(Ty::F64, t, 1);
+        vec![a, b]
+    });
+    let outcome = Interpreter::with_module(&m)
+        .execute_func(f, [])
+        .expect("execution succeeds");
+    let bits: Vec<u64> = outcome
+        .returns
+        .iter()
+        .map(|v| match v.kind {
+            InterpretValueKind::FloatBits(bits) => bits,
+            ref other => panic!("expected float return, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        bits,
+        vec![u64::from(0.1f32.to_bits()), 0.1f64.to_bits()],
+        "the F32 field is 0x3dcccccd, the F64 field binary64 0.1"
+    );
+}
+
+/// (3) `cmpxchg` at F32 compares bit patterns: a matching expected value
+/// succeeds and the desired value is written (the Lean half:
+/// `ws2_23_review_cmpxchg_f32_*`; the Lean model used to report failure for
+/// every float).
+#[test]
+fn ws2_23_review_cmpxchg_f32_success_writes_desired() {
+    use trust_ir::inst::Ordering;
+    let (m, f) = build_nullary(vec![Ty::Bool, Ty::F32], |fb| {
+        let p = fb.alloca(Ty::F32);
+        let x = fb.fconst(Ty::F32, 1.5);
+        fb.store(Ty::F32, p, x);
+        let d = fb.fconst(Ty::F32, 2.0);
+        let (_old, ok) = fb.cmpxchg(Ty::F32, p, x, d, Ordering::SeqCst, Ordering::SeqCst);
+        let now = fb.load(Ty::F32, p);
+        vec![ok, now]
+    });
+    let outcome = Interpreter::with_module(&m)
+        .execute_func(f, [])
+        .expect("execution succeeds");
+    assert!(matches!(
+        outcome.returns[0].kind,
+        InterpretValueKind::Bool(true)
+    ));
+    assert!(matches!(
+        outcome.returns[1].kind,
+        InterpretValueKind::FloatBits(bits) if bits == u64::from(2.0f32.to_bits())
+    ));
+}
+
+/// Bitwise: a stored `+0.0` does not match an expected `-0.0`.
+#[test]
+fn ws2_23_review_cmpxchg_f32_signed_zero_differs() {
+    use trust_ir::inst::Ordering;
+    let (m, f) = build_nullary(vec![Ty::Bool], |fb| {
+        let p = fb.alloca(Ty::F32);
+        let z = fb.fconst(Ty::F32, 0.0);
+        fb.store(Ty::F32, p, z);
+        let nz = fb.fconst(Ty::F32, -0.0);
+        let (_old, ok) = fb.cmpxchg(Ty::F32, p, nz, nz, Ordering::SeqCst, Ordering::SeqCst);
+        vec![ok]
+    });
+    assert!(!run_bool(&m, f));
+}
+
+/// Every review row has its Lean half, so neither side can be dropped alone.
+#[test]
+fn ws2_23_review_rows_have_lean_halves() {
+    let lean = float_fixtures_lean_source();
+    for row in [
+        "ws2_23_review_snan_store_reload_refused",
+        "ws2_23_review_fneg_nan_store_refused",
+        "ws2_23_review_tuple_const_f32_field_rounds",
+        "ws2_23_review_tuple_const_extract_f32",
+        "ws2_23_review_vector_const_f32_lanes_round",
+        "ws2_23_review_struct_const_inexact_float_refused",
+        "ws2_23_review_struct_const_exact_float_admitted",
+        "ws2_23_review_cmpxchg_f32_success",
+        "ws2_23_review_cmpxchg_f32_writes_desired",
+        "ws2_23_review_cmpxchg_f32_signed_zero_differs",
+        "ws2_23_review_cmpxchg_f32_nan_refused",
+    ] {
+        assert!(
+            lean.contains(&format!("theorem {row} :")),
+            "Lean half `{row}` is missing from FloatFixtures.lean"
+        );
+    }
 }

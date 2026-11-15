@@ -29,7 +29,7 @@ fn module_with_condbr() -> Module {
         fb.ret(vec![]);
         fb.build();
     }
-    mb.build()
+    mb.build().expect("ModuleBuilder::build: test fixture")
 }
 
 /// Attach a proof annotation to the entry block's terminator (the CondBr).
@@ -74,7 +74,7 @@ fn branch_weights_on_non_terminator_rejected() {
         fb.ret(vec![r]);
         fb.build();
     }
-    let mut m = mb.build();
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
     // annotate the first const node (not a terminator)
     m.functions[0].blocks[0].body[0]
         .proofs
@@ -115,7 +115,7 @@ fn module_with_switch(weights: Vec<u32>) -> Module {
         fb.ret(vec![]);
         fb.build();
     }
-    let mut m = mb.build();
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
     annotate_terminator(&mut m, ProofAnnotation::BranchWeights(weights));
     m
 }

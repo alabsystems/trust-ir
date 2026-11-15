@@ -10,13 +10,14 @@
 //! Run from the workspace root:
 //!
 //! ```text
-//! cargo run --quiet --locked -p trust-ir-build --example getting_started
+//! targo --unverified run --quiet --locked -p trust-ir-build --example getting_started
 //! ```
 
+use trust_ir::proof::{ProofCertificate, ProofEvidence};
 use trust_ir::{ObligationKind, ProofId, ProofObligation, ProofStatus, Ty};
 use trust_ir_build::{ModuleBuilder, validate_module};
 
-fn main() {
+fn main() -> Result<(), trust_ir_build::BuildError> {
     let mut module = ModuleBuilder::new("answer");
     let signature = module.add_func_type(vec![], vec![Ty::I64]);
 
@@ -29,7 +30,7 @@ fn main() {
     program.ret(vec![answer]);
     program.build();
 
-    let mut module = module.build();
+    let mut module = module.build()?;
     if std::env::args().any(|arg| arg == "--trusted") {
         module.proof_obligations.push(ProofObligation::new(
             ProofId::new(0),
@@ -37,9 +38,19 @@ fn main() {
             ProofStatus::Trusted,
             "tutorial obligation accepted on faith",
         ));
+        // A `Trusted` row must attribute its faith (WS1.8 DECIDE 1A): the
+        // validator refuses a Trusted status with no `ProofEvidence::Trusted`
+        // justification, and `--forbid-trusted` lists both.
+        module.proof_certificates.push(ProofCertificate {
+            obligation: ProofId::new(0),
+            prover: "tutorial".to_string(),
+            evidence: ProofEvidence::Trusted("accepted on faith for the tutorial".to_string()),
+            assurance: None,
+        });
     }
 
     let errors = validate_module(&module);
     assert!(errors.is_empty(), "{errors:#?}");
     print!("{module}");
+    Ok(())
 }

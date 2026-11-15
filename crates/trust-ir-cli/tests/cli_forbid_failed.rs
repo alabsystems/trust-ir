@@ -17,7 +17,11 @@ use common::{build_failed_status_module, build_valid_module, trust_ir_cmd};
 
 fn write_module(dir: &Path, module: &trust_ir::Module) -> PathBuf {
     let path = dir.join("module.tmbc");
-    fs::write(&path, trust_ir::binary::serialize_module(module)).expect("write module");
+    fs::write(
+        &path,
+        trust_ir::binary::serialize_module(module).expect("serialize_module: test fixture"),
+    )
+    .expect("write module");
     path
 }
 

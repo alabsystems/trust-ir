@@ -29,6 +29,9 @@ fn global_addr_loads_initializer() {
         linkage: Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
     let ft = mb.add_func_type(vec![], vec![Ty::I32]);
@@ -39,7 +42,7 @@ fn global_addr_loads_initializer() {
     let v = fb.load(Ty::I32, p);
     fb.ret(vec![v]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(
         validate_module(&module).is_empty(),
@@ -72,6 +75,9 @@ fn global_addr_mutable_store_persists_and_aliases() {
         linkage: Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
     let ft = mb.add_func_type(vec![], vec![Ty::I32]);
@@ -86,7 +92,7 @@ fn global_addr_mutable_store_persists_and_aliases() {
     let v = fb.load(Ty::I32, p2);
     fb.ret(vec![v]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     assert!(validate_module(&module).is_empty());
 
@@ -113,7 +119,7 @@ fn global_addr_out_of_range_is_rejected() {
     let p = fb.global_addr(GlobalId::new(0));
     fb.ret(vec![p]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
 
     let errors = validate_module(&module);
     assert!(

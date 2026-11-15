@@ -45,11 +45,18 @@ inductive StepResult where
   -- Fields: callee, resolved argument values, normal destination, UNresolved
   -- normal-edge argument ids (they may reference the invoke's own results, so
   -- they are evaluated only AFTER the evaluator binds those — mirroring
-  -- interpret.rs), and the unwind destination. The executable model, like the
-  -- reference interpreter, models a non-throwing callee (panic=abort), so the
-  -- unwind edge is carried for structural fidelity but never taken.
+  -- interpret.rs), and the unwind destination. Under `PanicStrategy.abort`
+  -- (the panic=abort projection) the unwind edge is never taken; under
+  -- `.unwind` the contextual evaluator enters it when the callee unwinds
+  -- (amendment D, Part 2).
   | InvokeReq : FuncId -> List Value -> BlockId -> List ValueId -> BlockId
       -> StepResult
+  -- Indirect invoke request (`Inst.InvokeIndirect`, amendment D Part 2):
+  -- `CallIndirectReq`'s fields (callee address, signature, resolved argument
+  -- values) then `InvokeReq`'s successor fields (normal destination,
+  -- UNresolved normal-edge argument ids, unwind destination).
+  | InvokeIndirectReq : Nat -> FuncTyId -> List Value -> BlockId -> List ValueId
+      -> BlockId -> StepResult
 
   -- SeqMap request: the evaluator must apply the element function (first
   -- field) to every element of the resolved sequence (second field) via the

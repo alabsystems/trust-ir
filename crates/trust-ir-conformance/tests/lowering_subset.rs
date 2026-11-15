@@ -29,18 +29,21 @@
 use std::path::{Path, PathBuf};
 
 use trust_ir_conformance::subset::{
-    CASTOP_ALLOWLIST_V2, DIALECT_OP_ALLOWLIST_V2, INST_ALLOWLIST_V2, PROOF_ALLOWLIST_V2,
-    SUBSET_VERSION, TY_ALLOWLIST_V2, module_subset_violations,
+    CASTOP_ALLOWLIST_V5, DIALECT_OP_ALLOWLIST_V5, INST_ALLOWLIST_V5, PROOF_ALLOWLIST_V5,
+    SUBSET_VERSION, TY_ALLOWLIST_V5, module_subset_violations,
 };
 
 // Fixture generators live in a sibling file and are included directly so
 // this gate walks the exact modules the byte-golden corpus pins. (dead_code
 // allowed: the lineage/oracle builders are only used by conformance.rs.)
-#[allow(dead_code)]
-#[path = "generate.rs"]
-mod generate;
+// The fixture generators (tests/generate.rs), compiled once as the library's
+// `fixtures` module rather than again inside every test binary.
+use trust_ir_conformance::fixtures as generate;
 
-type ModuleFixture = (&'static str, fn() -> trust_ir::Module);
+type ModuleFixture = (
+    &'static str,
+    fn() -> Result<trust_ir::Module, generate::FixtureError>,
+);
 
 /// One corpus row: fixture name + builder (kept in sync with
 /// `conformance.rs::corpus()` by the `gate_walks_every_corpus_fixture`
@@ -48,6 +51,13 @@ type ModuleFixture = (&'static str, fn() -> trust_ir::Module);
 const MODULE_FIXTURES: &[ModuleFixture] = &[
     ("ty_primitives", generate::build_ty_primitives),
     ("ty_composite", generate::build_ty_composite),
+    ("declared_tuple_v42", generate::build_declared_tuple_v42),
+    ("spec_carrier", generate::build_spec_carrier),
+    // v59 effect summaries and world epochs (WS1.14) are summary METADATA;
+    // the bodies are stores, a global address, an add and a direct call —
+    // expected subset-clean.
+    ("effect_summaries", generate::build_effect_summaries),
+    ("certificate_binding", generate::build_certificate_binding),
     ("inst_arithmetic", generate::build_inst_arithmetic),
     ("inst_seq_map", generate::build_inst_seq_map),
     ("inst_seq_map_not", generate::build_inst_seq_map_not),
@@ -78,10 +88,20 @@ const MODULE_FIXTURES: &[ModuleFixture] = &[
         "frontend_panic_obligations",
         generate::build_frontend_panic_obligations,
     ),
+    // WS4.4: the proof surface text carries — summaries with every clause
+    // kind and place, a `backed_by` citation, one obligation per v41 kind,
+    // one certificate per `CoverageBound`. All of it is module-level proof
+    // METADATA over a plain body plus a body-less `External` declaration, so
+    // the fixture must stay subset-clean.
+    ("proof_surface", generate::build_proof_surface),
     ("composition", generate::build_composition),
+    // WS4.2 text-directive coverage: function/node metadata plus a plain
+    // call and branches — expected subset-clean.
+    ("text_directives", generate::build_text_directives),
     // v23 producer provenance tags. Provenance is function metadata (like
     // calling_conv/linkage); the subset constrains instructions and types,
     // so a fully-tagged module is expected subset-clean.
+    ("body_gate", generate::build_body_gate),
     ("producer_provenance", generate::build_producer_provenance),
     // v32/v33 debug metadata is claim-style function/node metadata. Its
     // sparse value IDs, scope tree, and source spans do not broaden the
@@ -101,6 +121,101 @@ const MODULE_FIXTURES: &[ModuleFixture] = &[
         "mixed_producer_module",
         generate::build_mixed_producer_module,
     ),
+    // v40 container-tail fat pointers (ContainerVtable + ContainerLen) on the
+    // default 64-bit little-endian target: FatPtr is in subset v2 regardless
+    // of kind, so the fixture is expected subset-clean.
+    ("ty_container_vtable", generate::build_ty_container_vtable),
+    // v44 import-identity scheme: a mixed V2/V3 import table over a
+    // one-instruction i32 identity body — expected subset-clean (the scheme
+    // is identity metadata, not a construct a backend lowers).
+    ("import_scheme", generate::build_import_scheme),
+    // v39 nominal dialect type and v43 nominal opaque runtime handle: both
+    // are excluded types (exact-typed transport only, no proven lowering),
+    // so both fixtures are documented exemptions.
+    ("ty_dialect_v39", generate::build_ty_dialect),
+    ("ty_handle", generate::build_ty_handle),
+    // v50 constant-size uniform array: a documented exemption (no trust-cg
+    // lowering yet).
+    ("array_splat", generate::build_array_splat),
+    // v51 INST wire batch: MakeAggregate / MemCopy / MemSet are excluded
+    // (no trust-cg lowering), so a documented exemption.
+    ("inst_wire_batch", generate::build_inst_wire_batch),
+    // Plan item P (wire v52): an assert's kind changes only its panic, so a
+    // kinded `Assert` stays in subset; expected subset-clean.
+    ("assert_kind", generate::build_assert_kind),
+    ("call_unwind_boundary", generate::build_call_unwind_boundary),
+    // Amendment P (wire v54): a site changes which panic a failed check is,
+    // never whether it fails, so a sited `Assert` stays in subset;
+    // expected subset-clean. `AssertInvoke` is excluded by name until a
+    // consumer lowers its unwind edge: a documented exemption.
+    ("assert_panic_site", generate::build_assert_panic_site),
+    ("assert_invoke", generate::build_assert_invoke),
+    // Amendment D (wire v55): `Drop` / `DropInvoke` are excluded by name
+    // until a backend lowers them (the v5 expansion): a documented
+    // exemption.
+    ("drop_glue", generate::build_drop_glue),
+    // Amendment D, Part 2 (wire v56): `InvokeIndirect` is excluded by name
+    // until a backend lowers it (the v5 expansion): a documented exemption.
+    ("unwind_twins", generate::build_unwind_twins),
+    // Roadmap DG-63 (wire v62): the entry-state pointee clause place is
+    // summary / obligation METADATA over a load-add-store body on `&u64` /
+    // `&mut u64` — expected subset-clean.
+    ("param_pointee_place", generate::build_param_pointee_place),
+    // v45 function symbol attributes (WS3.10): visibility / section /
+    // retention are function METADATA, like linkage and producer — the
+    // subset constrains instructions and types — so this fixture is
+    // expected subset-clean.
+    ("abi_function_symbol", generate::build_abi_function_symbol),
+    // v45 foreign calling conventions (WS3.12): a convention is an ABI fact
+    // on a function or a call site, not an instruction or a type, so this
+    // fixture is expected subset-clean too.
+    ("abi_calling_conv", generate::build_abi_calling_conv),
+    // v60 checked source ABI placement: a placement record is an ABI fact on
+    // a function signature, not an instruction or a type, so this fixture is
+    // expected subset-clean.
+    ("typed_signature_abi", generate::build_typed_signature_abi),
+    // v45 128-bit enum tag lanes (WS3.14(b)): `Ty::Enum` is in the subset
+    // and a tag repr is a LAYOUT hint on the enum definition, not an
+    // instruction or a type — expected subset-clean.
+    ("abi_enum_tag_repr", generate::build_abi_enum_tag_repr),
+    // v45 per-slot ABI facts (WS3.11): ABI claims on function metadata, not
+    // instructions or types — expected subset-clean.
+    ("abi_param_facts", generate::build_abi_param_facts),
+    // WS4.15: the Lean library envelope — subset arithmetic plus module-level
+    // proof metadata, so it is expected subset-clean.
+    (
+        "lean_library_envelope",
+        generate::build_lean_library_envelope,
+    ),
+    // v58 (WS3.13): a declared closure environment frame plus the
+    // application it makes lowerable for codegen. The APPLICATION is outside
+    // the subset (structural condition 4: no Lean closure-application rule),
+    // so the fixture is on the exemption list below.
+    ("closure_layout", generate::build_closure_layout),
+    ("make_closure", generate::build_make_closure),
+    ("storage_only", generate::build_storage_only),
+    // The tensor region (PKG-U13a): `Ty::Tensor` and `Inst::TensorContract`
+    // have no machine lowering, so the fixture is on the exemption list below.
+    ("tensor_contract", generate::build_tensor_contract),
+    // Its map, reduce and view (PKG-U13c): no machine lowering either, so
+    // the fixture is on the exemption list below.
+    (
+        "tensor_map_reduce_view",
+        generate::build_tensor_map_reduce_view,
+    ),
+    // Its gather and scatter (PKG-U13d): no machine lowering either, so the
+    // fixture is on the exemption list below.
+    (
+        "tensor_gather_scatter",
+        generate::build_tensor_gather_scatter,
+    ),
+    // Its content-addressed weights (PKG-U13e): no machine lowering either,
+    // so the fixture is on the exemption list below.
+    ("tensor_weight_blob", generate::build_tensor_weight_blob),
+    // v58 (WS3.9): nominal type-origin keys on a struct and an enum over a
+    // one-constant u32 body — expected subset-clean (the key is identity
+    // metadata, not a construct a backend lowers).
+    ("nominal_type_origin", generate::build_nominal_type_origin),
 ];
 
 /// Fixtures that INTENTIONALLY exercise out-of-subset constructs, with the
@@ -110,14 +225,20 @@ const MODULE_FIXTURES: &[ModuleFixture] = &[
 /// the fixture or document the exemption here AND in the spec doc).
 const SUBSET_EXEMPT_FIXTURES: &[(&str, &str)] = &[
     (
-        "b1_scalars",
-        "Ty::Isize/Usize/Char — v25 B1 scalar wire coverage; trust-cg has no pointer-width-int \
-         or char lowering yet (B1 adoption wave)",
+        "call_unwind_boundary",
+        "Inst::CallCannotUnwind / CallIndirectCannotUnwind — typed wire-only no-crossing boundaries; executable and proof-subset host-unwind semantics are not modeled",
+    ),
+    (
+        "inst_memory",
+        "Inst::Dealloc — wire coverage of the full memory-instruction surface; the format \
+         states neither the AllocOrigin nor the layout a correct free needs, so no conforming \
+         backend can consume it (G18-1)",
     ),
     (
         "ty_primitives",
-        "Ty::F16 — wire coverage of the full primitive-type surface; F16 has no executable \
-         binary16 semantics (B3 depth ledger)",
+        "Ty::F16 — wire coverage of the full primitive-type surface; F16 has no Lean \
+         binary16 semantics (B3 depth ledger), so it stays out of the subset although the \
+         reference interpreter executes it since WS2.15",
     ),
     (
         "inst_vector_crosslane",
@@ -138,6 +259,91 @@ const SUBSET_EXEMPT_FIXTURES: &[(&str, &str)] = &[
         "chc_batch",
         "ProofAnnotation::Custom — the ay CHC batch protocol tags ride the unpinned Custom \
          escape hatch",
+    ),
+    (
+        "ty_dialect_v39",
+        "Ty::Dialect — v39 nominal dialect type wire coverage (the only golden with header \
+         39); exact-typed transport only, no legalization, so excluded as emitted",
+    ),
+    (
+        "ty_handle",
+        "Ty::Handle — v43 nominal opaque runtime handle wire coverage (the only golden with \
+         header 43); the pinned trust_bignum::Nat declarations plus a transport body, \
+         runtime-opaque with no interpreter or Lean origin, so excluded as emitted",
+    ),
+    (
+        "array_splat",
+        "Inst::ArraySplat / Constant::Splat — v50 uniform-array wire coverage (the only golden \
+         with header 50) at u64-scale lengths; wire tags, Lean semantics and the lazy \
+         interpreter value landed, a trust-cg lowering did not, so excluded until a subset bump",
+    ),
+    (
+        "inst_wire_batch",
+        "Inst::MakeAggregate / MemCopy / MemSet — v51 INST wire batch coverage (the only golden \
+         with header 51) beside the in-subset WS3.20 sub-ops; the three instructions have wire \
+         tags and semantics but no trust-cg lowering, so excluded until their admission bumps",
+    ),
+    (
+        "assert_invoke",
+        "Inst::AssertInvoke / LandingPad / Resume — amendment P wire coverage of the sited check \
+         with an unwind edge (Inst tag 67); both engines execute it as the panic=abort \
+         projection, but no consumer lowers its unwind edge, so excluded by name until a \
+         subset bump admits it with the lowering",
+    ),
+    (
+        "drop_glue",
+        "Inst::Drop / DropInvoke / LandingPad / Resume — amendment D wire coverage of the \
+         drop-glue table and the unwinding drop (Inst tag 68); both engines execute a resolved \
+         drop as a call of its glue, but no backend lowers a drop yet, so excluded by name \
+         until the v5 expansion admits Drop and DropInvoke with the lowering",
+    ),
+    (
+        "unwind_twins",
+        "Inst::InvokeIndirect / LandingPad — amendment D Part 2 wire coverage of the unwinding \
+         indirect call (Inst tag 69); both engines execute it (its unwind edge under \
+         PanicStrategy::Unwind), but no backend lowers it, so excluded by name until the v5 \
+         expansion admits it with the lowering",
+    ),
+    (
+        "closure_layout",
+        "closure application (CallIndirect over a Ty::Closure callee) — v58 declared-closure-frame \
+         wire coverage that applies the closure its row declares; structural condition 4 keeps \
+         the application outside the subset (the Lean model has no closure-application rule)",
+    ),
+    (
+        "storage_only",
+        "possibly-uninitialized storage geometry; no by-value Core lowering or initialized-value authority",
+    ),
+    (
+        "make_closure",
+        "Inst::MakeClosure and closure application — runtime capture wire coverage, \
+         still refused by the lowering-target subset; no native/provider proof admission",
+    ),
+    (
+        "tensor_contract",
+        "Ty::Tensor / Inst::TensorContract — the tensor region's wire coverage (an integer \
+         matrix multiply); both engines execute it, but a tensor has no memory layout and no \
+         backend lowers a contraction, so excluded by name until a subset bump admits them",
+    ),
+    (
+        "tensor_map_reduce_view",
+        "Ty::Tensor / Inst::TensorMap / Inst::TensorReduce / Inst::TensorView — the tensor \
+         region's map, reduce and view wire coverage, chained; both engines execute them, but a \
+         tensor has no memory layout and no backend lowers them, so excluded by name until a \
+         subset bump admits them",
+    ),
+    (
+        "tensor_gather_scatter",
+        "Ty::Tensor / Inst::TensorGather / Inst::TensorScatter — the tensor region's gather and \
+         scatter wire coverage, chained; both engines execute them, but a tensor has no memory \
+         layout and no backend lowers them, so excluded by name until a subset bump admits them",
+    ),
+    (
+        "tensor_weight_blob",
+        "Ty::Tensor / Constant::TensorBlob — content-addressed weight blobs named at two element \
+         types and fed to a contraction; both engines read them, but a tensor has no memory \
+         layout and no backend lowers a blob constant, so excluded by its tensor type until a \
+         subset bump admits it",
     ),
 ];
 
@@ -162,7 +368,7 @@ fn exemption_reason(name: &str) -> Option<&'static str> {
 #[test]
 fn corpus_fixtures_respect_the_lowering_target_subset() {
     for (name, build) in MODULE_FIXTURES {
-        let module = build();
+        let module = build().expect("the fixture builds");
         let violations = module_subset_violations(&module);
         match exemption_reason(name) {
             None => assert!(
@@ -241,7 +447,7 @@ fn gate_walks_every_corpus_fixture() {
 /// metadata, not emitted IR).
 #[test]
 fn native_bundle_module_respects_the_subset() {
-    let fixture = generate::build_trust_native_request_bundle();
+    let fixture = generate::build_trust_native_request_bundle().expect("the fixture builds");
     let violations = module_subset_violations(&fixture.bundle.module);
     assert!(
         violations.is_empty(),
@@ -330,21 +536,64 @@ fn spec_doc_matches_machine_readable_subset() {
     };
     check_axis(
         "## Instructions",
-        INST_ALLOWLIST_V2,
-        &["CoroSuspend", "LandingPad", "Resume"],
+        INST_ALLOWLIST_V5,
+        // `Dealloc` left the subset in G18-1 (2026-09-01): the format cannot
+        // state the allocator origin or the layout a correct free needs.
+        // `MakeAggregate` (WS3.5, 2026-09-19) landed after v3 was cut without
+        // its wire tag or a backend lowering; a v3 addendum records it as
+        // excluded (see the doc's history).
+        &[
+            "Dealloc",
+            "CoroSuspend",
+            "LandingPad",
+            "Resume",
+            "MakeAggregate",
+            // WS3.20: semantics landed, admission is a subset-contract bump.
+            "MemCopy",
+            "MemSet",
+            // Crystal lane (wave-DS): no destructor model in either executable model.
+            "Drop",
+            // v50: wire tags and semantics landed, no backend lowering yet.
+            "ArraySplat",
+            // Amendment P (v54): no consumer lowers its unwind edge yet.
+            "AssertInvoke",
+            // Amendment D Part 2 (v56): no backend lowers it yet.
+            "InvokeIndirect",
+            // The tensor region (PKG-U13a): no backend lowers a contraction.
+            "TensorContract",
+            // Its map, reduce and view (PKG-U13c): no backend lowers them.
+            "TensorMap",
+            "TensorReduce",
+            "TensorView",
+            // Its gather and scatter (PKG-U13d): likewise.
+            "TensorGather",
+            "TensorScatter",
+        ],
     );
     check_axis(
         "## Types",
-        TY_ALLOWLIST_V2,
-        &["F16", "Isize", "Usize", "Char", "Error"],
+        TY_ALLOWLIST_V5,
+        // v4 (WS2.17) promoted `Isize` / `Usize` / `Char` out of this table.
+        // The tensor region (PKG-U13a): `Tensor` has no memory layout.
+        &[
+            "F16", "Error", "Refine", "Dialect", "Handle", "Storage", "Tensor",
+        ],
     );
     check_axis(
         "## Casts",
-        CASTOP_ALLOWLIST_V2,
+        CASTOP_ALLOWLIST_V5,
         &["ReifyFnPointer", "FPToSISat", "FPToUISat"],
     );
-    check_axis("## Dialect ops", DIALECT_OP_ALLOWLIST_V2, &["vector.fma"]);
-    check_axis("## Proof annotations", PROOF_ALLOWLIST_V2, &["Custom"]);
+    check_axis("## Dialect ops", DIALECT_OP_ALLOWLIST_V5, &["vector.fma"]);
+    check_axis(
+        "## Proof annotations",
+        PROOF_ALLOWLIST_V5,
+        // Both havoc markers are wire-encodable, NOT feature-gated, and were
+        // never ratified into the subset — `proof_annotation_excluded`
+        // (trust-ir::bridge) and `PROOF_ALLOWLIST_V5` both fail closed on
+        // them, so the doc must carry them in its Excluded table too.
+        &["Custom", "FreshSymbolicHavoc", "RegionHavocStore"],
+    );
     // Every exempt fixture must be listed in the doc's exemption table.
     for (name, _) in SUBSET_EXEMPT_FIXTURES {
         if !doc.contains(&format!("`{name}`")) {
@@ -363,7 +612,7 @@ fn spec_doc_matches_machine_readable_subset() {
 /// emitted through the subset with spans — validated end-to-end.
 #[test]
 fn worked_example_is_subset_clean_validated_and_span_covered() {
-    let module = generate::build_frontend_emission_subset();
+    let module = generate::build_frontend_emission_subset().expect("the fixture builds");
 
     // 1. Well-formed.
     let errors = trust_ir_build::validate_module(&module);
@@ -420,13 +669,18 @@ fn worked_example_is_subset_clean_validated_and_span_covered() {
     assert_eq!(got, 42, "sum3(39) == 42");
 }
 
+/// v2 admitted the fat-pointer trio with canonical metadata on the 64-bit
+/// little-endian target only; v3 keeps the metadata condition and lifts the
+/// target condition to the whole module (structural condition 5), so a
+/// non-64-bit or big-endian module fails ONCE, module-wide, whether or not it
+/// carries a fat pointer.
 #[test]
-fn fat_pointer_v2_is_canonical_and_64_bit_only() {
-    let module = generate::build_inst_arithmetic();
+fn fat_pointer_is_canonical_and_the_module_target_is_pinned() {
+    let module = generate::build_inst_arithmetic().expect("the fixture builds");
     let violations = module_subset_violations(&module);
     assert!(
         violations.is_empty(),
-        "the canonical U64 str metadata trio must be admitted in v2: {violations:?}"
+        "the canonical U64 str metadata trio must be admitted: {violations:?}"
     );
 
     let mut wrong_metadata = module.clone();
@@ -459,21 +713,163 @@ fn fat_pointer_v2_is_canonical_and_64_bit_only() {
         abi: None,
         struct_passing: Default::default(),
     });
+    // Condition 5 is reported exactly once, first, module-wide. On a 4-byte
+    // target the canonical-metadata condition (2) ALSO fires against the
+    // fixture's `u64` lanes (canonical is `u32` there) — an independent,
+    // correct finding, so it is not counted against the module-level row.
     let violations = module_subset_violations(&narrow);
-    assert!(
+    assert_eq!(
         violations
             .iter()
-            .any(|violation| violation.contains("pinned 64-bit little-endian target")),
-        "32-bit FatPtr must fail closed: {violations:?}"
+            .filter(|violation| violation.contains("structural condition 5"))
+            .count(),
+        1,
+        "{violations:?}"
+    );
+    assert!(
+        violations[0].contains("structural condition 5")
+            && violations[0].contains("4-byte pointers"),
+        "32-bit module must fail closed on condition 5 first: {violations:?}"
+    );
+    assert!(
+        violations[1..]
+            .iter()
+            .all(|violation| violation.contains("does not match canonical")),
+        "{violations:?}"
     );
 
     narrow.target_info.as_mut().expect("target").pointer_size = 8;
     narrow.target_info.as_mut().expect("target").endianness = trust_ir::Endianness::Big;
     let violations = module_subset_violations(&narrow);
-    assert!(
-        violations
-            .iter()
-            .any(|violation| violation.contains("got 64-bit big-endian")),
-        "big-endian FatPtr must fail closed: {violations:?}"
+    assert_eq!(
+        violations.len(),
+        1,
+        "one module-wide violation: {violations:?}"
     );
+    assert!(
+        violations[0].contains("structural condition 5") && violations[0].contains("big-endian"),
+        "big-endian module must fail closed on condition 5: {violations:?}"
+    );
+
+    // Mutation control: an explicit 64-bit little-endian pin is admitted
+    // exactly like the unpinned module — the condition names ONE byte
+    // model, it does not refuse every pinned target.
+    narrow.target_info.as_mut().expect("target").endianness = trust_ir::Endianness::Little;
+    let violations = module_subset_violations(&narrow);
+    assert!(
+        violations.is_empty(),
+        "an explicit 64-bit little-endian target is the pinned byte model: {violations:?}"
+    );
+}
+
+/// Amendment D (wire v55): `Drop` and `DropInvoke` stay OUTSIDE subset v4,
+/// excluded BY NAME in both spellings (the core classifier and the mirror),
+/// though both engines now execute a resolved drop as a call of its glue:
+/// admitting an opcode no backend lowers is not admission (the v5
+/// expansion, with structural condition 9: every drop resolves).
+#[test]
+fn drop_and_drop_invoke_stay_outside_subset_v4() {
+    let module = generate::build_drop_glue().expect("the fixture builds");
+    let violations = module_subset_violations(&module).join("\n");
+    for name in ["Inst::Drop ", "Inst::DropInvoke "] {
+        assert!(
+            violations.contains(name),
+            "{name} must be named:\n{violations}"
+        );
+    }
+    let mut seen = 0;
+    for node in module
+        .functions
+        .iter()
+        .flat_map(|f| &f.blocks)
+        .flat_map(|b| &b.body)
+    {
+        if matches!(
+            node.inst,
+            trust_ir::Inst::Drop { .. } | trust_ir::Inst::DropInvoke { .. }
+        ) {
+            seen += 1;
+            assert!(
+                trust_ir::ConformanceSubset::inst_excluded(&node.inst)
+                    .is_some_and(|why| why.contains("Drop")),
+                "the core classifier excludes {:?} by name",
+                node.inst
+            );
+        }
+    }
+    assert!(seen >= 5, "the golden carries both spellings ({seen})");
+}
+
+/// Amendment D, Part 2 (wire v56): `InvokeIndirect` is outside subset v4,
+/// named by both spellings of the subset (the mirror and the core
+/// classifier), with the `LandingPad` its unwind edge enters.
+#[test]
+fn invoke_indirect_stays_outside_subset_v4() {
+    let module = generate::build_unwind_twins().expect("the fixture builds");
+    let violations = module_subset_violations(&module).join("\n");
+    for name in ["Inst::InvokeIndirect ", "Inst::LandingPad "] {
+        assert!(
+            violations.contains(name),
+            "{name} must be named:\n{violations}"
+        );
+    }
+    let mut seen = 0;
+    for node in module
+        .functions
+        .iter()
+        .flat_map(|f| &f.blocks)
+        .flat_map(|b| &b.body)
+    {
+        if matches!(node.inst, trust_ir::Inst::InvokeIndirect { .. }) {
+            seen += 1;
+            assert!(
+                trust_ir::ConformanceSubset::inst_excluded(&node.inst)
+                    .is_some_and(|why| why.contains("InvokeIndirect")),
+                "the core classifier excludes {:?} by name",
+                node.inst
+            );
+        }
+    }
+    assert_eq!(seen, 2, "the golden carries one twin per runner");
+}
+
+/// Amendment P (wire v54): a site changes WHICH panic a failed check is,
+/// never whether it fails, so every sited `Assert` of the `assert_panic_site`
+/// golden is inside the subset, while `AssertInvoke` is excluded BY NAME
+/// (both spellings of the subset), with `LandingPad` and `Resume` beside it.
+#[test]
+fn a_sited_assert_is_inside_the_subset_and_assert_invoke_is_excluded_by_name() {
+    let sited = generate::build_assert_panic_site().expect("the fixture builds");
+    assert!(
+        sited
+            .functions
+            .iter()
+            .flat_map(|f| &f.blocks)
+            .flat_map(|b| &b.body)
+            .any(|node| node.inst.panic_site().is_some()),
+        "the golden carries sited asserts"
+    );
+    assert_eq!(module_subset_violations(&sited), Vec::<String>::new());
+    let invoke = generate::build_assert_invoke().expect("the fixture builds");
+    let violations = module_subset_violations(&invoke).join("\n");
+    for name in ["AssertInvoke", "LandingPad", "Resume"] {
+        assert!(
+            violations.contains(name),
+            "{name} must be named:\n{violations}"
+        );
+    }
+    for node in invoke
+        .functions
+        .iter()
+        .flat_map(|f| &f.blocks)
+        .flat_map(|b| &b.body)
+    {
+        if matches!(node.inst, trust_ir::Inst::AssertInvoke { .. }) {
+            assert!(
+                trust_ir::ConformanceSubset::inst_excluded(&node.inst)
+                    .is_some_and(|why| why.contains("AssertInvoke")),
+                "the core classifier excludes it by name"
+            );
+        }
+    }
 }

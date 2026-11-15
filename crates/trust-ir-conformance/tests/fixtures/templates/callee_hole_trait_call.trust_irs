@@ -1,0 +1,20 @@
+; TrustIr template text format v1
+template "core::clone::dup::<T>"
+param $0 type
+hole ?0 callee @func.1 key "rust" [99, 111, 114, 101, 58, 58, 99, 108, 111, 110, 101, 58, 58, 67, 108, 111, 110, 101, 58, 58, 99, 108, 111, 110, 101] args ($0)
+; TrustIr text format v1
+module "core"
+target "aarch64-apple-darwin" 8 little
+
+functy.0 = ($0) -> ($0)
+
+functy.1 = ($0) -> ($0)
+
+fn @"!template_body"(functy.0) {
+bb0(%0: $0):
+    %1 = call @func.1(%0)
+    ret %1
+}
+
+fn @"!template_hole::0"(functy.1) {
+}

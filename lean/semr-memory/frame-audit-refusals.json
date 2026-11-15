@@ -1,0 +1,151 @@
+{
+  "schema": 1,
+  "components": [
+    "SemRFrameMemory",
+    "SemRFrameMemoryChecks",
+    "SemRPlacedFrame",
+    "SemRPlacedFrameChecks",
+    "SemRFramePair",
+    "SemRFramePairChecks",
+    "SemRFrameStep",
+    "SemRFrameCaller"
+  ],
+  "cases": [
+    {
+      "name": "missing_component",
+      "replacements": [
+        {
+          "needle": "  let components : List Name := [`SemRFrameMemory, `SemRFrameMemoryChecks, `SemRPlacedFrame, `SemRPlacedFrameChecks, `SemRFramePair, `SemRFramePairChecks, `SemRFrameStep, `SemRFrameCaller]",
+          "replacement": "  let components : List Name := [`SemRFrameMemory, `SemRFrameMemoryChecks, `SemRPlacedFrame, `SemRPlacedFrameChecks, `SemRFramePair, `SemRFramePairChecks, `SemRFrameStep]",
+          "count": 1
+        }
+      ],
+      "diagnostic": "Frame audit: exactly eight distinct frame components are required"
+    },
+    {
+      "name": "duplicate_component",
+      "replacements": [
+        {
+          "needle": "  let components : List Name := [`SemRFrameMemory, `SemRFrameMemoryChecks, `SemRPlacedFrame, `SemRPlacedFrameChecks, `SemRFramePair, `SemRFramePairChecks, `SemRFrameStep, `SemRFrameCaller]",
+          "replacement": "  let components : List Name := [`SemRFrameMemory, `SemRFrameMemoryChecks, `SemRPlacedFrame, `SemRPlacedFrameChecks, `SemRFramePair, `SemRFramePairChecks, `SemRFrameStep, `SemRFrameStep]",
+          "count": 1
+        }
+      ],
+      "diagnostic": "Frame audit: exactly eight distinct frame components are required"
+    },
+    {
+      "name": "omitted_required_owner",
+      "replacements": [
+        {
+          "needle": "  let components : List Name := [`SemRFrameMemory, `SemRFrameMemoryChecks, `SemRPlacedFrame, `SemRPlacedFrameChecks, `SemRFramePair, `SemRFramePairChecks, `SemRFrameStep, `SemRFrameCaller]",
+          "replacement": "  let components : List Name := [`SemRFrameMemory, `SemRFrameMemoryChecks, `SemRPlacedFrame, `SemRPlacedFrameChecks, `SemRFramePair, `SemRFramePairChecks, `SemRFrameStep, `SemRFrameChecks]",
+          "count": 1
+        }
+      ],
+      "diagnostic": "Frame audit: required component omitted"
+    },
+    {
+      "name": "missing_required_theorem",
+      "replacements": [
+        {
+          "needle": "`SemR.MemoryEmbedding.FrameCaller.save_call_restore",
+          "replacement": "`SemR.MemoryEmbedding.FrameCaller.missing_audit_probe",
+          "count": 1
+        }
+      ],
+      "diagnostic": "Frame audit: required theorem missing"
+    },
+    {
+      "name": "contaminated_replay_base",
+      "replacements": [
+        {
+          "needle": "let base \u2190 importModules imports {} 0",
+          "replacement": "let base \u2190 importModules #[{ module := component }] {} 0",
+          "count": 1
+        }
+      ],
+      "diagnostic": "Frame audit: replay base already contains"
+    },
+    {
+      "name": "axiom_declaration",
+      "probe": {
+        "module": "FrameAuditAxiomProbe",
+        "source": "axiom FrameAuditAxiomProbe.bad : True\n"
+      },
+      "replacements": [
+        {
+          "needle": "`SemRFrameCaller",
+          "replacement": "`FrameAuditAxiomProbe",
+          "count": 5
+        }
+      ],
+      "diagnostic": "Frame audit: axiom/opaque declaration"
+    },
+    {
+      "name": "opaque_declaration",
+      "probe": {
+        "module": "FrameAuditOpaqueProbe",
+        "source": "opaque FrameAuditOpaqueProbe.bad : Nat := 0\n"
+      },
+      "replacements": [
+        {
+          "needle": "`SemRFrameCaller",
+          "replacement": "`FrameAuditOpaqueProbe",
+          "count": 5
+        }
+      ],
+      "diagnostic": "Frame audit: axiom/opaque declaration"
+    },
+    {
+      "name": "unsafe_declaration",
+      "probe": {
+        "module": "FrameAuditUnsafeProbe",
+        "source": "unsafe def FrameAuditUnsafeProbe.bad : Nat := 0\n"
+      },
+      "replacements": [
+        {
+          "needle": "`SemRFrameCaller",
+          "replacement": "`FrameAuditUnsafeProbe",
+          "count": 5
+        }
+      ],
+      "diagnostic": "Frame audit: unsafe/partial declaration"
+    },
+    {
+      "name": "partial_declaration",
+      "probe": {
+        "module": "FrameAuditPartialProbe",
+        "source": "partial def FrameAuditPartialProbe.bad (value : Nat) : Nat := FrameAuditPartialProbe.bad value\n"
+      },
+      "replacements": [
+        {
+          "needle": "`SemRFrameCaller",
+          "replacement": "`FrameAuditPartialProbe",
+          "count": 5
+        }
+      ],
+      "diagnostic": "Frame audit: unsafe/partial declaration"
+    },
+    {
+      "name": "transitive_declaration",
+      "probe": {
+        "module": "FrameAuditTransitiveProbe",
+        "source": "import FrameAuditForeignAxiom\ntheorem FrameAuditTransitiveProbe.bad : True := FrameAuditForeignAxiom.assumption\n",
+        "dependencies": [
+          {
+            "module": "FrameAuditForeignAxiom",
+            "source": "axiom FrameAuditForeignAxiom.assumption : True\n"
+          }
+        ]
+      },
+      "replacements": [
+        {
+          "needle": "`SemRFrameCaller",
+          "replacement": "`FrameAuditTransitiveProbe",
+          "count": 5
+        }
+      ],
+      "diagnostic": "Frame audit: forbidden axiom"
+    }
+  ]
+}

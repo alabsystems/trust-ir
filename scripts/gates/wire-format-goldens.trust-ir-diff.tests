@@ -1,0 +1,3 @@
+cli  # WS4.13 gate leg: the trust-ir-diff binary end to end (no gate ran the thin tools' tests before)
+f073_rows  # WS4.13: the semantic diff's F-073 ports (crit.misw05 / scout-lean.A4), every proof-channel field seen
+formats  # WS4.9: trust-ir-diff resolves its inputs by the one codec rule, over all four formats

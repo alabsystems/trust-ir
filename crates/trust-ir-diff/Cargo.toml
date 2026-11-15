@@ -4,8 +4,10 @@
 # Copyright 2026 Andrew Yates | License: Apache-2.0
 #
 # Thin CLI wrapper around `trust-ir::diff` (crates/trust-ir, `diff` feature).
-# Reads two TrustIr modules from disk (serde JSON) and prints either a
-# unified-diff text report or a machine-readable JSON report.
+# Reads two TrustIr modules from disk in any of the four formats (binary,
+# text, serde JSON, serde MessagePack; resolved by
+# `trust_ir::codec::resolve_module_format`, `--format` overrides) and prints
+# either a unified-diff text report or a machine-readable JSON report.
 #
 # Exit codes mirror `Diff::exit_code`:
 #   0 — isomorphic
@@ -24,7 +26,15 @@ description = "Semantic module diff CLI for TrustIr (ignores ID renumbering and 
 [[bin]]
 name = "trust-ir-diff"
 path = "src/main.rs"
+# No unit tests in the binary: skip building an empty test harness for it.
+test = false
 
 [dependencies]
-trust-ir = { path = "../trust-ir", features = ["diff", "serde"] }
+trust-ir = { path = "../trust-ir", features = ["diff", "serde", "parser", "binary"] }
 serde_json = "1.0"
+rmp-serde = "1.3"
+
+[dev-dependencies]
+# The format tests (tests/formats.rs) write each fixture's text form through
+# the loss-checked encoder, `trust_ir::format::text_checked`.
+trust-ir = { path = "../trust-ir", features = ["fmt"] }

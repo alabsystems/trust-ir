@@ -86,6 +86,7 @@ fn build_fixture() -> trust_ir::Module {
         size: None,
         align: None,
         repr: Default::default(),
+        origin: None,
     });
 
     // Function-type interning (two distinct signatures).
@@ -141,7 +142,7 @@ fn build_fixture() -> trust_ir::Module {
         fb.build();
     }
 
-    let mut m = mb.build();
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
 
     // Named enum with variants (exercises enum + variant-name interning).
     m.enums.push(EnumDef {
@@ -162,6 +163,7 @@ fn build_fixture() -> trust_ir::Module {
         discriminants: Vec::new(),
         repr: None,
         layout: None,
+        origin: None,
     });
 
     // Several globals with constant initializers (constant-pool + global codec).
@@ -173,6 +175,9 @@ fn build_fixture() -> trust_ir::Module {
         linkage: Linkage::Internal,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
     m.globals.push(Global {
         name: "G_hi".into(),
@@ -182,6 +187,9 @@ fn build_fixture() -> trust_ir::Module {
         linkage: Linkage::External,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
     m.globals.push(Global {
         name: "G_agg".into(),
@@ -194,6 +202,9 @@ fn build_fixture() -> trust_ir::Module {
         linkage: Linkage::Private,
         tls: None,
         align: None,
+        section: None,
+        visibility: Default::default(),
+        retained: false,
     });
 
     // A proof obligation (exercises the obligations table + description
@@ -228,15 +239,35 @@ fn fingerprint() -> String {
     let errs = trust_ir_build::validate_module(&m);
     assert!(errs.is_empty(), "fixture failed validation: {errs:?}");
 
-    let bytes = trust_ir::binary::serialize_module(&m);
+    let bytes = trust_ir::binary::serialize_module(&m).expect("serialize_module: test fixture");
     let digest = m.stable_digest();
 
-    // Cross-check: stable_digest() is exactly the domain-separated SHA-256
-    // authority identity over the canonical bytes.
-    let expected = trust_ir::proof::ProofDigest::sha256_domain("trust_ir.module.v2", &bytes);
+    // Cross-check: the legacy V2 identity is exactly the domain-separated
+    // SHA-256 over the canonical bytes, and stable_digest() (the portable V3
+    // identity, WS4.10) is the same construction over the module with every
+    // debug file path blanked (table length kept), under the v3 domain.
+    assert!(
+        !m.files.is_empty(),
+        "the fixture must carry a file table, or V3 == V2-image is vacuous"
+    );
+    let legacy =
+        trust_ir::proof::ProofDigest::sha256_domain(trust_ir::MODULE_IDENTITY_DOMAIN_V2, &bytes);
+    assert_eq!(
+        m.stable_digest_under(trust_ir::IdentityScheme::V2),
+        legacy,
+        "Module::stable_digest_under(V2) diverged from serialize_module + SHA-256"
+    );
+    let mut blanked = m.clone();
+    for path in &mut blanked.files {
+        path.clear();
+    }
+    let expected = trust_ir::proof::ProofDigest::sha256_domain(
+        trust_ir::MODULE_IDENTITY_DOMAIN,
+        &trust_ir::binary::serialize_module(&blanked).expect("serialize_module: test fixture"),
+    );
     assert_eq!(
         digest, expected,
-        "Module::stable_digest diverged from serialize_module + SHA-256"
+        "Module::stable_digest diverged from serialize_module(files blanked) + SHA-256"
     );
 
     let mut out = format!("len:{}:", bytes.len());

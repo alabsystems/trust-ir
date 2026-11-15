@@ -57,10 +57,10 @@ use rustc_middle::ty::layout::LayoutCx;
 use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::def_id::LocalDefId;
 
-use trust_ir::Module;
 use trust_ir::inst::{BinOp, ICmpOp};
 use trust_ir::ty::{EnumVariant, FieldDef, StructDef, Ty as IrTy};
 use trust_ir::value::{FuncId, StructId, ValueId};
+use trust_ir::Module;
 use trust_ir_build::{FunctionBuilder, ModuleBuilder};
 
 pub mod m3;
@@ -72,15 +72,39 @@ pub fn linked_rustc_version() -> Option<&'static str> {
     rustc_interface::util::rustc_version_str()
 }
 
+/// Whether a `rustc --version` line names exactly the compiler whose
+/// `rustc_driver` this frontend links (`linked`, from [`linked_rustc_version`]).
+///
+/// Trust's `trustc` appends a product suffix after the upstream-shaped version
+/// (`rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0)`), so the release
+/// and commit must equal `linked` exactly and anything after them may only be
+/// one parenthesised suffix — never a different release or commit.
+pub fn version_line_matches(actual: &str, linked: &str) -> bool {
+    let Some(rest) = actual.trim().strip_prefix("rustc ") else {
+        return false;
+    };
+    match rest.strip_prefix(linked) {
+        Some("") => true,
+        Some(suffix) => suffix
+            .strip_prefix(" (")
+            .and_then(|inner| inner.strip_suffix(')'))
+            .is_some_and(|inner| !inner.contains(['(', ')'])),
+        None => false,
+    }
+}
+
 /// Add the sysroot of the ABI-matching external `rustc` unless the caller
 /// supplied one explicitly.
 ///
-/// A rustc-private driver commonly needs `DYLD_LIBRARY_PATH`/`LD_LIBRARY_PATH`
-/// to load its own `rustc_driver`. Passing that loader override through to the
-/// child used for `--print=sysroot` can make a public stage1 `rustc` load the
-/// prepared private driver and report the private metadata root instead of the
-/// stage1 standard-library sysroot. Query in a sanitized child and verify that
-/// its compiler version matches the in-process driver before accepting it.
+/// The compiler is `RUSTC` when set, else `trustc` — the Trust compiler whose
+/// `rustc_driver` this frontend is built against. There is no bare `rustc`
+/// fallback: on a Trust machine that name is not the compiler this driver links.
+///
+/// A rustc-private driver may need `DYLD_LIBRARY_PATH`/`LD_LIBRARY_PATH` to load
+/// its own `rustc_driver`. Passing that loader override through to the child
+/// used for `--print=sysroot` can make the child load a different driver and
+/// report the wrong root, so query in a sanitized child and verify that its
+/// compiler version matches the in-process driver before accepting it.
 pub fn append_matching_rustc_sysroot(rustc_args: &mut Vec<String>) -> Result<(), String> {
     if rustc_args
         .iter()
@@ -89,7 +113,9 @@ pub fn append_matching_rustc_sysroot(rustc_args: &mut Vec<String>) -> Result<(),
         return Ok(());
     }
 
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let rustc = std::env::var_os("RUSTC")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "trustc".into());
     let clean_command = |arg: &str| {
         let mut command = std::process::Command::new(&rustc);
         command
@@ -113,10 +139,10 @@ pub fn append_matching_rustc_sysroot(rustc_args: &mut Vec<String>) -> Result<(),
     let actual_version = String::from_utf8(version_output.stdout)
         .map_err(|_| format!("RUSTC={rustc:?} --version returned non-UTF-8 output"))?;
     if let Some(expected_version) = linked_rustc_version() {
-        if !actual_version.trim().ends_with(expected_version) {
+        if !version_line_matches(&actual_version, expected_version) {
             return Err(format!(
                 "RUSTC={rustc:?} is `{}`, but this frontend is linked to rustc {expected_version}; \
-                 pass an ABI-matching stage1 RUSTC or an explicit --sysroot",
+                 set RUSTC to the trustc it was built with, or pass an explicit --sysroot",
                 actual_version.trim()
             ));
         }
@@ -163,6 +189,14 @@ impl std::fmt::Display for LowerError {
     }
 }
 impl std::error::Error for LowerError {}
+
+/// A builder fault is a lowering failure: the module was not built
+/// (`ModuleBuilder::build` reports the first fault the builder recorded).
+impl From<trust_ir_build::BuildError> for LowerError {
+    fn from(fault: trust_ir_build::BuildError) -> Self {
+        LowerError(format!("the module builder refused: {fault}"))
+    }
+}
 
 pub type LResult<T> = Result<T, LowerError>;
 
@@ -655,6 +689,7 @@ pub(crate) fn build_enum_model<'tcx>(
         size: None,
         align: None,
         repr: Default::default(),
+        origin: None,
     });
     debug_assert_eq!(struct_id, self_struct, "first add_struct must yield id 0");
     Ok(EnumModel {
@@ -680,7 +715,7 @@ pub fn lower_fn_to_module<'tcx>(
     def: LocalDefId,
 ) -> LResult<(Module, EnumModel, FuncId)> {
     let (mb, enum_model, func_id) = lower_fn_to_builder(tcx, def)?;
-    Ok((mb.build(), enum_model, func_id))
+    Ok((mb.build()?, enum_model, func_id))
 }
 
 /// Lower the predicate into a fresh `ModuleBuilder`, returning it UNBUILT so a
@@ -713,7 +748,7 @@ pub(crate) fn find_match_enum<'tcx>(
     loop {
         match &thir[cur].kind {
             ExprKind::Scope { value, .. } => cur = *value,
-            ExprKind::Use { source } | ExprKind::NeverToAny { source } => cur = *source,
+            ExprKind::NeverToAny { source } => cur = *source,
             ExprKind::Block { block } => {
                 let b = &thir[*block];
                 match b.expr {
@@ -795,7 +830,7 @@ pub(crate) fn pattern_variants<'tcx>(kind: &PatKind<'tcx>) -> LResult<PatternMat
 /// β-redex shape) is now LOWERED as a decision sub-tree (inner tag-check +
 /// branch), while deeper/ambiguous shapes still bail loud. See
 /// `classify_arm_subpatterns` below.
-
+///
 /// A FIELD subpattern is trivial iff it is `Wild`/`Missing` or a plain
 /// `Binding { subpattern: None }` (a simple binder). A `Binding { subpattern:
 /// Some }` (`field @ P`), or any constructor/constant/range/or/deref-to-such, is
@@ -907,6 +942,7 @@ pub(crate) enum ArmShape {
 ///     `DerefPattern` wrapping a `Variant`/`Leaf` whose OWN fields are all
 ///     trivial), the rest trivial -> `OneLevelNested`;
 ///   - anything else -> `Unsupported`.
+///
 /// A bare wildcard/binder arm (no constructor) is `Trivial`.
 pub(crate) fn classify_arm_subpatterns<'tcx>(kind: &PatKind<'tcx>) -> ArmShape {
     match kind {
@@ -1373,7 +1409,6 @@ fn expr_kind_name(kind: &ExprKind<'_>) -> &'static str {
         ExprKind::LogicalOp { .. } => "LogicalOp",
         ExprKind::Unary { .. } => "Unary",
         ExprKind::Cast { .. } => "Cast",
-        ExprKind::Use { .. } => "Use",
         ExprKind::NeverToAny { .. } => "NeverToAny",
         ExprKind::PointerCoercion { .. } => "PointerCoercion",
         ExprKind::Loop { .. } => "Loop",
@@ -1418,4 +1453,37 @@ fn _doc_links() {
             field_names: Vec::new(),
         },
     );
+}
+
+#[cfg(test)]
+mod version_line_tests {
+    use super::version_line_matches;
+
+    const LINKED: &str = "1.99.0-dev (321aaeda7 2026-09-17)";
+
+    #[test]
+    fn upstream_shaped_and_trustc_suffixed_lines_match_the_linked_driver() {
+        assert!(version_line_matches(
+            "rustc 1.99.0-dev (321aaeda7 2026-09-17)\n",
+            LINKED
+        ));
+        assert!(version_line_matches(
+            "rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0)",
+            LINKED
+        ));
+    }
+
+    #[test]
+    fn a_different_commit_release_or_trailing_text_is_refused() {
+        for actual in [
+            "rustc 1.99.0-dev (1979a7b85 2026-08-28) (trustc 0.1.0)",
+            "rustc 1.97.1 (3e9a6ba2a 2026-08-06)",
+            "rustc 1.99.0-dev (321aaeda7 2026-09-17)-patched",
+            "rustc 1.99.0-dev (321aaeda7 2026-09-17) (trustc 0.1.0) (x)",
+            "trustc 1.99.0-dev (321aaeda7 2026-09-17)",
+            "",
+        ] {
+            assert!(!version_line_matches(actual, LINKED), "{actual}");
+        }
+    }
 }

@@ -92,20 +92,6 @@
             },
             {
               "inst": {
-                "AtomicStore": {
-                  "ty": "I64",
-                  "ptr": 0,
-                  "value": 1,
-                  "ordering": "Relaxed"
-                }
-              },
-              "results": [],
-              "proofs": [],
-              "span": null,
-              "proof_context": null
-            },
-            {
-              "inst": {
                 "AtomicLoad": {
                   "ty": "I64",
                   "ptr": 0,
@@ -121,24 +107,10 @@
             },
             {
               "inst": {
-                "AtomicStore": {
-                  "ty": "I64",
-                  "ptr": 0,
-                  "value": 1,
-                  "ordering": "Acquire"
-                }
-              },
-              "results": [],
-              "proofs": [],
-              "span": null,
-              "proof_context": null
-            },
-            {
-              "inst": {
                 "AtomicLoad": {
                   "ty": "I64",
                   "ptr": 0,
-                  "ordering": "Release"
+                  "ordering": "SeqCst"
                 }
               },
               "results": [
@@ -154,25 +126,10 @@
                   "ty": "I64",
                   "ptr": 0,
                   "value": 1,
-                  "ordering": "Release"
+                  "ordering": "Relaxed"
                 }
               },
               "results": [],
-              "proofs": [],
-              "span": null,
-              "proof_context": null
-            },
-            {
-              "inst": {
-                "AtomicLoad": {
-                  "ty": "I64",
-                  "ptr": 0,
-                  "ordering": "AcqRel"
-                }
-              },
-              "results": [
-                5
-              ],
               "proofs": [],
               "span": null,
               "proof_context": null
@@ -183,25 +140,10 @@
                   "ty": "I64",
                   "ptr": 0,
                   "value": 1,
-                  "ordering": "AcqRel"
+                  "ordering": "Release"
                 }
               },
               "results": [],
-              "proofs": [],
-              "span": null,
-              "proof_context": null
-            },
-            {
-              "inst": {
-                "AtomicLoad": {
-                  "ty": "I64",
-                  "ptr": 0,
-                  "ordering": "SeqCst"
-                }
-              },
-              "results": [
-                6
-              ],
               "proofs": [],
               "span": null,
               "proof_context": null
@@ -231,7 +173,7 @@
                 }
               },
               "results": [
-                7
+                5
               ],
               "proofs": [],
               "span": null,
@@ -248,7 +190,7 @@
                 }
               },
               "results": [
-                8
+                6
               ],
               "proofs": [],
               "span": null,
@@ -265,7 +207,7 @@
                 }
               },
               "results": [
-                9
+                7
               ],
               "proofs": [],
               "span": null,
@@ -282,7 +224,7 @@
                 }
               },
               "results": [
-                10
+                8
               ],
               "proofs": [],
               "span": null,
@@ -299,7 +241,7 @@
                 }
               },
               "results": [
-                11
+                9
               ],
               "proofs": [],
               "span": null,
@@ -316,7 +258,7 @@
                 }
               },
               "results": [
-                12
+                10
               ],
               "proofs": [],
               "span": null,
@@ -333,7 +275,7 @@
                 }
               },
               "results": [
-                13
+                11
               ],
               "proofs": [],
               "span": null,
@@ -350,7 +292,7 @@
                 }
               },
               "results": [
-                14
+                12
               ],
               "proofs": [],
               "span": null,
@@ -367,7 +309,7 @@
                 }
               },
               "results": [
-                15
+                13
               ],
               "proofs": [],
               "span": null,
@@ -384,7 +326,7 @@
                 }
               },
               "results": [
-                16
+                14
               ],
               "proofs": [],
               "span": null,
@@ -400,7 +342,7 @@
                 }
               },
               "results": [
-                17
+                15
               ],
               "proofs": [],
               "span": null,
@@ -416,7 +358,7 @@
                 }
               },
               "results": [
-                18
+                16
               ],
               "proofs": [],
               "span": null,
@@ -427,15 +369,15 @@
                 "CmpXchg": {
                   "ty": "I64",
                   "ptr": 0,
-                  "expected": 17,
-                  "desired": 18,
+                  "expected": 15,
+                  "desired": 16,
                   "success": "AcqRel",
                   "failure": "Acquire"
                 }
               },
               "results": [
-                19,
-                20
+                17,
+                18
               ],
               "proofs": [],
               "span": null,
@@ -451,7 +393,7 @@
                 }
               },
               "results": [
-                21
+                19
               ],
               "proofs": [],
               "span": null,
@@ -461,7 +403,7 @@
               "inst": {
                 "Return": {
                   "values": [
-                    21
+                    19
                   ]
                 }
               },
@@ -480,12 +422,20 @@
         "readonly": false,
         "readnone": false,
         "inlinehint": false,
-        "cold": false
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
       },
       "summary": null,
       "producer": null,
       "value_names": null,
-      "scopes": null
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": null,
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
     }
   ],
   "structs": [],
@@ -512,5 +462,12 @@
   "files": [],
   "obligation_diagnostics": [],
   "spec_modules": [],
-  "universes": []
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
 }

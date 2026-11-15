@@ -1,0 +1,50 @@
+{
+  "structs": [],
+  "enums": [],
+  "types": [],
+  "arguments": [
+    {
+      "Type": "U64"
+    }
+  ],
+  "holes": [
+    {
+      "Answer": {
+        "Callee": {
+          "symbol": "clone_u64",
+          "calling_conv": "Rust",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "linkage": "External"
+        }
+      }
+    }
+  ],
+  "header": {
+    "symbol": "dup_u64",
+    "linkage": "Internal",
+    "visibility": "Default",
+    "calling_conv": "Rust",
+    "attrs": {
+      "readonly": false,
+      "readnone": false,
+      "inlinehint": false,
+      "cold": false,
+      "params": [],
+      "naked": false,
+      "target_features": []
+    },
+    "display_path": "dup::u64",
+    "body_gate": "Ungated"
+  },
+  "destructors": [],
+  "tuple_layouts": [],
+  "tamper": false
+}

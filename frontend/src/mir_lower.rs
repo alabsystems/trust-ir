@@ -53,11 +53,15 @@
 //     binds the destination (scalar -> env def; memory -> Store at dest addr);
 //     then `br` to the success `target`. A diverging call (target == None) emits
 //     `unreachable` after the call.
-//   * `TerminatorKind::Assert { cond, expected, target, .. }`: evaluate `cond`,
-//     `condbr` to `target` when it matches `expected`, else a shared trap block
-//     (`unreachable`) — the panic path. Unblocks debug overflow-checked
-//     arithmetic (AddWithOverflow feeds a tuple dest, still RUNG 3, but the bare
-//     bounds/overflow Assert terminator itself now lowers).
+//   * `TerminatorKind::Assert { cond, expected, target, .. }`: evaluate `cond`
+//     and emit ONE sited check (trust-ir amendment P, wire v54): a sited
+//     `assert` naming the check's kind, its `core::panicking` entry and its
+//     `Location`, then `br` to `target` — or an `assert_invoke` whose unwind
+//     edge enters the cleanup pad under the unwind lane. A failed check is the
+//     panic it names, never a trap (`unreachable`, which is UB). Unblocks
+//     debug overflow-checked arithmetic (AddWithOverflow feeds a tuple dest,
+//     still RUNG 3, but the bare bounds/overflow Assert terminator itself now
+//     lowers).
 //
 //   Later rungs (3..9.5, documented at their sites) landed aggregate
 //   construction, the general aggregate return/param ABI (sret hidden pointer /
@@ -107,7 +111,7 @@ use trust_ir::inst::{
 };
 use trust_ir::Constant;
 use trust_ir::Ty as TIRTy;
-use trust_ir_build::{validate_module, FunctionBuilder, ModuleBuilder, ValidationError};
+use trust_ir_build::{validate_module, ModuleBuilder, ValidationError};
 
 use crate::span_map::SpanMap;
 
@@ -353,13 +357,12 @@ struct MemSlot {
 /// `Cx::const_globals`). A referenced CTFE allocation (a promoted `&STATIC`, or a
 /// relocation TARGET inside a const aggregate) is keyed by `AllocId`; a thread-local
 /// static (`Rvalue::ThreadLocalRef`) is keyed by its `DefId`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum InternKey {
     Alloc(AllocId),
     Tls(rustc_span::def_id::DefId),
-    /// A `&'static str` / `&'static [u8]` LITERAL, keyed by a content hash so
-    /// identical literals share one rodata global (see `intern_str_literal_global`).
-    StrBytes(u64),
+    /// Literal bytes are the identity; a hash collision must not merge data.
+    StrBytes(Vec<u8>),
 }
 
 /// A module global QUEUED during lowering (when `mb` is exclusively borrowed by
@@ -421,9 +424,8 @@ struct Cx<'tcx, 'm> {
     /// pass (it needs `mb` to `add_global`); read by `lower_unsize_assign`'s dyn
     /// branch, which emits `global_addr(gid)` for the fat pointer's vtable lane.
     /// The `GlobalId` is the global's index in `module.globals` — globals are
-    /// added EXCLUSIVELY by that pass (one per distinct vtable) over an initially
-    /// empty table, so the next id equals `dyn_vtables.len()`. Empty (no drift)
-    /// for a body with no to-`dyn` coercion.
+    /// added by that pass (one per distinct vtable), interleaved with constants
+    /// from earlier members. Both interning tables span the entire closure.
     dyn_vtables: HashMap<(Ty<'tcx>, Ty<'tcx>), trust_ir::value::GlobalId>,
     /// LAZILY-interned module globals for provenance-bearing constants (a static
     /// reached through a const pointer, or a relocation TARGET inside a const
@@ -432,10 +434,9 @@ struct Cx<'tcx, 'm> {
     /// by `fb`, so the real globals cannot be added yet; their specs accumulate in
     /// `pending_globals` and are pushed to `mb` AFTER `fb.build()` (see
     /// `lower_with_signature`). Keyed so a repeated reference to one static shares a
-    /// single global. The assigned `GlobalId` is `dyn_vtables.len() + <index into
-    /// pending_globals>`: vtables occupy `0..dyn_vtables.len()` (added by the pre-`fb`
-    /// pass), these follow in `pending_globals` order — exactly the final
-    /// `module.globals` layout, so `GlobalAddr(gid)` resolves in-range.
+    /// single global across all closure members. Each new id is the sum of
+    /// already interned constants and vtables, including pending constants.
+    /// Flushing preserves reservation order and the module's absolute ids.
     const_globals: std::cell::RefCell<HashMap<InternKey, trust_ir::value::GlobalId>>,
     /// Specs for the globals interned above, in `GlobalId` order; drained into `mb`
     /// once `fb` releases its borrow.
@@ -536,8 +537,8 @@ fn ty_is_zst<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> bool {
 // the ADDRESS of a module global. Globals can only be added through `mb`, which is
 // exclusively borrowed by `fb` during lowering, so we INTERN lazily: assign the
 // `GlobalId` now (emitting `GlobalAddr` immediately) and queue the spec, then add
-// the real globals after `fb.build()` (`flush_pending_globals`). Vtables occupy
-// `0..dyn_vtables.len()`; these follow, matching final `module.globals` order.
+// the real globals after `fb.build()` (`flush_pending_globals`). Both interning
+// tables span the module; their combined size is the next absolute GlobalId.
 
 /// Reserve/reuse a `GlobalId` for `key` and queue `spec` for post-lowering
 /// materialization. Idempotent per key (a repeated reference shares one global).
@@ -549,9 +550,10 @@ fn intern_global_spec<'tcx>(
     if let Some(gid) = cx.const_globals.borrow().get(&key).copied() {
         return gid;
     }
-    let base = cx.dyn_vtables.len();
+    let gid = trust_ir::value::GlobalId::new(
+        (cx.dyn_vtables.len() + cx.const_globals.borrow().len()) as u32,
+    );
     let mut pend = cx.pending_globals.borrow_mut();
-    let gid = trust_ir::value::GlobalId::new((base + pend.len()) as u32);
     pend.push(spec());
     drop(pend);
     cx.const_globals.borrow_mut().insert(key, gid);
@@ -793,7 +795,7 @@ fn build_reloc_alloc_init_with<'tcx>(
 /// (`GlobalAddr`) is the data pointer, with NO runtime allocation. `max(len,1)` bytes
 /// so the empty literal `""` still gets a well-defined non-null 1-byte global (its
 /// spare byte is never read). Keyed by a content hash so identical literals share one
-/// global.
+/// global. Equality is checked on the bytes, not just their symbol-name hash.
 fn intern_str_literal_global(cx: &Cx<'_, '_>, bytes: &[u8]) -> trust_ir::value::GlobalId {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -803,8 +805,12 @@ fn intern_str_literal_global(cx: &Cx<'_, '_>, bytes: &[u8]) -> trust_ir::value::
     let size = (bytes.len() as u64).max(1);
     // The frozen `init` length must equal `size` (validator pin): pad `""` to 1 byte.
     let init: Vec<u8> = if bytes.is_empty() { vec![0u8] } else { bytes.to_vec() };
-    intern_global_spec(cx, InternKey::StrBytes(hash), || PendingGlobal {
-        name: format!("str.{hash:016x}"),
+    intern_global_spec(cx, InternKey::StrBytes(bytes.to_vec()), || PendingGlobal {
+        // Global ids also disambiguate symbol names if distinct bytes hash alike.
+        name: format!(
+            "str.{hash:016x}.{}",
+            cx.dyn_vtables.len() + cx.const_globals.borrow().len()
+        ),
         size,
         init: Some(init),
         tls: None,
@@ -933,6 +939,10 @@ fn flush_pending_globals<'tcx>(cx: &Cx<'tcx, '_>, mb: &mut ModuleBuilder) {
                 // No explicit over-alignment: the consumer derives alignment
                 // from the (pointer-slot / byte) type layout.
                 align: None,
+                // v41: a body-interned allocation image has no attributes.
+                section: None,
+                visibility: trust_ir::Visibility::Default,
+                retained: false,
             });
             continue;
         }
@@ -950,6 +960,10 @@ fn flush_pending_globals<'tcx>(cx: &Cx<'tcx, '_>, mb: &mut ModuleBuilder) {
             tls: pg.tls,
             // A `[u8; size]` blob is byte-aligned; consumer derives from type.
             align: None,
+            // v41: a body-interned allocation image has no attributes.
+            section: None,
+            visibility: trust_ir::Visibility::Default,
+            retained: false,
         });
     }
 }
@@ -969,6 +983,14 @@ fn flush_pending_globals<'tcx>(cx: &Cx<'tcx, '_>, mb: &mut ModuleBuilder) {
 // allocation genuinely cannot be evaluated (true `extern` foreign statics,
 // TLS statics — which flow through the TLS model instead) remain extern, and
 // the driver reports each with its reason.
+
+/// v41 placement a static DECLARES and its emitted `Global` must carry:
+/// `#[link_section]` and `#[used]`. Anonymous allocations state neither.
+#[derive(Clone, Debug, Default)]
+struct GlobalPlacement {
+    section: Option<String>,
+    retained: bool,
+}
 
 /// Process-wide registry of statics referenced by lowered code, in first-seen
 /// order (deterministic given the deterministic mono-item walk). Drained once
@@ -1043,6 +1065,8 @@ impl<'a, 'tcx> StaticsEmit<'a, 'tcx> {
             depth,
             trust_ir::Linkage::Internal,
             /*force_mutable=*/ false,
+            // An anonymous CTFE allocation has no attributes to carry.
+            GlobalPlacement { section: None, retained: false },
         )?;
         self.mb.add_global(g);
         Ok(name)
@@ -1072,7 +1096,9 @@ impl<'a, 'tcx> StaticsEmit<'a, 'tcx> {
         depth: u32,
         linkage: trust_ir::Linkage,
         force_mutable: bool,
+        placement: GlobalPlacement,
     ) -> Result<trust_ir::Global, String> {
+        let GlobalPlacement { section, retained } = placement;
         let size = inner.len() as u64;
         let mutable = force_mutable || inner.mutability.is_mut();
         // The static's declared storage alignment (power of two). Carried
@@ -1091,6 +1117,14 @@ impl<'a, 'tcx> StaticsEmit<'a, 'tcx> {
                 linkage,
                 tls: None,
                 align,
+                // v41: `section`/`retained` are the static's OWN attributes,
+                // handed in by the definition site; an anonymous allocation
+                // states neither. Visibility is not modeled by this producer
+                // (rustc decides it at codegen from the export map), so the
+                // legacy value is the only honest one here.
+                section: section.clone(),
+                visibility: trust_ir::Visibility::Default,
+                retained,
             });
         }
         let whole = alloc_range(Size::ZERO, Size::from_bytes(size));
@@ -1107,6 +1141,9 @@ impl<'a, 'tcx> StaticsEmit<'a, 'tcx> {
                 linkage,
                 tls: None,
                 align,
+                section: section.clone(),
+                visibility: trust_ir::Visibility::Default,
+                retained,
             })
         } else {
             let tcx = self.tcx;
@@ -1127,6 +1164,9 @@ impl<'a, 'tcx> StaticsEmit<'a, 'tcx> {
                 linkage,
                 tls: None,
                 align,
+                section,
+                visibility: trust_ir::Visibility::Default,
+                retained,
             })
         }
     }
@@ -1154,7 +1194,7 @@ pub struct StaticDefReport {
 pub fn emit_statics_module<'tcx>(
     tcx: TyCtxt<'tcx>,
 ) -> (
-    Option<(trust_ir::Module, Vec<ValidationError>)>,
+    Option<Result<(trust_ir::Module, Vec<ValidationError>), trust_ir_build::BuildError>>,
     Vec<StaticDefReport>,
     Vec<(String, String)>,
 ) {
@@ -1227,12 +1267,27 @@ pub fn emit_statics_module<'tcx>(
                 )
                 .is_freeze(tcx, ty::TypingEnv::fully_monomorphized());
             let size = inner.len() as u64;
+            // v41: carry what the static DECLARES. `#[link_section]` becomes the
+            // explicit output section; `#[used]` / `#[used(linker)]` become
+            // `retained`, which is exactly the "keep this even with no in-module
+            // reference" the field exists for — a linker-section registration
+            // array is the canonical case. Defaulting either would emit a value
+            // the source contradicts.
+            let attrs = tcx.codegen_fn_attrs(def_id);
+            let placement = GlobalPlacement {
+                section: attrs.link_section.map(|s| s.as_str().to_string()),
+                retained: attrs.flags.intersects(
+                    rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags::USED_COMPILER
+                        | rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags::USED_LINKER,
+                ),
+            };
             match st.build_alloc_global(
                 sym.clone(),
                 inner,
                 0,
                 trust_ir::Linkage::External,
                 declared_mut || interior_mut,
+                placement,
             ) {
                 Ok(g) => {
                     let mutable = g.mutable;
@@ -1259,10 +1314,15 @@ pub fn emit_statics_module<'tcx>(
     fb.switch_to_block(entry);
     fb.ret(Vec::new());
     fb.build();
-    let mut module = mb.build();
+    let mut module = match mb.build() {
+        Ok(module) => module,
+        // FAIL-CLOSED like a statics module that does not validate: it is
+        // not written, and the caller reports the builder's fault.
+        Err(fault) => return (Some(Err(fault)), defined, externs),
+    };
     module.target_info = Some(emit_target_info(tcx));
     let errs = validate_module(&module);
-    (Some((module, errs)), defined, externs)
+    (Some(Ok((module, errs))), defined, externs)
 }
 
 /// Attempt the minimal lowering of one mono-item fn. Ok(()) means it lowered AND
@@ -1297,7 +1357,7 @@ pub fn try_lower_minimal<'tcx>(
     let sym = tcx.def_path_str(instance.def_id());
     let mut mb = ModuleBuilder::new(format!("mir::{sym}"));
     lower_with_signature(&mut cx, &mut mb, /*wiring=*/ None, body, ret_abi, &address_taken)?;
-    let mut module = mb.build();
+    let mut module = mb.build().map_err(|fault| format!("BUILD: {fault}"))?;
     module.target_info = Some(emit_target_info(tcx));
     // Coverage path: "lowered-ok" == validate_module reports 0 errors.
     let errs = validate_module(&module);
@@ -1330,7 +1390,7 @@ pub fn lower_module_for_emit<'tcx>(
     let sym = tcx.def_path_str(instance.def_id());
     let mut mb = ModuleBuilder::new(format!("mir::{sym}"));
     lower_with_signature(&mut cx, &mut mb, /*wiring=*/ None, body, ret_abi, &address_taken)?;
-    let mut module = mb.build();
+    let mut module = mb.build().map_err(|fault| format!("BUILD: {fault}"))?;
     module.target_info = Some(emit_target_info(tcx));
     let errs = validate_module(&module);
     Ok((module, errs))
@@ -2003,6 +2063,10 @@ pub fn lower_closure_for_emit<'tcx>(
         .map(|m| (m.symbol.clone(), trust_ir::FuncId::new(0)))
         .collect();
     let mut footprints: Vec<u32> = Vec::with_capacity(members.len());
+    // Scratch ids from per-member scratch builders are meaningless, but MEMBERSHIP
+    // is what decides whether a member declares a symbol or reuses it, and that
+    // is what the footprint must count.
+    let sizing_externs = std::cell::RefCell::new(std::collections::HashMap::new());
     for m in &members {
         let (mut cx, ret_abi, address_taken) = classify_locals_and_ret_abi(
             tcx,
@@ -2014,10 +2078,13 @@ pub fn lower_closure_for_emit<'tcx>(
         let wiring = ClosureWiring {
             base_fid: 0,
             member_fids: &dummy_fids,
+            shared_externs: &sizing_externs,
         };
         lower_with_signature(&mut cx, &mut scratch, Some(&wiring), m.body, ret_abi, &address_taken)
             .map_err(|e| format!("closure member `{}` failed to lower: {e}", m.symbol))?;
-        let built = scratch.build();
+        let built = scratch
+            .build()
+            .map_err(|fault| format!("closure member `{}` failed to build: {fault}", m.symbol))?;
         footprints.push(built.functions.len() as u32);
     }
 
@@ -2037,6 +2104,9 @@ pub fn lower_closure_for_emit<'tcx>(
     // ---- 4. REAL pass: lower every member into ONE shared mb, wiring member calls. ----
     let root_path = tcx.def_path_str(root.def_id());
     let mut mb = ModuleBuilder::new(format!("mir::closure::{root_path}"));
+    let shared_externs = std::cell::RefCell::new(std::collections::HashMap::new());
+    let mut shared_constants = HashMap::new();
+    let mut shared_vtables = HashMap::new();
     for (i, m) in members.iter().enumerate() {
         let (mut cx, ret_abi, address_taken) = classify_locals_and_ret_abi(
             tcx,
@@ -2044,14 +2114,20 @@ pub fn lower_closure_for_emit<'tcx>(
             m.body,
             /*emit_self_recursion=*/ true,
         )?;
+        // A shared builder requires shared global identity, not per-body ids.
+        cx.const_globals = std::cell::RefCell::new(std::mem::take(&mut shared_constants));
+        cx.dyn_vtables = std::mem::take(&mut shared_vtables);
         let wiring = ClosureWiring {
             base_fid: base_fids[i],
             member_fids: &member_fids,
+            shared_externs: &shared_externs,
         };
         lower_with_signature(&mut cx, &mut mb, Some(&wiring), m.body, ret_abi, &address_taken)
             .map_err(|e| format!("closure member `{}` failed to lower: {e}", m.symbol))?;
+        shared_constants = cx.const_globals.into_inner();
+        shared_vtables = cx.dyn_vtables;
     }
-    let mut module = mb.build();
+    let mut module = mb.build().map_err(|fault| format!("BUILD: {fault}"))?;
     module.target_info = Some(emit_target_info(tcx));
     let errs = validate_module(&module);
     let member_syms: Vec<String> = members.iter().map(|m| m.symbol.clone()).collect();
@@ -2457,7 +2533,7 @@ fn pair_ret_model<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<PairRet> {
         .tcx
         .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(ty))
         .ok()?;
-    let BackendRepr::ScalarPair(a, b) = layout.backend_repr else {
+    let BackendRepr::ScalarPair { a, b, b_offset } = layout.backend_repr else {
         return None;
     };
     // Gate 3: the register-classified size band.
@@ -2472,10 +2548,7 @@ fn pair_ret_model<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<PairRet> {
     // lane b at `align_up(size(ta), align(tb))`. True for every natural int/bool
     // ScalarPair on this target; anything exotic falls back to sret.
     let (sa, sb) = (int_lane_size(&ta), int_lane_size(&tb));
-    let b_off = a
-        .size(&cx.tcx)
-        .align_to(b.default_align(&cx.tcx).abi)
-        .bytes();
+    let b_off = b_offset.bytes();
     if sa == 0 || sb == 0 || a.size(&cx.tcx).bytes() != sa {
         return None;
     }
@@ -2525,6 +2598,17 @@ struct ClosureWiring<'a> {
     /// same `tcx.symbol_name(instance)` the extern dedup uses, so the key is stable
     /// and monomorphization-precise (a different mono-instance is a different symbol).
     member_fids: &'a std::collections::HashMap<String, trust_ir::FuncId>,
+    /// Extern callee SYMBOL -> the `FuncId` of its ONE 0-block declaration in the
+    /// shared module, across EVERY member. Before this, each member declared its
+    /// externs afresh — twelve declarations of one `drop_glue` symbol in one
+    /// fixture — which trust-ir's own validator refuses since v41
+    /// (`DuplicateFunctionSymbol`: `Function::name` is the link-time symbol). A
+    /// member seeds its per-body dedup table from here and writes its new
+    /// declarations back, so a symbol is declared by the FIRST member that calls
+    /// it and reused by every later one. The sizing pass threads a scratch table
+    /// through the same path, in the same member order, so each footprint counts
+    /// exactly the declarations the real pass will make.
+    shared_externs: &'a std::cell::RefCell<std::collections::HashMap<String, trust_ir::FuncId>>,
 }
 
 /// Body of the lowering once the return ABI is decided. Lowers into the provided
@@ -2814,8 +2898,12 @@ fn lower_with_signature<'tcx>(
     // a `dyn Fn`/`FnMut`/`FnOnce` dispatch whose args tuple must be SPREAD (its vtable
     // method is the concrete closure body, emitted with spread params).
     let mut virtual_blocks: HashMap<usize, (trust_ir::FuncTyId, usize, bool)> = HashMap::new();
-    // Dedup extern callees by symbol across this one function's body.
-    let mut extern_by_sym: HashMap<String, trust_ir::FuncId> = HashMap::new();
+    // Dedup extern callees by symbol across this one function's body — seeded, in
+    // closure mode, from the declarations earlier members already made, so the
+    // closure carries ONE declaration per symbol (see `ClosureWiring::shared_externs`).
+    let mut extern_by_sym: HashMap<String, trust_ir::FuncId> = wiring
+        .map(|w| w.shared_externs.borrow().clone())
+        .unwrap_or_default();
     // Count of functions THIS member declares into `mb` (its externs, then its body).
     // `FuncId`s are assigned sequentially, one per `.build()`. In single-fn mode the
     // body's id is simply this count (`mb` started empty); in closure mode the body's
@@ -3536,14 +3624,15 @@ fn lower_with_signature<'tcx>(
         }
     }
 
-    // UNWIND lane Assert pre-pass: declare the `core::panicking` entry point
-    // each supported `Assert` failure path calls (rustc parity — overflow /
-    // bounds / div-by-zero panics UNWIND and are catchable, with cleanup run),
-    // and record its cleanup edge so reachability/liveness include it. Under
-    // panic=abort this loop is skipped entirely and the Assert failure path
-    // keeps its historical shared-trap lowering BYTE-IDENTICALLY.
+    // Assert pre-pass, BOTH lanes (amendment P, trust-ir wire v54): declare the
+    // `core::panicking` entry point each `Assert` failure calls — the panic
+    // SITE's entry — and, under the unwind lane, record its cleanup edge so
+    // reachability/liveness include it. Every check lowers to a sited
+    // `Assert` (or `AssertInvoke`), so the panic=abort lane no longer lowers a
+    // failed check to a shared `unreachable` trap (UB, which licensed an
+    // assume-false optimizer to delete the check).
     let mut assert_panic_blocks: HashMap<usize, AssertPanicCall> = HashMap::new();
-    if eh {
+    {
         for (bb_raw, data) in body.basic_blocks.iter_enumerated() {
             let term = data.terminator.as_ref().unwrap();
             if let TerminatorKind::Assert { msg, unwind, .. } = &term.kind {
@@ -3686,6 +3775,13 @@ fn lower_with_signature<'tcx>(
     for &bb in &self_call_blocks {
         callee_ids.insert(bb, body_fid);
     }
+    // Publish this member's extern declarations to the closure table so later
+    // members reuse them instead of re-declaring the same symbol.
+    if let Some(w) = wiring {
+        w.shared_externs
+            .borrow_mut()
+            .extend(extern_by_sym.iter().map(|(sym, id)| (sym.clone(), *id)));
+    }
     // Span threading: PRE-PASS-intern every source file this body's spans touch
     // (the fn-level `body.span` + each statement's/terminator's `SourceInfo`)
     // into the module's debug-info file table, BEFORE the FunctionBuilder takes
@@ -3710,12 +3806,14 @@ fn lower_with_signature<'tcx>(
     // and emit binaries — it is a development tripwire, not a shipped gate.
     debug_assert_eq!(
         mb.peek_next_func_id(),
-        body_fid,
+        Ok(body_fid),
         "body_fid drifted from the ModuleBuilder's next function id"
     );
-    let obligation_fid = mb.peek_next_func_id();
+    let obligation_fid = mb
+        .peek_next_func_id()
+        .map_err(|exhausted| format!("BUILD: {exhausted}"))?;
     let recorded_obligations =
-        record_assert_obligations(cx, mb, body, obligation_fid, &normal_reachable, &span_map);
+        record_assert_obligations(cx, mb, body, obligation_fid, &normal_reachable, &span_map)?;
     // PANIC-CLASS OBLIGATION SITES: filled by the `Assert` arm of
     // `lower_terminator`, drained after `fb.build()` to back-fill each
     // obligation's `ObligationSite`.
@@ -4027,9 +4125,6 @@ fn lower_with_signature<'tcx>(
     let str_literals = prescan_str_consts(cx, body);
     materialize_str_consts(cx, &mut fb, str_literals)?;
 
-    // A single shared TRAP block for the Assert failure (panic) path: created
-    // lazily on first use, threaded through the block loop.
-    let mut trap_block: Option<trust_ir::BlockId> = None;
     // UNWIND lane: the shared per-reason TERMINATE pads (a cleanup landing pad
     // that calls the reason's `core::panicking` terminate entry point — the
     // loud double-panic abort), created lazily on first
@@ -4128,7 +4223,6 @@ fn lower_with_signature<'tcx>(
             box_new_uninit: box_new_uninit_blocks.get(&bb_idx).cloned(),
             box_into_vec: box_into_vec_blocks.get(&bb_idx).cloned(),
             str_inline: str_inline_blocks.get(&bb_idx).cloned(),
-            trap_block: &mut trap_block,
             eh,
             cur_blk: blk,
             exn_slot,
@@ -4144,14 +4238,8 @@ fn lower_with_signature<'tcx>(
         lower_terminator(cx, &mut fb, &mut env, &mut tcx_term, &term.kind, term.source_info)?;
     }
 
-    // If the Assert path allocated a trap block, fill it with `unreachable`.
-    if let Some(tb) = trap_block {
-        fb.switch_to_block(tb);
-        // The shared trap block belongs to no single statement — give its
-        // `unreachable` the fn-level span.
-        span_map.apply(cx.tcx, &mut fb, body.span);
-        fb.unreachable();
-    }
+    // Amendment P (trust-ir wire v54): there is no shared assert trap block
+    // any more — every check is a sited `Assert` / `AssertInvoke`.
 
     // UNWIND lane: fill the shared per-reason terminate pads — a cleanup
     // landing pad whose body CALLS the reason's `core::panicking` terminate
@@ -4224,7 +4312,7 @@ fn lower_with_signature<'tcx>(
     // `fb` has released its exclusive `mb` borrow: materialize any globals interned
     // for provenance-bearing constants / thread-local references during lowering
     // (a no-op when the body interned none). Their `GlobalId`s were assigned in
-    // `dyn_vtables.len() + pending order`, matching the append order here.
+    // absolute module ids, matching the reservation and append order here.
     flush_pending_globals(cx, mb);
     // NOTE: `mb` is now shared/owned by the caller (it builds + validates the final
     // module). The per-fn `TRUST_IR_MIR_DUMP` text dump moved to the callers
@@ -4898,9 +4986,8 @@ fn prescan_dyn_coercions<'tcx>(
 }
 
 /// Build one vtable module global per distinct to-`dyn` coercion key and record
-/// its `GlobalId` in `cx.dyn_vtables`. Globals are added EXCLUSIVELY here over an
-/// initially empty table (one per distinct vtable), so the next global's index is
-/// `cx.dyn_vtables.len()`. Fails loud (fail-closed, never partial) on a coercion
+/// its absolute `GlobalId` in the module-wide `cx.dyn_vtables`. Previously
+/// materialized constants and vtables retain their slots. Fails loud on a coercion
 /// whose vtable cannot be modeled (auto-trait-only `dyn`, unsized self, supertrait
 /// vptr) — the coercion then stays an unlowered loud failure at its use site.
 fn materialize_dyn_vtables<'tcx>(
@@ -4939,9 +5026,8 @@ fn dyn_identity_unsize<'tcx>(cx: &Cx<'tcx, '_>, self_ty: Ty<'tcx>, dyn_ty: Ty<'t
 /// trait with supertrait tables (`StringError: Error(+Debug/Display)`) is fully
 /// materialized. Ids stay dense by construction: each ensure adds EXACTLY one
 /// global per distinct key, nested keys are ensured (added) BEFORE the parent's
-/// `add_global`, and this pass runs pre-`fb` (the pending-globals table is
-/// empty), so `cx.dyn_vtables.len()` equals the globals-table length at every
-/// add.
+/// `add_global`, and this pass runs pre-`fb` (the pending-globals table is empty).
+/// Prior members' constants and vtables both contribute to the absolute id.
 fn ensure_dyn_vtable<'tcx>(
     cx: &mut Cx<'tcx, '_>,
     mb: &mut ModuleBuilder,
@@ -4952,7 +5038,9 @@ fn ensure_dyn_vtable<'tcx>(
         return Ok(gid);
     }
     let global = build_dyn_vtable_global(cx, mb, self_ty, dyn_ty)?;
-    let gid = trust_ir::value::GlobalId::new(cx.dyn_vtables.len() as u32);
+    let gid = trust_ir::value::GlobalId::new(
+        (cx.dyn_vtables.len() + cx.const_globals.borrow().len()) as u32,
+    );
     mb.add_global(global);
     cx.dyn_vtables.insert((self_ty, dyn_ty), gid);
     Ok(gid)
@@ -5074,6 +5162,11 @@ fn build_dyn_vtable_global<'tcx>(
         tls: None,
         // A vtable is pointer-aligned; the Tuple(Ptr, …) type derives that.
         align: None,
+        // v41: a compiler-synthesized vtable states no section, is placed by
+        // the consumer, and is referenced by every use — nothing to retain.
+        section: None,
+        visibility: trust_ir::Visibility::Default,
+        retained: false,
     })
 }
 
@@ -7546,18 +7639,22 @@ struct AssertPanicCall {
 /// than silently miscompiling.
 fn assert_panic_langcall(
     msg: &AssertKind<Operand<'_>>,
-) -> Option<(rustc_hir::LangItem, Vec<TIRTy>, AssertPanicArgs)> {
-    use rustc_hir::LangItem;
+) -> Option<(rustc_attr_ir::lang_items::LangItem, Vec<TIRTy>, AssertPanicArgs)> {
+    use rustc_attr_ir::lang_items::LangItem;
     let loc_only = |li: LangItem| Some((li, vec![TIRTy::Ptr], AssertPanicArgs::LocationOnly));
     match msg {
+        // Amendment P (trust-ir wire v54): a panic site's entry takes the
+        // kind's operands as `usize` (the validator's V2 rule), so the
+        // `usize` operands of these two entries are declared `Usize` and the
+        // emission bitcasts the frontend's `U64` image of a `usize` to it.
         AssertKind::BoundsCheck { .. } => Some((
             LangItem::PanicBoundsCheck,
-            vec![TIRTy::U64, TIRTy::U64, TIRTy::Ptr],
+            vec![TIRTy::Usize, TIRTy::Usize, TIRTy::Ptr],
             AssertPanicArgs::BoundsCheck,
         )),
         AssertKind::MisalignedPointerDereference { .. } => Some((
             LangItem::PanicMisalignedPointerDereference,
-            vec![TIRTy::U64, TIRTy::U64, TIRTy::Ptr],
+            vec![TIRTy::Usize, TIRTy::Usize, TIRTy::Ptr],
             AssertPanicArgs::Misaligned,
         )),
         AssertKind::NullPointerDereference => loc_only(LangItem::PanicNullPointerDereference),
@@ -7798,7 +7895,8 @@ fn clamp_proof_description(value: &str) -> String {
 
 /// PRE-PASS (runs BEFORE the `FunctionBuilder` takes the module's exclusive
 /// borrow): record one `Pending` `ProofObligation` per Assert this lowering
-/// will actually emit. Returns how many were recorded.
+/// will actually emit. Returns what was recorded, or the builder's refusal
+/// (no fresh obligation id, or a row that does not carry its minted id).
 ///
 /// `fid` must be the id the body about to be built will occupy — the caller
 /// reads it from `ModuleBuilder::peek_next_func_id`, which is the authority.
@@ -7811,7 +7909,7 @@ fn record_assert_obligations<'tcx>(
     fid: trust_ir::FuncId,
     normal_reachable: &HashSet<usize>,
     span_map: &SpanMap,
-) -> Vec<(trust_ir::ProofId, usize)> {
+) -> Result<Vec<(trust_ir::ProofId, usize)>, String> {
     // IDENTITY vs. READABILITY, deliberately split:
     //   * `symbol` — the mono-precise, ASCII, stable mangled symbol — keys the
     //     machine-readable `assertion_id`, so two monomorphizations of the same
@@ -7845,14 +7943,16 @@ fn record_assert_obligations<'tcx>(
             "rustc MIR Assert ({slug}) at bb{index} of `{path}`: {phrase}. \
              RECORDED BY THE FRONTEND, NOT PROVED."
         ));
-        let id = mb.add_proof_obligation(|id| {
-            trust_ir::ProofObligation::new(id, kind, trust_ir::ProofStatus::Pending, description)
-                .with_function(fid)
-                .with_source(source)
-        });
+        let id = mb
+            .add_proof_obligation(|id| {
+                trust_ir::ProofObligation::new(id, kind, trust_ir::ProofStatus::Pending, description)
+                    .with_function(fid)
+                    .with_source(source)
+            })
+            .map_err(|refusal| refusal.to_string())?;
         recorded.push((id, index));
     }
-    recorded
+    Ok(recorded)
 }
 
 /// Record the `(mir_bb, block, inst_index)` of the lowered-`Assert` `CondBr`
@@ -7868,7 +7968,7 @@ fn record_assert_site(
     tc: &mut TermCtx<'_>,
 ) -> Result<(), String> {
     let (block, index) = fb.last_emitted_position().ok_or_else(|| {
-        "Assert lowering emitted a CondBr but the builder reports no last position".to_string()
+        "Assert lowering emitted a check but the builder reports no last position".to_string()
     })?;
     tc.assert_sites.push((tc.mir_bb, block, index));
     Ok(())
@@ -8101,6 +8201,126 @@ fn get_caller_location<'tcx>(
         })
 }
 
+/// Amendment P (trust-ir wire v54): the location a failed check's panic site
+/// reports, in its ONE spelling (§19.1 rule 2): inside a `#[track_caller]`
+/// body (and an inlined track-caller scope) the caller's location parameter,
+/// forwarded (`PanicLocation::Value`); otherwise the CTFE'd `Location`
+/// global itself (`PanicLocation::Global`) — never a `global_addr` of it. A
+/// location at a nonzero offset into its allocation stays a run-time address
+/// (`gep`), which the validator admits.
+fn get_panic_location<'tcx>(
+    cx: &Cx<'tcx, '_>,
+    fb: &mut trust_ir_build::FunctionBuilder<'_>,
+    source_info: rustc_middle::mir::SourceInfo,
+) -> Result<trust_ir::PanicLocation, String> {
+    cx.body.caller_location_span(
+        source_info,
+        cx.caller_location
+            .map(|value| Ok(trust_ir::PanicLocation::Value(value))),
+        cx.tcx,
+        |span| {
+            let cv = cx.tcx.span_as_caller_location(span);
+            let ConstValue::Scalar(Scalar::Ptr(ptr, _)) = cv else {
+                return Err(format!(
+                    "span_as_caller_location did not yield a const pointer ({cv:?})"
+                ));
+            };
+            let (prov, offset) = ptr.prov_and_relative_offset();
+            let gid = intern_alloc_global(cx, prov.alloc_id())?;
+            let off = offset.bytes();
+            Ok(if off == 0 {
+                trust_ir::PanicLocation::Global(gid)
+            } else {
+                let base = fb.global_addr(gid);
+                trust_ir::PanicLocation::Value(gep_byte_offset(fb, base, off))
+            })
+        },
+    )
+}
+
+/// Amendment P: the trust-ir `AssertKind` of a MIR assert (plan item P, wire
+/// v52), its `usize` operands lowered and bitcast from the frontend's `U64`
+/// image of a `usize` to `Usize` (the validator types kind operands
+/// `usize`). The location-only kinds trust-ir has no kind for — coroutine
+/// resume and null reference constructed — are `Unspecified`; their panic
+/// site still names their entry, so they lower faithfully.
+fn tir_assert_kind<'tcx>(
+    cx: &Cx<'tcx, '_>,
+    fb: &mut trust_ir_build::FunctionBuilder<'_>,
+    env: &HashMap<Local, trust_ir::ValueId>,
+    args: AssertPanicArgs,
+    msg: &AssertKind<Operand<'tcx>>,
+) -> Result<trust_ir::AssertKind, String> {
+    use trust_ir::AssertOverflowOp as Op;
+    let usize_operand = |fb: &mut trust_ir_build::FunctionBuilder<'_>, op: &Operand<'tcx>| {
+        lower_usize_operand(cx, fb, env, op)
+    };
+    Ok(match (args, msg) {
+        (AssertPanicArgs::BoundsCheck, AssertKind::BoundsCheck { len, index }) => {
+            let index = usize_operand(fb, index)?;
+            let len = usize_operand(fb, len)?;
+            trust_ir::AssertKind::BoundsCheck { index, len }
+        }
+        (
+            AssertPanicArgs::Misaligned,
+            AssertKind::MisalignedPointerDereference { required, found },
+        ) => {
+            let required = usize_operand(fb, required)?;
+            let found = usize_operand(fb, found)?;
+            trust_ir::AssertKind::MisalignedPtr { required, found }
+        }
+        (AssertPanicArgs::LocationOnly, AssertKind::Overflow(op, _, _)) => {
+            trust_ir::AssertKind::Overflow(match op {
+                MirBinOp::Add | MirBinOp::AddUnchecked | MirBinOp::AddWithOverflow => Op::Add,
+                MirBinOp::Sub | MirBinOp::SubUnchecked | MirBinOp::SubWithOverflow => Op::Sub,
+                MirBinOp::Mul | MirBinOp::MulUnchecked | MirBinOp::MulWithOverflow => Op::Mul,
+                MirBinOp::Div => Op::Div,
+                MirBinOp::Rem => Op::Rem,
+                MirBinOp::Shl | MirBinOp::ShlUnchecked => Op::Shl,
+                MirBinOp::Shr | MirBinOp::ShrUnchecked => Op::Shr,
+                other => return Err(format!("Assert Overflow of an unexpected op ({other:?})")),
+            })
+        }
+        (AssertPanicArgs::LocationOnly, AssertKind::OverflowNeg(_)) => {
+            trust_ir::AssertKind::Overflow(Op::Neg)
+        }
+        (AssertPanicArgs::LocationOnly, AssertKind::DivisionByZero(_)) => {
+            trust_ir::AssertKind::DivByZero
+        }
+        (AssertPanicArgs::LocationOnly, AssertKind::RemainderByZero(_)) => {
+            trust_ir::AssertKind::RemByZero
+        }
+        (AssertPanicArgs::LocationOnly, AssertKind::NullPointerDereference) => {
+            trust_ir::AssertKind::NullPtr
+        }
+        (
+            AssertPanicArgs::LocationOnly,
+            AssertKind::NullReferenceConstructed
+            | AssertKind::ResumedAfterReturn(_)
+            | AssertKind::ResumedAfterPanic(_)
+            | AssertKind::ResumedAfterDrop(_),
+        ) => trust_ir::AssertKind::Unspecified,
+        _ => return Err("Assert panic-arg shape mismatch (pre-pass bug)".to_string()),
+    })
+}
+
+/// A MIR `usize` operand as a trust-ir `Usize` value: the frontend images a
+/// `usize` as `U64`, so that image is bitcast (same width on every target the
+/// frontend lowers for); an operand of any other type is refused.
+fn lower_usize_operand<'tcx>(
+    cx: &Cx<'tcx, '_>,
+    fb: &mut trust_ir_build::FunctionBuilder<'_>,
+    env: &HashMap<Local, trust_ir::ValueId>,
+    op: &Operand<'tcx>,
+) -> Result<trust_ir::ValueId, String> {
+    let (v, t) = lower_operand(cx, fb, env, op)?;
+    match t {
+        TIRTy::Usize => Ok(v),
+        TIRTy::U64 => Ok(fb.cast(CastOp::Bitcast, TIRTy::U64, TIRTy::Usize, v)),
+        other => Err(format!("Assert kind operand is not usize ({other:?})")),
+    }
+}
+
 /// Materialize the CTFE'd `Location` allocation for `span` as a read-only
 /// module global (bytes + the file-name `&str` relocation), yielding its
 /// address (`span_as_caller_location` + `intern_alloc_global`).
@@ -8170,7 +8390,7 @@ fn successors_for_lowering(
 /// happy-path edges (`target`, switch arms, goto) are the ones we keep.
 fn normal_successors(kind: &TerminatorKind<'_>) -> Vec<usize> {
     match kind {
-        TerminatorKind::Goto { target } => vec![target.as_usize()],
+        TerminatorKind::Goto { target, .. } => vec![target.as_usize()],
         TerminatorKind::SwitchInt { targets, .. } => {
             targets.all_targets().iter().map(|t| t.as_usize()).collect()
         }
@@ -8294,6 +8514,7 @@ fn resolve_call_callee<'tcx>(
     let ty::FnDef(def_id, args) = *func_ty.kind() else {
         return None;
     };
+    let args = args.no_bound_vars()?;
     Instance::try_resolve(cx.tcx, ty::TypingEnv::fully_monomorphized(), def_id, args)
         .ok()
         .flatten()
@@ -10474,8 +10695,6 @@ struct TermCtx<'a> {
     /// blanket-identity `into_iter`). `Some` -> emit fat-pair lane reads /
     /// cursor writes instead of a `call`.
     str_inline: Option<StrInlineOp>,
-    /// The shared Assert-failure trap block, allocated lazily on first use.
-    trap_block: &'a mut Option<trust_ir::BlockId>,
     /// UNWIND lane: whether this compilation session lowers unwind edges faithfully
     /// (`eh_lane`). `false` under panic=abort — every EH field below is inert.
     eh: bool,
@@ -10549,18 +10768,6 @@ impl<'a> TermCtx<'a> {
         // A normal edge always targets a normal-reachable block (see
         // `compute_normal_reachable`), so this `Some` holds by construction.
         self.blocks[bb.as_usize()].expect("normal edge targets an emitted block")
-    }
-
-    /// The shared trap block, created on first use (filled with `unreachable`
-    /// after the block loop).
-    fn trap(&mut self, fb: &mut FunctionBuilder<'_>) -> trust_ir::BlockId {
-        if let Some(tb) = *self.trap_block {
-            tb
-        } else {
-            let tb = fb.create_block();
-            *self.trap_block = Some(tb);
-            tb
-        }
     }
 }
 
@@ -11078,7 +11285,7 @@ fn simd_int_vector_lanes<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<(TIRTy
         },
         _ => return None,
     };
-    Some((elem, count))
+    Some((elem, count.as_u64()))
 }
 
 /// Like `simd_int_vector_lanes`, but ALSO admits FLOAT-element SIMD vectors
@@ -11109,11 +11316,12 @@ fn simd_vector_lanes_any<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<(TIRTy
         Primitive::Float(f) => match f {
             rustc_abi::Float::F32 => TIRTy::F32,
             rustc_abi::Float::F64 => TIRTy::F64,
-            rustc_abi::Float::F16 | rustc_abi::Float::F128 => return None,
+            rustc_abi::Float::F16 | rustc_abi::Float::F16B
+            | rustc_abi::Float::F128 | rustc_abi::Float::PpcF128 => return None,
         },
         _ => return None,
     };
-    Some((elem, count))
+    Some((elem, count.as_u64()))
 }
 
 /// Whether a pointer to `pointee` is FAT with a COUNT metadata lane (a slice /
@@ -11943,7 +12151,8 @@ fn cast_scalar_tir_ty<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<TIRTy> {
         Primitive::Float(f) => match f {
             rustc_abi::Float::F32 => Some(TIRTy::F32),
             rustc_abi::Float::F64 => Some(TIRTy::F64),
-            rustc_abi::Float::F16 | rustc_abi::Float::F128 => None,
+            rustc_abi::Float::F16 | rustc_abi::Float::F16B
+            | rustc_abi::Float::F128 | rustc_abi::Float::PpcF128 => None,
         },
     }
 }
@@ -12285,6 +12494,7 @@ fn cast_kind_short(k: &CastKind) -> &'static str {
         CastKind::PtrToPtr => "PtrToPtr",
         CastKind::FnPtrToPtr => "FnPtrToPtr",
         CastKind::Transmute => "Transmute",
+        CastKind::BoxDerefTransmute => "BoxDerefTransmute",
         CastKind::Subtype => "Subtype",
     }
 }
@@ -12796,6 +13006,43 @@ fn lower_binop(
     }
 }
 
+/// Spell a MIR integer switch pattern at its source width, but only when the
+/// emitted selector has that same representation. In particular, a source
+/// `isize` on a 32-bit target is NOT the frontend's historical `I64` lane:
+/// refusing that mismatch here leaves the wider scalar/ABI gap explicit.
+fn switch_int_case_value(
+    selector: &TIRTy,
+    source_bits: u32,
+    target_pointer_bits: u32,
+    bits: u128,
+) -> Result<Constant, String> {
+    let selector_bits = selector
+        .bit_width_with(target_pointer_bits)
+        .filter(|_| selector.is_integer() || matches!(selector, TIRTy::Char))
+        .ok_or_else(|| format!("switch selector {selector} has no integer representation"))?;
+    if source_bits != selector_bits {
+        return Err(format!(
+            "switch selector source width {source_bits} differs from emitted {selector} width \
+             {selector_bits} on a {target_pointer_bits}-bit pointer target"
+        ));
+    }
+    if !(1..=128).contains(&source_bits) || (source_bits < 128 && bits >= (1_u128 << source_bits)) {
+        return Err(format!(
+            "switch case bit pattern {bits} does not fit its source width {source_bits}"
+        ));
+    }
+    if selector.is_signed() {
+        let shift = 128 - source_bits;
+        Ok(Constant::Int(((bits << shift) as i128) >> shift))
+    } else {
+        Ok(Constant::u128(bits))
+    }
+}
+
+#[cfg(test)]
+#[path = "mir_lower_switch_case_tests.rs"]
+mod switch_case_tests;
+
 /// Lower a terminator. RUNG 0: Return / Goto / SwitchInt / Unreachable. RUNG 2:
 /// edge args (cross-block phi), `Call`, `Assert`. Edges into a block supply the
 /// block's live-in scalar params via `tc.edge_args`.
@@ -12849,7 +13096,7 @@ fn lower_terminator<'tcx>(
             }
             Ok(())
         }
-        TerminatorKind::Goto { target } => {
+        TerminatorKind::Goto { target, .. } => {
             let args = tc.edge_args(env, *target)?;
             fb.br(tc.target_block(*target), args);
             Ok(())
@@ -12936,10 +13183,25 @@ fn lower_terminator<'tcx>(
                 }
                 return Ok(());
             }
+            // A case is a constant OF THE SELECTOR'S TYPE in its one spelling
+            // (SPEC_RATIFICATIONS §3.3; the validator refuses any other as
+            // `ConstTypeMismatch`). MIR's `SwitchInt` carries each value as the
+            // selector's bit pattern zero-extended to `u128`, so the `-1` arm of
+            // an `i8` match arrives as `255`: sign-extend at the SOURCE width.
+            // Pointer-sized source integers use THIS compilation's target,
+            // never the host or the historical scalar_tir_ty I64/U64 mapping.
+            let pointer_bits = u32::from(cx.tcx.sess.target.pointer_width);
+            let source_ty = cx.mono(discr.ty(&cx.body.local_decls, cx.tcx));
+            let source_bits = match source_ty.kind() {
+                ty::Int(ty::IntTy::Isize) | ty::Uint(ty::UintTy::Usize) => pointer_bits,
+                _ => t.bit_width_with(pointer_bits).ok_or_else(|| {
+                    format!("switch selector {t} has no source integer width")
+                })?,
+            };
             let mut cases: Vec<SwitchCase> = Vec::new();
             for (val, target) in targets.iter() {
                 cases.push(SwitchCase {
-                    value: Constant::Int(val as i128),
+                    value: switch_int_case_value(&t, source_bits, pointer_bits, val)?,
                     target: tc.target_block(target),
                     args: tc.edge_args(env, target)?,
                 });
@@ -16335,17 +16597,24 @@ fn lower_terminator<'tcx>(
             Ok(())
         }
         // RUNG 2: an overflow / bounds / division / pointer-validity assert.
-        // Evaluate `cond`; branch to `target` when it equals `expected`, else the
-        // failure (panic) path:
-        //   * panic=abort — a shared TRAP block (`unreachable`), byte-identical
-        //     to the historical lowering: the message variant only selects which
-        //     panic, which the trap subsumes on the never-taken failure path.
-        //   * UNWIND lane (a supported message kind) — rustc parity: the failure
-        //     arm CALLS the `core::panicking` entry point the pre-pass declared
-        //     (message operands + the CTFE'd `&'static Location`), as an
-        //     `Invoke` when the assert carries a cleanup/terminate unwind edge —
-        //     so an overflow/bounds/div-zero panic UNWINDS, runs cleanup, and is
-        //     catchable, exactly like native codegen.
+        // Amendment P (trust-ir wire v54): every MIR assert lowers to ONE
+        // sited check, in BOTH lanes, never to a branch into a shared
+        // `unreachable` trap (UB) nor to a branch into a call of the entry:
+        //   * the check's `AssertKind` (its `usize` operands bitcast from the
+        //     frontend's `U64` image) — `Unspecified` for the location-only
+        //     kinds that have no trust-ir kind (coroutine resume, null
+        //     reference constructed);
+        //   * its panic SITE: the `core::panicking` entry the pre-pass
+        //     declared, and the location — the CTFE'd `&'static Location`
+        //     global (`PanicLocation::Global`), or the caller's location
+        //     parameter inside a `#[track_caller]` body (`Value`);
+        //   * a plain sited `Assert` then `br target` for `UnwindAction::
+        //     Continue` / `Unreachable`; an `AssertInvoke` whose unwind edge
+        //     enters the synthesized pad for `Cleanup` / `Terminate` (unwind
+        //     lane only).
+        // `InvalidEnumConstruction` has no kind (its operand is a `u128`), so
+        // until plan item M it keeps a branch to a CALL of its entry (never
+        // to a trap).
         TerminatorKind::Assert {
             cond,
             expected,
@@ -16364,91 +16633,75 @@ fn lower_terminator<'tcx>(
                 let f = fb.bool_const(false);
                 fb.icmp(ICmpOp::Eq, TIRTy::Bool, cond_v, f)
             };
-            if tc.eh {
-                if let Some(ap) = tc.assert_panic {
-                    let fail = fb.create_block();
-                    let then_args = tc.edge_args(env, *target)?;
-                    fb.condbr(
-                        assert_cond,
-                        tc.target_block(*target),
-                        then_args,
-                        fail,
-                        vec![],
-                    );
-                    record_assert_site(fb, tc)?;
-                    fb.switch_to_block(fail);
-                    // Pad synthesis switches back to `tc.cur_blk` when done —
-                    // the invoke lives in the failure arm now.
-                    tc.cur_blk = fail;
-                    let mut pargs: Vec<trust_ir::ValueId> = Vec::new();
-                    match (ap.args, &**msg) {
-                        (AssertPanicArgs::BoundsCheck, AssertKind::BoundsCheck { len, index }) => {
-                            // `fn panic_bounds_check(index, len, &Location)`.
-                            let (iv, _) = lower_operand(cx, fb, env, index)?;
-                            let (lv, _) = lower_operand(cx, fb, env, len)?;
-                            pargs.push(iv);
-                            pargs.push(lv);
-                        }
-                        (
-                            AssertPanicArgs::Misaligned,
-                            AssertKind::MisalignedPointerDereference { required, found },
-                        ) => {
-                            let (rv, _) = lower_operand(cx, fb, env, required)?;
-                            let (fv, _) = lower_operand(cx, fb, env, found)?;
-                            pargs.push(rv);
-                            pargs.push(fv);
-                        }
-                        (
-                            AssertPanicArgs::InvalidEnum,
-                            AssertKind::InvalidEnumConstruction(source),
-                        ) => {
-                            // `fn panic_invalid_enum_construction(source: u128,
-                            // &Location)`. The operand is the already-widened
-                            // `u128` discriminant image (`CheckEnums` masks it
-                            // in MIR); anything else is ABI drift — fail loud.
-                            let (sv, st) = lower_operand(cx, fb, env, source)?;
-                            if !matches!(st, TIRTy::U128) {
-                                return Err(format!(
-                                    "InvalidEnumConstruction source is not u128 ({st:?})"
-                                ));
-                            }
-                            pargs.push(sv);
-                        }
-                        (AssertPanicArgs::LocationOnly, _) => {}
-                        _ => {
-                            return Err(
-                                "Assert panic-arg shape mismatch (pre-pass bug)".to_string()
-                            )
-                        }
-                    }
-                    pargs.push(get_caller_location(cx, fb, source_info)?);
-                    if let Some(pad) = eh_unwind_dest(fb, env, tc, unwind)? {
-                        // The entry point is `-> !`: the normal edge is never
-                        // taken; give the Invoke a dead normal block.
-                        let dead = fb.create_block();
-                        fb.invoke_void(ap.fid, pargs, dead, vec![], pad);
-                        fb.switch_to_block(dead);
-                        fb.unreachable();
-                    } else {
-                        // `Continue`/`Unreachable` unwind action: a plain call —
-                        // the unwind (if any) walks through this frame via its
-                        // always-emitted tables, entering no pad here.
-                        fb.call_void(ap.fid, pargs);
-                        fb.unreachable();
-                    }
-                    return Ok(());
+            let Some(ap) = tc.assert_panic else {
+                // No entry point (an assert kind `assert_panic_langcall` does
+                // not map — unreachable today): fail closed rather than
+                // inventing a panic or trapping.
+                return Err(format!(
+                    "Assert: no core::panicking entry point for this assert kind ({msg:?})"
+                ));
+            };
+            if let (AssertPanicArgs::InvalidEnum, AssertKind::InvalidEnumConstruction(source)) =
+                (ap.args, &**msg)
+            {
+                let fail = fb.create_block();
+                let then_args = tc.edge_args(env, *target)?;
+                fb.condbr(
+                    assert_cond,
+                    tc.target_block(*target),
+                    then_args,
+                    fail,
+                    vec![],
+                );
+                record_assert_site(fb, tc)?;
+                fb.switch_to_block(fail);
+                // Pad synthesis switches back to `tc.cur_blk` when done — the
+                // call lives in the failure arm now.
+                tc.cur_blk = fail;
+                // `fn panic_invalid_enum_construction(source: u128, &Location)`.
+                // The operand is the already-widened `u128` discriminant image
+                // (`CheckEnums` masks it in MIR); anything else is ABI drift.
+                let (sv, st) = lower_operand(cx, fb, env, source)?;
+                if !matches!(st, TIRTy::U128) {
+                    return Err(format!(
+                        "InvalidEnumConstruction source is not u128 ({st:?})"
+                    ));
                 }
+                let pargs = vec![sv, get_caller_location(cx, fb, source_info)?];
+                if let Some(pad) = eh_unwind_dest(fb, env, tc, unwind)? {
+                    // The entry point is `-> !`: the normal edge is never
+                    // taken; give the Invoke a dead normal block.
+                    let dead = fb.create_block();
+                    fb.invoke_void(ap.fid, pargs, dead, vec![], pad);
+                    fb.switch_to_block(dead);
+                    fb.unreachable();
+                } else {
+                    fb.call_void(ap.fid, pargs);
+                    fb.unreachable();
+                }
+                return Ok(());
             }
-            let trap = tc.trap(fb);
+            let kind = tir_assert_kind(cx, fb, env, ap.args, msg)?;
+            let site = trust_ir::PanicSite {
+                entry: ap.fid,
+                location: get_panic_location(cx, fb, source_info)?,
+            };
             let then_args = tc.edge_args(env, *target)?;
-            fb.condbr(
-                assert_cond,
-                tc.target_block(*target),
-                then_args,
-                trap,
-                vec![],
-            );
-            record_assert_site(fb, tc)?;
+            if let Some(pad) = eh_unwind_dest(fb, env, tc, unwind)? {
+                fb.assert_invoke(
+                    assert_cond,
+                    kind,
+                    site,
+                    tc.target_block(*target),
+                    then_args,
+                    pad,
+                );
+                record_assert_site(fb, tc)?;
+            } else {
+                fb.assert_sited(assert_cond, kind, site);
+                record_assert_site(fb, tc)?;
+                fb.br(tc.target_block(*target), then_args);
+            }
             Ok(())
         }
         // RUNG 4: `drop(place) -> [return: target, unwind: ..]`. We run the place's
@@ -16753,6 +17006,7 @@ fn resolve_fnptr_operand<'tcx>(
         let ty::FnDef(def_id, args) = *t.kind() else {
             return None;
         };
+        let args = args.no_bound_vars()?;
         Instance::try_resolve(cx.tcx, ty::TypingEnv::fully_monomorphized(), def_id, args)
             .ok()
             .flatten()

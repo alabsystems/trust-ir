@@ -53,11 +53,11 @@ fn build_func_with_proofs(proofs: &[ProofAnnotation]) -> Function {
     let x = fb.add_block_param(entry, Ty::I64);
     fb.switch_to_block(entry);
     for p in proofs {
-        fb.add_proof(p.clone());
+        fb.add_function_proof(p.clone());
     }
     fb.ret(vec![x]);
     fb.build();
-    let module = mb.build();
+    let module = mb.build().expect("ModuleBuilder::build: test fixture");
     assert_eq!(module.functions.len(), 1);
     module.functions[0].clone()
 }

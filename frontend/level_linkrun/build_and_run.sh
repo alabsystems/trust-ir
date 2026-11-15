@@ -8,13 +8,16 @@
 #     -> link (closure object[s] + runtime.o + Rust driver) + real-method oracle
 #     -> run, structurally compare every result to the real Rust method.
 #
-# Requires: the stage1 toolchain, the trust-ir main-repo CLI (writes binary
-# format v37; readers accept v23-v25 and v29-v37), and a
-# trust-cg built from the jump-table-fix branch (commit e4455fb).
+# Requires: the Trust toolchain (`trustc`; the frontend built with
+# `targo --unverified build --release --manifest-path frontend/Cargo.toml`), the
+# trust-ir main-repo CLI (writes binary format v37; readers accept v23-v25 and
+# v29-v37), and a trust-cg built from the jump-table-fix branch (commit e4455fb).
 set -u
-# Tool locations — override via env. Defaults: the trust / trust-cg checkouts
-# live under $HOME; FE/CLI derive from this script's own location in the repo.
-STAGE1=${STAGE1:-$HOME/trust/build/aarch64-apple-darwin/stage1}
+# Tool locations — override via env. Defaults: the Trust compiler on PATH and
+# its sysroot; the trust-cg checkout under $HOME; FE/CLI derive from this
+# script's own location in the repo.
+RUSTC=${RUSTC:-trustc}
+SYSROOT=${SYSROOT:-$("$RUSTC" --print sysroot)} || { echo "cannot run $RUSTC (need the Trust toolchain's trustc)" >&2; exit 2; }
 FE=${FE:-${0:a:h:h}}                                # this repo's frontend/
 CORPUS=$FE/clean_level_slice.rs
 CLI=${CLI:-${0:a:h:h:h}/target/release/trust-ir}
@@ -22,13 +25,22 @@ CG=${CG:-$HOME/trust-cg/target/release/trust-cg}    # built from e4455fb
 HERE=${0:a:h}
 OUT=${1:-/tmp/level_linkrun.out}
 mkdir -p "$OUT"
-export DYLD_FALLBACK_LIBRARY_PATH=$STAGE1/lib/rustlib/aarch64-apple-darwin/lib
-export RUSTUP_TOOLCHAIN=
-RUSTC=$STAGE1/bin/rustc
+export RUSTC
 
+# SCOPED NON-VERIFICATION LANE (`-Ztrust-verify=off`): the subject under test is
+# THIS driver's out-of-tree THIR->trust-ir lowering. With verification on, the
+# compiler runs its OWN in-tree trust-ir lowering and may install derived MIR at
+# the flip seam (`-Ztrust-ir-lower` only takes an explicit value in the
+# `-Ztrust-verify=off` compatibility lane), mutating the MIR we extract — we
+# would then be measuring the in-tree producer, not ours. `advisory` does not
+# help: it changes whether verdicts are fatal, not whether the flip runs.
+# NB the retired `-Zno-trust-verify` spelling is REJECTED at flag-parse by the
+# Trust compiler ("unknown unstable option"); only the mutable x.py stage1 tree
+# this script used to default to still accepted it, which is why it went
+# unnoticed.
 emit() { # <fn-substr> <name>
   "$FE/target/release/trust_ir_mir" --mir-emit-closure "$1" "$OUT/$2.trust_ir" \
-    --sysroot $STAGE1 -Zno-trust-verify --crate-type=lib "$CORPUS" 2>&1 | grep -E 'EMIT-CLOSURE-(OK|FAIL)'
+    --sysroot "$SYSROOT" -Ztrust-verify=off --crate-type=lib "$CORPUS" 2>&1 | grep -E 'EMIT-CLOSURE-(OK|FAIL)'
   "$CLI" convert --from text --to bin "$OUT/$2.trust_ir" "$OUT/$2.bin" >/dev/null
   printf 'tMBC\x01\x00\x00\x00' > "$OUT/$2.tmbc"; cat "$OUT/$2.bin" >> "$OUT/$2.tmbc"
   "$CG" -c "$OUT/$2.tmbc" -o "$OUT/$2.o" 2>&1 | grep -i error
@@ -51,9 +63,16 @@ cc -c -O1 "$HERE/runtime.c" -o "$OUT/runtime.o"
 
 echo "== 4. link + run each group =="
 cp "$HERE/oracle.rs" "$OUT/oracle.rs"; cp "$HERE/driver.rs" "$OUT/driver.rs"
+# SCOPED NON-VERIFICATION LANE (`-Ztrust-verify=off`): this compiles the ORACLE
+# side of a differential check — driver.rs calls the real Rust method and the
+# trust-cg-compiled symbol on identical inputs and compares. The oracle must be
+# bit-for-bit vanilla Rust or it is not an oracle, which is precisely the lane
+# `-Ztrust-verify=off` names in `-Z help` ("compile as vanilla Rust ... used by
+# the vanilla-comparison and bootstrap compiler lanes"). `advisory` would still
+# be a verifying compile and is therefore the wrong tool here.
 build() { # <group> <extra .o ...>
   local grp=$1; shift
-  $RUSTC -Zno-trust-verify -Copt-level=0 -Awarnings --cfg grp_$grp "$OUT/driver.rs" -o "$OUT/driver_$grp" \
+  "$RUSTC" -Ztrust-verify=off -Copt-level=0 -Awarnings --cfg grp_$grp "$OUT/driver.rs" -o "$OUT/driver_$grp" \
     ${^@/#/-Clink-arg=} 2>/dev/null
   "$OUT/driver_$grp" $grp
 }

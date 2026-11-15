@@ -8,7 +8,7 @@
 //!
 //! This integration test drives the REAL lowering end-to-end: it spawns the built
 //! `trust_ir_frontend` binary (provided to integration tests as
-//! `CARGO_BIN_EXE_trust_ir_frontend`) under the stage1 rustc toolchain on the
+//! `CARGO_BIN_EXE_trust_ir_frontend`) under the linked Trust toolchain on the
 //! committed `m3_corpus.rs`, in BOTH `--m3` mode and default mode, and asserts on
 //! the driver's output:
 //!
@@ -26,25 +26,29 @@
 //! that the `--lib` suite would miss.
 //!
 //! TOOLCHAIN: the lowering reads `tcx.thir_body` via `rustc_private`, so it MUST run
-//! under the ABI-matching trust stage1 rustc and bootstrap-prepared private
-//! `rustc_driver` dylib directory. The test rejects a `RUSTC` whose version does
-//! not match the linked driver, then falls back to the checkout's canonical
-//! stage1/private-sysroot paths. If that pair cannot be located, the test SKIPS
-//! loudly rather than running against a mismatched sysroot.
+//! under the ABI-matching Trust compiler (`RUSTC`, else `trustc` on PATH) and its
+//! sysroot's `rustc_driver` dylib (`support::trust_toolchain`). A compiler whose
+//! version does not match the linked driver, or no compiler at all, FAILS the
+//! test: these gates used to SKIP (and pass) whenever an x.py stage1 tree was
+//! absent, which on the installed toolchain meant always.
 
 #![feature(rustc_private)]
 
 use std::path::Path;
 
 mod support;
-use support::{artifact_only_driver_command, find_stage1_root};
+use support::{artifact_only_driver_command, trust_toolchain, TrustToolchain};
 
 /// Run the built frontend binary on `corpus_file` with the given extra args under
-/// the stage1 toolchain. Returns (exit_success, combined stdout+stderr).
-fn run_frontend_on(stage1: &Path, corpus_file: &str, extra_args: &[&str]) -> (bool, String) {
+/// the linked Trust toolchain. Returns (exit_success, combined stdout+stderr).
+fn run_frontend_on(
+    toolchain: &TrustToolchain,
+    corpus_file: &str,
+    extra_args: &[&str],
+) -> (bool, String) {
     let bin = env!("CARGO_BIN_EXE_trust_ir_frontend");
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join(corpus_file);
-    let mut cmd = artifact_only_driver_command(bin, stage1);
+    let mut cmd = artifact_only_driver_command(bin, toolchain);
     cmd.arg(&corpus);
     cmd.args(extra_args);
 
@@ -55,8 +59,8 @@ fn run_frontend_on(stage1: &Path, corpus_file: &str, extra_args: &[&str]) -> (bo
 }
 
 /// `run_frontend_on` against the default `m3_corpus.rs` (back-compat shim).
-fn run_frontend(stage1: &Path, extra_args: &[&str]) -> (bool, String) {
-    run_frontend_on(stage1, "m3_corpus.rs", extra_args)
+fn run_frontend(toolchain: &TrustToolchain, extra_args: &[&str]) -> (bool, String) {
+    run_frontend_on(toolchain, "m3_corpus.rs", extra_args)
 }
 
 /// Assert NONE of the failure markers appears in `out`.
@@ -189,19 +193,10 @@ fn assert_span_provenance(out: &str, mode: &str, fn_name: &str, corpus_file: &st
 
 #[test]
 fn real_lowering_m3_and_default_accept() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP real_lowering_acceptance: no stage1 rustc toolchain found \
-             (set RUSTC=<stage1>/bin/rustc, or place it at \
-             $HOME/trust/build/aarch64-apple-darwin/stage1). \
-             This test is the REAL-lowering gate; it is being skipped only because \
-             the rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     // --- 1) `--m3` mode: every milestone family must report ALL MATCH. ---------
-    let (ok_m3, out_m3) = run_frontend(&stage1, &["--m3"]);
+    let (ok_m3, out_m3) = run_frontend(&toolchain, &["--m3"]);
     assert!(
         ok_m3,
         "[--m3] driver exited non-zero.\n---- full output ----\n{out_m3}"
@@ -256,7 +251,7 @@ fn real_lowering_m3_and_default_accept() {
     }
 
     // --- 2) default mode: the genuine emitted-from-THIR predicate, 21/21 twice. -
-    let (ok_def, out_def) = run_frontend(&stage1, &[]);
+    let (ok_def, out_def) = run_frontend(&toolchain, &[]);
     assert!(
         ok_def,
         "[default] driver exited non-zero (a PARITY NOT CHECKED fail exits 1).\n\
@@ -304,17 +299,10 @@ fn real_lowering_m3_and_default_accept() {
 ///   * the predicate differential: 21/21 twice over the real niche heap graphs.
 #[test]
 fn real_lowering_m6_niche_level_accepts() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP real_lowering_m6_niche_level: no stage1 rustc toolchain found. \
-             This is the M6 niche-Level capstone gate; skipped only because the \
-             rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let (ok, out) = run_frontend_on(
-        &stage1,
+        &toolchain,
         "m6_corpus.rs",
         &[
             "--assert-layout",
@@ -377,22 +365,13 @@ fn real_lowering_m6_niche_level_accepts() {
 /// round-trip the downstream JIT consumes.
 #[test]
 fn mir_emit_threads_spans() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_emit_threads_spans: no stage1 rustc toolchain found \
-             (set RUSTC=<stage1>/bin/rustc, or place it at \
-             $HOME/trust/build/aarch64-apple-darwin/stage1). \
-             This is the MIR-path span-threading provenance gate; it is being \
-             skipped only because the rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus_rel = "tests/fixtures/span_corpus.rs";
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join(corpus_rel);
     let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("span_probe_sz.tir");
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit");
     cmd.arg("span_probe_sz");
     cmd.arg(&outpath);
@@ -638,11 +617,11 @@ fn value_is_zext_byte_const(
 
 /// Emit one ZST pointer-offset helper and prove the frontend preserved it as a
 /// true pointer-identity operation: no opaque call, byte multiply, or GEP.
-fn assert_zst_offset_is_noop(stage1: &Path, bin: &str, corpus: &Path, symbol: &str) {
+fn assert_zst_offset_is_noop(toolchain: &TrustToolchain, bin: &str, corpus: &Path, symbol: &str) {
     let outpath =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{symbol}_must_be_noop.tir"));
     let _ = std::fs::remove_file(&outpath);
-    let mut command = artifact_only_driver_command(bin, stage1);
+    let mut command = artifact_only_driver_command(bin, toolchain);
     command.arg("--mir-emit");
     command.arg(symbol);
     command.arg(&outpath);
@@ -677,6 +656,79 @@ fn assert_zst_offset_is_noop(stage1: &Path, bin: &str, corpus: &Path, symbol: &s
     );
 }
 
+/// Regression for the emit-closure EXTERN TABLE: two closure members that call
+/// the same extern must share ONE 0-block declaration. Each member used to
+/// declare its own, so one link-time symbol appeared twice in one module — twelve
+/// times for one `drop_glue` in a real kernel fixture — which trust-ir's own
+/// validator refuses since v41 (`DuplicateFunctionSymbol`). Asserted on the
+/// emitted module, not the log: one `memmove`, no repeated name anywhere, and a
+/// clean validate + round-trip.
+#[test]
+fn mir_emit_closure_declares_each_extern_once_across_members() {
+    let toolchain = trust_toolchain();
+
+    let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
+    let corpus =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shared_extern_corpus.rs");
+    let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("shared_extern_closure.tir");
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
+    cmd.arg("--mir-emit-closure");
+    cmd.arg("shared_extern_root");
+    cmd.arg(&outpath);
+    cmd.arg("-Cpanic=abort");
+    cmd.arg("--crate-type=lib");
+    cmd.arg(&corpus);
+
+    let out = cmd.output().expect("failed to spawn trust_ir_mir");
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success() && combined.contains("EMIT-CLOSURE-OK"),
+        "[shared-extern] closure did not lower.\n---- output ----\n{combined}"
+    );
+    assert!(
+        combined.contains("validate_module = 0 error(s)") && combined.contains("re-parse: OK"),
+        "[shared-extern] emitted module did not validate and round-trip.\n\
+         ---- output ----\n{combined}"
+    );
+
+    let text = std::fs::read_to_string(&outpath).unwrap_or_else(|error| {
+        panic!("[shared-extern] cannot read emitted module {}: {error}", outpath.display())
+    });
+    let module = trust_ir::parser::parse_module(&text)
+        .unwrap_or_else(|error| panic!("[shared-extern] emitted module does not parse: {error:?}"));
+
+    // Exactly one `memmove` declaration, reached from BOTH members.
+    let memmove = fn_ending_in(&module, "memmove");
+    assert!(memmove.blocks.is_empty(), "[shared-extern] memmove must be a 0-block extern");
+    for body_suffix in ["copy_a", "copy_b"] {
+        let function = fn_ending_in(&module, body_suffix);
+        let calls = function
+            .instructions()
+            .filter(|node| {
+                matches!(&node.inst, trust_ir::Inst::Call { callee, .. } if *callee == memmove.id)
+            })
+            .count();
+        assert_eq!(
+            calls, 1,
+            "[shared-extern] {body_suffix} must call the ONE shared memmove declaration.\n\
+             ---- IR ----\n{text}"
+        );
+    }
+    // And no link-time symbol is declared twice anywhere in the closure.
+    let mut seen = std::collections::HashSet::new();
+    let repeated: Vec<&str> = module
+        .functions
+        .iter()
+        .filter(|function| !seen.insert(function.name.as_str()))
+        .map(|function| function.name.as_str())
+        .collect();
+    assert!(
+        repeated.is_empty(),
+        "[shared-extern] symbols declared more than once: {repeated:?}\n---- IR ----\n{text}"
+    );
+}
+
 /// Regression for the panic-abort miscompile fixed in `mir_lower`: an intrinsic
 /// element count for `u64` must become a BYTE count (`count * 8`) before the
 /// memmove/memset call. The old abort lane emitted a stride-erased intrinsic
@@ -684,20 +736,13 @@ fn assert_zst_offset_is_noop(stage1: &Path, bin: &str, corpus: &Path, symbol: &s
 /// one eighth of the requested memory.
 #[test]
 fn mir_panic_abort_scales_wide_copy_and_write_bytes() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_panic_abort_scales_wide_copy_and_write_bytes: no ABI-matching \
-             stage1 rustc toolchain found. This is the panic-abort wide-memory \
-             miscompile gate; it is skipped only because rustc_private is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mem_intrinsic_wide_corpus.rs");
     let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("mem_intrinsic_wide_abort.tir");
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("mem_intrinsic_wide");
     cmd.arg(&outpath);
@@ -817,13 +862,7 @@ fn mir_panic_abort_scales_wide_copy_and_write_bytes() {
 /// destination/source order of `*mut T::copy_from*`.
 #[test]
 fn mir_panic_abort_scales_stable_pointer_memory_wrappers() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_panic_abort_scales_stable_pointer_memory_wrappers: no ABI-matching \
-             stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus =
@@ -831,7 +870,7 @@ fn mir_panic_abort_scales_stable_pointer_memory_wrappers() {
     let outpath =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("stable_mem_wrappers_wide_abort.tir");
     let _ = std::fs::remove_file(&outpath);
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("stable_mem_wrappers_wide");
     cmd.arg(&outpath);
@@ -939,8 +978,27 @@ fn mir_panic_abort_scales_stable_pointer_memory_wrappers() {
         .filter(|function| function.blocks.is_empty())
         .map(|function| function.name.as_str())
         .collect();
-    assert_eq!(bodyless.iter().filter(|name| name.ends_with("memmove")).count(), 6);
-    assert_eq!(bodyless.iter().filter(|name| name.ends_with("memset")).count(), 2);
+    // The six copy calls and two write calls above are distinct operations,
+    // not distinct foreign declarations. The closure interns each libc leaf
+    // once, retaining the exact shared FuncId and its concrete signature.
+    for (symbol, params, expected_calls) in [
+        ("memmove", vec![trust_ir::Ty::Ptr, trust_ir::Ty::Ptr, trust_ir::Ty::U64], 6),
+        ("memset", vec![trust_ir::Ty::Ptr, trust_ir::Ty::I32, trust_ir::Ty::U64], 2),
+    ] {
+        let leaves: Vec<_> = module.functions.iter().filter(|function| {
+            function.blocks.is_empty() && function.name.ends_with(symbol)
+        }).collect();
+        assert_eq!(leaves.len(), 1, "[stable-mem] {symbol} declaration was not interned.\n{text}");
+        let leaf = leaves[0];
+        let signature = &module.func_types[leaf.ty.index() as usize];
+        assert_eq!(signature.params, params, "[stable-mem] {symbol} carrier changed.\n{text}");
+        assert!(signature.returns.is_empty(), "[stable-mem] {symbol} return carrier changed.\n{text}");
+        assert!(!signature.is_vararg, "[stable-mem] {symbol} became variadic.\n{text}");
+        let calls = module.functions.iter().flat_map(|function| function.instructions())
+            .filter(|node| matches!(&node.inst, trust_ir::Inst::Call { callee, .. } if *callee == leaf.id))
+            .count();
+        assert_eq!(calls, expected_calls, "[stable-mem] {symbol} calls lost shared identity.\n{text}");
+    }
     assert!(
         bodyless
             .iter()
@@ -953,13 +1011,7 @@ fn mir_panic_abort_scales_stable_pointer_memory_wrappers() {
 /// without a libc call, opaque wrapper declaration, byte multiply, or GEP.
 #[test]
 fn mir_panic_abort_stable_zst_memory_wrappers_are_true_noops() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_panic_abort_stable_zst_memory_wrappers_are_true_noops: no \
-             ABI-matching stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus =
@@ -967,7 +1019,7 @@ fn mir_panic_abort_stable_zst_memory_wrappers_are_true_noops() {
     let outpath =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("stable_mem_wrappers_zst_abort.tir");
     let _ = std::fs::remove_file(&outpath);
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("stable_mem_wrappers_zst");
     cmd.arg(&outpath);
@@ -1015,20 +1067,14 @@ fn mir_panic_abort_stable_zst_memory_wrappers_are_true_noops() {
 /// forms, even under panic=abort.
 #[test]
 fn mir_panic_abort_zst_memory_intrinsics_are_true_noops() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_panic_abort_zst_memory_intrinsics_are_true_noops: no ABI-matching \
-             stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mem_intrinsic_wide_corpus.rs");
     let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("mem_intrinsic_zst_abort.tir");
     let _ = std::fs::remove_file(&outpath);
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("mem_intrinsic_zst");
     cmd.arg(&outpath);
@@ -1081,13 +1127,7 @@ fn mir_panic_abort_zst_memory_intrinsics_are_true_noops() {
 /// without leaving a bodyless intrinsic/wrapper declaration behind.
 #[test]
 fn mir_arith_offset_uses_wrapping_integer_pointer_lane() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_arith_offset_uses_wrapping_integer_pointer_lane: no \
-             ABI-matching stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1096,7 +1136,7 @@ fn mir_arith_offset_uses_wrapping_integer_pointer_lane() {
         let outpath =
             Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{symbol}_integer_lane.tir"));
         let _ = std::fs::remove_file(&outpath);
-        let mut command = artifact_only_driver_command(bin, &stage1);
+        let mut command = artifact_only_driver_command(bin, &toolchain);
         command.arg("--mir-emit");
         command.arg(symbol);
         command.arg(&outpath);
@@ -1136,13 +1176,7 @@ fn mir_arith_offset_uses_wrapping_integer_pointer_lane() {
 /// integer-pointer lane so valid backward in-allocation steps remain expressible.
 #[test]
 fn mir_binop_offset_admits_forward_and_dynamic_signed() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_binop_offset_admits_forward_and_dynamic_signed: no \
-             ABI-matching stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus =
@@ -1151,7 +1185,7 @@ fn mir_binop_offset_admits_forward_and_dynamic_signed() {
     let forward_path =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("mir_offset_forward_constant.tir");
     let _ = std::fs::remove_file(&forward_path);
-    let mut forward = artifact_only_driver_command(bin, &stage1);
+    let mut forward = artifact_only_driver_command(bin, &toolchain);
     forward.arg("--mir-emit");
     forward.arg("forward_wide_offset");
     forward.arg(&forward_path);
@@ -1205,7 +1239,7 @@ fn mir_binop_offset_admits_forward_and_dynamic_signed() {
     let dynamic_path =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("mir_offset_dynamic_integer_lane.tir");
     let _ = std::fs::remove_file(&dynamic_path);
-    let mut dynamic = artifact_only_driver_command(bin, &stage1);
+    let mut dynamic = artifact_only_driver_command(bin, &toolchain);
     dynamic.arg("--mir-emit");
     dynamic.arg("dynamic_wide_offset");
     dynamic.arg(&dynamic_path);
@@ -1233,7 +1267,7 @@ fn mir_binop_offset_admits_forward_and_dynamic_signed() {
     });
     let function = fn_ending_in(&module, "dynamic_wide_offset");
     assert_integer_pointer_offset(function, 8, &text);
-    assert_zst_offset_is_noop(&stage1, bin, &corpus, "dynamic_zst_offset");
+    assert_zst_offset_is_noop(&toolchain, bin, &corpus, "dynamic_zst_offset");
 }
 
 /// Cross-crate MIR may retain `ptr.offset` itself as a core method call. The
@@ -1242,13 +1276,7 @@ fn mir_binop_offset_admits_forward_and_dynamic_signed() {
 /// arithmetic, never an opaque core extern whose semantics evade verification.
 #[test]
 fn mir_raw_ptr_offset_wrapper_inlines_both_domains() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_raw_ptr_offset_wrapper_inlines_both_domains: no \
-             ABI-matching stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus =
@@ -1257,7 +1285,7 @@ fn mir_raw_ptr_offset_wrapper_inlines_both_domains() {
     let forward_path =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("raw_ptr_wrapper_forward.tir");
     let _ = std::fs::remove_file(&forward_path);
-    let mut forward = artifact_only_driver_command(bin, &stage1);
+    let mut forward = artifact_only_driver_command(bin, &toolchain);
     forward.arg("--mir-emit");
     forward.arg("wrapper_forward_wide_offset");
     forward.arg(&forward_path);
@@ -1319,7 +1347,7 @@ fn mir_raw_ptr_offset_wrapper_inlines_both_domains() {
     let dynamic_path =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("raw_ptr_wrapper_dynamic_integer_lane.tir");
     let _ = std::fs::remove_file(&dynamic_path);
-    let mut dynamic = artifact_only_driver_command(bin, &stage1);
+    let mut dynamic = artifact_only_driver_command(bin, &toolchain);
     dynamic.arg("--mir-emit");
     dynamic.arg("wrapper_dynamic_wide_offset");
     dynamic.arg(&dynamic_path);
@@ -1352,7 +1380,7 @@ fn mir_raw_ptr_offset_wrapper_inlines_both_domains() {
         "[raw-ptr-offset-wrapper] dynamic wrapper retained a bodyless core declaration.\n\
          ---- IR ----\n{text}"
     );
-    assert_zst_offset_is_noop(&stage1, bin, &corpus, "wrapper_dynamic_zst_offset");
+    assert_zst_offset_is_noop(&toolchain, bin, &corpus, "wrapper_dynamic_zst_offset");
 }
 
 // ============ RUNG 10: by-value SMALL-PAIR return ABI (MIR path) =============
@@ -1443,16 +1471,7 @@ fn agg_lane_uint(v: &trust_ir::interpret::InterpretValue, i: usize) -> u128 {
 ///     reads), checked end-to-end over several argument pairs.
 #[test]
 fn mir_pair_by_value_return_lowers_and_interprets() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_pair_by_value_return_lowers_and_interprets: no stage1 rustc \
-             toolchain found (set RUSTC=<stage1>/bin/rustc, or place it at \
-             $HOME/trust/build/aarch64-apple-darwin/stage1). This is the MIR-path \
-             by-value pair-return gate; it is being skipped only because the \
-             rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus_rel = "tests/fixtures/pair_ret_corpus.rs";
@@ -1461,7 +1480,7 @@ fn mir_pair_by_value_return_lowers_and_interprets() {
     // Lower the CALL-GRAPH CLOSURE of `pair_trip` (wires mk_pair / mk_tuple /
     // swap_wide in-module), so both the callee `ret` side and the caller spill
     // side of the by-value pair ABI are in one interpretable module.
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-pair-ret-by-value");
     cmd.arg("--mir-emit-closure");
     cmd.arg("pair_trip");
@@ -1640,20 +1659,12 @@ fn mir_pair_by_value_return_lowers_and_interprets() {
 /// of 2-byte structs; flipping the default is a coordinated trust-cg rung).
 #[test]
 fn mir_pair_return_defaults_to_sret_without_flag() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_pair_return_defaults_to_sret_without_flag: no stage1 rustc \
-             toolchain found. This is the RUNG 10 default-off (no-drift) pin; it \
-             is being skipped only because the rustc_private toolchain is \
-             unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pair_ret_corpus.rs");
     let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("pair_ret_default_sret.tir");
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("pair_trip");
     cmd.arg(&outpath);
@@ -1758,16 +1769,7 @@ fn tuple2(a: (trust_ir::Ty, u128), b: (trust_ir::Ty, u128)) -> trust_ir::interpr
 ///     the emitted text; validate-clean on the built module).
 #[test]
 fn mir_pair_by_value_param_lowers_and_interprets() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_pair_by_value_param_lowers_and_interprets: no stage1 rustc \
-             toolchain found (set RUSTC=<stage1>/bin/rustc, or place it at \
-             $HOME/trust/build/aarch64-apple-darwin/stage1). This is the MIR-path \
-             by-value pair-PARAM gate; it is being skipped only because the \
-             rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus_rel = "tests/fixtures/pair_param_corpus.rs";
@@ -1776,7 +1778,7 @@ fn mir_pair_by_value_param_lowers_and_interprets() {
     // Lower the CALL-GRAPH CLOSURE of `param_trip` (wires the producers + consumers
     // in-module), so both the callee spill side and the caller by-value-arg side of
     // the by-value pair PARAM ABI are in one interpretable module.
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-pair-ret-by-value");
     cmd.arg("--mir-emit-closure");
     cmd.arg("param_trip");
@@ -1951,19 +1953,12 @@ fn mir_pair_by_value_param_lowers_and_interprets() {
 /// This is the in-repo guard for the no-drift default.
 #[test]
 fn mir_pair_param_defaults_to_byref_without_flag() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_pair_param_defaults_to_byref_without_flag: no stage1 rustc \
-             toolchain found. This is the RUNG 11 default-off (no-drift) pin; it is \
-             being skipped only because the rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pair_param_corpus.rs");
     let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("pair_param_default_byref.tir");
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("param_trip");
     cmd.arg(&outpath);
@@ -2026,13 +2021,13 @@ fn interp_u64(module: &trust_ir::Module, func: trust_ir::FuncId, x: u64) -> u64 
 /// Emit the call-graph closure of `fnname` from the R1/R2 fixture and return the
 /// combined driver output plus the parsed module (asserting EMIT-CLOSURE-OK,
 /// clean validation, and a text round-trip along the way).
-fn emit_agg_closure(stage1: &Path, fnname: &str) -> (String, trust_ir::Module) {
+fn emit_agg_closure(toolchain: &TrustToolchain, fnname: &str) -> (String, trust_ir::Module) {
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus_rel = "tests/fixtures/agg_const_cast_corpus.rs";
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join(corpus_rel);
     let outpath =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("agg_{fnname}.tir"));
-    let mut cmd = artifact_only_driver_command(bin, stage1);
+    let mut cmd = artifact_only_driver_command(bin, toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg(fnname);
     cmd.arg(&outpath);
@@ -2080,19 +2075,10 @@ fn emit_agg_closure(stage1: &Path, fnname: &str) -> (String, trust_ir::Module) {
 ///     the inline `load ptr` lane-0 extraction and carry NO residual call.
 #[test]
 fn mir_const_aggregate_arg_lowers_and_interprets() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_const_aggregate_arg_lowers_and_interprets: no stage1 rustc \
-             toolchain found (set RUSTC=<stage1>/bin/rustc, or place it at \
-             $HOME/trust/build/aarch64-apple-darwin/stage1). This is the MIR-path \
-             const-aggregate-arg / fat-cast gate; it is skipped only because the \
-             rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     // --- R1: const-aggregate call arg, full interpreter differential. ---
-    let (_r1_text, r1) = emit_agg_closure(&stage1, "const_agg_trip");
+    let (_r1_text, r1) = emit_agg_closure(&toolchain, "const_agg_trip");
     let (cfg_fn, _sig) = fn_and_sig(&r1, "const_agg_trip");
     // The XOR fold is bit-exact, so EVERY argument must match the native oracle.
     for x in [0u64, 1, 0xdead_beef, 0xffff_ffff_ffff_ffff, 0x0123_4567_89ab_cdef] {
@@ -2107,7 +2093,7 @@ fn mir_const_aggregate_arg_lowers_and_interprets() {
     }
 
     // --- R2: fat-pointer cast, emit + validate + inline-shape check. ---
-    let (r2_text, _r2) = emit_agg_closure(&stage1, "fat_cast_probe");
+    let (r2_text, _r2) = emit_agg_closure(&toolchain, "fat_cast_probe");
     assert!(
         !r2_text.contains("call @"),
         "[agg] R2 fat_cast_probe should lower the fat->thin cast INLINE (no residual \
@@ -2127,20 +2113,13 @@ fn mir_const_aggregate_arg_lowers_and_interprets() {
 /// fail-closed adapters.
 #[test]
 fn mir_u128_max_uses_canonical_constant() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_u128_max_uses_canonical_constant: no stage1 rustc toolchain found. \
-             This is the real MIR U128-constant gate; it is skipped only because \
-             the rustc_private toolchain is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/u128_const_corpus.rs");
     let outpath = Path::new(env!("CARGO_TARGET_TMPDIR")).join("u128_max_const.tir");
-    let mut cmd = artifact_only_driver_command(bin, &stage1);
+    let mut cmd = artifact_only_driver_command(bin, &toolchain);
     cmd.arg("--mir-emit-closure");
     cmd.arg("u128_max_const");
     cmd.arg(&outpath);
@@ -2202,7 +2181,7 @@ fn mir_u128_max_uses_canonical_constant() {
 /// its parsed module plus the driver's combined output. Compiles with debug
 /// assertions ON so the overflow/div-by-zero asserts actually exist in MIR.
 fn emit_panic_obligation_probe(
-    stage1: &Path,
+    toolchain: &TrustToolchain,
     symbol: &str,
 ) -> (trust_ir::Module, String) {
     let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
@@ -2211,7 +2190,7 @@ fn emit_panic_obligation_probe(
     let outpath =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("panic_obligation_{symbol}.tir"));
     let _ = std::fs::remove_file(&outpath);
-    let mut cmd = artifact_only_driver_command(bin, stage1);
+    let mut cmd = artifact_only_driver_command(bin, toolchain);
     cmd.arg("--mir-emit");
     cmd.arg(symbol);
     cmd.arg(&outpath);
@@ -2364,17 +2343,10 @@ fn assert_obligation_shape(module: &trust_ir::Module, label: &str) {
 /// annotation would CLAIM the property holds, which nothing here established).
 #[test]
 fn mir_emit_records_panic_class_obligations() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP mir_emit_records_panic_class_obligations: no ABI-matching stage1 \
-             rustc toolchain found. This is the panic-class proof-obligation gate; \
-             it is skipped only because rustc_private is unavailable."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
     // ---- (a) a slice index mints exactly one BoundsCheck. ----
-    let (module, text) = emit_panic_obligation_probe(&stage1, "probe_bounds");
+    let (module, text) = emit_panic_obligation_probe(&toolchain, "probe_bounds");
     assert_obligation_shape(&module, "probe_bounds");
     let bounds = obligations_for(&module, "probe_bounds", trust_ir::ObligationKind::BoundsCheck);
     assert_eq!(
@@ -2417,7 +2389,7 @@ fn mir_emit_records_panic_class_obligations() {
     );
 
     // ---- (b) a checked add mints exactly one ArithmeticSafety. ----
-    let (module, text) = emit_panic_obligation_probe(&stage1, "probe_overflow");
+    let (module, text) = emit_panic_obligation_probe(&toolchain, "probe_overflow");
     assert_obligation_shape(&module, "probe_overflow");
     let arith = obligations_for(
         &module,
@@ -2448,7 +2420,7 @@ fn mir_emit_records_panic_class_obligations() {
     // ---- (c) a signed division mints BOTH div-by-zero and overflow, and both
     // route to ArithmeticSafety (the shift/div family must never fall through
     // to the panic-freedom bucket). ----
-    let (module, text) = emit_panic_obligation_probe(&stage1, "probe_div_zero");
+    let (module, text) = emit_panic_obligation_probe(&toolchain, "probe_div_zero");
     assert_obligation_shape(&module, "probe_div_zero");
     let arith = obligations_for(
         &module,
@@ -2486,15 +2458,9 @@ fn mir_emit_records_panic_class_obligations() {
 /// conformance fixture, which does not need a rustc toolchain to run.)
 #[test]
 fn panic_class_obligations_survive_every_wire_format() {
-    let Some(stage1) = find_stage1_root() else {
-        eprintln!(
-            "SKIP panic_class_obligations_survive_every_wire_format: no ABI-matching \
-             stage1 rustc toolchain found."
-        );
-        return;
-    };
+    let toolchain = trust_toolchain();
 
-    let (module, text) = emit_panic_obligation_probe(&stage1, "probe_div_zero");
+    let (module, text) = emit_panic_obligation_probe(&toolchain, "probe_div_zero");
     assert!(!module.proof_obligations.is_empty());
 
     // Text (already parsed once by the helper) — assert idempotence of the
@@ -2509,11 +2475,281 @@ fn panic_class_obligations_survive_every_wire_format() {
     );
 
     // Binary.
-    let bytes = trust_ir::binary::serialize_module(&module);
+    let bytes = trust_ir::binary::serialize_module(&module).expect("serialize_module: test fixture");
     let decoded = trust_ir::binary::deserialize_module(&bytes)
         .expect("[panic-obligations] binary decode failed");
     assert_eq!(
         decoded.proof_obligations, module.proof_obligations,
         "[panic-obligations] obligations did not survive the binary codec"
     );
+}
+
+// ===== PANIC SITES (trust-ir amendment P, wire v54) ===========================
+
+/// The two lanes the frontend lowers a MIR assert in.
+const PANIC_LANES: [(&str, Option<&str>); 2] = [("unwind", None), ("abort", Some("-Cpanic=abort"))];
+
+/// Emit one probe from `tests/fixtures/panic_site_corpus.rs` under `lane`
+/// (debug assertions ON) and return its parsed module and emitted text. The
+/// emitted module must validate cleanly and re-parse.
+fn emit_panic_site_probe(
+    toolchain: &TrustToolchain,
+    symbol: &str,
+    lane: (&str, Option<&str>),
+) -> (trust_ir::Module, String) {
+    let bin = env!("CARGO_BIN_EXE_trust_ir_mir");
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/panic_site_corpus.rs");
+    let outpath =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("panic_site_{symbol}_{}.tir", lane.0));
+    let _ = std::fs::remove_file(&outpath);
+    let mut cmd = artifact_only_driver_command(bin, toolchain);
+    cmd.arg("--mir-emit");
+    cmd.arg(symbol);
+    cmd.arg(&outpath);
+    cmd.arg("-Cdebug-assertions=yes");
+    if let Some(flag) = lane.1 {
+        cmd.arg(flag);
+    }
+    cmd.arg(&corpus);
+    let out = cmd.output().expect("failed to spawn trust_ir_mir");
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success() && combined.contains("EMIT-OK"),
+        "[panic-site] {symbol} ({}) did not lower.\n---- full output ----\n{combined}",
+        lane.0
+    );
+    assert!(
+        combined.contains("validate_module = 0 error(s)"),
+        "[panic-site] {symbol} ({}): emitted module does not validate cleanly.\n\
+         ---- full output ----\n{combined}",
+        lane.0
+    );
+    let text = std::fs::read_to_string(&outpath).unwrap_or_else(|error| {
+        panic!(
+            "[panic-site] cannot read emitted module {}: {error}",
+            outpath.display()
+        )
+    });
+    let module = trust_ir::parser::parse_module(&text)
+        .unwrap_or_else(|error| panic!("[panic-site] {symbol}: module does not parse: {error:?}"));
+    (module, text)
+}
+
+/// Every sited check (`Assert` with a site, or `AssertInvoke`) in `function`,
+/// with its kind and site.
+fn sited_checks(
+    function: &trust_ir::Function,
+) -> Vec<(trust_ir::AssertKind, trust_ir::PanicSite, bool)> {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.body)
+        .filter_map(|node| match &node.inst {
+            trust_ir::Inst::Assert {
+                kind,
+                site: Some(site),
+                ..
+            } => Some((*kind, *site, false)),
+            trust_ir::Inst::AssertInvoke { kind, site, .. } => Some((*kind, *site, true)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The entry function a site names.
+fn site_entry<'m>(
+    module: &'m trust_ir::Module,
+    site: &trust_ir::PanicSite,
+) -> &'m trust_ir::Function {
+    module
+        .functions
+        .iter()
+        .find(|function| function.id == site.entry)
+        .expect("a panic site's entry is a module function")
+}
+
+/// Amendment P: in BOTH lanes every MIR assert lowers to a sited check that
+/// names its kind, its `core::panicking` entry and a static `Location`
+/// global — and no siteless assert and no `condbr` into a call remain.
+#[test]
+fn mir_asserts_lower_to_sited_asserts_in_both_lanes() {
+    let toolchain = trust_toolchain();
+    for lane in PANIC_LANES {
+        let (module, text) = emit_panic_site_probe(&toolchain, "probe_site_bounds", lane);
+        let function = fn_ending_in(&module, "probe_site_bounds");
+        let checks = sited_checks(function);
+        assert_eq!(
+            checks.len(),
+            1,
+            "[panic-site] {}: one bounds check:\n{text}",
+            lane.0
+        );
+        let (kind, site, invoke) = checks[0];
+        assert!(
+            !invoke,
+            "[panic-site] {}: no cleanup, so a plain sited assert",
+            lane.0
+        );
+        assert!(
+            matches!(kind, trust_ir::AssertKind::BoundsCheck { .. }),
+            "[panic-site] {}: {kind:?}",
+            lane.0
+        );
+        assert!(
+            site_entry(&module, &site)
+                .name
+                .contains("panic_bounds_check"),
+            "[panic-site] {}: entry {:?}",
+            lane.0,
+            site_entry(&module, &site).name
+        );
+        let trust_ir::PanicLocation::Global(global) = site.location else {
+            panic!(
+                "[panic-site] {}: a non-track-caller location is static: {site:?}",
+                lane.0
+            );
+        };
+        assert!(
+            !module.globals[global.as_usize()].mutable,
+            "[panic-site] {}: the Location global is immutable",
+            lane.0
+        );
+        assert!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.body)
+                .all(|node| !matches!(node.inst, trust_ir::Inst::Assert { site: None, .. })),
+            "[panic-site] {}: a siteless assert remains:\n{text}",
+            lane.0
+        );
+
+        let (module, text) = emit_panic_site_probe(&toolchain, "probe_site_overflow", lane);
+        let function = fn_ending_in(&module, "probe_site_overflow");
+        let checks = sited_checks(function);
+        assert_eq!(
+            checks.len(),
+            1,
+            "[panic-site] {}: one overflow check:\n{text}",
+            lane.0
+        );
+        assert_eq!(
+            checks[0].0,
+            trust_ir::AssertKind::Overflow(trust_ir::AssertOverflowOp::Add),
+            "[panic-site] {}",
+            lane.0
+        );
+        assert!(
+            site_entry(&module, &checks[0].1)
+                .name
+                .contains("panic_const_add_overflow"),
+            "[panic-site] {}: entry {:?}",
+            lane.0,
+            site_entry(&module, &checks[0].1).name
+        );
+    }
+}
+
+/// Amendment P: a `#[track_caller]` body reports its CALLER's location under
+/// panic=unwind — the trailing caller-location parameter, forwarded as a
+/// run-time location — and its own static location under panic=abort,
+/// which carries no caller-location ABI.
+#[test]
+fn track_caller_location_is_forwarded_to_the_site() {
+    let toolchain = trust_toolchain();
+    for lane in PANIC_LANES {
+        let (module, text) = emit_panic_site_probe(&toolchain, "probe_site_tracked", lane);
+        let function = fn_ending_in(&module, "probe_site_tracked");
+        let checks = sited_checks(function);
+        assert_eq!(checks.len(), 1, "[panic-site] {}:\n{text}", lane.0);
+        match (lane.0, checks[0].1.location) {
+            ("unwind", trust_ir::PanicLocation::Value(value)) => {
+                let entry = function
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == function.entry)
+                    .expect("entry block");
+                assert_eq!(
+                    entry.params.last().map(|(id, _)| *id),
+                    Some(value),
+                    "[panic-site] the forwarded location is the trailing parameter:\n{text}"
+                );
+            }
+            ("abort", trust_ir::PanicLocation::Global(_)) => {}
+            (lane, location) => {
+                panic!("[panic-site] {lane}: unexpected location {location:?}:\n{text}")
+            }
+        }
+    }
+}
+
+/// Amendment P: under panic=unwind a check whose unwind action enters
+/// cleanup (a live `String` must be dropped) lowers to `AssertInvoke`, whose
+/// unwind edge enters a landing pad; under panic=abort it is a plain sited
+/// assert.
+#[test]
+fn cleanup_bearing_checks_lower_to_assert_invoke() {
+    let toolchain = trust_toolchain();
+    for lane in PANIC_LANES {
+        let (module, text) = emit_panic_site_probe(&toolchain, "probe_site_cleanup", lane);
+        let function = fn_ending_in(&module, "probe_site_cleanup");
+        let checks = sited_checks(function);
+        let bounds: Vec<_> = checks
+            .iter()
+            .filter(|(kind, _, _)| matches!(kind, trust_ir::AssertKind::BoundsCheck { .. }))
+            .collect();
+        assert_eq!(bounds.len(), 1, "[panic-site] {}:\n{text}", lane.0);
+        assert_eq!(
+            bounds[0].2,
+            lane.0 == "unwind",
+            "[panic-site] {}:\n{text}",
+            lane.0
+        );
+        if lane.0 == "unwind" {
+            let unwind_dest = function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.body)
+                .find_map(|node| match &node.inst {
+                    trust_ir::Inst::AssertInvoke { unwind_dest, .. } => Some(*unwind_dest),
+                    _ => None,
+                })
+                .expect("the assert_invoke");
+            let pad = function
+                .blocks
+                .iter()
+                .find(|block| block.id == unwind_dest)
+                .expect("the unwind destination");
+            assert!(
+                matches!(
+                    pad.body.first().map(|node| &node.inst),
+                    Some(trust_ir::Inst::LandingPad { .. })
+                ),
+                "[panic-site] the unwind edge enters a landing pad:\n{text}"
+            );
+        }
+    }
+}
+
+/// Amendment P: no check lowers to `unreachable` any more — the panic=abort
+/// lane's shared trap block (a failed check as UB) is retired.
+#[test]
+fn no_check_lowers_to_unreachable() {
+    let toolchain = trust_toolchain();
+    for lane in PANIC_LANES {
+        for symbol in ["probe_site_bounds", "probe_site_overflow"] {
+            let (module, text) = emit_panic_site_probe(&toolchain, symbol, lane);
+            let function = fn_ending_in(&module, symbol);
+            assert!(
+                function
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.body)
+                    .all(|node| !matches!(node.inst, trust_ir::Inst::Unreachable)),
+                "[panic-site] {symbol} ({}): a check still lowers to `unreachable`:\n{text}",
+                lane.0
+            );
+        }
+    }
 }

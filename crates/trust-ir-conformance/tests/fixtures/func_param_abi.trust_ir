@@ -2,7 +2,7 @@
 module "func_param_abi"
 target "x86_64-unknown-linux-gnu" 8 little abi="sysv64" structpass=always_memory
 
-struct @BigPair { u64, u64 } size=16 align=8 repr=c id=0
+struct @BigPair { lo: u64 @0, hi: u64 @8 } size=16 align=8 repr=c id=0
 
 functy.0 = (ptr, ptr) -> ()
 

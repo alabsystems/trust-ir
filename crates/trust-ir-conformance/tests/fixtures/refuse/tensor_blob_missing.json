@@ -1,0 +1,222 @@
+{
+  "name": "refuse_tensor_blob_missing",
+  "functions": [
+    {
+      "id": 0,
+      "name": "id",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [
+            [
+              0,
+              "I32"
+            ]
+          ],
+          "body": [
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    0
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    },
+    {
+      "id": 1,
+      "name": "tensor",
+      "ty": 1,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [],
+          "body": [
+            {
+              "inst": {
+                "Const": {
+                  "ty": {
+                    "Tensor": [
+                      "I32",
+                      1
+                    ]
+                  },
+                  "value": {
+                    "TensorBlob": {
+                      "digest": [
+                        70,
+                        54,
+                        153,
+                        61,
+                        62,
+                        29,
+                        164,
+                        233,
+                        214,
+                        184,
+                        248,
+                        123,
+                        121,
+                        232,
+                        247,
+                        198,
+                        208,
+                        24,
+                        88,
+                        13,
+                        82,
+                        102,
+                        25,
+                        80,
+                        234,
+                        188,
+                        56,
+                        69,
+                        197,
+                        137,
+                        122,
+                        77
+                      ],
+                      "dims": [
+                        3
+                      ]
+                    }
+                  }
+                }
+              },
+              "results": [
+                0
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    0
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [
+        "I32"
+      ],
+      "returns": [
+        "I32"
+      ],
+      "is_vararg": false
+    },
+    {
+      "params": [],
+      "returns": [
+        {
+          "Tensor": [
+            "I32",
+            1
+          ]
+        }
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": {
+    "triple": "aarch64-apple-darwin",
+    "pointer_size": 8,
+    "endianness": "Little",
+    "abi": null,
+    "struct_passing": "NativeC"
+  },
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

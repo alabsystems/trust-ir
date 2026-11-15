@@ -230,6 +230,12 @@ def decodePackLanes (inst : DialectInst) : Except SemError PackLanesSpec := do
   else
     typeError s!"{inst.qualifiedName} expects {lanes} lane operand(s)"
 
+/-- `supportedLaneVectorTy` supplies only these two element types. Keeping
+    this check structural makes the admitted decoder equations kernel-reducible. -/
+private def extractLaneResultTyMatches : Ty → Ty → Bool
+  | .I32, .I32 | .I64, .I64 => true
+  | _, _ => false
+
 def decodeExtractLane (inst : DialectInst) : Except SemError ExtractLaneSpec := do
   checkHeader inst extractLaneOp
   requireOperandCount inst 1
@@ -239,7 +245,7 @@ def decodeExtractLane (inst : DialectInst) : Except SemError ExtractLaneSpec := 
   let lane ← attrLane inst lanes
   match inst.resultTys with
   | [resultTy] =>
-    if resultTy == elemTy then
+    if extractLaneResultTyMatches resultTy elemTy then
       .ok { vectorTy := vectorTy, elemTy := elemTy, lanes := lanes, lane := lane }
     else
       typeError s!"{inst.qualifiedName} result type does not match vector element type"
@@ -358,6 +364,16 @@ def runExtractLane (inst : DialectInst) (spec : ExtractLaneSpec)
   let vectorValue ← match state.lookupValue vectorId with
     | some value => .ok value
     | none => typeError s!"undefined SSA value: {repr vectorId}"
+  -- Core ExtractElement has only its result lane type. A dialect spec also
+  -- carries the declared vector census, which remains part of its contract
+  -- when the shared core lane helper supports arbitrary positive counts.
+  match vectorValue with
+  | .vector lanes =>
+    if lanes.length != spec.lanes then
+      vectorShapeUnsupported
+        "vector.extract_lane runtime lane count does not match declared vector type"
+    else pure ()
+  | _ => pure ()
   let lane ← getVectorElement spec.elemTy vectorValue spec.lane
   .ok (bindFreshValue state lane)
 
@@ -456,7 +472,7 @@ def runReduce (inst : DialectInst) (spec : ReduceSpec)
 def shuffleGather (lanes : List Value) : List Nat → Except SemError (List Value)
   | [] => .ok []
   | index :: rest =>
-    match lanes.get? index with
+    match trustIrListGet? lanes index with
     | some lane => do
       let others ← shuffleGather lanes rest
       .ok (lane :: others)

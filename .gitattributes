@@ -1,0 +1,2 @@
+scripts/gates/*.tests merge=union
+CHANGELOG.md merge=union

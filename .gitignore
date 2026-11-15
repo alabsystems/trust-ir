@@ -1,5 +1,11 @@
 # Rust
 target/
+# `target` may be a symlink to `target.noindex`, which keeps Spotlight out on macOS.
+# `target/` above matches only a directory, so these two lines cover the link and
+# its destination. The Trust superproject's `targo trust release validate` refuses
+# local info/exclude rules in a submodule, so the rule has to be committed.
+/target
+/target.noindex
 **/*.rs.bk
 
 # Lean / Lake build cache (never track; symlinking it across worktrees corrupts the repo)
@@ -48,3 +54,17 @@ evals/**/logs/
 
 # Publish tool work area (export tree, report, staging clone)
 publish/.out/
+
+# Generated report archive payloads are retained through report-artifacts.json.
+# The sealed standing fixture is already tracked and remains exact.
+/reports/**/*.bin
+/reports/**/*.gz
+/reports/**/*.xz
+/reports/**/*.zst
+/reports/**/*.zip
+/reports/**/*.tar
+/reports/**/*.tgz
+/reports/**/*.bz2
+/reports/**/*.7z
+/reports/**/*.olean
+/reports/**/*.ilean

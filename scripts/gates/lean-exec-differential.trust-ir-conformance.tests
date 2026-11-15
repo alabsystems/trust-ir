@@ -1,0 +1,9 @@
+# Gate 12: the W5b Lean-execution differential oracle (roadmap WS2.19). The
+# target builds `trustir_eval` (lean/trust_ir-semantics, `lake build
+# trustir_eval`) and runs the subset fixtures and the seeded W5a corpus
+# through BOTH the reference interpreter and the Lean executable semantics.
+# ci_gates.sh runs this registry with TRUST_IR_REQUIRE_LEAN=1 whenever
+# $HOME/.elan/bin/lake exists, so the oracle is required, never skipped.
+lean_exec_differential  # WS2.19: interpreter <-> Lean executable semantics agreement
+semr_bool_memory  # canonical Bool-cell and all frame lemmas: build, no new axioms, complete kernel replay
+template_subst_differential  # amendment S: Rust level-S substitution (TyG::try_map_ext) against Lean's substTy, goldens under their instances plus generated types over every constructor; unsupported ratcheted

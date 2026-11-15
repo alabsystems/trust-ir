@@ -71,26 +71,36 @@ fn rust_to_c_module(caller_by_value: bool) -> Module {
         size: Some(16),
         align: Some(8),
         repr: StructRepr::C,
+        origin: None,
     });
 
     // functy.0 — the callee's true signature: BigPair through memory.
-    let callee_sig = m.add_func_type(FuncTy {
-        params: vec![Ty::Ptr],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let callee_sig = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Ptr],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     // functy.1 — the by-value view: BigPair in registers.
-    let by_value_sig = m.add_func_type(FuncTy {
-        params: vec![Ty::Struct(s)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let by_value_sig = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Struct(s)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     // functy.2 — the caller's own signature.
-    let caller_ty = m.add_func_type(FuncTy {
-        params: vec![Ty::Struct(s), Ty::Ptr],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let caller_ty = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Struct(s), Ty::Ptr],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     // C-side import declaration: bodyless external, ccc, byval memory copy.
     let mut callee = Function::new(FuncId::new(0), "c_take_pair", callee_sig, BlockId::new(0));
@@ -101,7 +111,8 @@ fn rust_to_c_module(caller_by_value: bool) -> Module {
         align: Some(8),
         ..Default::default()
     }];
-    m.add_function(callee);
+    m.try_add_function(callee)
+        .expect("Module::try_add_function: test fixture");
 
     // Rust-side caller.
     let edge_sig = if caller_by_value {
@@ -127,14 +138,14 @@ fn rust_to_c_module(caller_by_value: bool) -> Module {
         InstrNode::new(Inst::Cast {
             op: CastOp::ReifyFnPointer,
             src_ty: Ty::Func(edge_sig),
-            dst_ty: Ty::Func(edge_sig),
+            dst_ty: Ty::Ptr,
             operand: ValueId::new(2),
         })
         .with_result(ValueId::new(3)),
     );
     block.body.push(
         InstrNode::new(Inst::Copy {
-            ty: Ty::Func(edge_sig),
+            ty: Ty::Ptr,
             operand: ValueId::new(3),
         })
         .with_result(ValueId::new(4)),
@@ -154,7 +165,8 @@ fn rust_to_c_module(caller_by_value: bool) -> Module {
         .body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     caller.blocks.push(block);
-    m.add_function(caller);
+    m.try_add_function(caller)
+        .expect("Module::try_add_function: test fixture");
 
     m
 }
@@ -203,11 +215,14 @@ fn golden_rust_to_c_agreeing_struct_passing_accepted() {
 fn conv_module(edge_conv: CallingConv, callee_conv: CallingConv) -> Module {
     let mut m = Module::new("conv_edge");
     m.target_info = Some(pinned_target());
-    let sig = m.add_func_type(FuncTy {
-        params: vec![],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let sig = m
+        .add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
 
     let mut callee = Function::new(FuncId::new(0), "target_fn", sig, BlockId::new(0));
     callee.calling_conv = callee_conv;
@@ -215,7 +230,8 @@ fn conv_module(edge_conv: CallingConv, callee_conv: CallingConv) -> Module {
     cb.body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     callee.blocks.push(cb);
-    m.add_function(callee);
+    m.try_add_function(callee)
+        .expect("Module::try_add_function: test fixture");
 
     let mut caller = Function::new(FuncId::new(1), "caller", sig, BlockId::new(0));
     caller.calling_conv = edge_conv; // enclosing conv == edge conv: no FFI boundary from the edge itself
@@ -237,7 +253,8 @@ fn conv_module(edge_conv: CallingConv, callee_conv: CallingConv) -> Module {
         .body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     caller.blocks.push(block);
-    m.add_function(caller);
+    m.try_add_function(caller)
+        .expect("Module::try_add_function: test fixture");
     m
 }
 
@@ -264,22 +281,194 @@ fn call_edge_conv_agreement_accepted() {
 }
 
 #[test]
+fn fn_def_signature_must_match_call_and_resolved_target() {
+    let mut m = conv_module(CallingConv::C, CallingConv::C);
+    let wrong_sig = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::I32],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let caller = m
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "caller")
+        .expect("fixture caller");
+    let block = &mut caller.blocks[0];
+    let Inst::Const { ty, .. } = &mut block.body[0].inst else {
+        panic!("fixture FnDef");
+    };
+    *ty = Ty::Func(wrong_sig);
+    block.body.insert(
+        1,
+        InstrNode::new(Inst::Cast {
+            op: CastOp::ReifyFnPointer,
+            src_ty: Ty::Func(wrong_sig),
+            dst_ty: Ty::Ptr,
+            operand: ValueId::new(0),
+        })
+        .with_result(ValueId::new(1)),
+    );
+    let Inst::CallIndirect { callee, .. } = &mut block.body[2].inst else {
+        panic!("fixture indirect call");
+    };
+    *callee = ValueId::new(1);
+
+    let errors = validate_module(&m);
+    assert!(
+        errors.iter().any(|error| matches!(
+            error,
+            ValidationError::CallEdgeSignatureMismatch {
+                callee,
+                declared,
+                ..
+            } if callee == "target_fn"
+                && declared.contains(&format!("FnDef declares functy.{}", wrong_sig.index()))
+        )),
+        "FnDef(B)->Ptr called with the real target/call signature A must be rejected: {errors:?}",
+    );
+}
+
+#[test]
+fn statically_resolved_missing_target_is_rejected() {
+    let mut m = conv_module(CallingConv::C, CallingConv::C);
+    let caller = m
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "caller")
+        .expect("fixture caller");
+    let Inst::Const { value, .. } = &mut caller.blocks[0].body[0].inst else {
+        panic!("fixture FnDef");
+    };
+    *value = Constant::FnDef(FuncId::new(99));
+
+    let errors = validate_module(&m);
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, ValidationError::CalleeNotFound { callee_id: 99, .. })),
+        "a typed FnDef receipt must not authorize a missing module target: {errors:?}",
+    );
+}
+
+#[test]
+fn statically_resolved_ambiguous_target_is_rejected() {
+    let mut m = conv_module(CallingConv::C, CallingConv::C);
+    let duplicate = m.functions[0].clone();
+    m.functions.push(duplicate);
+
+    let errors = validate_module(&m);
+    assert!(errors.contains(&ValidationError::DuplicateFuncId(0)));
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, ValidationError::CalleeNotFound { callee_id: 0, .. })),
+        "a typed FnDef receipt must not select one duplicate target: {errors:?}",
+    );
+}
+
+#[test]
+fn call_edge_cross_block_dominating_provenance_is_checked() {
+    let mut m = conv_module(CallingConv::Rust, CallingConv::C);
+    let caller = m
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "caller")
+        .expect("fixture caller");
+    let mut original = caller.blocks.pop().expect("fixture entry block");
+    let definition = original.body.remove(0);
+    let call = original.body.remove(0);
+    let ret = original.body.remove(0);
+
+    let mut entry = Block::new(BlockId::new(0));
+    entry.body.push(definition);
+    entry.body.push(InstrNode::new(Inst::Br {
+        target: BlockId::new(1),
+        args: vec![],
+    }));
+    let mut use_block = Block::new(BlockId::new(1));
+    use_block.body = vec![call, ret];
+    caller.blocks = vec![entry, use_block];
+
+    assert!(
+        has(&m, |e| matches!(
+            e,
+            ValidationError::CallEdgeConvMismatch { callee, .. } if callee == "target_fn"
+        )),
+        "a cross-block definition that dominates the indirect call remains statically checked: {:?}",
+        validate_module(&m)
+    );
+}
+
+#[test]
+fn call_edge_sibling_provenance_is_not_misclassified_as_static() {
+    let mut m = conv_module(CallingConv::Rust, CallingConv::C);
+    let caller = m
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "caller")
+        .expect("fixture caller");
+    let mut original = caller.blocks.pop().expect("fixture entry block");
+    let definition = original.body.remove(0);
+    let call = original.body.remove(0);
+
+    let mut entry = Block::new(BlockId::new(0));
+    entry.body.push(
+        InstrNode::new(Inst::Const {
+            ty: Ty::Bool,
+            value: Constant::Bool(true),
+        })
+        .with_result(ValueId::new(9)),
+    );
+    entry.body.push(InstrNode::new(Inst::CondBr {
+        cond: ValueId::new(9),
+        then_target: BlockId::new(1),
+        then_args: vec![],
+        else_target: BlockId::new(2),
+        else_args: vec![],
+    }));
+    let mut definition_block = Block::new(BlockId::new(1));
+    definition_block.body = vec![definition, InstrNode::new(Inst::Return { values: vec![] })];
+    let mut use_block = Block::new(BlockId::new(2));
+    use_block.body = vec![call, InstrNode::new(Inst::Return { values: vec![] })];
+    caller.blocks = vec![entry, definition_block, use_block];
+
+    assert!(
+        !has(&m, |e| matches!(
+            e,
+            ValidationError::CallEdgeConvMismatch { .. }
+                | ValidationError::CallEdgeSignatureMismatch { .. }
+        )),
+        "a sibling-only definition must fail closed instead of authorizing a static call-edge check: {:?}",
+        validate_module(&m)
+    );
+}
+
+#[test]
 fn call_edge_with_dynamic_provenance_is_not_checkable() {
     // The documented not-checkable subset: a function pointer arriving as a
     // block parameter has no static provenance, so the edge is trusted as
     // declared (no CallEdge* error even though no callee matches).
     let mut m = Module::new("dynamic_edge");
     m.target_info = Some(pinned_target());
-    let sig = m.add_func_type(FuncTy {
-        params: vec![],
-        returns: vec![],
-        is_vararg: false,
-    });
-    let caller_ty = m.add_func_type(FuncTy {
-        params: vec![Ty::Func(sig)],
-        returns: vec![],
-        is_vararg: false,
-    });
+    let sig = m
+        .add_func_type(FuncTy {
+            params: vec![],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
+    let caller_ty = m
+        .add_func_type(FuncTy {
+            params: vec![Ty::Func(sig)],
+            returns: vec![],
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut caller = Function::new(FuncId::new(0), "caller", caller_ty, BlockId::new(0));
     let mut block = Block::new(BlockId::new(0));
     block.params.push((ValueId::new(0), Ty::Func(sig)));
@@ -293,7 +482,8 @@ fn call_edge_with_dynamic_provenance_is_not_checkable() {
         .body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     caller.blocks.push(block);
-    m.add_function(caller);
+    m.try_add_function(caller)
+        .expect("Module::try_add_function: test fixture");
 
     assert!(!has(&m, |e| matches!(
         e,
@@ -310,11 +500,14 @@ fn call_edge_with_dynamic_provenance_is_not_checkable() {
 fn attr_module(params: Vec<Ty>, returns: Vec<Ty>, attrs: Vec<ParamAttrs>) -> Module {
     let mut m = Module::new("attr_abi");
     m.target_info = Some(pinned_target());
-    let ft = m.add_func_type(FuncTy {
-        params: params.clone(),
-        returns,
-        is_vararg: false,
-    });
+    let ft = m
+        .add_func_type(FuncTy {
+            params: params.clone(),
+            returns,
+            abi: None,
+            is_vararg: false,
+        })
+        .expect("Module::add_func_type: test fixture");
     let mut func = Function::new(FuncId::new(0), "f", ft, BlockId::new(0));
     func.attrs.params = attrs;
     let mut block = Block::new(BlockId::new(0));
@@ -325,7 +518,8 @@ fn attr_module(params: Vec<Ty>, returns: Vec<Ty>, attrs: Vec<ParamAttrs>) -> Mod
         .body
         .push(InstrNode::new(Inst::Return { values: vec![] }));
     func.blocks.push(block);
-    m.add_function(func);
+    m.try_add_function(func)
+        .expect("Module::try_add_function: test fixture");
     m
 }
 

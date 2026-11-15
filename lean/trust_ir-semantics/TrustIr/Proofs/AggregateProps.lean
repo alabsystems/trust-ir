@@ -733,18 +733,29 @@ theorem seqElemAddK_eq_emod (w k : Nat) (v : Int) :
     (local copy of the VectorDialectProps helper; kept private to avoid a
     proof-file cross-dependency). -/
 private theorem seqTwoPowInt (w : Nat) : (2 : Int) ^ w = ((2 ^ w : Nat) : Int) := by
-  induction w with
-  | zero => rfl
-  | succ k ih => rw [Int.pow_succ, Nat.pow_succ, ih, Int.ofNat_mul]; rfl
+  trustIrCompilerProof {
+    induction w with
+    | zero => rfl
+    | succ k ih => rw [Int.pow_succ, Nat.pow_succ, ih, Int.ofNat_mul]; rfl
+  } {
+    exact (Int.natCast_pow 2 w).symm
+  }
 
 /-- Cast of the inverse constant: `seqMapAddKInv` over `Int`. -/
 private theorem seqMapAddKInv_intCast (w k : Nat) :
     ((seqMapAddKInv w k : Nat) : Int)
       = ((2 : Int) ^ w - (k : Int) % (2 : Int) ^ w) % (2 : Int) ^ w := by
-  have hle : k % 2 ^ w ≤ 2 ^ w :=
-    Nat.le_of_lt (Nat.mod_lt _ (Nat.pos_pow_of_pos w (by decide)))
-  unfold seqMapAddKInv
-  rw [Int.ofNat_emod, Int.ofNat_sub hle, Int.ofNat_emod, seqTwoPowInt]
+  trustIrCompilerProof {
+    have hle : k % 2 ^ w ≤ 2 ^ w :=
+      Nat.le_of_lt (Nat.mod_lt _ (Nat.pos_pow_of_pos w (by decide)))
+    unfold seqMapAddKInv
+    rw [Int.ofNat_emod, Int.ofNat_sub hle, Int.ofNat_emod, seqTwoPowInt]
+  } {
+    have hle : k % 2 ^ w ≤ 2 ^ w :=
+      Nat.le_of_lt (Nat.mod_lt _ (Nat.two_pow_pos w))
+    unfold seqMapAddKInv
+    rw [Int.natCast_emod, Int.ofNat_sub hle, Int.natCast_emod, seqTwoPowInt]
+  }
 
 /-- Element-level round trip: on a canonical width-`w` integer, the wrapping
     increment by `k` is undone by the wrapping increment by
@@ -777,16 +788,16 @@ theorem seqMapAddKList_roundTrip (w k : Nat) (xs ys : List Value)
     seqMapAddKList (seqMapAddKInv w k) ys = .ok xs := by
   induction xs generalizing ys with
   | nil =>
-    simp only [seqMapAddKList] at h
+    simp only [seqMapAddKList] at h <;> try contradiction
     cases h
     rfl
   | cons v rest ih =>
-    obtain ⟨i, hv, h0, hlt⟩ := hnorm v (List.mem_cons_self v rest)
+    obtain ⟨i, hv, h0, hlt⟩ := hnorm v ((trustIrListMemConsSelf v rest))
     subst hv
     cases hrest : seqMapAddKList k rest with
-    | error e => simp only [seqMapAddKList, hrest] at h
+    | error e => simp only [seqMapAddKList, hrest] at h <;> try contradiction
     | ok rest' =>
-      simp only [seqMapAddKList, hrest] at h
+      simp only [seqMapAddKList, hrest] at h <;> try contradiction
       cases h
       have ihrest : seqMapAddKList (seqMapAddKInv w k) rest' = .ok rest :=
         ih rest' (fun v hv => hnorm v (List.mem_cons_of_mem _ hv)) hrest
@@ -798,19 +809,358 @@ theorem seqMapNotList_involutive (xs ys : List Value)
     (h : seqMapNotList xs = .ok ys) : seqMapNotList ys = .ok xs := by
   induction xs generalizing ys with
   | nil =>
-    simp only [seqMapNotList] at h
+    simp only [seqMapNotList] at h <;> try contradiction
     cases h
     rfl
   | cons v rest ih =>
     cases v with
     | bool b =>
       cases hrest : seqMapNotList rest with
-      | error e => simp only [seqMapNotList, hrest] at h
+      | error e => simp only [seqMapNotList, hrest] at h <;> try contradiction
       | ok rest' =>
-        simp only [seqMapNotList, hrest] at h
+        simp only [seqMapNotList, hrest] at h <;> try contradiction
         cases h
         have ihrest : seqMapNotList rest' = .ok rest := ih rest' hrest
         simp only [seqMapNotList, ihrest, Bool.not_not]
-    | _ => simp only [seqMapNotList] at h
+    | _ => simp only [seqMapNotList] at h <;> try contradiction
+
+-- =================================================================
+-- MakeAggregate (WS3.5): ExtractField i ∘ MakeAggregate = fields[i]
+-- =================================================================
+
+/-- `Sem.run` of a lane lookup, by cases on the map. -/
+theorem Sem.run_lookupValue (id : ValueId) (s : MachineState) :
+    Sem.run (Sem.lookupValue id) s =
+      match s.lookupValue id with
+      | some v => .ok (v, s)
+      | none => .error (.typeError s!"undefined SSA value: {repr id}") := by
+  cases h : s.lookupValue id <;>
+    simp [Sem.run, Sem.lookupValue, Sem.getState, StateT.run, StateT.get, bind,
+      StateT.bind, Except.bind, pure, Except.pure, h] <;>
+    rfl
+
+/-- `Sem.run` of a throw is the error, whatever the state. -/
+theorem Sem.run_throw {α : Type} (e : SemError) (s : MachineState) :
+    Sem.run (throw e : Sem α) s = .error e := rfl
+
+/-- `Sem.run` of `bindFresh`: the value lands at the next fresh id. -/
+theorem Sem.run_bindFresh (v : Value) (s : MachineState) :
+    Sem.run (Sem.bindFresh v) s =
+      .ok (ValueId.mk s.nextValueId,
+        { s with
+          locals := s.locals.set (ValueId.mk s.nextValueId) v
+          nextValueId := s.nextValueId + 1 }) := rfl
+
+/-- The fresh id of a `bindFresh` looks up exactly the bound value. -/
+theorem Sem.bindFresh_ok {v : Value} {s s' : MachineState} {id : ValueId}
+    (h : Sem.run (Sem.bindFresh v) s = .ok (id, s')) :
+    s'.lookupValue id = some v := by
+  rw [Sem.run_bindFresh] at h
+  cases h
+  simp [MachineState.lookupValue, ValueMap.get, ValueMap.set]
+
+/-- `lookupLanes` reads locals only: the state is unchanged, and lane `j` is
+    exactly the value operand `j` held (every operand in range is bound). -/
+theorem lookupLanes_ok {ids : List ValueId} {s s' : MachineState} {lanes : List Value}
+    (h : Sem.run (lookupLanes ids) s = .ok (lanes, s')) :
+    s' = s ∧ lanes.length = ids.length ∧
+      ∀ j, j < ids.length →
+        ∃ id v, trustIrListGet? ids j = some id ∧ trustIrListGet? lanes j = some v ∧ s.lookupValue id = some v ∧
+          v.isUninit = false := by
+  induction ids generalizing lanes s' with
+  | nil =>
+    simp only [lookupLanes, Sem.run_pure, Except.ok.injEq, Prod.mk.injEq] at h <;> try contradiction
+    obtain ⟨hl, hs⟩ := h
+    subst hl; subst hs
+    refine ⟨rfl, rfl, ?_⟩
+    intro j hj
+    exact absurd hj (Nat.not_lt_zero j)
+  | cons id rest ih =>
+    simp only [lookupLanes] at h <;> try contradiction
+    rw [Sem.run_bind, Sem.run_lookupValue] at h
+    cases hv : s.lookupValue id with
+    | none => simp [hv, Except.bind] at h <;> try contradiction
+    | some v =>
+      simp only [hv, Except.bind] at h <;> try contradiction
+      -- rejectPartial: poison faults — both spellings, `.partial` and (since
+      -- WS2.10, "Undef is poison in both engines") `.undef` — and everything
+      -- else is a pure no-op.
+      cases v with
+      | «partial» p =>
+        simp [Sem.run_bind, Sem.rejectPartial, Sem.throwUB, Sem.run_throw, Except.bind] at h <;> try contradiction
+      | undef t =>
+        simp [Sem.run_bind, Sem.rejectPartial, Sem.throwUB, Sem.run_throw, Except.bind] at h <;> try contradiction
+      -- Crystal lane (E3b): an unwritten lane faults too, so a successful lookup never
+      -- carries one (the `isUninit = false` conjunct below).
+      | uninit =>
+        simp [Sem.run_bind, Sem.rejectPartial, Sem.throwUB, Sem.run_throw, Except.bind] at h <;> try contradiction
+      | _ =>
+        simp only [Sem.run_bind, Sem.rejectPartial, Sem.run_pure, Except.bind] at h <;> try contradiction
+        cases hr : Sem.run (lookupLanes rest) s with
+        | error e => simp [hr] at h <;> try contradiction
+        | ok r =>
+          obtain ⟨vs, s''⟩ := r
+          simp only [hr, Except.bind, Sem.run_pure, Except.ok.injEq, Prod.mk.injEq] at h <;> try contradiction
+          obtain ⟨hl, hs⟩ := h
+          obtain ⟨hs'', hlen, hlanes⟩ := ih hr
+          subst hl; subst hs; subst hs''
+          refine ⟨rfl, by simp [hlen], ?_⟩
+          intro j hj
+          cases j with
+          | zero => exact ⟨id, _, rfl, rfl, hv, rfl⟩
+          | succ j =>
+            simp only [List.length_cons, Nat.succ_lt_succ_iff] at hj
+            obtain ⟨id', v', h1, h2, h3, h4⟩ := hlanes j hj
+            exact ⟨id', v', by simpa using h1, by simpa using h2, h3, h4⟩
+
+/-- A struct / tuple `MakeAggregate` is `lookupLanes` then one
+    `bindFresh` of `buildAggregate`. -/
+theorem semMakeAggregate_fields {ty : Ty} (hTy : ty.fieldAggregate = true)
+    (ids : List ValueId) (s : MachineState) :
+    Sem.run (semMakeAggregate ty none ids) s =
+      (Sem.run (lookupLanes ids) s).bind
+        (fun r => Sem.run (Sem.bindFresh (buildAggregate r.1)) r.2) := by
+  cases ty <;> simp [Ty.fieldAggregate] at hTy <;> rfl
+
+/-- **ExtractField i ∘ MakeAggregate = fields[i]** (roadmap WS3.5): reading
+    lane `i` of a freshly built struct / tuple value yields exactly
+    the value operand `i` held when the aggregate was built. Stated at the
+    operational layer, through `Sem.run`, so it is about the instruction
+    semantics and not only about the pure `buildAggregate` / `getField`
+    pair. -/
+theorem extract_make_aggregate {ty fty : Ty} (hTy : ty.fieldAggregate = true)
+    {ids : List ValueId} {i : Nat} (hi : i < ids.length)
+    {s s₁ : MachineState} {vid : ValueId}
+    (hMake : Sem.run (semMakeAggregate ty none ids) s = .ok (vid, s₁)) :
+    ∃ (id : ValueId) (v : Value) (vid' : ValueId) (s₂ : MachineState),
+      trustIrListGet? ids i = some id ∧ s.lookupValue id = some v ∧
+      Sem.run (semExtractField fty vid i) s₁ = .ok (vid', s₂) ∧
+      s₂.lookupValue vid' = some v := by
+  rw [semMakeAggregate_fields hTy] at hMake
+  cases hl : Sem.run (lookupLanes ids) s with
+  | error e => simp [hl, Except.bind] at hMake
+  | ok r =>
+    obtain ⟨lanes, s'⟩ := r
+    simp only [hl, Except.bind] at hMake
+    obtain ⟨hs', _hlen, hlanes⟩ := lookupLanes_ok hl
+    subst hs'
+    have hAgg : s₁.lookupValue vid = some (buildAggregate lanes) := Sem.bindFresh_ok hMake
+    obtain ⟨id, v, hid, hlane, hval, hnu⟩ := hlanes i hi
+    refine ⟨id, v, ValueId.mk s₁.nextValueId,
+      { s₁ with
+        locals := s₁.locals.set (ValueId.mk s₁.nextValueId) v
+        nextValueId := s₁.nextValueId + 1 },
+      hid, hval, ?_, ?_⟩
+    · unfold semExtractField
+      rw [Sem.run_bind, Sem.run_lookupValue, hAgg]
+      simp only [Except.bind, buildAggregate, Sem.run_bind, Sem.rejectPartial, Sem.run_pure,
+        getField, hlane, hnu]
+      rfl
+    · simp [MachineState.lookupValue, ValueMap.get, ValueMap.set]
+
+-- =================================================================
+-- Named records: positional access preserves labels and field order
+-- =================================================================
+
+/-- A record update uses the selected field's existing label. -/
+theorem setField_record_at (fields : List (String × Value)) (i : Nat)
+    (name : String) (old value : Value)
+    (h : trustIrListGet? fields i = some (name, old)) :
+    setField (.record fields) i value =
+      some (.record (fields.set i (name, value))) := by
+  simp [setField, h]
+
+/-- Updating one record field preserves every label and their order. -/
+theorem record_set_preserves_labels (fields : List (String × Value)) (i : Nat)
+    (name : String) (old value : Value)
+    (h : trustIrListGet? fields i = some (name, old)) :
+    (fields.set i (name, value)).map Prod.fst = fields.map Prod.fst := by
+  induction fields generalizing i with
+  | nil => simp at h <;> try contradiction
+  | cons head tail ih =>
+    cases i with
+    | zero =>
+      simp only [trustIrListGetConsZero, Option.some.injEq] at h <;> try contradiction
+      cases h
+      rfl
+    | succ i =>
+      simp only [trustIrListGetConsSucc] at h <;> try contradiction
+      trustIrCompilerProof {
+        simp only [List.set_succ, List.map_cons]
+      } {
+        simp only [List.set_cons_succ, List.map_cons]
+      }
+      rw [ih i h]
+
+/-- Reading the updated record field returns precisely the replacement. -/
+theorem record_getField_set_same (fields : List (String × Value)) (i : Nat)
+    (name : String) (old value : Value)
+    (h : trustIrListGet? fields i = some (name, old)) :
+    getField (.record (fields.set i (name, value))) i = some value := by
+  induction fields generalizing i with
+  | nil => simp at h <;> try contradiction
+  | cons head tail ih =>
+    cases i with
+    | zero => rfl
+    | succ i =>
+      exact ih i (by simpa only [trustIrListGetConsSucc] using h)
+
+/-- A successful record write followed by a read at the same index retains
+    both the replacement and the record representation. -/
+theorem getField_setField_record (fields : List (String × Value)) (i : Nat)
+    (name : String) (old value : Value)
+    (h : trustIrListGet? fields i = some (name, old)) :
+    (setField (.record fields) i value).bind (fun record => getField record i) =
+      some value := by
+  rw [setField_record_at fields i name old value h]
+  exact record_getField_set_same fields i name old value h
+
+/-- Record reads outside the existing field list cannot invent a value. -/
+theorem getField_record_out_of_bounds (fields : List (String × Value)) (i : Nat)
+    (h : fields.length ≤ i) : getField (.record fields) i = none := by
+  simp [getField, CompilerCompat.listGet?_outside fields i h]
+
+/-- Record writes outside the existing field list cannot append a field. -/
+theorem setField_record_out_of_bounds (fields : List (String × Value)) (i : Nat)
+    (value : Value) (h : fields.length ≤ i) :
+    setField (.record fields) i value = none := by
+  simp [setField, CompilerCompat.listGet?_outside fields i h]
+
+-- =================================================================
+-- ArraySplat (v50): ExtractElement i ∘ ArraySplat = v, for every n
+-- =================================================================
+
+/-- Dense construction observes exactly its finite source buffer. -/
+theorem getElement_array_ofList (values : List Value) (index : Nat) :
+    getElement (.array (CompactArray.Packed.ofArray values.toArray)) index = trustIrListGet? values index :=
+  CompactArray.Packed.get_ofList values index
+
+/-- Array construction uses element access, whereas field projection is
+    reserved for field products, records and closure environments. -/
+theorem array_values_are_not_field_products (values : CompactArray.Packed Value) (index : Nat) :
+    getField (.array values) index = none := rfl
+
+/-- The array constructor binds its actual lane buffer after checking census. -/
+theorem semMakeAggregate_array (element : TyId) (count : Nat) (ids : List ValueId) (state : MachineState) :
+    Sem.run (semMakeAggregate (.Array element count) none ids) state =
+      (Sem.run (lookupLanes ids) state).bind (fun result =>
+        if result.1.length != count then
+          .error (.typeError "MakeAggregate: array lane count does not match its type")
+        else Sem.run (Sem.bindFresh (.array (CompactArray.Packed.ofArray result.1.toArray))) result.2) := by
+  unfold semMakeAggregate
+  rw [Sem.run_bind]
+  cases read : Sem.run (lookupLanes ids) state with
+  | error error => rfl
+  | ok pair =>
+    obtain ⟨lanes, after⟩ := pair
+    simp only [Except.bind]
+    by_cases wrong : (lanes.length != count) = true
+    all_goals simp only [wrong, Bool.false_eq_true, if_true, if_false, Sem.throwTypeError, Sem.run_throw]
+
+/-- Actual ExtractElement after MakeAggregate returns the original operand,
+    with no array expansion or field-access fiction. -/
+theorem extract_make_array {element : TyId} {count index : Nat} {elementTy : Ty}
+    {ids : List ValueId} (inside : index < ids.length)
+    {state constructed : MachineState} {arrayId indexId : ValueId} {width : Nat}
+    (made : Sem.run (semMakeAggregate (.Array element count) none ids) state = .ok (arrayId, constructed))
+    (indexValue : constructed.lookupValue indexId = some (.int width (Int.ofNat index))) :
+    ∃ id value result final,
+      trustIrListGet? ids index = some id ∧ state.lookupValue id = some value ∧
+      Sem.run (semExtractElement elementTy arrayId indexId) constructed = .ok (result, final) ∧
+      final.lookupValue result = some value := by
+  rw [semMakeAggregate_array] at made
+  cases read : Sem.run (lookupLanes ids) state with
+  | error error => simp [read, Except.bind] at made
+  | ok pair =>
+    obtain ⟨lanes, after⟩ := pair
+    simp only [read, Except.bind] at made
+    split at made
+    · cases made
+    · obtain ⟨unchanged, _length, members⟩ := lookupLanes_ok read
+      subst unchanged
+      have arrayValue := Sem.bindFresh_ok made
+      obtain ⟨id, value, member, lane, original, _written⟩ := members index inside
+      refine ⟨id, value, ValueId.mk constructed.nextValueId,
+        { constructed with locals := constructed.locals.set (ValueId.mk constructed.nextValueId) value
+                           nextValueId := constructed.nextValueId + 1 }, member, original, ?_, ?_⟩
+      · have nonnegative : ¬ Int.ofNat index < 0 := Int.not_lt.mpr (Int.ofNat_nonneg index)
+        have toNat : (Int.ofNat index).toNat = index := rfl
+        unfold semExtractElement semExtractElementUsing
+        simp only [Sem.run_bind, Sem.run_lookupValue, arrayValue, indexValue, Except.bind,
+          Sem.rejectPartial, nonnegative, if_false, Sem.run_pure, toNat,
+          getElement_array_ofList, lane]
+        rfl
+      · simp [MachineState.lookupValue, ValueMap.get, ValueMap.set]
+
+/-- `getElement` of a splatted array reads the splatted value at every
+    in-bounds index. -/
+theorem getElement_splat {v : Value} {n i : Nat} (hi : i < n) :
+    getElement (.array (CompactArray.Packed.uniform n v)) i = some v := by
+  simp [getElement, CompactArray.Packed.get?, CompactArray.Packed.uniform,
+    CompactArray.Tree.get?, hi]
+
+/-- The constant twin denotes the same compact uniform array:
+    `Value.ofConstant (splat c n)` is `n` copies of `Value.ofConstant c`. -/
+theorem ofConstant_splat (c : Constant) (n : Nat) :
+    Value.ofConstant (.splat c n) = .array (CompactArray.Packed.uniform n (Value.ofConstant c)) := by
+  simp [Value.ofConstant]
+
+/-- **Element i of a splat constant is its element** (v50), for every `n`. -/
+theorem getElement_ofConstant_splat {c : Constant} {n i : Nat} (hi : i < n) :
+    getElement (Value.ofConstant (.splat c n)) i = some (Value.ofConstant c) := by
+  rw [ofConstant_splat]
+  exact getElement_splat hi
+
+/-- An `ArraySplat` at an array type that runs binds the compact uniform array
+    of the (defined) value its operand held. -/
+theorem semArraySplat_ok {e : TyId} {n : Nat} {id vid : ValueId}
+    {s s₁ : MachineState}
+    (h : Sem.run (semArraySplat (.Array e n) id) s = .ok (vid, s₁)) :
+    ∃ v, s.lookupValue id = some v ∧
+      s₁.lookupValue vid = some (.array (CompactArray.Packed.uniform n v)) := by
+  unfold semArraySplat at h
+  rw [Sem.run_bind, Sem.run_lookupValue] at h
+  cases hv : s.lookupValue id with
+  | none => simp [hv, Except.bind] at h <;> try contradiction
+  | some v =>
+    simp only [hv, Except.bind] at h <;> try contradiction
+    cases v with
+    | «partial» p =>
+      simp [Sem.run_bind, Sem.rejectPartial, Sem.throwUB, Sem.run_throw, Except.bind] at h <;> try contradiction
+    | undef t =>
+      simp [Sem.run_bind, Sem.rejectPartial, Sem.throwUB, Sem.run_throw, Except.bind] at h <;> try contradiction
+    -- Crystal lane (E3b): an unwritten lane faults in `rejectPartial` too.
+    | uninit =>
+      simp [Sem.run_bind, Sem.rejectPartial, Sem.throwUB, Sem.run_throw, Except.bind] at h <;> try contradiction
+    | _ =>
+      simp only [Sem.run_bind, Sem.rejectPartial, Sem.run_pure, Except.bind] at h <;> try contradiction
+      exact ⟨_, rfl, Sem.bindFresh_ok h⟩
+
+/-- **ExtractElement i ∘ ArraySplat = v** (v50): reading any in-bounds element
+    `i < n` of a freshly splatted array yields exactly the value the operand
+    held when the array was built. Stated at the operational layer, through
+    `Sem.run`, for EVERY `n` — there is no replicated list. -/
+theorem extract_array_splat {e : TyId} {n i : Nat} (hi : i < n) {ety : Ty}
+    {id vid idx : ValueId} {w : Nat} {s s₁ : MachineState}
+    (hSplat : Sem.run (semArraySplat (.Array e n) id) s = .ok (vid, s₁))
+    (hIdx : s₁.lookupValue idx = some (.int w (Int.ofNat i))) :
+    ∃ (v : Value) (vid' : ValueId) (s₂ : MachineState),
+      s.lookupValue id = some v ∧
+      Sem.run (semExtractElement ety vid idx) s₁ = .ok (vid', s₂) ∧
+      s₂.lookupValue vid' = some v := by
+  obtain ⟨v, hv, hAgg⟩ := semArraySplat_ok hSplat
+  refine ⟨v, ValueId.mk s₁.nextValueId,
+    { s₁ with
+      locals := s₁.locals.set (ValueId.mk s₁.nextValueId) v
+      nextValueId := s₁.nextValueId + 1 },
+    hv, ?_, ?_⟩
+  · have hNonneg : ¬ (Int.ofNat i < 0) := Int.not_lt.mpr (Int.ofNat_nonneg i)
+    have hToNat : (Int.ofNat i).toNat = i := rfl
+    unfold semExtractElement semExtractElementUsing
+    simp only [Sem.run_bind, Sem.run_lookupValue, hAgg, hIdx, Except.bind, Sem.rejectPartial,
+      hNonneg, if_false,
+      Sem.run_pure, hToNat, getElement_splat hi]
+    rfl
+  · simp [MachineState.lookupValue, ValueMap.get, ValueMap.set]
 
 end TrustIr
