@@ -247,3 +247,93 @@ fn sparse_maximum_block_ids_and_decimal_diagnostic_text_match_original() {
     };
     assert!(detail.contains("bb4294967295"));
 }
+
+fn nominal_errors(m: &Module) -> Vec<ValidationError> {
+    let mut observer = Observer::default();
+    let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+    let (catalog, values, nominal) = setup(m, &mut session);
+    let mut context =
+        ObservedIndirectCalls::new_observed(&catalog, 0, &mut session, site()).unwrap();
+    let errors = context
+        .validate_at_observed(0, 1, &values, Some(&nominal), &mut session, site())
+        .unwrap();
+    let saved = errors.clone();
+    retire_validation_errors_observed(errors, &mut session, site()).unwrap();
+    context.retire_observed(&mut session, site()).unwrap();
+    dispose(catalog, values, nominal, &mut session);
+    assert!(session.first_refusal().is_none());
+    saved
+}
+
+#[test]
+fn closure_targets_authenticate_convention_in_all_three_observed_edge_families() {
+    for family in 0..3 {
+        let mut module = closure();
+        let (callee, sig, args, calling_conv) =
+            (v(10), FuncTyId::new(1), vec![v(0), v(1)], CallingConv::C);
+        module.functions[0].blocks[0].body[1].inst = match family {
+            0 => Inst::CallIndirect {
+                callee,
+                sig,
+                args,
+                calling_conv,
+            },
+            1 => Inst::CallIndirectCannotUnwind {
+                callee,
+                sig,
+                args,
+                calling_conv,
+            },
+            _ => Inst::InvokeIndirect {
+                callee,
+                sig,
+                args,
+                calling_conv,
+                normal_dest: BlockId::new(2),
+                normal_args: vec![],
+                unwind_dest: BlockId::new(3),
+            },
+        };
+        assert!(nominal_errors(&module).is_empty());
+        module.functions[1].calling_conv = CallingConv::Rust;
+        assert!(matches!(
+            nominal_errors(&module).as_slice(),
+            [ValidationError::CallEdgeConvMismatch { callee, declared, actual, .. }]
+                if callee == "target" && declared == "ccc" && actual == "rustcc"
+        ));
+    }
+}
+
+#[test]
+fn nominal_item_edges_authenticate_exact_header_signature_and_convention() {
+    let mut m = fixture();
+    m.functions[0].blocks[0].body[0].inst = Inst::Const {
+        ty: Ty::FnItem(FuncId::new(9)),
+        value: Constant::FnItem(FuncId::new(9)),
+    };
+    assert!(nominal_errors(&m).is_empty());
+    let same_shape = m.add_func_type(m.func_types[1].clone()).unwrap();
+    m.functions[0].blocks[0].body[1].inst = call(10, same_shape.index(), &[0, 1]);
+    assert!(matches!(
+        &nominal_errors(&m)[..],
+        [ValidationError::CallEdgeSignatureMismatch { .. }]
+    ));
+    m.functions[0].blocks[0].body[1].inst = call(10, 1, &[0, 1]);
+    m.functions[1].calling_conv = CallingConv::Fast;
+    assert!(matches!(
+        &nominal_errors(&m)[..],
+        [ValidationError::CallEdgeConvMismatch { .. }]
+    ));
+    m.functions[1].calling_conv = CallingConv::C;
+    m.functions.push(m.functions[1].clone());
+    assert!(matches!(
+        &nominal_errors(&m)[..],
+        [ValidationError::ConstTypeMismatch { .. }]
+    ));
+    m.functions.pop();
+    m.functions[1].ty = FuncTyId::new(999);
+    assert!(matches!(
+        &nominal_errors(&m)[..],
+        [ValidationError::ConstTypeMismatch { .. }]
+    ));
+}

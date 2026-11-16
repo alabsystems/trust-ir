@@ -68,7 +68,14 @@ fn run(
     let mut s = ObservedSession::new(InterpretOptions::default(), &mut o);
     let out = validate_type_reference_node_observed(m, r, ty, loc, &mut s, site()).unwrap();
     let mut expected = vec![];
-    super::super::check_ty_reference_node(m, r, ty, loc, &mut expected);
+    super::super::check_ty_reference_node(
+        m,
+        &ModuleFunctionCatalog::new(m),
+        r,
+        ty,
+        loc,
+        &mut expected,
+    );
     let census = NominalCensus {
         dialect: matches!(ty, Ty::Dialect(_)),
         handle: matches!(ty, Ty::Handle(_)),

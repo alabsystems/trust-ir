@@ -102,6 +102,7 @@ fn write<O: ExecutionObserver>(
         }
         TyLayoutKind::Unit => work.text("unit", out)?,
         TyLayoutKind::Never => work.text("never", out)?,
+        TyLayoutKind::FnItem => work.text("function_item", out)?,
     }
     work.admit(1, size_of::<u64>() + size_of::<Option<u64>>())?;
     work.text(" size=", out)?;
@@ -172,6 +173,7 @@ fn ty_shape<O: ExecutionObserver>(
         TyShape::Tuple => "tuple",
         TyShape::Enum => "enum",
         TyShape::Function => "function",
+        TyShape::FnItem => "fnitem",
         TyShape::Ref => "ref",
         TyShape::RefMut => "ref_mut",
         TyShape::PtrConst => "ptr_const",

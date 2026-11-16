@@ -2882,6 +2882,670 @@ pub fn build_refuse_bytes_blob_tensor_gather_scatter_below_its_version()
     Ok(bytes)
 }
 
+// ----- Box deref validity facts (wire v74) ----------------------------------
+
+/// The `box_deref` golden under the structural license: `fresh` (function 0)
+/// premises every conjunct on its own allocation, `checked` (function 1) on
+/// its by-value parameter.
+fn box_deref_subject(name: &str) -> Result<Module, FixtureError> {
+    let mut module = crate::fixtures::build_box_deref()?;
+    module.name = name.into();
+    for function in &mut module.functions {
+        function.body_gate = Some(refuse_structural_license());
+    }
+    Ok(module)
+}
+
+/// The one `BoxDeref` node of `function` in `module`, with its index.
+fn box_deref_node(module: &mut Module, function: usize) -> Result<&mut InstrNode, FixtureError> {
+    module
+        .functions
+        .get_mut(function)
+        .and_then(|function| function.blocks.first_mut())
+        .and_then(|block| {
+            block
+                .body
+                .iter_mut()
+                .find(|node| matches!(node.inst, Inst::BoxDeref { .. }))
+        })
+        .or_fixture("the subject's Box deref")
+}
+
+/// The fact of the one `BoxDeref` of `function` in `module`.
+fn box_deref_fact(
+    module: &mut Module,
+    function: usize,
+) -> Result<&mut trust_ir::box_validity::BoxValidityFact, FixtureError> {
+    match &mut box_deref_node(module, function)?.inst {
+        Inst::BoxDeref { fact, .. } => Ok(fact),
+        _ => Err(FixtureError {
+            context: "Box deref refusal",
+            message: "expected the subject's Box deref".into(),
+        }),
+    }
+}
+
+/// The evidence entry of `conjunct` in the fact of `function`.
+fn box_deref_entry(
+    module: &mut Module,
+    function: usize,
+    conjunct: trust_ir::box_validity::ValidityConjunct,
+) -> Result<&mut trust_ir::box_validity::ValidityEvidence, FixtureError> {
+    box_deref_fact(module, function)?
+        .evidence
+        .iter_mut()
+        .find(|entry| entry.conjunct == conjunct)
+        .map(|entry| &mut entry.evidence)
+        .or_fixture("the subject's conjunct entry")
+}
+
+/// The two-verdict row: a well-formed fact whose every conjunct is a named
+/// premise. The default gates accept it; a consumer that sets the evidence
+/// floor above the premise tier refuses each conjunct.
+pub fn build_refuse_box_deref_premise_tier() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{BoxDerefSite, BoxFactSession, BoxValidityFact, PremiseRoot};
+    let mut mb = ModuleBuilder::new("refuse_box_deref_premise_tier");
+    let ft = mb.add_func_type(vec![Ty::Ptr], vec![Ty::Ptr]);
+    let mut fb = mb.function("unbox", ft);
+    let entry = fb.create_block();
+    let pointer = fb.add_block_param(entry, Ty::Ptr);
+    fb.switch_to_block(entry);
+    let boxed = fb.box_deref(
+        Ty::I64,
+        pointer,
+        BoxValidityFact::premise(
+            BoxDerefSite {
+                item: [0x5a; 16],
+                ordinal: 0,
+            },
+            BoxFactSession::PROOF_SNAPSHOT,
+            PremiseRoot::ParamByValue,
+        ),
+    );
+    fb.ret(vec![boxed]);
+    fb.set_body_gate(refuse_structural_license());
+    fb.build();
+    let mut module = mb.build().or_fixture("ModuleBuilder::build")?;
+    module.target_info = Some(refuse_target());
+    Ok(module)
+}
+
+/// The operand is the stored `i64`, not a pointer.
+pub fn build_refuse_box_deref_operand_not_ptr() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_operand_not_ptr")?;
+    match &mut box_deref_node(&mut module, 0)?.inst {
+        Inst::BoxDeref { operand, .. } => *operand = ValueId::new(1),
+        _ => unreachable_box_deref()?,
+    }
+    Ok(module)
+}
+
+fn unreachable_box_deref() -> Result<(), FixtureError> {
+    Err(FixtureError {
+        context: "Box deref refusal",
+        message: "expected the subject's Box deref".into(),
+    })
+}
+
+/// The pointee is the zero-sized unit type.
+pub fn build_refuse_box_deref_pointee_zero_sized() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_pointee_zero_sized")?;
+    match &mut box_deref_node(&mut module, 0)?.inst {
+        Inst::BoxDeref { pointee, .. } => *pointee.ty_mut() = Ty::Unit,
+        _ => unreachable_box_deref()?,
+    }
+    Ok(module)
+}
+
+/// The pointee is the uninhabited never type.
+pub fn build_refuse_box_deref_pointee_uninhabited() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_pointee_uninhabited")?;
+    match &mut box_deref_node(&mut module, 0)?.inst {
+        Inst::BoxDeref { pointee, .. } => *pointee.ty_mut() = Ty::Never,
+        _ => unreachable_box_deref()?,
+    }
+    Ok(module)
+}
+
+/// The fact carries no evidence for `Dereferenceable`.
+pub fn build_refuse_box_deref_conjunct_missing() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_conjunct_missing")?;
+    box_deref_fact(&mut module, 0)?
+        .evidence
+        .pop()
+        .or_fixture("the Dereferenceable entry")?;
+    Ok(module)
+}
+
+/// `NonNull` carries evidence twice.
+pub fn build_refuse_box_deref_conjunct_duplicated() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_conjunct_duplicated")?;
+    let fact = box_deref_fact(&mut module, 0)?;
+    let first = fact
+        .evidence
+        .first()
+        .cloned()
+        .or_fixture("the NonNull entry")?;
+    fact.evidence.insert(0, first);
+    Ok(module)
+}
+
+/// Every conjunct once, `Aligned` before `NonNull`.
+pub fn build_refuse_box_deref_conjunct_misordered() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_conjunct_misordered")?;
+    box_deref_fact(&mut module, 0)?.evidence.swap(0, 1);
+    Ok(module)
+}
+
+/// A sized pointee's fact carries the wide-only `MetadataValid`.
+pub fn build_refuse_box_deref_metadata_valid_on_sized() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{ConjunctEvidence, ValidityConjunct};
+    let mut module = box_deref_subject("refuse_box_deref_metadata_valid_on_sized")?;
+    let fact = box_deref_fact(&mut module, 0)?;
+    let evidence = fact
+        .evidence
+        .last()
+        .map(|entry| entry.evidence.clone())
+        .or_fixture("a premise entry")?;
+    fact.evidence.push(ConjunctEvidence {
+        conjunct: ValidityConjunct::MetadataValid,
+        evidence,
+    });
+    Ok(module)
+}
+
+/// A premise that no longer names `BoxUnique`.
+pub fn build_refuse_box_deref_premise_standing_dropped() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{ValidityConjunct, ValidityEvidence};
+    let mut module = box_deref_subject("refuse_box_deref_premise_standing_dropped")?;
+    match box_deref_entry(&mut module, 0, ValidityConjunct::Dereferenceable)? {
+        ValidityEvidence::Premise { standing, .. } => {
+            standing.pop().or_fixture("the BoxUnique assumption")?;
+        }
+        _ => unreachable_box_deref()?,
+    }
+    Ok(module)
+}
+
+/// The fact was judged on the optimized fallback body.
+pub fn build_refuse_box_deref_session_fallback() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_session_fallback")?;
+    box_deref_fact(&mut module, 0)?.session.judged =
+        trust_ir::box_validity::JudgedBody::OptimizedFallback;
+    Ok(module)
+}
+
+/// The fact states a session whose verifier did not run.
+pub fn build_refuse_box_deref_session_not_proof() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_session_not_proof")?;
+    box_deref_fact(&mut module, 0)?.session.producing =
+        trust_ir::box_validity::ProducingSession::NonProofSession;
+    Ok(module)
+}
+
+/// The shape an earlier draft of rule 6 accepted, kept as the subject of
+/// the dominating-check refusals: `fn checked(p: ptr) -> i64` derefs `p`
+/// with `NonNull` and `Aligned` offered as dominating checks, asserts both
+/// over the RESULT (`ptrtoint`, compare, `Assert` of kind `NullPtr`; mask,
+/// compare, `Assert` of kind `MisalignedPtr`), then loads through the
+/// result. `Dereferenceable` is premised on the parameter.
+fn box_deref_checked_subject(name: &str) -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{
+        BoxDerefSite, BoxFactSession, BoxValidityFact, PremiseRoot, ValidityConjunct,
+        ValidityEvidence,
+    };
+    use trust_ir::inst::{AssertKind, BinOp, CastOp, ICmpOp};
+    let mut mb = ModuleBuilder::new(name);
+    let ft = mb.add_func_type(vec![Ty::Ptr], vec![Ty::I64]);
+    let mut fb = mb.function("checked", ft);
+    let entry = fb.create_block();
+    let pointer = fb.add_block_param(entry, Ty::Ptr);
+    fb.switch_to_block(entry);
+    let mut fact = BoxValidityFact::premise(
+        BoxDerefSite {
+            item: [0xc4; 16],
+            ordinal: 0,
+        },
+        BoxFactSession::PROOF_SNAPSHOT,
+        PremiseRoot::ParamByValue,
+    );
+    for entry in &mut fact.evidence {
+        match entry.conjunct {
+            ValidityConjunct::NonNull => {
+                entry.evidence = ValidityEvidence::DominatingCheck { align: None };
+            }
+            ValidityConjunct::Aligned => {
+                entry.evidence = ValidityEvidence::DominatingCheck { align: Some(8) };
+            }
+            ValidityConjunct::Dereferenceable | ValidityConjunct::MetadataValid => {}
+        }
+    }
+    let boxed = fb.box_deref(Ty::I64, pointer, fact);
+    let address = fb.cast(CastOp::PtrToInt, Ty::Ptr, Ty::Usize, boxed);
+    let zero = fb.const_value(Ty::Usize, Constant::Int(0));
+    let nonnull = fb.icmp(ICmpOp::Ne, Ty::Usize, address, zero);
+    fb.assert_kind(nonnull, AssertKind::NullPtr);
+    let required = fb.const_value(Ty::Usize, Constant::Int(8));
+    let mask = fb.const_value(Ty::Usize, Constant::Int(7));
+    let low = fb.binop(BinOp::And, Ty::Usize, address, mask);
+    let none = fb.const_value(Ty::Usize, Constant::Int(0));
+    let aligned = fb.icmp(ICmpOp::Eq, Ty::Usize, low, none);
+    fb.assert_kind(
+        aligned,
+        AssertKind::MisalignedPtr {
+            required,
+            found: address,
+        },
+    );
+    let read = fb.load(Ty::I64, boxed);
+    fb.ret(vec![read]);
+    fb.set_body_gate(refuse_structural_license());
+    fb.build();
+    mb.build().or_fixture("ModuleBuilder::build")
+}
+
+/// The checked subject unchanged: both asserts exist over the result and
+/// dominate the load through it. Dominating-check evidence is refused in
+/// every shape, this one included.
+pub fn build_refuse_box_deref_check_pinned_shape() -> Result<Module, FixtureError> {
+    box_deref_checked_subject("refuse_box_deref_check_pinned_shape")
+}
+
+/// `r = box_deref p [nonnull dominating_check]; a = ptrtoint r;
+/// q = inttoptr a; load q;` and only then the null assert over `a`. `r` has
+/// no use as a pointer, so a rule that exempts `ptrtoint r` from the uses a
+/// check must dominate would be satisfied while the address is dereferenced
+/// unchecked.
+pub fn build_refuse_box_deref_check_address_round_trip() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{
+        BoxDerefSite, BoxFactSession, BoxValidityFact, PremiseRoot, ValidityConjunct,
+        ValidityEvidence,
+    };
+    use trust_ir::inst::{AssertKind, CastOp, ICmpOp};
+    let mut mb = ModuleBuilder::new("refuse_box_deref_check_address_round_trip");
+    let ft = mb.add_func_type(vec![Ty::Ptr], vec![Ty::I64]);
+    let mut fb = mb.function("round_trip", ft);
+    let entry = fb.create_block();
+    let pointer = fb.add_block_param(entry, Ty::Ptr);
+    fb.switch_to_block(entry);
+    let mut fact = BoxValidityFact::premise(
+        BoxDerefSite {
+            item: [0xc5; 16],
+            ordinal: 0,
+        },
+        BoxFactSession::PROOF_SNAPSHOT,
+        PremiseRoot::ParamByValue,
+    );
+    for entry in &mut fact.evidence {
+        if entry.conjunct == ValidityConjunct::NonNull {
+            entry.evidence = ValidityEvidence::DominatingCheck { align: None };
+        }
+    }
+    let boxed = fb.box_deref(Ty::I64, pointer, fact);
+    let address = fb.cast(CastOp::PtrToInt, Ty::Ptr, Ty::Usize, boxed);
+    let again = fb.cast(CastOp::IntToPtr, Ty::Usize, Ty::Ptr, address);
+    let read = fb.load(Ty::I64, again);
+    let zero = fb.const_value(Ty::Usize, Constant::Int(0));
+    let nonnull = fb.icmp(ICmpOp::Ne, Ty::Usize, address, zero);
+    fb.assert_kind(nonnull, AssertKind::NullPtr);
+    fb.ret(vec![read]);
+    fb.set_body_gate(refuse_structural_license());
+    fb.build();
+    mb.build().or_fixture("ModuleBuilder::build")
+}
+
+/// A dominating check offered for `Dereferenceable`.
+pub fn build_refuse_box_deref_check_for_dereferenceable() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{ValidityConjunct, ValidityEvidence};
+    let mut module = box_deref_checked_subject("refuse_box_deref_check_for_dereferenceable")?;
+    *box_deref_entry(&mut module, 0, ValidityConjunct::Dereferenceable)? =
+        ValidityEvidence::DominatingCheck { align: None };
+    Ok(module)
+}
+
+/// The alignment check claims 4 bytes for an 8-byte-aligned pointee.
+pub fn build_refuse_box_deref_check_wrong_alignment() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{ValidityConjunct, ValidityEvidence};
+    let mut module = box_deref_checked_subject("refuse_box_deref_check_wrong_alignment")?;
+    *box_deref_entry(&mut module, 0, ValidityConjunct::Aligned)? =
+        ValidityEvidence::DominatingCheck { align: Some(4) };
+    Ok(module)
+}
+
+/// A null check claimed in a function that asserts nothing.
+pub fn build_refuse_box_deref_check_absent() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{ValidityConjunct, ValidityEvidence};
+    let mut module = box_deref_subject("refuse_box_deref_check_absent")?;
+    *box_deref_entry(&mut module, 0, ValidityConjunct::NonNull)? =
+        ValidityEvidence::DominatingCheck { align: None };
+    Ok(module)
+}
+
+/// The one block of the checked subject with the position of its `BoxDeref`.
+fn box_deref_checked_block(
+    module: &mut Module,
+) -> Result<(&mut Vec<InstrNode>, usize), FixtureError> {
+    let body = &mut module
+        .functions
+        .first_mut()
+        .and_then(|function| function.blocks.first_mut())
+        .or_fixture("the checked function's block")?
+        .body;
+    let at = body
+        .iter()
+        .position(|node| matches!(node.inst, Inst::BoxDeref { .. }))
+        .or_fixture("the subject's Box deref")?;
+    Ok((body, at))
+}
+
+/// Both asserts exist over the result, but the load through the result
+/// executes BEFORE them.
+pub fn build_refuse_box_deref_check_not_dominating() -> Result<Module, FixtureError> {
+    let mut module = box_deref_checked_subject("refuse_box_deref_check_not_dominating")?;
+    let (body, at) = box_deref_checked_block(&mut module)?;
+    let load = body
+        .iter()
+        .position(|node| matches!(node.inst, Inst::Load { .. }))
+        .or_fixture("the checked function's load through the result")?;
+    let node = body.remove(load);
+    body.insert(at + 1, node);
+    Ok(module)
+}
+
+/// Both asserts exist and dominate every use, but they test the cast's
+/// OPERAND, not its result.
+pub fn build_refuse_box_deref_check_on_operand() -> Result<Module, FixtureError> {
+    let mut module = box_deref_checked_subject("refuse_box_deref_check_on_operand")?;
+    let (body, at) = box_deref_checked_block(&mut module)?;
+    let (Inst::BoxDeref { operand, .. }, [result]) = (&body[at].inst, body[at].results.as_slice())
+    else {
+        return Err(FixtureError {
+            context: "Box deref refusal",
+            message: "expected the subject's Box deref with one result".into(),
+        });
+    };
+    let (operand, result) = (*operand, *result);
+    let address = body
+        .iter_mut()
+        .find_map(|node| match &mut node.inst {
+            Inst::Cast {
+                op: trust_ir::inst::CastOp::PtrToInt,
+                operand: checked,
+                ..
+            } if *checked == result => Some(checked),
+            _ => None,
+        })
+        .or_fixture("the checked function's address of the result")?;
+    *address = operand;
+    Ok(module)
+}
+
+// Rule 9: a premise the function itself contradicts.
+
+/// `fn subject(<params>) -> ptr`: a fresh heap allocation `raw`, the operand
+/// `shape` builds from it and the first parameter, the deref of that operand
+/// premised on `root`, and the result returned.
+fn box_deref_premise_module(
+    name: &str,
+    with_parameter: bool,
+    with_allocation: bool,
+    root: trust_ir::box_validity::PremiseRoot,
+    shape: fn(
+        &mut trust_ir_build::FunctionBuilder<'_>,
+        Option<ValueId>,
+        Option<ValueId>,
+    ) -> ValueId,
+) -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{BoxDerefSite, BoxFactSession, BoxValidityFact};
+    let mut mb = ModuleBuilder::new(name);
+    let params = if with_parameter {
+        vec![Ty::Ptr]
+    } else {
+        vec![]
+    };
+    let ft = mb.add_func_type(params, vec![Ty::Ptr]);
+    let mut fb = mb.function("subject", ft);
+    let entry = fb.create_block();
+    let parameter = with_parameter.then(|| fb.add_block_param(entry, Ty::Ptr));
+    fb.switch_to_block(entry);
+    let raw = with_allocation
+        .then(|| fb.heap_alloc(Ty::I64, None, None, trust_ir::inst::AllocOrigin::RustHeap));
+    let operand = shape(&mut fb, parameter, raw);
+    let boxed = fb.box_deref(
+        Ty::I64,
+        operand,
+        BoxValidityFact::premise(
+            BoxDerefSite {
+                item: [0x9e; 16],
+                ordinal: 0,
+            },
+            BoxFactSession::PROOF_SNAPSHOT,
+            root,
+        ),
+    );
+    fb.ret(vec![boxed]);
+    fb.set_body_gate(refuse_structural_license());
+    fb.build();
+    mb.build().or_fixture("ModuleBuilder::build")
+}
+
+/// The operand is `null_ptr`, premised non-null on an allocation the body
+/// does make.
+pub fn build_refuse_box_deref_premise_null_operand() -> Result<Module, FixtureError> {
+    box_deref_premise_module(
+        "refuse_box_deref_premise_null_operand",
+        false,
+        true,
+        trust_ir::box_validity::PremiseRoot::AllocPostcondition,
+        |fb, _, _| fb.null_ptr(),
+    )
+}
+
+/// The operand is `inttoptr 4096`, premised on the function's parameter.
+pub fn build_refuse_box_deref_premise_inttoptr_operand() -> Result<Module, FixtureError> {
+    box_deref_premise_module(
+        "refuse_box_deref_premise_inttoptr_operand",
+        true,
+        false,
+        trust_ir::box_validity::PremiseRoot::ParamByValue,
+        |fb, _, _| {
+            let address = fb.const_value(Ty::Usize, Constant::Int(4096));
+            fb.cast(
+                trust_ir::inst::CastOp::IntToPtr,
+                Ty::Usize,
+                Ty::Ptr,
+                address,
+            )
+        },
+    )
+}
+
+/// The root is `param_by_value` in a function that takes no parameter.
+pub fn build_refuse_box_deref_premise_param_root_without_parameter() -> Result<Module, FixtureError>
+{
+    box_deref_premise_module(
+        "refuse_box_deref_premise_param_root_without_parameter",
+        false,
+        true,
+        trust_ir::box_validity::PremiseRoot::ParamByValue,
+        |_, _, raw| raw.unwrap_or(ValueId::new(u32::MAX)),
+    )
+}
+
+/// The root is `alloc_postcondition` in a body with no allocation and no
+/// call.
+pub fn build_refuse_box_deref_premise_alloc_root_without_allocation() -> Result<Module, FixtureError>
+{
+    box_deref_premise_module(
+        "refuse_box_deref_premise_alloc_root_without_allocation",
+        true,
+        false,
+        trust_ir::box_validity::PremiseRoot::AllocPostcondition,
+        |_, parameter, _| parameter.unwrap_or(ValueId::new(u32::MAX)),
+    )
+}
+
+/// The operand's allocation is freed by a `Dealloc` that dominates the deref.
+pub fn build_refuse_box_deref_premise_freed_operand() -> Result<Module, FixtureError> {
+    box_deref_premise_module(
+        "refuse_box_deref_premise_freed_operand",
+        false,
+        true,
+        trust_ir::box_validity::PremiseRoot::AllocPostcondition,
+        |fb, _, raw| {
+            let raw = raw.unwrap_or(ValueId::new(u32::MAX));
+            fb.dealloc(raw);
+            raw
+        },
+    )
+}
+
+/// `NonNull` and `Aligned` are premised on `param_by_value`,
+/// `Dereferenceable` on `reference_arg_box_valid`: one fact, two roots.
+pub fn build_refuse_box_deref_premise_mixed_roots() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{PremiseRoot, ValidityConjunct, ValidityEvidence};
+    let mut module = box_deref_subject("refuse_box_deref_premise_mixed_roots")?;
+    match box_deref_entry(&mut module, 1, ValidityConjunct::Dereferenceable)? {
+        ValidityEvidence::Premise { root, .. } => *root = PremiseRoot::ReferenceArgBoxValid,
+        _ => unreachable_box_deref()?,
+    }
+    Ok(module)
+}
+
+/// The two-verdict row of the lower premise class: a well-formed fact whose
+/// every conjunct is premised on `reference_arg_box_valid`, a root that says
+/// the producing session verified nothing behind it. The default gates
+/// accept it; a consumer whose floor is the named-premise class refuses each
+/// conjunct.
+pub fn build_refuse_box_deref_assumed_root_tier() -> Result<Module, FixtureError> {
+    let mut module = box_deref_premise_module(
+        "refuse_box_deref_assumed_root_tier",
+        true,
+        false,
+        trust_ir::box_validity::PremiseRoot::ReferenceArgBoxValid,
+        |_, parameter, _| parameter.unwrap_or(ValueId::new(u32::MAX)),
+    )?;
+    module.target_info = Some(refuse_target());
+    Ok(module)
+}
+
+/// A `MemorySafety` row owned by and sited on the `BoxDeref` of `fresh`,
+/// `Pending`: no certificate exists for it.
+fn box_deref_obligation(module: &Module) -> Result<ProofObligation, FixtureError> {
+    let function = module.functions.first().or_fixture("the fresh function")?;
+    let block = function.blocks.first().or_fixture("its entry block")?;
+    let at = block
+        .body
+        .iter()
+        .position(|node| matches!(node.inst, Inst::BoxDeref { .. }))
+        .or_fixture("the subject's Box deref")?;
+    Ok(ProofObligation::new(
+        ProofId::new(0),
+        ObligationKind::MemorySafety,
+        ProofStatus::Pending,
+        "the pointer is dereferenceable for the pointee",
+    )
+    .with_function(function.id)
+    .with_site(trust_ir::proof::ObligationSite::new(
+        function.id,
+        block.id,
+        at as u32,
+    )))
+}
+
+fn cite_box_deref_obligation(module: &mut Module) -> Result<(), FixtureError> {
+    use trust_ir::box_validity::{ValidityConjunct, ValidityEvidence};
+    *box_deref_entry(module, 0, ValidityConjunct::Dereferenceable)? =
+        ValidityEvidence::Obligation {
+            obligation: ProofId::new(0),
+        };
+    Ok(())
+}
+
+/// The fact cites obligation 0 and the module has no obligation rows.
+pub fn build_refuse_box_deref_obligation_missing() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_obligation_missing")?;
+    cite_box_deref_obligation(&mut module)?;
+    Ok(module)
+}
+
+/// The cited row is an `Ownership` obligation.
+pub fn build_refuse_box_deref_obligation_wrong_kind() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_obligation_wrong_kind")?;
+    let mut row = box_deref_obligation(&module)?;
+    row.kind = ObligationKind::Ownership;
+    module.proof_obligations.push(row);
+    cite_box_deref_obligation(&mut module)?;
+    Ok(module)
+}
+
+/// The cited row is a well-formed row of ANOTHER function: owned by
+/// `checked` and sited on the deref of `checked`, cited by the fact of
+/// `fresh`.
+pub fn build_refuse_box_deref_obligation_wrong_function() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_obligation_wrong_function")?;
+    let mut row = box_deref_obligation(&module)?;
+    let other = module.functions.get(1).or_fixture("the checked function")?;
+    let block = other.blocks.first().or_fixture("its entry block")?;
+    let at = block
+        .body
+        .iter()
+        .position(|node| matches!(node.inst, Inst::BoxDeref { .. }))
+        .or_fixture("the checked function's Box deref")?;
+    row.function = Some(other.id);
+    row.site = Some(trust_ir::proof::ObligationSite::new(
+        other.id, block.id, at as u32,
+    ));
+    module.proof_obligations.push(row);
+    cite_box_deref_obligation(&mut module)?;
+    Ok(module)
+}
+
+/// The cited row is sited on the instruction before the deref.
+pub fn build_refuse_box_deref_obligation_wrong_site() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_obligation_wrong_site")?;
+    let mut row = box_deref_obligation(&module)?;
+    let site = row.site.as_mut().or_fixture("the row's site")?;
+    site.inst_index = site
+        .inst_index
+        .checked_sub(1)
+        .or_fixture("an earlier instruction")?;
+    module.proof_obligations.push(row);
+    cite_box_deref_obligation(&mut module)?;
+    Ok(module)
+}
+
+/// The cited row binds the instruction and no certificate of it exists.
+pub fn build_refuse_box_deref_obligation_not_replayed() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_obligation_not_replayed")?;
+    let row = box_deref_obligation(&module)?;
+    module.proof_obligations.push(row);
+    cite_box_deref_obligation(&mut module)?;
+    Ok(module)
+}
+
+/// The fact no longer says it makes no allocator claim.
+pub fn build_refuse_box_deref_non_claim_dropped() -> Result<Module, FixtureError> {
+    let mut module = box_deref_subject("refuse_box_deref_non_claim_dropped")?;
+    box_deref_fact(&mut module, 0)?
+        .not_claimed
+        .pop()
+        .or_fixture("the allocator non-claim")?;
+    Ok(module)
+}
+
+/// The `box_deref` golden under the header one version below the
+/// instruction's, which allocates no Inst tag 77.
+pub fn build_refuse_bytes_blob_box_deref_below_its_version() -> Result<Vec<u8>, FixtureError> {
+    let module = crate::fixtures::build_box_deref()?;
+    let mut bytes = trust_ir::binary::serialize_module(&module).or_fixture("serialize_module")?;
+    set_header_version(
+        &mut bytes,
+        trust_ir::binary::BOX_DEREF_VALIDITY_FORMAT_VERSION - 1,
+    )?;
+    Ok(bytes)
+}
+
 // ---------- content-addressed weight blobs (PKG-U13e) ----------
 
 /// Three `i32` weights, `[1, 2, 3]`, as their twelve little-endian bytes.
@@ -2992,4 +3656,22 @@ pub fn build_refuse_bytes_blob_tensor_blob_table_not_canonical() -> Result<Vec<u
         });
     }
     trust_ir::binary::serialize_module(&module).or_fixture("serialize_module")
+}
+
+/// The first premise root byte of the `box_deref` golden set to 9, which
+/// names no `PremiseRoot`.
+pub fn build_refuse_bytes_blob_box_deref_premise_root_unknown() -> Result<Vec<u8>, FixtureError> {
+    let module = crate::fixtures::build_box_deref()?;
+    let mut bytes = trust_ir::binary::serialize_module(&module).or_fixture("serialize_module")?;
+    // The end of site 0 (item byte 0xf0, ordinal 0), the session (snapshot,
+    // proof session), three entries, then `NonNull` (0), `Premise` (0)
+    // and its root byte (1, `AllocPostcondition`).
+    let pattern = [0xf0u8, 0, 0, 0, 3, 0, 0, 1];
+    let at = bytes
+        .windows(pattern.len())
+        .position(|window| window == pattern)
+        .or_fixture("the first premise's bytes")?;
+    let root_byte = at.checked_add(7).or_fixture("the root byte's offset")?;
+    *bytes.get_mut(root_byte).or_fixture("the root byte")? = 9;
+    Ok(bytes)
 }

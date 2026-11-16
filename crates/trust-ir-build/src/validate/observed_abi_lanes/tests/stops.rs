@@ -51,6 +51,11 @@ fn every_actual_empty_variant_and_niche_order_transition_refuses() {
     every(&m, &Ty::Enum(EnumId::new(0)));
 }
 #[test]
+fn every_uninhabited_direct_layout_range_and_publication_callback_refuses() {
+    let m = direct_storage_fixture(Ty::U32, 4, 4);
+    every(&m, &Ty::Enum(EnumId::new(0)));
+}
+#[test]
 fn repeated_cached_queries_keep_original_cumulative_work_and_copy_budget() {
     let mut m = module();
     m.structs.push(strukt(0, vec![Ty::U64, Ty::Ptr]));

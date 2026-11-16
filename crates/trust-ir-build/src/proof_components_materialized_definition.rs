@@ -17,6 +17,147 @@ pub(super) struct MaterializedDefinition {
     value: Expr,
 }
 
+impl ProofComponents {
+    /// Materialize the exact retained declaration, including its dynamic
+    /// capture telescope, under its actual preceding component scope.
+    ///
+    /// The first closure and every later lookup spend the existing component
+    /// work budget. Subsequent projected normalization may reuse this result
+    /// with charged identity checks. This supplies no typechecking, equation,
+    /// opacity or admission: all original bodies remain in complete replay.
+    pub fn materialize_owned_definition(
+        &mut self,
+        scope: &LocalScope,
+        local: &ScopedLocal,
+    ) -> Result<Expr, String> {
+        self.spend_context_work(1)?;
+        if !self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.matches(&scope.memo_owner()))
+            || !scope.owns(local)
+        {
+            return Err("materialized definition has another scope owner".into());
+        }
+        let mut found = None;
+        for index in 0..self.bindings.len() {
+            self.spend_context_work(1)?;
+            if self.bindings[index].0.id() == local.id() {
+                found = Some(index);
+                break;
+            }
+        }
+        let index = found.ok_or("materialized definition is not retained by this component")?;
+        let (actual, value) = self.bindings[index].clone();
+        if !same_graph(actual.ty(), local.ty()) {
+            return Err("materialized definition has another retained type".into());
+        }
+        let mut lookup_work = 0;
+        let cached =
+            self.cached_materialized_definition(scope, index, &actual, &value, &mut lookup_work);
+        self.spend_context_work(lookup_work)?;
+        if let Some((_, value)) = cached? {
+            return Ok(value);
+        }
+        let mut external = self
+            .base
+            .iter()
+            .map(|capture| capture.local().clone())
+            .collect::<Vec<_>>();
+        external.extend(
+            self.bindings[..index]
+                .iter()
+                .map(|(local, _)| local.clone()),
+        );
+        let roots = [actual.ty().clone(), value.clone()];
+        let mut materialized =
+            self.charged_materialize_forest(scope, &external, &roots, &[external.len(); 2])?;
+        let value_ = materialized
+            .pop()
+            .ok_or("materialized definition lost value")?;
+        let type_ = materialized
+            .pop()
+            .ok_or("materialized definition lost type")?;
+        if !materialized.is_empty() {
+            return Err("materialized definition has extra roots".into());
+        }
+        // General TermScope closing deliberately preserves an outer ordinary
+        // BVar context. A retained top-level declaration has no such context.
+        // Check after closing too: a named binder must not capture BVar(0).
+        if type_.has_loose_bvars() || value_.has_loose_bvars() {
+            return Err("materialized definition retains loose ordinary bound variables".into());
+        }
+        self.materialized_definitions.insert(
+            local.id(),
+            MaterializedDefinition {
+                index,
+                base_len: self.base.len(),
+                original_type: actual.ty().clone(),
+                original_value: value,
+                prefix: external,
+                type_,
+                value: value_.clone(),
+            },
+        );
+        Ok(value_)
+    }
+
+    pub(super) fn cached_materialized_definition(
+        &self,
+        scope: &LocalScope,
+        index: usize,
+        local: &ScopedLocal,
+        value: &Expr,
+        work: &mut usize,
+    ) -> Result<Option<(Expr, Expr)>, String> {
+        let charge = |work: &mut usize, amount: usize| -> Result<(), String> {
+            *work = work
+                .checked_add(amount)
+                .filter(|total| *total <= self.limits.operations)
+                .ok_or("materialized definition lookup work limit")?;
+            Ok(())
+        };
+        charge(work, 1)?;
+        let Some(cached) = self.materialized_definitions.get(&local.id()) else {
+            return Ok(None);
+        };
+        charge(work, 9)?;
+        let Some((actual, actual_value)) = self.bindings.get(index) else {
+            return Err("materialized definition lost its retained declaration".into());
+        };
+        if !self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.matches(&scope.memo_owner()))
+            || !scope.owns(local)
+            || cached.index != index
+            || cached.base_len != self.base.len()
+            || cached.prefix.len() != self.base.len().saturating_add(index)
+            || actual.id() != local.id()
+            || !same_graph(actual.ty(), local.ty())
+            || !same_graph(actual_value, value)
+            || !same_graph(&cached.original_type, local.ty())
+            || !same_graph(&cached.original_value, value)
+        {
+            return Err("materialized definition has stale owner, prefix or body".into());
+        }
+        let prefix = self
+            .base
+            .iter()
+            .map(OwnedProofCapture::local)
+            .chain(self.bindings.iter().take(index).map(|(local, _)| local));
+        for (old, current) in cached.prefix.iter().zip(prefix) {
+            charge(work, 3)?;
+            if !scope.owns(current)
+                || old.id() != current.id()
+                || !same_graph(old.ty(), current.ty())
+            {
+                return Err("materialized definition has a changed preceding scope".into());
+            }
+        }
+        Ok(Some((cached.type_.clone(), cached.value.clone())))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,7 +213,10 @@ mod tests {
             .bind_scoped_owned(&mut scope, &[], n(), value.clone())
             .unwrap();
         let (cold, _, before) = parts
-            .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &scope,
+                std::slice::from_ref(&definition.reference),
+            )
             .unwrap();
         let materialized = parts
             .materialize_owned_definition(&scope, &definition.local)
@@ -86,7 +230,10 @@ mod tests {
         );
         assert!(parts.counts().3 > after_first.3, "cache hits are charged");
         let (warm, _, after) = parts
-            .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &scope,
+                std::slice::from_ref(&definition.reference),
+            )
             .unwrap();
         assert_eq!(before.cached_definition_visits, 0);
         assert!(after.cached_definition_visits > 0);
@@ -241,7 +388,10 @@ mod tests {
                 }
 
                 let (context, _, work) = parts
-                    .untrusted_normalization_context_profiled(&scope, &[last.reference.clone()])
+                    .untrusted_normalization_context_profiled(
+                        &scope,
+                        std::slice::from_ref(&last.reference),
+                    )
                     .unwrap();
                 let expected_middle = succ(input.term().clone());
                 let expected_last = succ(expected_middle.clone());
@@ -569,147 +719,5 @@ mod tests {
                 .materialized_definitions
                 .contains_key(&named.local.id())
         );
-    }
-}
-
-impl ProofComponents {
-    /// Materialize the exact retained declaration, including its dynamic
-    /// capture telescope, under its actual preceding component scope.
-    ///
-    /// The first closure and every later lookup spend the existing component
-    /// work budget. Subsequent projected normalization may reuse this result
-    /// with charged identity checks. This supplies no typechecking, equation,
-    /// opacity or admission: all original bodies remain in complete replay.
-    pub fn materialize_owned_definition(
-        &mut self,
-        scope: &LocalScope,
-        local: &ScopedLocal,
-    ) -> Result<Expr, String> {
-        self.spend_context_work(1)?;
-        if !self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.matches(&scope.memo_owner()))
-            || !scope.owns(local)
-        {
-            return Err("materialized definition has another scope owner".into());
-        }
-        let mut found = None;
-        for index in 0..self.bindings.len() {
-            self.spend_context_work(1)?;
-            if self.bindings[index].0.id() == local.id() {
-                found = Some(index);
-                break;
-            }
-        }
-        let index = found.ok_or("materialized definition is not retained by this component")?;
-        let (actual, value) = self.bindings[index].clone();
-        if !same_graph(actual.ty(), local.ty()) {
-            return Err("materialized definition has another retained type".into());
-        }
-        let mut lookup_work = 0;
-        let cached =
-            self.cached_materialized_definition(scope, index, &actual, &value, &mut lookup_work);
-        self.spend_context_work(lookup_work)?;
-        if let Some((_, value)) = cached? {
-            return Ok(value);
-        }
-        let mut external = self
-            .base
-            .iter()
-            .map(|capture| capture.local().clone())
-            .collect::<Vec<_>>();
-        external.extend(
-            self.bindings[..index]
-                .iter()
-                .map(|(local, _)| local.clone()),
-        );
-        let roots = [actual.ty().clone(), value.clone()];
-        let mut materialized =
-            self.charged_materialize_forest(scope, &external, &roots, &[external.len(); 2])?;
-        let value_ = materialized
-            .pop()
-            .ok_or("materialized definition lost value")?;
-        let type_ = materialized
-            .pop()
-            .ok_or("materialized definition lost type")?;
-        if !materialized.is_empty() {
-            return Err("materialized definition has extra roots".into());
-        }
-        // General TermScope closing deliberately preserves an outer ordinary
-        // BVar context. A retained top-level declaration has no such context.
-        // Check after closing too: a named binder must not capture BVar(0).
-        if type_.has_loose_bvars() || value_.has_loose_bvars() {
-            return Err("materialized definition retains loose ordinary bound variables".into());
-        }
-        self.materialized_definitions.insert(
-            local.id(),
-            MaterializedDefinition {
-                index,
-                base_len: self.base.len(),
-                original_type: actual.ty().clone(),
-                original_value: value,
-                prefix: external,
-                type_,
-                value: value_.clone(),
-            },
-        );
-        Ok(value_)
-    }
-
-    pub(super) fn cached_materialized_definition(
-        &self,
-        scope: &LocalScope,
-        index: usize,
-        local: &ScopedLocal,
-        value: &Expr,
-        work: &mut usize,
-    ) -> Result<Option<(Expr, Expr)>, String> {
-        let charge = |work: &mut usize, amount: usize| -> Result<(), String> {
-            *work = work
-                .checked_add(amount)
-                .filter(|total| *total <= self.limits.operations)
-                .ok_or("materialized definition lookup work limit")?;
-            Ok(())
-        };
-        charge(work, 1)?;
-        let Some(cached) = self.materialized_definitions.get(&local.id()) else {
-            return Ok(None);
-        };
-        charge(work, 9)?;
-        let Some((actual, actual_value)) = self.bindings.get(index) else {
-            return Err("materialized definition lost its retained declaration".into());
-        };
-        if !self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.matches(&scope.memo_owner()))
-            || !scope.owns(local)
-            || cached.index != index
-            || cached.base_len != self.base.len()
-            || cached.prefix.len() != self.base.len().saturating_add(index)
-            || actual.id() != local.id()
-            || !same_graph(actual.ty(), local.ty())
-            || !same_graph(actual_value, value)
-            || !same_graph(&cached.original_type, local.ty())
-            || !same_graph(&cached.original_value, value)
-        {
-            return Err("materialized definition has stale owner, prefix or body".into());
-        }
-        let prefix = self
-            .base
-            .iter()
-            .map(OwnedProofCapture::local)
-            .chain(self.bindings.iter().take(index).map(|(local, _)| local));
-        for (old, current) in cached.prefix.iter().zip(prefix) {
-            charge(work, 3)?;
-            if !scope.owns(current)
-                || old.id() != current.id()
-                || !same_graph(old.ty(), current.ty())
-            {
-                return Err("materialized definition has a changed preceding scope".into());
-            }
-        }
-        Ok(Some((cached.type_.clone(), cached.value.clone())))
     }
 }

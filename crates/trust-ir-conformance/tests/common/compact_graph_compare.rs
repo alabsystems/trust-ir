@@ -139,7 +139,8 @@ pub(super) fn equivalent(left: &Graph, right: &Graph) -> Result<Comparison, Stri
         }
         result.value_pairs += 1;
         let sequence = match tag(a) {
-            "int" | "float" | "bool" | "ptr" | "function" | "frame" | "poison" | "uninit" => {
+            "int" | "float" | "bool" | "ptr" | "function" | "fnitem" | "frame" | "poison"
+            | "uninit" => {
                 if a != b {
                     return Ok(result);
                 }

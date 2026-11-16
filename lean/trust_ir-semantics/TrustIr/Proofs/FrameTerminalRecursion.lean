@@ -89,6 +89,10 @@ theorem terminal_frame_layer_exit (recurse : Recurse) (ctx : EvalContext) (safe 
   | some block =>
     obtain ⟨sites,⟨control⟩⟩ := grammar pc block found
     simp only [found]
+    apply FrameActionExit.bind (fun bound _ => MintedArgs bound args) MintedArgs _ _ state
+      (function_item_checks_frame_exit ctx ((ctx.resolveBlock block).params.map (·.snd)) args state valid incoming)
+    intro unit state valid incoming
+    cases unit
     apply FrameActionExit.bind (fun _ _ => True) MintedArgs _ _ state
       (checked_params_frame_exit (ctx.resolveBlock block).params args state valid incoming)
     intro unit bound boundValid _

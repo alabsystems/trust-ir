@@ -110,3 +110,6 @@
 69	shipped	tensor-gather-scatter: TENSOR_GATHER_SCATTER_FORMAT_VERSION	self	work/tensor-gather-scatter
 70	shipped	tensor-weight-blobs: TENSOR_BLOB_FORMAT_VERSION	self	work/tensor-weight-blobs
 71	shipped	template-thin-pointer: THIN_POINTER_CONTRACT_FORMAT_VERSION	self	main
+72	shipped	uninhabited-direct-storage: UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION	self	codex/direct-main-integration-20261113
+73	shipped	fn-item-identity: FN_ITEM_IDENTITY_FORMAT_VERSION	self	codex/fn-item-main-integration-20261113
+74	shipped	box-deref-validity: BOX_DEREF_VALIDITY_FORMAT_VERSION	self	main

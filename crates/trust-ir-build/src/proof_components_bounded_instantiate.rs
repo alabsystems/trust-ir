@@ -596,9 +596,9 @@ mod tests {
         );
         let argument = value(Expr::nat_lit(0));
         let proof = parts(&scope, 100)
-            .charged_instantiate_closed_rev(&scope, &body, &[argument.clone()])
+            .charged_instantiate_closed_rev(&scope, &body, std::slice::from_ref(&argument))
             .unwrap();
-        assert_eq!(proof, body.instantiate_rev(&[argument.clone()]));
+        assert_eq!(proof, body.instantiate_rev(std::slice::from_ref(&argument)));
         let mut env = Environment::new();
         env.init_nat().unwrap();
         env.init_eq().unwrap();

@@ -22,13 +22,19 @@
 //!
 //! Nodes are laid out bottom-up on an explicit stack (no recursion, so no
 //! depth limit) and the id lookups are hash maps, so a query costs O(the part
-//! of the type graph it reaches that the table has not laid out yet), and a
-//! table that answers every query of a module does O(total fields) work over
-//! its lifetime (the per-definition overlap test sorts, O(f log f) for `f`
-//! fields; the first-definition index reads each struct and enum row at most
-//! once, the tuple and closure indexes each declared row once, and the
-//! inhabitedness memo
-//! each definition once). [`LayoutTableStats`] counts all of it.
+//! of the type graph it reaches that the table has not laid out yet). Its
+//! memoized layout and inhabitedness work visits each definition once (the
+//! per-definition overlap test additionally sorts, O(f log f) for `f` fields;
+//! the first-definition index reads each struct and enum row at most once,
+//! the tuple and closure indexes each declared row once). [`LayoutTableStats`]
+//! describes that memoized work. `SingleInhabited` and
+//! `DirectWithUninhabited` queries additionally check reachable source
+//! references without laying out inactive storage. These
+//! iterative scans are not memoized across distinct enum queries, so shared
+//! reference graphs may be revisited; no global linear bound is claimed for
+//! that additional work. A physical dead-row profile also compares its field
+//! ranges pairwise, O(f²) for a row with `f` fields. The observed path charges
+//! these actual scans and comparisons.
 //!
 //! # Identical results, cycles included
 //!
@@ -99,7 +105,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::inhabit::InhabitMemo;
 use crate::reach::{Reach, ReachMemo};
@@ -114,7 +120,9 @@ use crate::ty::{
 use crate::value::{ClosureTyId, EnumId, StructId, TyId};
 use crate::{ClosureLayoutDescriptor, Module, TupleLayoutDescriptor};
 
+pub(crate) mod direct_storage;
 mod observed;
+mod references;
 
 /// A failure, shared: a node that fails because a field failed records the
 /// field's failure, not a copy of it.
@@ -136,6 +144,7 @@ type Laid = Result<Arc<TyLayoutShape>, Failure>;
 /// `Sync`: its memo sits behind a [`Mutex`], so threads can share one table.
 pub struct LayoutTable<'m> {
     module: &'m Module,
+    functions: OnceLock<crate::function_item::FunctionItemIndex>,
     pointer_bits: u32,
     canonical_scalars: bool,
     // Observed queries own independent memo-free Work. None keeps even cold
@@ -243,8 +252,10 @@ impl LayoutTableStats {
 /// function, is the case this is for. [`LayoutTable::with_memo`] starts
 /// afresh when a table's length or the target's layout differs from the one
 /// the memo was built over (an edit it can see), except that a longer or
-/// shorter signature table drops only the reachability verdicts (no layout
-/// reads a signature); it cannot see an edit in place.
+/// shorter signature table drops only the reachability verdicts unless a
+/// cached query reached a function item. Item-dependent answers also bind the
+/// actual function IDs/signature references and signature-table length; changing
+/// those starts a fresh memo. Other edits in place remain caller-owned.
 pub struct LayoutMemo {
     memo: Memo,
     tables: Tables,
@@ -285,7 +296,7 @@ impl core::fmt::Debug for LayoutMemo {
 }
 
 /// The table lengths and target layout a memo was built over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Tables {
     types: usize,
     structs: usize,
@@ -296,12 +307,14 @@ struct Tables {
     closure_layouts: usize,
     /// Read by the handle reachability verdicts only.
     func_types: usize,
+    function_headers: Option<Vec<(crate::FuncId, crate::FuncTyId)>>,
+    function_signature_count: usize,
     pointer_bits: u32,
     canonical_scalars: bool,
 }
 
 impl Tables {
-    fn of(module: &Module) -> Self {
+    fn of(module: &Module, items: bool) -> Self {
         Tables {
             types: module.types.len(),
             structs: module.structs.len(),
@@ -311,6 +324,9 @@ impl Tables {
             closure_types: module.closure_types.len(),
             closure_layouts: module.closure_layouts.len(),
             func_types: module.func_types.len(),
+            function_headers: items
+                .then(|| module.functions.iter().map(|f| (f.id, f.ty)).collect()),
+            function_signature_count: if items { module.func_types.len() } else { 0 },
             pointer_bits: module.pointer_bits(),
             canonical_scalars: module.target_has_canonical_scalar_layout(),
         }
@@ -632,6 +648,7 @@ impl<'m> LayoutTable<'m> {
     pub fn new(module: &'m Module) -> Self {
         LayoutTable {
             module,
+            functions: OnceLock::new(),
             pointer_bits: module.pointer_bits(),
             canonical_scalars: module.target_has_canonical_scalar_layout(),
             memo: Mutex::new(Some(Memo::default())),
@@ -643,16 +660,23 @@ impl<'m> LayoutTable<'m> {
     /// sound). A memo built over tables of other lengths or another target
     /// layout is dropped and the table starts empty; one built over a
     /// signature table of another length keeps all but its reachability
-    /// verdicts.
+    /// verdicts unless item-dependent answers were cached (see [`LayoutMemo`]).
     pub fn with_memo(module: &'m Module, memo: LayoutMemo) -> Self {
         let table = LayoutTable::new(module);
-        let now = Tables::of(module);
         let LayoutMemo { mut memo, tables } = memo;
+        let now = Tables::of(module, tables.function_headers.is_some());
         let layouts_unchanged = Tables {
             func_types: now.func_types,
-            ..tables
+            ..tables.clone()
         } == now;
         if layouts_unchanged {
+            // Retained item-dependent answers remain dependent even when a
+            // subsequent query is a cache hit and performs no header lookup.
+            if tables.function_headers.is_some() {
+                table
+                    .functions
+                    .get_or_init(|| crate::function_item::FunctionItemIndex::new(module));
+            }
             if tables.func_types != now.func_types {
                 memo.reach = ReachMemo::default();
             }
@@ -664,7 +688,7 @@ impl<'m> LayoutTable<'m> {
     /// This table's memo, without its borrow of the module (see
     /// [`LayoutMemo`]).
     pub fn into_memo(self) -> LayoutMemo {
-        let tables = Tables::of(self.module);
+        let tables = Tables::of(self.module, self.functions.get().is_some());
         let memo = self
             .memo
             .into_inner()
@@ -694,6 +718,16 @@ impl<'m> LayoutTable<'m> {
     fn query_memo<T>(&self, query: impl FnOnce(&mut Memo) -> T) -> T {
         let mut guard = self.lock();
         query(guard.get_or_insert_with(Memo::default))
+    }
+
+    /// Resolve an actual nominal item using this table's one lazy function catalog.
+    pub fn function_item(
+        &self,
+        id: crate::FuncId,
+    ) -> Result<(&'m crate::Function, &'m crate::FuncTy), crate::FunctionItemError> {
+        self.functions
+            .get_or_init(|| crate::function_item::FunctionItemIndex::new(self.module))
+            .function_item(self.module, id)
     }
 
     /// The module this table lays out.
@@ -1147,6 +1181,19 @@ impl<'m> LayoutTable<'m> {
 
     /// The layout of a type that names no other type by value, or `None`.
     fn leaf(&self, memo: &mut Memo, ty: &Ty) -> Option<Laid> {
+        if let Ty::FnItem(id) = ty {
+            return Some(
+                self.function_item(*id)
+                    .map(|_| {
+                        Arc::new(TyLayoutShape {
+                            size_bits: 0,
+                            align_bits: Some(8),
+                            kind: TyLayoutKind::FnItem,
+                        })
+                    })
+                    .map_err(|_| Arc::new(LayoutError::UnsupportedTyShape(ty.shape()))),
+            );
+        }
         if ty_uses_scalar_layout_table(ty) && !self.canonical_scalars {
             let module = self.module;
             let refusal = memo.scalar_refusal.get_or_insert_with(|| {
@@ -1181,6 +1228,20 @@ impl<'m> LayoutTable<'m> {
     fn enum_frame(&self, memo: &mut Memo, index: usize) -> Result<EnumFrame<'m>, Failure> {
         let def = &self.module.enums[index];
         let unavailable = || Arc::new(LayoutError::EnumLayoutUnavailable(def.id));
+        // Inactive storage is skipped, but every declared source reference
+        // remains normative, even after Never already proves the row dead.
+        if matches!(
+            def.layout.as_ref().map(|layout| &layout.encoding),
+            Some(EnumTagEncoding::SingleInhabited { .. })
+        ) && !references::valid_with(
+            self.module,
+            def.variants
+                .iter()
+                .flat_map(|variant| variant.fields.iter()),
+            |id| self.function_item(id).is_ok(),
+        ) {
+            return Err(unavailable());
+        }
         let discriminants = def.effective_discriminants().ok_or_else(unavailable)?;
         let tag = def.canonical_tag_repr().ok_or_else(unavailable)?;
         // WS2.22 (review): a lane's ALIGNMENT is the target's for the lane
@@ -1197,12 +1258,40 @@ impl<'m> LayoutTable<'m> {
         // `TargetScalarLayoutUnavailable`: the layout is unjudgeable, not
         // admissible.
         let lane_align_bits = match def.layout.as_ref().map(|desc| &desc.encoding) {
-            None | Some(EnumTagEncoding::Direct { .. }) => Some(self.tag_align_bits(memo, tag)?),
+            None
+            | Some(
+                EnumTagEncoding::Direct { .. } | EnumTagEncoding::DirectWithUninhabited { .. },
+            ) => Some(self.tag_align_bits(memo, tag)?),
             Some(EnumTagEncoding::Niche { niche_ty, .. }) => {
                 Some(self.tag_align_bits(memo, *niche_ty)?)
             }
             Some(EnumTagEncoding::Untagged | EnumTagEncoding::SingleInhabited { .. }) => None,
         };
+        if let Some(
+            desc @ crate::ty::EnumLayoutDescriptor {
+                encoding: EnumTagEncoding::DirectWithUninhabited { .. },
+                ..
+            },
+        ) = &def.layout
+        {
+            let function_item = |id| self.function_item(id).is_ok();
+            let mut work = direct_storage::Ordinary {
+                inhabit: &mut memo.inhabit,
+                function_item: &function_item,
+            };
+            if !direct_storage::validate(
+                self.module,
+                def,
+                desc,
+                tag.size_bytes(),
+                lane_align_bits.ok_or_else(unavailable)? / 8,
+                &mut work,
+            )
+            .unwrap_or_else(|never| match never {})
+            {
+                return Err(unavailable());
+            }
+        }
         Ok(EnumFrame {
             index,
             def,
@@ -1606,6 +1695,25 @@ impl<'q> EnumFrame<'q> {
     fn next_field(&mut self) -> Result<Option<&'q Ty>, Failure> {
         let def = self.def;
         while let Some(variant) = def.variants.get(self.variant) {
+            if let Some(profile) = direct_storage::profile(def, self.variant) {
+                self.field_sizes = profile.fields.iter().map(|field| field.size).collect();
+                self.field_aligns = profile.fields.iter().map(|field| field.align).collect();
+                // Public payload summaries keep their canonical field-only
+                // meaning. The profile's full row (including tag) is checked
+                // independently and must not become canonical payload size.
+                for field in &profile.fields {
+                    let align = field
+                        .align
+                        .checked_mul(8)
+                        .ok_or(LayoutError::SizeOverflow)?;
+                    let size = field.size.checked_mul(8).ok_or(LayoutError::SizeOverflow)?;
+                    self.offset_bits = align_up_bits(self.offset_bits, align)?
+                        .checked_add(size)
+                        .ok_or(LayoutError::SizeOverflow)?;
+                    self.variant_align_bits = self.variant_align_bits.max(align);
+                }
+                self.field = variant.fields.len();
+            }
             let inactive = matches!(&def.layout, Some(layout) if matches!(layout.encoding,
                 EnumTagEncoding::SingleInhabited { variant } if usize::try_from(variant).ok() != Some(self.variant)));
             if !inactive && let Some(field) = variant.fields.get(self.field) {
@@ -1740,7 +1848,8 @@ impl<'q> EnumFrame<'q> {
                         return Err(unavailable());
                     }
                 }
-                EnumTagEncoding::Direct { tag_offset } => {
+                EnumTagEncoding::Direct { tag_offset }
+                | EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
                     let tag_size = tag_size_bits / 8;
                     // WS2.22: the tag's PLACEMENT is judged against the
                     // target's alignment for the tag type (asked of the layout

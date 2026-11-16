@@ -1,6 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Retained exact793 ordinary field block, scoped as a diagnostic-only oracle.
+//! Retained ordinary field block with explicit version66 profile validation;
+//! scoped as a diagnostic-only oracle.
 use super::*;
 pub(super) fn run(
     module: &Module,
@@ -10,6 +11,29 @@ pub(super) fn run(
     let layouts = module.layout_table();
     let mut errors = Vec::new();
     let location = || format!("enum.{} ({}) layout", enm.id.index(), enm.name);
+    if matches!(
+        &layout.encoding,
+        trust_ir::EnumTagEncoding::DirectWithUninhabited { .. }
+    ) {
+        let bound = module
+            .enums
+            .iter()
+            .find(|row| row.id == enm.id)
+            .is_some_and(|row| core::ptr::eq(row, enm))
+            && enm
+                .layout
+                .as_ref()
+                .is_some_and(|actual| core::ptr::eq(actual, layout));
+        if !bound || layouts.enum_layout(enm.id).is_err() {
+            errors.push(ValidationError::ConstTypeMismatch {
+                location: location(),
+                expected: "a valid Direct storage profile for exactly the uninhabited variants"
+                    .into(),
+                actual: "invalid Direct uninhabited storage".into(),
+            });
+        }
+        return errors;
+    }
     let mut push_layout_error = |expected: String, actual: String| {
         errors.push(ValidationError::ConstTypeMismatch {
             location: location(),
@@ -29,6 +53,17 @@ pub(super) fn run(
             .zip(&layout.variant_field_offsets)
             .enumerate()
         {
+            if matches!(layout.encoding, trust_ir::EnumTagEncoding::SingleInhabited { variant } if usize::try_from(variant).ok() != Some(variant_index))
+            {
+                if !offsets.is_empty() {
+                    push_layout_error(
+                        "an empty physical offset row for an inactive single-inhabited variant"
+                            .into(),
+                        format!("variant {variant_index}: {} offsets", offsets.len()),
+                    );
+                }
+                continue;
+            }
             if offsets.len() != variant.fields.len() {
                 push_layout_error(
                     format!(

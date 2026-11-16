@@ -35,6 +35,19 @@ pub(super) fn all() -> Vec<Inst> {
             data: v(),
             metadata: v(),
         },
+        Inst::BoxDeref {
+            ptr_ty: Ty::Ptr,
+            pointee: crate::box_validity::BoxPointee::Sized { ty: Ty::I64 },
+            operand: v(),
+            fact: Box::new(crate::box_validity::BoxValidityFact::premise(
+                crate::box_validity::BoxDerefSite {
+                    item: [0; 16],
+                    ordinal: 0,
+                },
+                crate::box_validity::BoxFactSession::PROOF_SNAPSHOT,
+                crate::box_validity::PremiseRoot::ParamByValue,
+            )),
+        },
         frame(2),
         dialect(2),
     ]);

@@ -61,8 +61,8 @@ private def closureIdentityContext : EvalContext :=
       else if f == (⟨1⟩ : FuncId) then some closureIdentityTarget else none
     funcTys := fun s => if s == (⟨0⟩ : FuncTyId) then
       some { params := [], returns := [.Ptr], isVararg := false } else none
-    closures := fun c => if c == (⟨0⟩ : ClosureTyId) then
-      some { func := ⟨0⟩, captures := [.Ptr] } else none }
+    valueSource := FunctionItemPresence.prepare
+      { closures := [{ func := ⟨0⟩, captures := [.Ptr] }] } }
 
 -- Reduce the evaluator directly; generated smart-unfolding equations duplicate
 -- large call/return terms during elaboration without changing the kernel proof.
@@ -76,7 +76,7 @@ theorem evaluator_closure_preserves_pointer (address : Nat) (provenance : Option
     (memory : Memory) :
     (Sem.run (evalFunctionInContext closureIdentityContext ⟨0⟩ [.ptr address provenance] 2)
       { MachineState.empty with memory := memory }).map Prod.fst = .ok [.ptr address provenance] := by
-  rfl
+  trustIrReduce
 
 
 set_option smartUnfolding false in
@@ -87,7 +87,7 @@ theorem evaluator_closure_preserves_memory (address : Nat) (provenance : Option 
     (memory : Memory) :
     (Sem.run (evalFunctionInContext closureIdentityContext ⟨0⟩ [.ptr address provenance] 2)
       { MachineState.empty with memory := memory }).map (fun result => result.2.memory) = .ok memory := by
-  rfl
+  trustIrReduce
 
 /-- A successful data update preserves both nominal and code identities and
     changes exactly the selected capture in declaration order. -/
@@ -143,7 +143,7 @@ theorem evaluator_closure_update_preserves_original
       [.ptr oldAddress oldProvenance, .ptr newAddress newProvenance] 2)
       { MachineState.empty with memory := memory }).map Prod.fst =
         .ok [.ptr oldAddress oldProvenance, .ptr newAddress newProvenance] := by
-  rfl
+  trustIrReduce
 
 set_option smartUnfolding false in
 set_option maxRecDepth 8192 in
@@ -157,6 +157,6 @@ theorem evaluator_closure_update_preserves_memory
       [.ptr oldAddress oldProvenance, .ptr newAddress newProvenance] 2)
       { MachineState.empty with memory := memory }).map (fun result => result.2.memory) =
         .ok memory := by
-  rfl
+  trustIrReduce
 
 end TrustIr

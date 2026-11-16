@@ -1429,7 +1429,7 @@ ENV_IGNORED = ("TRUST_IR_GATE_CACHE", "TRUST_IR_GATES_BASE", "TRUST_IR_TARGO_JOB
 # The internal script tests run real targo metadata but mock their Lean runners.
 # A new/unknown unit retains the complete identity and environment until its
 # execution contract is reviewed here. Changes to this table are gate inputs.
-EXECUTION_SCHEMA = "trust-ir-unit-execution-v1"
+EXECUTION_SCHEMA = "trust-ir-unit-execution-v2"
 EXECUTION_PROFILES = {
     **dict.fromkeys(("zero-ignored-rust", "dependency-pin-census", "wire-allocation-registry",
                      "wire-allocation-owners", "enforcement-links"), "python"),
@@ -1445,7 +1445,25 @@ EXECUTION_PROFILES = {
     "trust-default-authority": "all",  # volatile, independently audits the installation
 }
 RUST_TOOL_KEYS = frozenset(("targo", "targo-version", "targo-file", "trustc", "trustc-vV", "trustc-file"))
-LEAN_TOOL_KEYS = frozenset(("lake", "lake-file", "lean", "lean-file"))
+# Keep the common launcher's historical fields, but bind every actual Lean
+# package separately: one dispatcher may select different installed compilers.
+LEAN_PROJECTS = ("lean/trust_ir-semantics", "lean/semr", "lean/semr-memory")
+LEAN_PROJECT_FIELDS = ("launcher", "launcher-file", "lake", "lake-file", "lake-version",
+                       "lean", "lean-file", "lean-version", "pin", "sysroot", "githash", "launcher-closure")
+LEAN_BASE_TOOL_KEYS = frozenset(("lake", "lake-file", "lean", "lean-file"))
+LEAN_PROJECT_TOOL_KEYS = {
+    project: frozenset(f"{project}:{field}" for field in LEAN_PROJECT_FIELDS)
+    for project in LEAN_PROJECTS
+}
+LEAN_TOOL_KEYS = LEAN_BASE_TOOL_KEYS | frozenset().union(*LEAN_PROJECT_TOOL_KEYS.values())
+
+
+def lean_tool_keys(name: str) -> frozenset:
+    # Only the proof package executes for this unit. The differential's three
+    # maintained targets use all three packages, including cross-version tests.
+    if name == "lean-proofs":
+        return LEAN_BASE_TOOL_KEYS | LEAN_PROJECT_TOOL_KEYS["lean/trust_ir-semantics"]
+    return LEAN_TOOL_KEYS
 COMMON_TOOL_KEYS = frozenset(("host", "python3", "python3-file", "git", "git-file"))
 COMPILER_TOOL_KEYS = frozenset(("cc", "cc-file"))
 AGGREGATE_IDENTITY_KEYS = frozenset(("env", "outside-config", "execution-schema"))
@@ -1478,7 +1496,7 @@ def execution_binding(name: str, ctx: "KeyContext") -> dict:
     rust = profile in ("rust", "rust-lean", "all")
     lean = profile in ("lean", "rust-lean", "all")
     known = RUST_TOOL_KEYS | LEAN_TOOL_KEYS | COMMON_TOOL_KEYS | COMPILER_TOOL_KEYS | AGGREGATE_IDENTITY_KEYS
-    keep = COMMON_TOOL_KEYS | (RUST_TOOL_KEYS if rust else set()) | (LEAN_TOOL_KEYS if lean else set())
+    keep = COMMON_TOOL_KEYS | (RUST_TOOL_KEYS if rust else set()) | (lean_tool_keys(name) if lean else set())
     if rust or lean:
         keep |= COMPILER_TOOL_KEYS
     identity = {k: v for k, v in ctx.ident.items() if k in keep or k not in known}
@@ -1554,6 +1572,113 @@ def executable_identity(path: str) -> str:
         return f"unavailable: {error}"
 
 
+def find_lake(env: Dict[str, str]) -> Optional[str]:
+    """The maintained proof/differential locator, including PATH fallback."""
+    explicit = env.get("TRUST_IR_LAKE")
+    if explicit:
+        return explicit
+    home = env.get("HOME")
+    if home:
+        elan = os.path.join(home, ".elan", "bin", "lake")
+        if os.path.isfile(elan) and os.access(elan, os.X_OK):
+            return elan
+    return _which("lake", env)
+
+
+def lean_project_identity(root: Path, project: str, launcher: Optional[str],
+                          env: Dict[str, str]) -> Dict[str, str]:
+    """Bind the toolchain Lake actually selects in this pinned project.
+
+    An elan shim or a real dispatch wrapper need not have a Lean executable
+    beside it. Lake's documented `env` command supplies LAKE, LEAN_SYSROOT,
+    LEAN_GITHASH and the selected toolchain PATH. Ask that environment for its
+    real tools, then hash and probe them; never infer a default compiler.
+    """
+    fields = dict.fromkeys(LEAN_PROJECT_FIELDS, "not found")
+    package = root / project
+    try:
+        fields["pin"] = (package / "lean-toolchain").read_text().strip()
+    except OSError as error:
+        fields["pin"] = f"unavailable: {error}"
+    if not launcher:
+        return fields
+    if not os.path.isabs(launcher):
+        fields["launcher"] = launcher
+        fields["launcher-file"] = "unavailable: use an absolute Lake launcher; runner-relative selectors are ambiguous"
+        return fields
+    launcher = os.path.abspath(launcher)
+    fields["launcher"] = os.path.realpath(launcher)
+    fields["launcher-file"] = executable_identity(launcher)
+    # Same environment policy as lean_proofs.py and the differential runners.
+    child_env = dict(env)
+    child_env.pop("SDKROOT", None)
+    child_env["PATH"] = os.path.dirname(launcher) + os.pathsep + env.get("PATH", "")
+
+    def capture(args: Sequence[str]) -> str:
+        try:
+            proc = subprocess.run([launcher, *args], cwd=package, env=child_env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return f"unavailable: {error}"
+        if proc.returncode:
+            return f"unavailable: Lake project probe exited {proc.returncode}"
+        return proc.stdout.decode(errors="replace").strip()
+
+    code = ("import json,os,shutil; print(json.dumps({"
+            "'lake':os.environ.get('LAKE'),'lean':shutil.which('lean'),"
+            "'sysroot':os.environ.get('LEAN_SYSROOT'),"
+            "'githash':os.environ.get('LEAN_GITHASH')}))")
+    raw = capture(["env", sys.executable, "-I", "-c", code])
+    try:
+        selected = json.loads(raw)
+        if not isinstance(selected, dict):
+            raise ValueError("Lake selection is not an object")
+        for key in ("lake", "lean", "sysroot", "githash"):
+            value = selected.get(key)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Lake did not resolve {key}")
+            if key == "githash":
+                fields[key] = value
+            else:
+                selected_path = Path(value)
+                if not selected_path.is_absolute():
+                    selected_path = package / selected_path
+                fields[key] = os.path.realpath(selected_path)
+    except (ValueError, TypeError) as error:
+        fields["lake"] = raw if raw.startswith("unavailable:") else f"unavailable: {error}"
+        return fields
+    # A script or indirect dispatcher can import an arbitrary external helper.
+    # The two native selectors are supported; an unbound helper closure must
+    # remain unavailable even when it currently reports the expected version.
+    try:
+        with Path(launcher).resolve(strict=True).open("rb") as stream:
+            magic = stream.read(4)
+        native = magic in (b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+                           b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+                           b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca") or magic[:2] == b"MZ"
+    except OSError:
+        native = False
+    fields["launcher-closure"] = (
+        "direct native Lake" if native and fields["launcher"] == fields["lake"]
+        else "unavailable: indirect Lake launcher closure is not bound")
+    for key in ("lake", "lean"):
+        fields[key + "-file"] = executable_identity(fields[key])
+    fields["lake-version"] = capture(["--version"])
+    fields["lean-version"] = capture(["env", "lean", "--version"])
+    # Current packages declare exact Lean release pins, including prereleases.
+    # A dispatcher reporting a different installed compiler is not admissible.
+    expected = re.fullmatch(r"leanprover/lean4:v([^\s]+)", fields["pin"])
+    actual = re.search(r"\bLean \(version ([^,\s]+)", fields["lean-version"])
+    if not expected or not actual or expected.group(1) != actual.group(1):
+        fields["lean-version"] = "unavailable: selected Lean does not match the exact project pin"
+    for key in ("lake", "lean"):
+        if executable_identity(fields[key]) != fields[key + "-file"]:
+            fields[key + "-file"] = "unavailable: selected executable changed during probes"
+    if executable_identity(launcher) != fields["launcher-file"]:
+        fields["launcher-file"] = "unavailable: Lake launcher changed during probes"
+    return fields
+
+
 def toolchain_identity(root: Path, env: Dict[str, str]) -> Dict[str, str]:
     """What compiles and checks: Trust's targo/trustc (resolved the way
     run-targo.sh resolves them), the elan-pinned Lean, and the programs the
@@ -1575,16 +1700,16 @@ def toolchain_identity(root: Path, env: Dict[str, str]) -> Dict[str, str]:
             ident.update({"trustc": "not found", "trustc-file": "not found", "trustc-vV": "not found"})
     else:
         ident["targo"] = "not found"
-    lake = env.get("TRUST_IR_LAKE") or os.path.join(env.get("HOME", ""), ".elan", "bin", "lake")
-    if os.path.exists(lake):
-        pkg = root / "lean" / "trust_ir-semantics"
-        ident["lake"] = os.path.realpath(lake)
-        ident["lake-file"] = executable_identity(lake)
-        lean = os.path.join(os.path.dirname(lake), "lean")
-        ident["lean"] = _run_quiet([lean, "--version"], pkg, env)
-        ident["lean-file"] = executable_identity(lean)
-    else:
-        ident["lake"] = "not found"
+    default_lake = find_lake(env)
+    for project in LEAN_PROJECTS:
+        launcher = (env.get("TRUST_IR_SEMR_LAKE") or default_lake
+                    if project != "lean/trust_ir-semantics" else default_lake)
+        selected = lean_project_identity(root, project, launcher, env)
+        ident.update({f"{project}:{key}": value for key, value in selected.items()})
+        if project == "lean/trust_ir-semantics":
+            ident.update({"lake": selected["launcher"], "lake-file": selected["launcher-file"],
+                          "lean": selected["lean"] + " " + selected["lean-version"],
+                          "lean-file": selected["lean-file"]})
     ident["host"] = f"{platform.system()} {platform.machine()}"
     # The other programs a leg runs from PATH: the gate scripts' interpreter,
     # the C driver rustc links test binaries with, and git (history readers).

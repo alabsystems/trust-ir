@@ -134,6 +134,7 @@ fn raw<O: ExecutionObserver>(
     work: &mut Work<'_, '_, O>,
 ) -> R {
     match &layout.encoding {
+        EnumTagEncoding::DirectWithUninhabited { .. } => Ok(()),
         EnumTagEncoding::Direct { tag_offset } => {
             state.direct(enm, layout, *tag_offset, align, work)
         }
@@ -158,7 +159,8 @@ fn raw<O: ExecutionObserver>(
             align,
             work,
         ),
-        EnumTagEncoding::Untagged | EnumTagEncoding::SingleInhabited { .. } => {
+        EnumTagEncoding::SingleInhabited { variant } => state.single_inhabited(enm, variant, work),
+        EnumTagEncoding::Untagged => {
             unreachable!("private trace fixtures exercise only Direct/Niche dispatch")
         }
     }
@@ -209,4 +211,35 @@ fn reprs() -> [EnumTagRepr; 10] {
         EnumTagRepr::U128,
         EnumTagRepr::I128,
     ]
+}
+
+// A real, strictly valid Single image. The dead declaration retains a valid
+// type-table reference whose huge storage must never be requested.
+fn strict_single_fixture() -> Module {
+    let mut m = Module::new("strict single encoding trace");
+    m.target_info = Some(target("aarch64-unknown-linux-gnu"));
+    m.types.push(Ty::U128);
+    let mut enm = EnumDef::new(
+        EnumId::new(9),
+        "SingleTrace",
+        vec![
+            variant(
+                "Dead",
+                vec![
+                    Ty::Never,
+                    Ty::Array(trust_ir::value::TyId::new(0), u64::MAX),
+                ],
+            ),
+            variant("Live", vec![Ty::U32]),
+        ],
+    );
+    enm.discriminants = vec![Some(-5), Some(17)];
+    enm.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0]],
+    });
+    m.enums.push(enm);
+    m
 }

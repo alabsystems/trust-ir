@@ -7,8 +7,12 @@
 use super::*;
 #[test]
 fn every_actual_compact_query_copy_rule_cleanup_and_publication_callback_refuses() {
-    let m = fixtures::invalid();
-    let (_, base) = run(&m, &[]);
+    for m in [fixtures::invalid(), fixtures::trailing_function_items()] {
+        every_actual_callback_refuses(&m);
+    }
+}
+fn every_actual_callback_refuses(m: &Module) {
+    let (_, base) = run(m, &[]);
     for stop in 1..=base.events.len() {
         let mut o = Observer {
             stop: Some(stop),
@@ -16,7 +20,7 @@ fn every_actual_compact_query_copy_rule_cleanup_and_publication_callback_refuses
         };
         let mut s = ObservedSession::new(InterpretOptions::default(), &mut o);
         assert_eq!(
-            validate_module_declared_struct_layouts_observed(&m, &[], &mut s, site()),
+            validate_module_declared_struct_layouts_observed(m, &[], &mut s, site()),
             Err(ObservedValueError::AdmissionRefused)
         );
         assert_eq!(

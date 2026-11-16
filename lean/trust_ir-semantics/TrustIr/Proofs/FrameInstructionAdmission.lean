@@ -13,6 +13,7 @@ local macro "admit_body" : tactic => `(tactic|
     | exact .memory (.load _ _ _ _)
     | exact .memory (.store _ _ _ _ _)
     | exact .memory (.gep _ _ _ _)
+    | exact .memory (.boxDeref _ _ _ _)
     | (solve | apply SequenceFrameInstruction.memory; apply MemoryFrameInstruction.atomic; constructor)
     | (solve | apply SequenceFrameInstruction.memory; apply MemoryFrameInstruction.allocation; constructor)
     | (solve | apply SequenceFrameInstruction.memory; apply MemoryFrameInstruction.bulk; constructor)

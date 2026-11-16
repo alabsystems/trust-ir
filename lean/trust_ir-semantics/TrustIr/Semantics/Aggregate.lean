@@ -654,6 +654,7 @@ def Value.ofConstant : Constant → Value
   -- a function item is a bare, capture-free closure (cf. `ReifyFnPointer`,
   -- Semantics/Cast.lean, and `ClosureTy.bare`);
   | .fnDef fn     => .closure fn []
+  | .fnItem fn    => .fnItem fn
   -- PhantomData is the canonical constant spelling of the unit value
   -- (`unitValue`, Semantics/Memory.lean);
   | .phantomData  => .aggregate []
@@ -838,7 +839,7 @@ theorem seqMapAddKList_length (k : Nat) :
         rw [← Except.ok.inj h]
         simp [ih hr]
       · next => exact absurd h (by simp)
-    | .float _ | .bool _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _
+    | .float _ | .bool _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _ | .sourceFrame _ _ _ _
     | .set _ | .sequence _ | .record _ | .closure _ _ | .fnDef _ _ | .typedClosure _ _ _ | .fatPtr _ _ _
     | .partial _ | .undef _ | .nullPtr => exact absurd h (by simp [seqMapAddKList])
 
@@ -861,7 +862,7 @@ theorem seqMapNotList_length :
         rw [← Except.ok.inj h]
         simp [ih hr]
       · next => exact absurd h (by simp)
-    | .int _ _ | .float _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _
+    | .int _ _ | .float _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _ | .sourceFrame _ _ _ _
     | .set _ | .sequence _ | .record _ | .closure _ _ | .fnDef _ _ | .typedClosure _ _ _ | .fatPtr _ _ _
     | .partial _ | .undef _ | .nullPtr => exact absurd h (by simp [seqMapNotList])
 

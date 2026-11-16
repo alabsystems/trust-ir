@@ -62,6 +62,9 @@ pub(super) fn for_instruction(instruction: &Inst) -> Plan<'_> {
             metadata_ty,
             ..
         } => Plan::Pair(ptr_ty, metadata_ty),
+        Inst::BoxDeref {
+            ptr_ty, pointee, ..
+        } => Plan::Pair(ptr_ty, pointee.ty()),
         Inst::OpenFrame { def } => Plan::Slots(&def.slots),
         Inst::DialectOp(op) => Plan::Types(&op.result_tys),
         Inst::TensorMap { ty, body, .. } => Plan::Map(ty, body),

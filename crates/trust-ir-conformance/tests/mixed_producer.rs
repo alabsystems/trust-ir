@@ -187,12 +187,13 @@ fn mixed_producer_module_executes_both_cross_calls() {
 // WS4.16 (F-080): the verification bundle STATES a two-language package
 // ============================================================
 //
-// Schema 8 of `NativeVerificationBundle`: `NativeBundleProducer::Clean`,
+// Schema 8 introduced `NativeBundleProducer::Clean`,
 // `NativeSourceLanguage::{Lean, Clean}`, and the language SET
 // `NativeBundleProvenance.source_languages`, which must contain the primary
 // `source_language` and cover every `Function.producer` of the bound module
 // under the total map `NativeSourceLanguage::candidates_for_producer`
-// (`None` -> `Unknown`, which must itself be a member). These tests are named
+// (`None` -> `Unknown`, which must itself be a member). Schema 9 retains
+// this language contract. These tests are named
 // `bundle_language_set_*` on purpose: gate 8 runs this crate with
 // `-- --skip native_request_bundle`, a SUBSTRING filter, so a test whose
 // name contains `native_request_bundle` would be silently skipped.
@@ -209,7 +210,7 @@ use trust_ir::{
     NativeSourceLanguage, NativeVerificationBundle, NativeVerificationBundleError,
 };
 
-/// A COMPLETE, validating schema-8 bundle around `module` (obligation,
+/// A COMPLETE, validating schema-9 bundle around `module` (obligation,
 /// lineage, sidecar, and all three request lanes — see
 /// `generate::build_language_set_bundle`), so `Ok(())` below means the whole
 /// bundle validates and a single error means the language rule alone fired.
@@ -248,6 +249,7 @@ use NativeSourceLanguage::{Clean as LangClean, Lean, Rust, Unknown};
 /// `{Rust, Lean, Clean, Unknown}`.
 #[test]
 fn bundle_language_set_two_producer_module_validates() {
+    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 9);
     for languages in [
         &[Rust, Lean][..],
         &[Rust, LangClean],
@@ -259,7 +261,10 @@ fn bundle_language_set_two_producer_module_validates() {
             NativeBundleProducer::TRust,
             languages,
         );
-        assert_eq!(bundle.schema_version, 8);
+        assert_eq!(
+            bundle.schema_version,
+            NativeVerificationBundle::SCHEMA_VERSION
+        );
         assert_eq!(bundle.validate(), Ok(()), "{languages:?}");
         assert!(
             bundle
@@ -485,7 +490,7 @@ fn bundle_language_set_v7_bundle_is_refused_exactly() {
         NativeBundleProducer::TRust,
         &[Rust, Lean],
     );
-    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 8);
+    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 9);
     bundle.schema_version = 7;
     bundle.serialization.schema_version = 7;
     let errors = language_errors(&bundle);
@@ -517,8 +522,51 @@ fn bundle_language_set_v7_bundle_is_refused_exactly() {
     )));
 }
 
+/// A complete schema-8 bundle keeps the two-language fields but still fails
+/// the current schema-9 exact-match handshake. JSON decoding preserves the old
+/// versions and provenance; it does not upgrade or authenticate the bundle.
+#[test]
+fn bundle_language_set_v8_bundle_is_refused_exactly() {
+    let mut bundle = bundle_over(
+        generate::build_mixed_producer_module().expect("the fixture builds"),
+        NativeBundleProducer::TRust,
+        &[Rust, Lean],
+    );
+    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 9);
+    assert_eq!(
+        bundle.schema_version,
+        NativeVerificationBundle::SCHEMA_VERSION
+    );
+    assert_eq!(bundle.validate(), Ok(()));
+    bundle.schema_version = 8;
+    bundle.serialization.schema_version = 8;
+    let errors = language_errors(&bundle);
+    assert!(errors.contains(&NativeVerificationBundleError::UnsupportedSchemaVersion(8)));
+    assert!(
+        errors.contains(&NativeVerificationBundleError::UnsupportedSerializationSchemaVersion(8))
+    );
+
+    let json = serde_json::to_value(&bundle).expect("json");
+    assert_eq!(json["schema_version"], 8);
+    assert_eq!(json["serialization"]["schema_version"], 8);
+    assert_eq!(
+        json["provenance"]["source_languages"],
+        serde_json::json!(["Rust", "Lean"]),
+    );
+    let decoded: NativeVerificationBundle = serde_json::from_value(json).expect("v8 shape decodes");
+    assert_eq!(
+        decoded, bundle,
+        "decoding retains all old content and identity fields"
+    );
+    let errors = language_errors(&decoded);
+    assert!(errors.contains(&NativeVerificationBundleError::UnsupportedSchemaVersion(8)));
+    assert!(
+        errors.contains(&NativeVerificationBundleError::UnsupportedSerializationSchemaVersion(8))
+    );
+}
+
 /// The set is part of the bundle's identity: two bundles differing only in
-/// the language set have different stable digests (the v8 domain), the digest
+/// the language set have different stable digests (the v9 domain), the digest
 /// is set-order independent by construction, and the set survives JSON and
 /// MessagePack byte-for-byte.
 #[test]

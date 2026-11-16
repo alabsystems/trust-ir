@@ -165,6 +165,7 @@ inductive SMTTerm : SMTSort → Type where
   | bvConst (bits : Nat) (value : Int) : SMTTerm (.bv bits)
   | boolConst (value : Bool) : SMTTerm .bool
   | var (bits : Nat) (symbol : String) : SMTTerm (.bv bits)
+  | boolVar (symbol : String) : SMTTerm .bool
   | unary {input output : SMTSort} (op : SMTUnary input output) (arg : SMTTerm input) : SMTTerm output
   | binary {input output : SMTSort} (op : SMTBinary input output)
       (left right : SMTTerm input) : SMTTerm output
@@ -179,6 +180,7 @@ def SMTTerm.toText : {sort : SMTSort} → SMTTerm sort → String
   | _, .bvConst bits value => numeral bits value
   | _, .boolConst value => if value then "true" else "false"
   | _, .var _ symbol => symbol
+  | _, .boolVar symbol => symbol
   | _, .unary op arg => "(" ++ op.name ++ " " ++ arg.toText ++ ")"
   | _, .binary op left right => "(" ++ op.name ++ " " ++ left.toText ++ " " ++ right.toText ++ ")"
   | _, .ite cond yes no => "(ite " ++ cond.toText ++ " " ++ yes.toText ++ " " ++ no.toText ++ ")"
@@ -192,6 +194,7 @@ def SMTTerm.eval (env : SMTEnv) : {sort : SMTSort} → SMTTerm sort → sort.Cor
   | _, .bvConst bits value => BitVec.ofInt bits value
   | _, .boolConst value => value
   | _, .var bits symbol => BitVec.ofInt bits (env symbol)
+  | _, .boolVar symbol => SMTSort.toCore .bool (env symbol)
   | _, .unary op arg => op.eval (arg.eval env)
   | _, .binary op left right => op.eval (left.eval env) (right.eval env)
   | _, .ite cond yes no => if cond.eval env then yes.eval env else no.eval env
@@ -257,14 +260,32 @@ theorem SMTBinary.name_spelling {input output : SMTSort} (op : SMTBinary input o
     SMTBinary.Spelling op op.name := by
   cases op <;> constructor
 
+/-- Mathematical value of a fixed list of literal digits, not an SMT parser. -/
+def SMTTerm.literalValue (radix : Nat) (digits : List Nat) : Nat :=
+  digits.foldl (fun value digit => value * radix + digit) 0
+
+def SMTTerm.literalDigits (digits : List Nat) : String :=
+  String.join (digits.map (fun digit => toString (Nat.digitChar digit)))
+
 /-- A structural derivation in the emitted typed SMT-LIB term grammar.
 It fixes literal syntax, keyword spelling, operand order and conditional arity. -/
 inductive SMTTerm.Prints : {sort : SMTSort} → SMTTerm sort → String → Prop where
   | bvConst (bits : Nat) (value : Int) :
       Prints (.bvConst bits value)
         ("(_ bv" ++ toString (value % (2 : Int) ^ bits).toNat ++ " " ++ toString bits ++ ")")
+  | bvHex (bits : Nat) (value : Int) (digits : List Nat)
+      (positive : 0 < bits) (width : digits.length * 4 = bits)
+      (range : ∀ digit ∈ digits, digit < 16)
+      (residue : literalValue 16 digits = (value % (2 : Int) ^ bits).toNat) :
+      Prints (.bvConst bits value) ("#x" ++ literalDigits digits)
+  | bvBinary (bits : Nat) (value : Int) (digits : List Nat)
+      (positive : 0 < bits) (width : digits.length = bits)
+      (range : ∀ digit ∈ digits, digit < 2)
+      (residue : literalValue 2 digits = (value % (2 : Int) ^ bits).toNat) :
+      Prints (.bvConst bits value) ("#b" ++ literalDigits digits)
   | boolConst (value : Bool) : Prints (.boolConst value) (if value then "true" else "false")
   | var (bits : Nat) (symbol : String) : Prints (.var bits symbol) symbol
+  | boolVar (symbol : String) : Prints (.boolVar symbol) symbol
   | unary {input output : SMTSort} {op : SMTUnary input output} {arg : SMTTerm input}
       {name text : String} (spelling : SMTUnary.Spelling op name) (argument : Prints arg text) :
       Prints (.unary op arg) ("(" ++ name ++ " " ++ text ++ ")")
@@ -284,6 +305,7 @@ theorem SMTTerm.toText_prints {sort : SMTSort} (term : SMTTerm sort) : term.Prin
   | bvConst bits value => exact .bvConst bits value
   | boolConst value => exact .boolConst value
   | var bits symbol => exact .var bits symbol
+  | boolVar symbol => exact .boolVar symbol
   | unary op arg ih => exact .unary op.name_spelling ih
   | binary op left right leftIH rightIH => exact .binary op.name_spelling leftIH rightIH
   | ite cond yes no condIH yesIH noIH => exact .ite condIH yesIH noIH
@@ -308,12 +330,33 @@ theorem SMTTerm.Identifier_function_eq_standard : SMTTerm.Identifier =
 trustIrString48 #trustIrAxiomsExact SMTTerm.Identifier_function_eq_standard == []
 trustIrString430 #trustIrAxiomsExact SMTTerm.Identifier_function_eq_standard == [propext, Classical.choice, Quot.sound]
 
+/-- A deliberately bounded raw simple-symbol vocabulary. These names are
+printed unchanged, never alpha-renamed or treated as formula syntax. Reserved
+lexical/theory tokens and every quoting/escape/control character refuse. -/
+def SMTTerm.checkNativeIdentifier (symbol : String) : Bool :=
+  let letter := fun c : Char => decide ((65 ≤ c.toNat ∧ c.toNat ≤ 90) ∨
+    (97 ≤ c.toNat ∧ c.toNat ≤ 122) ∨ c = '_')
+  let tail := fun c : Char => letter c || decide ((48 ≤ c.toNat ∧ c.toNat ≤ 57) ∨ c = '$')
+  let reserved := ["BINARY", "DECIMAL", "HEXADECIMAL", "NUMERAL", "STRING", "_",
+    "as", "let", "exists", "forall", "match", "par", "true", "false", "Bool",
+    "assert", "check-sat", "declare-fun", "not", "and", "or", "xor", "ite", "distinct",
+    "bvadd", "bvsub", "bvmul", "bvudiv", "bvsdiv", "bvurem", "bvsrem",
+    "bvand", "bvor", "bvxor", "bvnot", "bvneg", "bvshl", "bvlshr", "bvashr",
+    "bvult", "bvule", "bvslt", "bvsle", "concat"]
+  match StringCompat.toList symbol with
+  | [] => false
+  | first :: rest => letter first && rest.all tail && !(reserved.contains symbol)
+
+def SMTTerm.VariableIdentifier (symbol : String) : Prop :=
+  SMTTerm.Identifier symbol ∨ SMTTerm.checkNativeIdentifier symbol = true
+
 /-- Positive bitvector widths and lexically safe variable identifiers. -/
 def SMTTerm.WellFormed {sort : SMTSort} (term : SMTTerm sort) : Prop :=
   SMTTerm.rec (motive := fun _ _ => Prop)
     (fun bits _ => 0 < bits)
     (fun _ => True)
-    (fun bits symbol => 0 < bits ∧ Identifier symbol)
+    (fun bits symbol => 0 < bits ∧ VariableIdentifier symbol)
+    (fun symbol => VariableIdentifier symbol)
     (fun _ _ arg => arg)
     (fun _ _ _ left right => left ∧ right)
     (fun _ _ _ cond yes no => cond ∧ yes ∧ no)
@@ -325,14 +368,19 @@ theorem SMTTerm.WellFormed_eq_standard {sort : SMTSort} (term : SMTTerm sort) :
       SMTTerm.rec (motive := fun _ _ => Prop)
         (fun bits _ => 0 < bits)
         (fun _ => True)
-        (fun bits symbol => 0 < bits ∧ ∃ payload : List Char,
+        (fun bits symbol => 0 < bits ∧ ((∃ payload : List Char,
           symbol.data = ['v', '_'] ++ payload ∧
-          ∀ c ∈ payload, c = '_' ∨ (48 ≤ c.toNat ∧ c.toNat ≤ 57))
+          ∀ c ∈ payload, c = '_' ∨ (48 ≤ c.toNat ∧ c.toNat ≤ 57)) ∨
+          SMTTerm.checkNativeIdentifier symbol = true))
+        (fun symbol => (∃ payload : List Char,
+          symbol.data = ['v', '_'] ++ payload ∧
+          ∀ c ∈ payload, c = '_' ∨ (48 ≤ c.toNat ∧ c.toNat ≤ 57)) ∨
+          SMTTerm.checkNativeIdentifier symbol = true)
         (fun _ _ arg => arg)
         (fun _ _ _ left right => left ∧ right)
         (fun _ _ _ cond yes no => cond ∧ yes ∧ no)
         (fun _ _ high low => high ∧ low) term := by
-  unfold SMTTerm.WellFormed
+  unfold SMTTerm.WellFormed SMTTerm.VariableIdentifier
   rw [SMTTerm.Identifier_function_eq_standard]
 trustIrString48 #trustIrAxiomsExact SMTTerm.WellFormed_eq_standard == []
 trustIrString430 #trustIrAxiomsExact SMTTerm.WellFormed_eq_standard == [propext, Classical.choice, Quot.sound]
@@ -348,3 +396,8 @@ trustIrString430 #trustIrAxiomsExact SMTTerm.WellFormed_eq_standard == [propext,
 /-- info: 'TrustIr.TrustIrExpr.SMTTerm.toText_prints' does not depend on any axioms -/
 #guard_msgs in
 #print axioms TrustIr.TrustIrExpr.SMTTerm.toText_prints
+
+#trustIrAxioms TrustIr.TrustIrExpr.SMTTerm.Prints <= [propext, Classical.choice, Quot.sound]
+#trustIrAxioms TrustIr.TrustIrExpr.SMTTerm.checkNativeIdentifier <= [propext, Classical.choice, Quot.sound]
+#trustIrAxioms TrustIr.TrustIrExpr.SMTTerm.literalValue <= [propext, Classical.choice, Quot.sound]
+#trustIrAxioms TrustIr.TrustIrExpr.SMTTerm.literalDigits <= [propext, Classical.choice, Quot.sound]

@@ -1018,7 +1018,7 @@ fn replay_image_impl<L: ScopedLocalAllocator>(
         let mut opaque_ids = HashSet::new();
         for index in 0..equations.len() {
             let equation = equations.get(index);
-            if !allocator.local_scope().owns(&equation.operator)
+            if !allocator.local_scope().owns(equation.operator)
                 || !allocator.local_scope().owns(&equation.proof.local)
                 || !ids.contains(&equation.operator.id())
                 || !ids.contains(&equation.proof.local.id())
@@ -1655,8 +1655,7 @@ mod tests {
             Default::default(),
             &mut retained,
         )
-        .err()
-        .expect("a retained definition is not an independent parameter");
+        .expect_err("a retained definition is not an independent parameter");
         assert!(error.contains("retained"), "unexpected refusal: {error}");
     }
     #[test]

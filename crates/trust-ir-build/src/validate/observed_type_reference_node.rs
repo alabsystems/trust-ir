@@ -116,6 +116,9 @@ impl State {
             Ty::Func(id) if module.func_type(*id).is_none() => {
                 Some(Refusal::Dangling("func_type", id.index()))
             }
+            Ty::FnItem(id) if !work.function_item_exists(module, *id)? => {
+                Some(Refusal::Dangling("function_item", id.index()))
+            }
             Ty::Array(id, _) | Ty::Set(id, _) | Ty::Sequence(id) if module.ty(*id).is_none() => {
                 Some(Refusal::Dangling("ty", id.index()))
             }

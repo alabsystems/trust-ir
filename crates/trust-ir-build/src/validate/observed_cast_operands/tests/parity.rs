@@ -273,3 +273,25 @@ fn bounded_decimal_and_all17_opcode_spellings_match_original_display() {
         assert_eq!(work.opcode(op).unwrap(), op.to_string());
     }
 }
+
+#[test]
+fn nominal_item_explicit_zero_byte_casts_and_reification_match_current_rules() {
+    let one = Ty::FnItem(FuncId::new(7));
+    let two = Ty::FnItem(FuncId::new(42));
+    for op in [CastOp::Bitcast, CastOp::Transmute] {
+        for (src, dst) in [(&one, &two), (&one, &Ty::Unit), (&Ty::Unit, &two)] {
+            assert!(parity(op, src, dst, &rows(src.clone()), v(0), MODES[0]).is_empty());
+        }
+    }
+    assert!(
+        parity(
+            CastOp::ReifyFnPointer,
+            &one,
+            &Ty::Func(FuncTyId::new(0)),
+            &rows(one.clone()),
+            v(0),
+            MODES[0]
+        )
+        .is_empty()
+    );
+}

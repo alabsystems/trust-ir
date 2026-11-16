@@ -8,6 +8,26 @@
 use super::*;
 use trust_ir::value::{EnumId, RecordId, StructId};
 impl<O: ExecutionObserver> Work<'_, '_, O> {
+    // This public operation checks one original node. Scan every declaration
+    // so a second matching ID can never authenticate the first row.
+    pub(super) fn function_item_exists(&mut self, module: &Module, id: FuncId) -> R<bool> {
+        let mut found = None;
+        let mut at = 0;
+        while let Some(row) = self.at(&module.functions, at)? {
+            self.admit(1, size_of::<bool>())?;
+            if row.id == id {
+                if found.is_some() {
+                    return Ok(false);
+                }
+                found = Some(row.ty);
+            }
+            self.next(&mut at)?;
+        }
+        match found {
+            Some(signature) => Ok(self.at(&module.func_types, signature.as_usize())?.is_some()),
+            None => Ok(false),
+        }
+    }
     pub(super) fn struct_exists(&mut self, module: &Module, id: StructId) -> R<bool> {
         self.admit(1, size_of::<usize>())?;
         if let Some(row) = self.at(&module.structs, id.as_usize())? {

@@ -4,6 +4,54 @@
 use super::*;
 
 #[test]
+fn direct_dead_storage_native_profiles_bind_exact_field_extents_and_rows() {
+    let module = crate::layout_table::direct_storage::tests::fixture();
+    let fact = crate::layout_table::direct_storage::tests::native_fact(&module);
+    assert!(ordinary_adt(&module, &fact).is_empty());
+    assert_eq!(adt(&module, &fact), ordinary_adt(&module, &fact));
+    for change in 0..7 {
+        let mut changed = fact.clone();
+        let layout = changed.enum_layout.as_mut().unwrap();
+        match change {
+            0 => layout.tag_encoding = NativeEnumTagEncoding::Direct,
+            1 => {
+                let NativeEnumTagEncoding::DirectWithUninhabited { variants } =
+                    &mut layout.tag_encoding
+                else {
+                    unreachable!()
+                };
+                variants[0].fields[0].size -= 16;
+            }
+            2 => layout.variants[0].size_bits -= 128,
+            3 => layout.variants[0].align_bits = None,
+            4 => layout.variants[0].fields[0].offset_bits = Some(0),
+            5 => layout.tag_bits = Some(8),
+            6 => layout.discriminant_offset_bits = Some(8),
+            _ => unreachable!(),
+        }
+        let expected = ordinary_adt(&module, &changed);
+        assert!(!expected.is_empty(), "case {change}");
+        assert_eq!(adt(&module, &changed), expected, "case {change}");
+    }
+    let mut invalid_source = module.clone();
+    let crate::EnumTagEncoding::DirectWithUninhabited { variants, .. } =
+        &mut invalid_source.enums[0].layout.as_mut().unwrap().encoding
+    else {
+        unreachable!()
+    };
+    variants[0].fields[0].align = 3;
+    let fact = crate::layout_table::direct_storage::tests::native_fact(&invalid_source);
+    assert!(
+        !ordinary_adt(&invalid_source, &fact).is_empty(),
+        "matching claims cannot establish source layout"
+    );
+    assert_eq!(
+        adt(&invalid_source, &fact),
+        ordinary_adt(&invalid_source, &fact)
+    );
+}
+
+#[test]
 fn struct_actual_layout_names_offsets_shapes_and_size_match_original_helper() {
     let module = module();
     let base = structure(&module);
@@ -180,7 +228,7 @@ fn niche_and_untagged_guard_order_and_early_returns_match() {
         for change in 0..6 {
             let mut fact = enumeration(&module);
             let layout = fact.enum_layout.as_mut().unwrap();
-            layout.tag_encoding = strategy;
+            layout.tag_encoding = strategy.clone();
             layout.niche = Some(NativeEnumNicheFact {
                 variant_index: 0,
                 field: Some(0),
@@ -270,4 +318,167 @@ fn pointer_width_zero_and_checked_overflow_fallback_preserve_original_helper() {
             ordinary_fat(&module, &fact)
         );
     }
+}
+
+// Standalone enum metadata and authoritative ADT storage have different scopes.
+fn empty_native_fixture() -> (Module, NativeAdtLayoutFact) {
+    let mut module = module();
+    let mut fact = enumeration(&module);
+    module.enums[0].variants.clear();
+    fact.layout.kind = TyLayoutKind::Enum {
+        id: EnumId::new(7),
+        variants: 0,
+    };
+    let layout = fact.enum_layout.as_mut().unwrap();
+    layout.tag_encoding = NativeEnumTagEncoding::Untagged;
+    layout.tag_bits = None;
+    layout.discriminant_offset_bits = None;
+    layout.variants.clear();
+    (module, fact)
+}
+fn assert_empty_storage_refused(size_bits: u64, include_enum_metadata: bool) {
+    let (module, mut fact) = empty_native_fixture();
+    assert!(module.ty_is_uninhabited(&fact.ty));
+    assert!(module.ty_layout_shape(&fact.ty).is_err());
+    fact.layout.size_bits = size_bits;
+    if !include_enum_metadata {
+        fact.enum_layout = None;
+    }
+    let expected = vec![E::InvalidCompilerFact {
+        fact: NativeCompilerFactRef::AdtLayout(fact.id),
+        field: "layout",
+    }];
+    assert_eq!(ordinary_adt(&module, &fact), expected);
+    assert_eq!(adt(&module, &fact), expected);
+    if include_enum_metadata {
+        assert!(ordinary_enum(&module, &fact).is_empty());
+        let mut observer = Observer::default();
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        assert!(
+            fact.enum_layout
+                .as_ref()
+                .unwrap()
+                .validation_errors_observed(&fact, &module.enums[0], &mut session, site(),)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+#[test]
+fn empty_storage_zero_is_refused_but_shape_helper_stays_shape_only() {
+    assert_empty_storage_refused(0, true);
+}
+#[test]
+fn empty_storage_nonzero_is_refused_but_shape_helper_stays_shape_only() {
+    assert_empty_storage_refused(8, true);
+}
+#[test]
+fn empty_storage_max_is_refused_but_shape_helper_stays_shape_only() {
+    assert_empty_storage_refused(u64::MAX, true);
+}
+#[test]
+fn empty_storage_missing_rows_cannot_bypass_full_adt() {
+    assert_empty_storage_refused(0, false);
+}
+
+fn bound_single_native_fixture() -> (Module, NativeAdtLayoutFact) {
+    let mut module = module();
+    module.types.push(Ty::U128);
+    module.enums[0].variants[0].fields = vec![Ty::Never, Ty::Array(TyId::new(0), u64::MAX)];
+    module.enums[0].variants[1].fields = vec![Ty::U32];
+    module.enums[0].layout = Some(crate::EnumLayoutDescriptor {
+        encoding: crate::EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0]],
+    });
+    let mut fact = enumeration(&module);
+    fact.layout.size_bits = 32;
+    fact.layout.align_bits = Some(32);
+    let layout = fact.enum_layout.as_mut().unwrap();
+    layout.tag_encoding = NativeEnumTagEncoding::Untagged;
+    layout.tag_bits = None;
+    layout.discriminant_offset_bits = None;
+    layout.variants[0].fields.clear();
+    layout.variants[0].size_bits = 0;
+    layout.variants[0].align_bits = None;
+    layout.variants[0].discriminant = None;
+    layout.variants[1].fields = vec![FieldOffsetShape {
+        field: 0,
+        name: "value".into(),
+        ty_shape: Ty::U32.shape(),
+        offset_bits: Some(0),
+    }];
+    layout.variants[1].size_bits = 32;
+    layout.variants[1].align_bits = Some(32);
+    layout.variants[1].discriminant = None;
+    (module, fact)
+}
+fn assert_bound_single_field(module: &Module, fact: &NativeAdtLayoutFact, field: &'static str) {
+    let ordinary = ordinary_adt(module, fact);
+    let observed = adt(module, fact);
+    assert_eq!(ordinary, observed);
+    let wanted = E::InvalidCompilerFact {
+        fact: NativeCompilerFactRef::AdtLayout(fact.id),
+        field,
+    };
+    assert!(
+        ordinary.contains(&wanted),
+        "missing exact {wanted:?}, got {ordinary:?}"
+    );
+}
+#[test]
+fn single_native_empty_dead_rows_bind_valid_logical_storage() {
+    let (module, fact) = bound_single_native_fixture();
+    assert!(ordinary_adt(&module, &fact).is_empty());
+    assert!(adt(&module, &fact).is_empty());
+}
+#[test]
+fn single_native_inactive_nonzero_size_is_refused() {
+    let (module, mut fact) = bound_single_native_fixture();
+    fact.enum_layout.as_mut().unwrap().variants[0].size_bits = 8;
+    assert_bound_single_field(&module, &fact, "layout.size_bits");
+}
+#[test]
+fn single_native_inactive_physical_fields_are_refused() {
+    let (module, mut fact) = bound_single_native_fixture();
+    fact.enum_layout.as_mut().unwrap().variants[0].fields = vec![
+        FieldOffsetShape {
+            field: 0,
+            name: "never".into(),
+            ty_shape: Ty::Never.shape(),
+            offset_bits: Some(0),
+        },
+        FieldOffsetShape {
+            field: 1,
+            name: "dead".into(),
+            ty_shape: module.enums[0].variants[0].fields[1].shape(),
+            offset_bits: Some(0),
+        },
+    ];
+    assert_bound_single_field(&module, &fact, "enum_layout.variant.fields");
+}
+#[test]
+fn single_native_outer_geometry_is_bound_to_logical_layout() {
+    let (module, mut fact) = bound_single_native_fixture();
+    fact.layout.size_bits = 64;
+    assert_bound_single_field(&module, &fact, "layout");
+}
+#[test]
+fn single_native_empty_row_cannot_supply_source_deadness() {
+    let (mut module, fact) = bound_single_native_fixture();
+    module.enums[0].variants[0].fields = vec![Ty::U64];
+    assert_bound_single_field(&module, &fact, "layout");
+}
+#[test]
+fn single_native_requires_untagged_protocol() {
+    let (module, mut fact) = bound_single_native_fixture();
+    let layout = fact.enum_layout.as_mut().unwrap();
+    layout.tag_encoding = NativeEnumTagEncoding::Direct;
+    layout.tag_bits = Some(8);
+    layout.discriminant_offset_bits = Some(0);
+    for (index, variant) in layout.variants.iter_mut().enumerate() {
+        variant.discriminant = Some(index as i128);
+    }
+    assert_bound_single_field(&module, &fact, "enum_layout.tag_encoding");
 }

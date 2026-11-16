@@ -459,6 +459,10 @@ class CurrentReportTreePolicy(unittest.TestCase):
             spec.loader.exec_module(classifier)
             if classifier.is_public_snapshot(root):
                 self.skipTest("public snapshot: internal report/catalog data is not exported")
+        if not Store(root, fetch=False).sources_available():
+            self.skipTest("payload archive absent: the 2026-11-15 history rewrite moved the original "
+                          "source commits to the custody mirror; set TRUST_IR_ARTIFACT_OBJECTS to its "
+                          "objects directory (HISTORY-REWRITE-2026-11-15.md)")
         result = Store(root, fetch=False).check_index()
         self.assertGreater(result["archive_files"], 0)
         self.assertEqual(result["inline_fixture_files"], 1349)

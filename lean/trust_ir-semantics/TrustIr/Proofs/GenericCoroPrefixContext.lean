@@ -21,12 +21,61 @@ def scopedContext (base : EvalContext) (functions : FuncId → Option EvalFuncti
     (types : Option LocalTypeTable) : EvalContext :=
   { base with functions := functions, localTypes := types }
 
+/-- A nominal callee check reads this operand's declaration only, not any
+    unrelated local declaration or executable callee body. -/
+theorem checkFunctionItemCalleeType_scoped_congr (base : EvalContext)
+    (source target : FuncId → Option EvalFunction) (sourceTypes targetTypes : Option LocalTypeTable)
+    (operand : ValueId) (value : Value)
+    (read : sourceTypes.bind (fun table => table operand) = targetTypes.bind (fun table => table operand)) :
+    checkFunctionItemCalleeType (scopedContext base source sourceTypes) operand value =
+      checkFunctionItemCalleeType (scopedContext base target targetTypes) operand value := by
+  simp only [checkFunctionItemCalleeType, scopedContext, read]
+
+/-- Item contracts come from the unchanged original header/signature view;
+    replacing an executable body or active SSA declarations does not mint it. -/
+theorem functionItemCall_scoped (base : EvalContext)
+    (functions : FuncId → Option EvalFunction) (types : Option LocalTypeTable)
+    (function : FuncId) (signature : FuncTyId) (convention : CallingConv) :
+    functionItemCall (scopedContext base functions types) function signature convention =
+      functionItemCall base function signature convention := rfl
+
 theorem headerAgreement_refl (functions : FuncId → Option EvalFunction) :
     HeaderAgreement functions functions := by
   intro id
   cases functions id with
   | none => exact .absent
   | some function => exact .present function function rfl rfl
+
+/-- The terminator observes body-resolution success or its exact error before
+    scheduling CallReq. It does not observe the callee's transformed CFG. -/
+theorem resolveFunctionItemBody_congr (base : EvalContext)
+    (source target : FuncId → Option EvalFunction) (agreement : HeaderAgreement source target)
+    (sourceTypes targetTypes : Option LocalTypeTable) (function : FuncId) :
+    (resolveFunctionItemBody (scopedContext base source sourceTypes) function).map (fun _ => ()) =
+      (resolveFunctionItemBody (scopedContext base target targetTypes) function).map (fun _ => ()) := by
+  have related := agreement function
+  cases sourceFound : source function with
+  | none =>
+    cases targetFound : target function with
+    | none =>
+      trustIrCompilerProof {
+        simp only [resolveFunctionItemBody, scopedContext, sourceFound, targetFound]
+      } {
+        cases failure : base.functionErrors function <;>
+          cases declared : base.declared function <;>
+          simp only [resolveFunctionItemBody, scopedContext, sourceFound, targetFound,
+            failure, declared, Except.map]
+      }
+    | some targetFunction =>
+      rw [sourceFound, targetFound] at related
+      cases related
+  | some sourceFunction =>
+    cases targetFound : target function with
+    | none =>
+      rw [sourceFound, targetFound] at related
+      cases related
+    | some targetFunction =>
+      simp only [resolveFunctionItemBody, scopedContext, sourceFound, targetFound, Except.map]
 
 theorem headerAgreement_withFunction (ctx : EvalContext) (id : FuncId)
     (source target : EvalFunction) (body : source.body = target.body)
@@ -139,6 +188,38 @@ theorem functionCall_congr (base : EvalContext)
           Except.bind, Except.pure, Bind.bind, Pure.pure]
 
 
+/-- Application also observes the actual convention equality already present
+    in HeaderAgreement, independently of recursive body effects. -/
+theorem functionCallWithConvention_congr (base : EvalContext)
+    (source target : FuncId → Option EvalFunction) (agreement : HeaderAgreement source target)
+    (sourceTypes targetTypes : Option LocalTypeTable) (held : FuncTyId) (fn : FuncId)
+    (sig : FuncTyId) (convention : CallingConv) :
+    functionCallWithConvention (scopedContext base source sourceTypes) held fn sig convention =
+      functionCallWithConvention (scopedContext base target targetTypes) held fn sig convention := by
+  unfold functionCallWithConvention
+  rw [functionCall_congr base source target agreement sourceTypes targetTypes held fn sig]
+  cases checked : functionCall (scopedContext base target targetTypes) held fn sig with
+  | error error => rfl
+  | ok resolved =>
+    have related := agreement resolved
+    cases sourceFound : source resolved with
+    | none =>
+      cases targetFound : target resolved with
+      | none => simp only [scopedContext, sourceFound, targetFound]
+      | some targetFunction =>
+        rw [sourceFound, targetFound] at related
+        cases related
+    | some sourceFunction =>
+      cases targetFound : target resolved with
+      | none =>
+        rw [sourceFound, targetFound] at related
+        cases related
+      | some targetFunction =>
+        rw [sourceFound, targetFound] at related
+        cases related with
+        | present _ _ body convention =>
+          simp only [scopedContext, sourceFound, targetFound, convention]
+
 theorem checkedClosureCaptures_scoped (base : EvalContext)
     (functions : FuncId → Option EvalFunction) (types : Option LocalTypeTable)
     (cid : ClosureTyId) (captures : List Value) :
@@ -175,13 +256,13 @@ theorem makeClosureValue_congr (base : EvalContext)
     funext (fun ty => funext (fun value => checkClosureValue_scoped base target targetTypes ty value))
   unfold makeClosureValue
   simp only [sourceCheck, targetCheck]
-  cases definition : base.closures cid with
+  cases definition : base.valueSource.closureTy cid with
   | none =>
-    simp [closureContract, scopedContext, definition, Except.bind, Except.pure, Bind.bind, Pure.pure]
+    simp [closureContract, scopedContext, EvalContext.closures, definition, Except.bind, Except.pure, Bind.bind, Pure.pure]
   | some declaration =>
     cases signature : base.funcTys declaration.func with
     | none =>
-      simp [closureContract, scopedContext, definition, signature,
+      simp [closureContract, scopedContext, EvalContext.closures, definition, signature,
         Except.bind, Except.pure, Bind.bind, Pure.pure]
     | some signatureDefinition =>
       have related := agreement fn
@@ -189,7 +270,7 @@ theorem makeClosureValue_congr (base : EvalContext)
       | none =>
         cases targetFound : target fn with
         | none =>
-          simp [closureContract, scopedContext, definition, signature, sourceFound, targetFound,
+          simp [closureContract, scopedContext, EvalContext.closures, definition, signature, sourceFound, targetFound,
             Except.bind, Except.pure, Bind.bind, Pure.pure]
         | some function =>
           rw [sourceFound, targetFound] at related
@@ -208,7 +289,7 @@ theorem makeClosureValue_congr (base : EvalContext)
                 !(closureTyListEq targetFunction.body.paramTys (declaration.captures ++ signatureDefinition.params)) ||
                 !(closureTyListEq targetFunction.body.returnTys signatureDefinition.returns) ||
                 targetFunction.body.abi != signatureDefinition.abi) <;>
-              simp [closureContract, scopedContext, definition, signature, sourceFound, targetFound, body,
+              simp [closureContract, scopedContext, EvalContext.closures, definition, signature, sourceFound, targetFound, body,
                 abi, shape, Except.bind, Except.pure, Bind.bind, Pure.pure]
 
 theorem closureCall_congr (base : EvalContext)
@@ -224,13 +305,13 @@ theorem closureCall_congr (base : EvalContext)
   unfold closureCall
   simp only [sourceCheck, targetCheck,
     makeClosureValue_congr base source target agreement sourceTypes targetTypes]
-  cases definition : base.closures cid with
+  cases definition : base.valueSource.closureTy cid with
   | none =>
-    simp [closureContract, scopedContext, definition, Except.bind, Except.pure, Bind.bind, Pure.pure]
+    simp [closureContract, scopedContext, EvalContext.closures, definition, Except.bind, Except.pure, Bind.bind, Pure.pure]
   | some declaration =>
     cases signature : base.funcTys declaration.func with
     | none =>
-      simp [closureContract, scopedContext, definition, signature,
+      simp [closureContract, scopedContext, EvalContext.closures, definition, signature,
         Except.bind, Except.pure, Bind.bind, Pure.pure]
     | some signatureDefinition =>
       have related := agreement fn
@@ -238,7 +319,7 @@ theorem closureCall_congr (base : EvalContext)
       | none =>
         cases targetFound : target fn with
         | none =>
-          simp [closureContract, scopedContext, definition, signature, sourceFound, targetFound,
+          simp [closureContract, scopedContext, EvalContext.closures, definition, signature, sourceFound, targetFound,
             Except.bind, Except.pure, Bind.bind, Pure.pure]
         | some function =>
           rw [sourceFound, targetFound] at related
@@ -257,7 +338,7 @@ theorem closureCall_congr (base : EvalContext)
                 !(closureTyListEq targetFunction.body.paramTys (declaration.captures ++ signatureDefinition.params)) ||
                 !(closureTyListEq targetFunction.body.returnTys signatureDefinition.returns) ||
                 targetFunction.body.abi != signatureDefinition.abi) <;>
-              simp [closureContract, scopedContext, definition, signature, sourceFound, targetFound, body,
+              simp [closureContract, scopedContext, EvalContext.closures, definition, signature, sourceFound, targetFound, body,
                 convention, abi, shape, Except.bind, Except.pure, Bind.bind, Pure.pure]
 
 end TrustIr.GenericCoro.Prefix

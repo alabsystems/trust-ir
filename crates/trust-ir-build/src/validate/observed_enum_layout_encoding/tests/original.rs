@@ -7,6 +7,12 @@ pub(super) fn prelude(
     enm: &EnumDef,
     layout: &EnumLayoutDescriptor,
 ) -> (Vec<ValidationError>, Option<u64>) {
+    if matches!(
+        &layout.encoding,
+        EnumTagEncoding::DirectWithUninhabited { .. }
+    ) {
+        return (vec![], None);
+    }
     let mut errors = Vec::new();
     let location = || format!("enum.{} ({}) layout", enm.id.index(), enm.name);
     // WS2.22: the tag lane's SIZE is the repr's own width
@@ -19,7 +25,8 @@ pub(super) fn prelude(
     // count; the alignment clauses below are then skipped, the enum having
     // already drawn its error.
     let lane_repr = match &layout.encoding {
-        trust_ir::EnumTagEncoding::Direct { .. } => enm.canonical_tag_repr(),
+        trust_ir::EnumTagEncoding::Direct { .. }
+        | trust_ir::EnumTagEncoding::DirectWithUninhabited { .. } => enm.canonical_tag_repr(),
         trust_ir::EnumTagEncoding::Niche { niche_ty, .. } => Some(*niche_ty),
         trust_ir::EnumTagEncoding::Untagged | trust_ir::EnumTagEncoding::SingleInhabited { .. } => {
             None
@@ -81,6 +88,7 @@ pub(super) fn encoding(
         });
     };
     match &layout.encoding {
+        trust_ir::EnumTagEncoding::DirectWithUninhabited { .. } => {}
         // v37 `Untagged`: no tag lane exists, so every tag-placement and
         // tag/field-disjointness check above is vacuous. The one claim that
         // still has content is that a variant can be RECOVERED without

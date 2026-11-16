@@ -294,11 +294,9 @@ impl Scan<'_> {
             !self.memo.shared_query || incoming.is_some_and(|child| Arc::strong_count(child) > 1);
         // The immutable actual root pins every address until this query ends.
         let address = expression as *const Expr as usize;
-        if memoize {
-            if let Some(height) = self.seen.get(&address).copied() {
-                self.known_height(height);
-                return None;
-            }
+        if memoize && let Some(height) = self.seen.get(&address).copied() {
+            self.known_height(height);
+            return None;
         }
         if self.memo.nested_reuse
             && address == self.root

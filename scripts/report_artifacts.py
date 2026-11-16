@@ -88,12 +88,22 @@ def _hex(value, pattern, label):
     return value
 
 
+ARTIFACT_OBJECTS_ENV = "TRUST_IR_ARTIFACT_OBJECTS"
+
+
 def _git_environment():
     env = dict(os.environ)
     for key in list(env):
         if key in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE", "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE"} or key.startswith("GIT_CONFIG"):
             del env[key]
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull, GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
+    # The 2026-11-15 history rewrite removed the archive payloads and their
+    # original source commits from this repository. A machine that holds the
+    # custody mirror names its object directory here; every byte read through
+    # it is still bound to the catalog's commit, tree, blob and SHA-256.
+    archive = os.environ.get(ARTIFACT_OBJECTS_ENV, "")
+    if archive and Path(archive).is_dir():
+        env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = archive
     return env
 
 
@@ -156,6 +166,10 @@ class Store:
         self._trees = {}
         self._api_trees = {}
         self._api_commits = set()
+
+    def sources_available(self):
+        """True when every original source commit can be read without the network."""
+        return all(self._git("cat-file", "-e", source + "^{commit}").returncode == 0 for source in self.sources)
 
     def _git(self, *args):
         command = ["git", "--no-replace-objects", "--literal-pathspecs", "-C", str(self.root), *args]

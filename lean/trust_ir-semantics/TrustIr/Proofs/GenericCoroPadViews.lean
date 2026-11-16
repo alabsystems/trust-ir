@@ -65,16 +65,24 @@ theorem stepTermUnwind_congr (source target : CFG) (term : Inst) (model : ByteMo
 theorem stepTermWithContext_congr (source target : EvalContext) (depth : Nat)
     (sourceCFG targetCFG : CFG) (term : Inst) (strategy : PanicStrategy)
     (models : source.byteModel = target.byteModel)
-    (functions : ∀ held function signature,
-      functionCall source held function signature = functionCall target held function signature)
+    (functions : ∀ held function signature convention,
+      functionCallWithConvention source held function signature convention =
+        functionCallWithConvention target held function signature convention)
     (closures : ∀ cid function captures signature args convention,
       closureCall source cid function captures signature args convention =
         closureCall target cid function captures signature args convention)
+    (calleeTypes : ∀ operand ∈ operandIds term, ∀ value,
+      checkFunctionItemCalleeType source operand value = checkFunctionItemCalleeType target operand value)
+    (items : ∀ function signature convention,
+      functionItemCall source function signature convention = functionItemCall target function signature convention)
+    (bodies : ∀ function,
+      (resolveFunctionItemBody source function).map (fun _ => ()) =
+        (resolveFunctionItemBody target function).map (fun _ => ()))
     (views : PadViewsAgree sourceCFG targetCFG) :
     stepTermWithContext source depth sourceCFG term strategy =
       stepTermWithContext target depth targetCFG term strategy := by
   cases strategy <;> unfold stepTermWithContext <;>
-    apply closureTermWithContext_congr source target depth term _ _ functions closures
+    apply closureTermWithContext_congr source target depth term _ _ functions closures calleeTypes items bodies
   · rw [models]
   · rw [models]
     exact stepTermUnwind_congr sourceCFG targetCFG term target.byteModel views
@@ -132,6 +140,7 @@ theorem closureTermWithContext_fresh (ctx : EvalContext) (depth : Nat) (term : I
       | exact throwTypeError_fresh _
       | exact pure_fresh _
       | exact lookup_fresh _
+      | exact SSAFreshMemory.fromMemoryExcept_fresh _
       | exact mapM_fresh Sem.lookupValue _ lookup_fresh
       | refine bind_fresh _ _ ?_ (fun value => ?_)
       | intro value

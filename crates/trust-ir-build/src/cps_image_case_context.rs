@@ -76,6 +76,32 @@ impl Work<'_> {
         result
     }
 }
+fn intrinsic_atom(expression: &Expr) -> bool {
+    matches!(
+        expression.kind(),
+        ExprKind::BVar(_) | ExprKind::Sort(_) | ExprKind::Lit(_)
+    )
+}
+fn atom_shape(expression: &Expr) -> bool {
+    intrinsic_atom(expression) || matches!(expression.kind(), ExprKind::FVar(_))
+}
+fn stuck_atom(
+    expression: &Expr,
+    checker: &TypeChecker<'_>,
+    work: &mut Work<'_>,
+) -> Result<bool, String> {
+    if intrinsic_atom(expression) {
+        return Ok(true);
+    }
+    if let ExprKind::FVar(id) = expression.kind() {
+        work.pay(1)?; // current local-context probe; never retained as a scope fact
+        return Ok(checker
+            .local_context()
+            .get(*id)
+            .is_none_or(|declaration| declaration.value.is_none()));
+    }
+    Ok(false)
+}
 struct Case {
     term: Expr,
     name: &'static str,
@@ -192,6 +218,25 @@ impl ExprFolderOpt for Search<'_, '_, '_> {
             self.error = Some("case-context search depth limit".into());
             return None;
         }
+        if atom_shape(e) {
+            let atom = self
+                .work
+                .pay(1)
+                .and_then(|()| stuck_atom(e, self.checker, self.work));
+            match atom {
+                Ok(true) => {
+                    if self.checker.heartbeat_spent() {
+                        self.error = Some("case-context kernel budget".into());
+                    }
+                    return None;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.error = Some(error);
+                    return None;
+                }
+            }
+        }
         if let Err(error) = self.work.pay(4) {
             self.error = Some(error);
             return None;
@@ -209,6 +254,10 @@ impl ExprFolderOpt for Search<'_, '_, '_> {
         self.depth -= 1;
         if self.found.is_none() && self.error.is_none() && !e.has_loose_bvars() {
             let normalized = self.checker.whnf(e);
+            if self.checker.heartbeat_spent() {
+                self.error = Some("case-context kernel budget".into());
+                return None;
+            }
             match case(&normalized, self.checker, self.work) {
                 Ok(found) => self.found = found,
                 Err(error) => self.error = Some(error),
@@ -284,6 +333,69 @@ impl ExprFolderOpt for Replace<'_, '_, '_> {
         }
         if self.depth > self.max_depth {
             self.error = Some("case-context replacement depth limit".into());
+            return None;
+        }
+        // These exact current WHNF atoms cannot equal or contain the selected
+        // App. Omit the proper-set probe, WHNF, and temporary storage entirely.
+        // A missing local-context entry has the same operational WHNF result;
+        // it grants no scope/type authority and original endpoint closure stays strict.
+        if matches!(self.target.kind(), ExprKind::App(..)) && atom_shape(e) {
+            let atom = self
+                .work
+                .pay(1)
+                .and_then(|()| stuck_atom(e, self.checker, self.work));
+            match atom {
+                Ok(true) => {
+                    if self.checker.heartbeat_spent() {
+                        self.error = Some("case-context kernel budget".into());
+                    }
+                    return None;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.error = Some(error);
+                    return None;
+                }
+            }
+        }
+        if matches!(
+            e.kind(),
+            ExprKind::BVar(_)
+                | ExprKind::FVar(_)
+                | ExprKind::Sort(_)
+                | ExprKind::Const(..)
+                | ExprKind::Lit(_)
+        ) {
+            // Scalar inputs have no children or possible parent rebuild. Keep
+            // the proper-frontier check and actual WHNF/target comparison:
+            // an FVar/Const definition may reduce to the selected whole Case.
+            // No temporary memo key/entry or rebuild reservation is needed.
+            if let Err(error) = self.work.pay(4) {
+                self.error = Some(error);
+                return None;
+            }
+            if self.proper.contains(&Key(e.clone())) {
+                return None;
+            }
+            if !e.has_loose_bvars() {
+                if let Err(error) = self.work.pay(3) {
+                    self.error = Some(error);
+                    return None;
+                }
+                let normalized = self.checker.whnf(e);
+                if self.checker.heartbeat_spent() {
+                    self.error = Some("case-context kernel budget".into());
+                    return None;
+                }
+                if crate::proof_assembly::normalize::same_graph(&normalized, self.target) {
+                    if let Err(error) = self.work.pay(1) {
+                        self.error = Some(error);
+                        return None;
+                    }
+                    self.changed = true;
+                    return Some(self.hole.clone());
+                }
+            }
             return None;
         }
         // One input visit, probes, retained memo entry and possible rebuilt
@@ -545,6 +657,10 @@ impl<L: ScopedLocalAllocator> Context<'_, '_, '_, L> {
         let mut frontier = VecDeque::from(case.args.clone());
         for _ in 0..self.limits.max_app_args {
             let Some(e) = frontier.pop_front() else { break };
+            if intrinsic_atom(&e) {
+                self.work.pay(1)?; // no children and cannot match a selected App
+                continue;
+            }
             self.work.pay(12)?; // graph probe/pin, entry, up to three children
             if crate::proof_assembly::normalize::same_graph(&e, &case.term)
                 || !proper.insert(Key(e.clone()))
@@ -781,13 +897,13 @@ pub(crate) fn commute_candidate<L: ScopedLocalAllocator>(
         cases,
     };
     let result = context.commute(source);
-    if result.is_err() {
-        if let Some(external) = external {
-            context
-                .work
-                .components
-                .poison_external_materialization(context.allocator.local_scope(), external);
-        }
+    if result.is_err()
+        && let Some(external) = external
+    {
+        context
+            .work
+            .components
+            .poison_external_materialization(context.allocator.local_scope(), external);
     }
     result
 }
@@ -796,6 +912,271 @@ pub(crate) fn commute_candidate<L: ScopedLocalAllocator>(
 mod tests {
     use super::*;
     use crate::scoped_local::LocalScope;
+
+    fn scalar_replacement(
+        checker: &TypeChecker<'_>,
+        scope: &LocalScope,
+        source: &Expr,
+        target: &Expr,
+        limit: usize,
+        proper: bool,
+        depth: usize,
+    ) -> (Option<Expr>, Option<String>, usize, bool) {
+        let mut parts = ProofComponents::new("Case.scalar.replacement", Default::default());
+        parts.set_base(scope, vec![]).unwrap();
+        let mut used = 0;
+        let result = {
+            let mut work = Work {
+                components: &mut parts,
+                used: &mut used,
+                limit,
+            };
+            let proper = if proper {
+                HashSet::from([Key(source.clone())])
+            } else {
+                HashSet::new()
+            };
+            let hole = Expr::nat_lit(99);
+            let mut replace = Replace {
+                checker,
+                target,
+                proper: &proper,
+                hole: &hole,
+                work: &mut work,
+                depth,
+                max_depth: 8,
+                memo: HashMap::new(),
+                changed: false,
+                error: None,
+                scope,
+                external: None,
+                max_app_args: 64,
+                support: None,
+            };
+            let output = replace.fold_expr_opt(source);
+            assert!(
+                replace.memo.is_empty(),
+                "scalar path must allocate no memo entry"
+            );
+            (output, replace.error, replace.changed)
+        };
+        assert_eq!(parts.counts().3, used);
+        assert!(used <= limit);
+        (result.0, result.1, used, result.2)
+    }
+
+    #[test]
+    fn scalar_case_replacement_still_follows_actual_constant_and_local_definitions() {
+        let mut env = Environment::new();
+        env.init_nat().unwrap();
+        env.add_decl(clean_kernel::Declaration::Definition {
+            name: Name::from_string("case.scalar.seven"),
+            level_params: vec![],
+            type_: Expr::const_str("Nat"),
+            value: Expr::nat_lit(7),
+            is_reducible: true,
+        })
+        .unwrap();
+        let mut scope = LocalScope::new();
+        let checker = TypeChecker::new(&env);
+        let source = Expr::const_str("case.scalar.seven");
+        let (output, error, used, changed) =
+            scalar_replacement(&checker, &scope, &source, &Expr::nat_lit(7), 8, false, 0);
+        assert!(error.is_none() && changed);
+        assert_eq!(output, Some(Expr::nat_lit(99)));
+        assert_eq!(used, 8);
+        let (output, error, used, changed) =
+            scalar_replacement(&checker, &scope, &source, &Expr::nat_lit(8), 7, false, 0);
+        assert!(error.is_none() && !changed && output.is_none());
+        assert_eq!(used, 7);
+
+        let input = scope.try_local(Expr::const_str("Nat")).unwrap();
+        let alias = scope.try_local(Expr::const_str("Nat")).unwrap();
+        let target = Expr::app(Expr::const_str("Nat.succ"), input.term().clone());
+        let mut context = clean_kernel::LocalContext::new();
+        context.push_with_id(
+            input.id(),
+            Name::from_string("input"),
+            Expr::const_str("Nat"),
+            clean_kernel::BinderInfo::Default,
+        );
+        context.push_let_with_id(
+            alias.id(),
+            Name::from_string("alias"),
+            Expr::const_str("Nat"),
+            target.clone(),
+        );
+        let checker = TypeChecker::with_context(&env, context);
+        let (output, error, used, changed) =
+            scalar_replacement(&checker, &scope, alias.term(), &target, 10, false, 0);
+        assert!(error.is_none() && changed);
+        assert_eq!(output, Some(Expr::nat_lit(99)));
+        assert_eq!(used, 10);
+    }
+
+    #[test]
+    fn scalar_case_replacement_keeps_frontier_depth_and_every_payment_cutoff() {
+        let mut env = Environment::new();
+        env.init_nat().unwrap();
+        let checker = TypeChecker::new(&env);
+        let scope = LocalScope::new();
+        let source = Expr::nat_lit(7);
+        for limit in 0..=8 {
+            let (output, error, used, changed) =
+                scalar_replacement(&checker, &scope, &source, &source, limit, false, 0);
+            assert_eq!(changed, limit == 8);
+            assert_eq!(error.is_none(), limit == 8);
+            assert_eq!(output.is_some(), limit == 8);
+            assert!(used <= limit);
+        }
+        let (output, error, used, changed) =
+            scalar_replacement(&checker, &scope, &source, &source, 4, true, 0);
+        assert!(error.is_none() && output.is_none() && !changed);
+        assert_eq!(used, 4);
+        let (output, error, used, changed) =
+            scalar_replacement(&checker, &scope, &source, &source, 100, false, 9);
+        assert!(error.unwrap().contains("depth limit") && output.is_none() && !changed);
+        assert_eq!(used, 0);
+        let (output, error, used, changed) =
+            scalar_replacement(&checker, &scope, &Expr::bvar(0), &source, 4, false, 8);
+        assert!(error.is_none() && output.is_none() && !changed);
+        assert_eq!(used, 4);
+    }
+
+    fn search_candidate(
+        checker: &TypeChecker<'_>,
+        scope: &LocalScope,
+        source: &Expr,
+        limit: usize,
+    ) -> (Option<Expr>, Option<String>, usize, usize) {
+        let mut parts = ProofComponents::new("Case.atom.search", Default::default());
+        parts.set_base(scope, vec![]).unwrap();
+        let mut used = 0;
+        let (found, error, retained) = {
+            let mut work = Work {
+                components: &mut parts,
+                used: &mut used,
+                limit,
+            };
+            let mut search = Search {
+                checker,
+                work: &mut work,
+                depth: 0,
+                max_depth: 8,
+                seen: HashSet::new(),
+                found: None,
+                error: None,
+            };
+            let _unchanged = search.fold_expr_opt(source);
+            (
+                search.found.map(|case| case.term),
+                search.error,
+                search.seen.len(),
+            )
+        };
+        assert_eq!(parts.counts().3, used);
+        assert!(used <= limit);
+        (found, error, used, retained)
+    }
+
+    #[test]
+    fn case_atoms_skip_storage_and_prepay_every_remaining_cutoff() {
+        let mut env = Environment::new();
+        env.init_nat().unwrap();
+        let mut scope = LocalScope::new();
+        let parameter = scope.try_local(Expr::const_str("Nat")).unwrap();
+        let missing = Expr::fvar(clean_kernel::expr::FVarId::new(900));
+        let mut context = clean_kernel::LocalContext::new();
+        context.push_with_id(
+            parameter.id(),
+            Name::from_string("parameter"),
+            Expr::const_str("Nat"),
+            clean_kernel::BinderInfo::Default,
+        );
+        let checker = TypeChecker::with_context(&env, context);
+        let target = Expr::app(Expr::const_str("Nat.succ"), parameter.term().clone());
+        for (source, required) in [
+            (Expr::bvar(0), 1),
+            (Expr::type_(), 1),
+            (Expr::nat_lit(7), 1),
+            (parameter.term().clone(), 2),
+            (missing.clone(), 2),
+        ] {
+            assert_eq!(checker.whnf(&source), source);
+            for limit in 0..=required + 1 {
+                let (output, error, used, changed) =
+                    scalar_replacement(&checker, &scope, &source, &target, limit, true, 0);
+                assert!(output.is_none() && !changed);
+                assert_eq!(error.is_none(), limit >= required);
+                assert_eq!(used, limit.min(required));
+                let (found, error, used, retained) =
+                    search_candidate(&checker, &scope, &source, limit);
+                assert!(found.is_none());
+                assert_eq!(error.is_none(), limit >= required);
+                assert_eq!(used, limit.min(required));
+                assert_eq!(retained, 0);
+            }
+        }
+        // Operational WHNF classification is never scope admission. The raw
+        // absent FVar remains in the original graph and canonical close refuses it.
+        assert!(scope.close(&missing).is_err());
+        assert!(scope.close(parameter.term()).is_err());
+    }
+
+    #[test]
+    fn case_atom_search_follows_a_current_let_definition_to_the_actual_case() {
+        let mut env = Environment::new();
+        env.init_nat().unwrap();
+        let mut scope = LocalScope::new();
+        let major = scope.try_local(Expr::const_str("Bool")).unwrap();
+        let alias = scope.try_local(Expr::const_str("Nat")).unwrap();
+        let target = at(
+            "Bool.rec",
+            vec![Level::zero()],
+            [
+                Expr::lam(
+                    clean_kernel::BinderInfo::Default,
+                    Expr::const_str("Bool"),
+                    Expr::const_str("Nat"),
+                ),
+                Expr::nat_lit(0),
+                Expr::nat_lit(1),
+                major.term().clone(),
+            ],
+        );
+        let mut context = clean_kernel::LocalContext::new();
+        context.push_let_with_id(
+            alias.id(),
+            Name::from_string("alias"),
+            Expr::const_str("Nat"),
+            target.clone(),
+        );
+        let checker = TypeChecker::with_context(&env, context);
+        let (found, error, _, retained) = search_candidate(&checker, &scope, alias.term(), 10_000);
+        assert_eq!(found, Some(target));
+        assert!(error.is_none());
+        assert_eq!(retained, 1);
+    }
+
+    #[test]
+    fn case_search_propagates_kernel_exhaustion_even_for_noncase_whnf() {
+        let mut env = Environment::new();
+        env.init_nat().unwrap();
+        let scope = LocalScope::new();
+        let mut checker = TypeChecker::new(&env);
+        checker.set_heartbeat_limit(1);
+        let (_, error, _, _) = search_candidate(&checker, &scope, &Expr::const_str("Nat.add"), 100);
+        assert!(checker.heartbeat_spent());
+        assert!(error.unwrap().contains("kernel budget"));
+        let target = Expr::app(Expr::const_str("Nat.succ"), Expr::nat_lit(0));
+        let (_, error, used, changed) =
+            scalar_replacement(&checker, &scope, &Expr::nat_lit(7), &target, 1, false, 0);
+        assert!(!changed && error.unwrap().contains("kernel budget"));
+        assert_eq!(used, 1);
+        let (_, error, used, retained) = search_candidate(&checker, &scope, &Expr::nat_lit(7), 1);
+        assert!(error.unwrap().contains("kernel budget"));
+        assert_eq!((used, retained), (1, 0));
+    }
 
     fn cold() -> Expr {
         (0..80).fold(Expr::nat_lit(0), |value, _| {
@@ -815,7 +1196,7 @@ mod tests {
             .set_base(&scope, vec![OwnedProofCapture::Parameter(input.clone())])
             .unwrap();
         let mut external = parts
-            .charged_external_context(&scope, &[input.clone()])
+            .charged_external_context(&scope, std::slice::from_ref(&input))
             .unwrap();
         parts
             .charged_enable_external_materialization_reuse(&scope, &mut external)

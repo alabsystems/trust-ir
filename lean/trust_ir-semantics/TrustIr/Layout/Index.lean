@@ -12,6 +12,8 @@ structure Index where
   source : Environment
   typeRows : Array (Option Ty)
   closureRows : Array ClosureTy
+  funcTypeRows : Array FuncTyDef
+  functionDefinitions : NatIndexTree (List (FuncId × FuncTyId))
   structCount : Nat
   enumCount : Nat
   tupleDeclarations : TupleIndex
@@ -47,6 +49,8 @@ def Index.ofEnvironment (source : Environment) : Index :=
     closureDeclarations := ClosureIndex.ofRows closureRows source.closureLayouts
     typeRows := typeRows
     closureRows := closureRows
+    funcTypeRows := source.funcTypes.toArray
+    functionDefinitions := definitionGroups source.functions (·.fst.index)
     structCount := source.structs.length
     enumCount := source.enums.length
     structDefinitions := definitionGroups source.structs (·.id.index)
@@ -57,6 +61,18 @@ def Index.ofEnvironment (source : Environment) : Index :=
     structPositions := positionIndex source.structs (·.id.index)
     enumPositions := positionIndex source.enums (·.id.index)
     recordPositions := positionIndex source.records (·.id.index) }
+
+/-- Resolve a nominal item from its one actual header and original signature.
+    Source function order and executable-body availability are irrelevant. -/
+def Index.functionItem (index : Index) (id : FuncId) :
+    Except Error (FuncTyId × FuncTyDef) :=
+  match index.functionDefinitions.find id.index with
+  | none | some [] => .error (.missingFunction id.index)
+  | some [(_, signature)] =>
+    match trustIrArrayGet? index.funcTypeRows signature.index with
+    | some declaration => .ok (signature, declaration)
+    | none => .error (.missingFunctionSignature id.index signature.index)
+  | some _ => .error (.ambiguousFunction id.index)
 
 def Index.structBase (index : Index) : Nat := index.typeRows.size
 def Index.enumBase (index : Index) : Nat := index.structBase + index.structCount
@@ -96,15 +112,17 @@ theorem definitionGroups_exact {α : Type} (rows : List α) (id : α → Nat) (k
   | nil => rfl
   | cons first rest ih =>
       simp only [definitionGroups, List.foldr_cons, NatIndexTree.find_insert]
-      by_cases same : key = id first
-      · subst key
+      cases Nat.decEq key (id first) with
+      | isTrue same =>
+        subst key
         simp only [if_pos rfl, Option.getD_some]
         rw [show ((rest.foldr (fun row groups =>
           groups.insert (id row) (row :: (groups.find (id row)).getD []))
           NatIndexTree.empty).find (id first)).getD [] =
           rest.filter (fun row => id row == id first) from ih]
         simp
-      · rw [if_neg same]
+      | isFalse same =>
+        rw [if_neg same]
         change ((definitionGroups rest id).find key).getD [] = _
         rw [ih]
         simp [List.filter_cons, Nat.beq_eq, Ne.symm same]
@@ -153,11 +171,14 @@ private theorem positionFold_witness {α : Type} (entries : List (α × Nat))
   | cons first rest ih =>
       rcases first with ⟨row, pos⟩
       rw [List.foldr_cons, NatIndexTree.find_insert] at found
-      split at found
-      · rename_i same
+      cases Nat.decEq key (id row) with
+      | isTrue same =>
+        simp only [if_pos same] at found
         cases found
         exact ⟨row, (trustIrListMemConsSelf _ _), same.symm⟩
-      · obtain ⟨row, member, same⟩ := ih found
+      | isFalse different =>
+        simp only [if_neg different] at found
+        obtain ⟨row, member, same⟩ := ih found
         exact ⟨row, List.mem_cons_of_mem _ member, same⟩
 
 /-- Every shape position really names a source row with the requested id. -/
@@ -182,16 +203,21 @@ private theorem positionOverride_preserves {α : Type} (entries : List (α × Na
       rw [List.foldl_cons]
       apply ih (fun row position member => valid row position (List.mem_cons_of_mem _ member))
       intro key position found
-      by_cases matching : id row == pos
-      · simp only [matching, ite_true, NatIndexTree.find_insert] at found
-        split at found
-        · rename_i same
+      cases matching : id row == pos with
+      | true =>
+        simp only [matching, ite_true, NatIndexTree.find_insert] at found
+        cases Nat.decEq key pos with
+        | isTrue same =>
+          simp only [if_pos same] at found
           cases found
           have admitted := valid row pos ((trustIrListMemConsSelf _ _))
           have equal : id row = pos := (by simpa using matching)
           simpa only [same, equal] using admitted
-        · exact initial key position found
-      · simp only [matching, Bool.false_eq_true, ite_false] at found
+        | isFalse different =>
+          simp only [if_neg different] at found
+          exact initial key position found
+      | false =>
+        simp only [matching, Bool.false_eq_true, ite_false] at found
         exact initial key position found
 
 /-- Matching-position overrides retain source identity. They can change which

@@ -110,8 +110,7 @@ fn cps_image_replay_statement_spines_refuse_malformed_actual_retained_equations(
                 arity: 3,
             }],
         )
-        .err()
-        .expect("malformed actual statement must refuse before producing a candidate");
+        .expect_err("malformed actual statement must refuse before producing a candidate");
         let expected = if malformed_equality {
             "unsupported endpoint"
         } else {

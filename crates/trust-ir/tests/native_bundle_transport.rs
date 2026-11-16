@@ -207,6 +207,35 @@ fn shared_formula_transport_refuses_ambiguous_mismatched_and_changed_references(
 }
 
 #[test]
+fn legacy_omitted_empty_closure_layouts_preserve_exact_native_identity() {
+    let original = bundle();
+    let mut payload = native_bundle_transport_payload(&original).unwrap();
+    let module = payload["bundle"]["module"].as_object_mut().unwrap();
+    assert_eq!(
+        module.remove("closure_layouts"),
+        Some(serde_json::json!([]))
+    );
+    let unchanged = payload.clone();
+    let restored = rehydrate_native_bundle_transport_payload(&payload).unwrap();
+    assert_eq!(restored, original);
+    assert_eq!(
+        restored.module.stable_digest(),
+        original.module.stable_digest()
+    );
+    assert_eq!(restored.stable_digest(), original.stable_digest());
+    assert_eq!(payload, unchanged);
+
+    for replacement in [serde_json::Value::Null, serde_json::json!([{}])] {
+        let mut invalid = payload.clone();
+        invalid["bundle"]["module"]["closure_layouts"] = replacement;
+        assert!(rehydrate_native_bundle_transport_payload(&invalid).is_err());
+    }
+    let mut unknown = payload;
+    unknown["bundle"]["module"]["unknown_identity"] = true.into();
+    assert!(rehydrate_native_bundle_transport_payload(&unknown).is_err());
+}
+
+#[test]
 fn formula_less_duplicate_obligation_ids_are_rejected_in_either_order() {
     for formula_first in [false, true] {
         let mut payload = native_bundle_transport_payload(&bundle()).unwrap();

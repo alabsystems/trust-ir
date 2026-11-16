@@ -7,7 +7,8 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ModulePreflight {
     Ready,
-    UnsupportedAbi,
+    // The complete ABI verdict depends on current options and the supplied body.
+    NeedsTypedAbiPreflight,
     InvalidStorage,
 }
 
@@ -18,7 +19,7 @@ impl ModulePreflight {
             .iter()
             .any(|signature| signature.abi.is_some())
         {
-            Self::UnsupportedAbi
+            Self::NeedsTypedAbiPreflight
         } else if module.first_storage_violation().is_some() {
             Self::InvalidStorage
         } else {

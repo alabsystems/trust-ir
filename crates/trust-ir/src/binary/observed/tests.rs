@@ -5,6 +5,9 @@ use super::*;
 use crate::interpret::InterpretOptions;
 use crate::{Block, Constant, FuncTy, Function, Global, InstrNode};
 
+#[path = "tests/tensor_map.rs"]
+mod tensor_map;
+
 #[derive(Default)]
 struct Observer {
     events: Vec<ExecutionProgress>,

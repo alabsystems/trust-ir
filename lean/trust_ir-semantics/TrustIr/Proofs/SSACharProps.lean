@@ -181,7 +181,7 @@ theorem single_result_future_declaration_retired (ctx : EvalContext) (world : Ma
         (.Const .U64 (.int 7)) (.value (some ⟨0⟩)) [⟨42⟩])
       { world with locals := ValueMap.empty.set ⟨0⟩ (.int 64 7), nextValueId := 1 }).map
       (fun pair => [pair.snd.lookupValue ⟨0⟩, pair.snd.lookupValue ⟨42⟩]) =
-      .ok [none, some (.int 64 7)] := rfl
+      .ok [none, some (.int 64 7)] := by trustIrReduce
 
 theorem single_result_later_source_destination (world : MachineState) :
     (Sem.run (do
@@ -212,12 +212,12 @@ end TrustIr
 #trustIrAxiomsExact TrustIr.ssaChar_block_parameter_valid == []
 #trustIrAxiomsExact TrustIr.ssaChar_block_parameter_invalid == []
 #trustIrAxiomsExact TrustIr.ssaChar_block_arity_priority == []
-#trustIrAxiomsPinned TrustIr.ssaChar_manual_source_declaration == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_source_missing_destination == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_source_result_count == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_manual_borrow_boundary == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_manual_header_boundary == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_classification_result_count == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_discarded_result_checked == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_missing_association_before_value_check == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.ssaChar_manual_call_result_order == [propext, Classical.choice, Quot.sound] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_manual_source_declaration == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_source_missing_destination == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_source_result_count == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_manual_borrow_boundary == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_manual_header_boundary == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_classification_result_count == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_discarded_result_checked == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_missing_association_before_value_check == [] modern []
+#trustIrAxiomsPinned TrustIr.ssaChar_manual_call_result_order == [] modern []

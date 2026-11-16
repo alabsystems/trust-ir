@@ -45,6 +45,7 @@ impl RopeElem for InterpretValue {
             (K::Ptr(a), K::Ptr(b)) => a == b,
             (K::DanglingPtr(a), K::DanglingPtr(b)) => a == b,
             (K::FnDef(a), K::FnDef(b)) => a == b,
+            (K::FnItem(a), K::FnItem(b)) => a == b,
             (K::NullPtr, K::NullPtr) | (K::Unit, K::Unit) | (K::PhantomData, K::PhantomData) => {
                 true
             }

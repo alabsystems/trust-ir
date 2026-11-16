@@ -225,7 +225,7 @@ mod tests {
         );
         let mut p = parts(&scope, vec![input.clone()]);
         let aliases = p
-            .alias_owned_definitions(&mut scope, &[input.clone()], &definitions)
+            .alias_owned_definitions(&mut scope, std::slice::from_ref(&input), &definitions)
             .unwrap();
         assert_ne!(aliases[0].alias.id(), first.id());
         assert_ne!(aliases[1].alias.id(), second.id());
@@ -264,7 +264,7 @@ mod tests {
         ] {
             let mut p = parts(&scope, vec![input.clone()]);
             assert!(
-                p.alias_owned_definitions(&mut scope, &[input.clone()], &definitions)
+                p.alias_owned_definitions(&mut scope, std::slice::from_ref(&input), &definitions)
                     .is_err()
             );
             assert_eq!(p.counts().0, 0);
@@ -327,10 +327,12 @@ mod tests {
         let mut scope = LocalScope::new();
         let mut other = LocalScope::new();
         let foreign = other.try_local(n()).unwrap();
-        let mut limits = ProofLimits::default();
         // Each definition now prepays 24 inventory units. Permit two paid
         // failed scans here; the original 24-unit boundary is retained below.
-        limits.operations = 80;
+        let limits = ProofLimits {
+            operations: 80,
+            ..Default::default()
+        };
         let mut p = ProofComponents::new("aliases.budget", limits);
         p.set_base(&scope, vec![]).unwrap();
         let before = p.counts().3;
@@ -385,8 +387,10 @@ mod tests {
     fn owned_definition_aliases_original_small_budget_refuses_before_allocating_aliases() {
         let mut scope = LocalScope::new();
         let local = scope.try_local(n()).unwrap();
-        let mut limits = ProofLimits::default();
-        limits.operations = 24;
+        let limits = ProofLimits {
+            operations: 24,
+            ..Default::default()
+        };
         let mut p = ProofComponents::new("aliases.prepaid_boundary", limits);
         p.set_base(&scope, vec![]).unwrap();
         let allocated = scope.allocated();

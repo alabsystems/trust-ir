@@ -101,7 +101,7 @@ fn check_generated_observation_keeps_all_input_refs_and_rechecks_changed_forbidd
             &mut memo,
             &token,
             &root,
-            &[callback.clone()],
+            std::slice::from_ref(&callback),
         )
         .unwrap();
     let cold = parts.counts().3 - before;
@@ -124,7 +124,7 @@ fn check_generated_observation_keeps_all_input_refs_and_rechecks_changed_forbidd
             &mut memo,
             &token,
             &root,
-            &[formal.clone()],
+            std::slice::from_ref(&formal),
         )
         .unwrap_err();
     assert!(error.contains("depends on final"));
@@ -326,12 +326,12 @@ fn check_generated_observation_failed_cold_scan_is_paid_poisoned_and_raw_inputs_
             &mut memo,
             &token,
             &root,
-            &[callback.clone()],
+            std::slice::from_ref(&callback),
         )
         .unwrap();
     let before = owner.counts().3;
     owner
-        .charged_independent_of(&scope, &[callback.clone()], &root)
+        .charged_independent_of(&scope, std::slice::from_ref(&callback), &root)
         .unwrap();
     let first = owner.counts().3 - before;
     let before = owner.counts().3;
@@ -420,7 +420,7 @@ fn check_generated_observation_typed_named_input_still_requires_original_decoded
             &mut memo,
             &token,
             &root,
-            &[callback.clone()],
+            std::slice::from_ref(&callback),
         )
         .unwrap();
     let closed_claim = scope.close(&input.pi(callback.pi(claim.clone()))).unwrap();
@@ -485,7 +485,7 @@ fn check_exact_shared_multiword_observation_keeps_original_claim_and_rejects_sam
         &mut memo,
         &token,
         &child,
-        &[callback.clone()],
+        std::slice::from_ref(&callback),
     )
     .unwrap();
     let token = p.constructed_observation(&scope, &memo, &root).unwrap();
@@ -495,7 +495,7 @@ fn check_exact_shared_multiword_observation_keeps_original_claim_and_rejects_sam
         &mut memo,
         &token,
         &root,
-        &[callback.clone()],
+        std::slice::from_ref(&callback),
     )
     .unwrap();
     let cold = p.counts().3 - before;

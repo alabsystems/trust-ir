@@ -134,7 +134,8 @@ noncomputable def evalFunctionListSpec (signatures : Array FuncTyDef)
     | .ok table => pure table
     | .error (.typeError message) => malformed message
     | .error error => malformed s!"SSA declarations: {repr error}"
-  pure { body := { paramTys := sig.params, returnTys := sig.returns, abi := sig.abi, isVararg := sig.isVararg }
+  pure { sourceId := some f.id
+         body := { paramTys := sig.params, returnTys := sig.returns, abi := sig.abi, isVararg := sig.isVararg }
          cfg := cfgOf blocks
          entryBlock := f.entry
          callingConv := f.callingConvention

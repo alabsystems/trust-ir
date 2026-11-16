@@ -51,6 +51,9 @@ pub(super) fn pair<'a, O: ExecutionObserver>(
             s.push(Task::Nominal(Kind::Closure, a.index(), b.index()), w)?
         }
         (Ty::Func(a), Ty::Func(b)) => s.push(Task::Nominal(Kind::Func, a.index(), b.index()), w)?,
+        (Ty::FnItem(a), Ty::FnItem(b)) => {
+            s.push(Task::Nominal(Kind::FnItem, a.index(), b.index()), w)?
+        }
         (Ty::Refine(a, pa), Ty::Refine(b, pb)) => {
             s.push(Task::Pred(*pa, *pb), w)?;
             s.push(Task::Id(*a, *b), w)?;
@@ -119,6 +122,7 @@ fn scalar(ty: &Ty) -> bool {
         | Ty::Record(..)
         | Ty::Closure(..)
         | Ty::Func(..)
+        | Ty::FnItem(..)
         | Ty::Refine(..)
         | Ty::Dialect(..)
         | Ty::Handle(..)

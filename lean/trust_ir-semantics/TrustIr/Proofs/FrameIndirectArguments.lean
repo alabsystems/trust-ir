@@ -78,7 +78,7 @@ theorem indirect_arguments_success (bound : Nat) (ctx : EvalContext) (held : Val
     final = s ∧ MintedArgs bound resolved.2 := by
   cases held
   case fnDef held fn =>
-    cases checked : functionCall ctx held fn sig with
+    cases checked : functionCallWithConvention ctx held fn sig conv with
     | error error => simp only [indirectArguments,checked] at run; cases run
     | ok id =>
       simp only [indirectArguments,checked] at run
@@ -92,5 +92,65 @@ theorem indirect_arguments_success (bound : Nat) (ctx : EvalContext) (held : Val
       cases run
       exact ⟨rfl,closure_call_arguments_minted bound ctx cid fn captures args sig conv _ validHeld incoming checked⟩
   all_goals exact raw_indirect_arguments_success bound ctx address sig args s final resolved incoming run
+
+/-- A missing body cannot become executable through nominal resolution. -/
+theorem function_item_body_missing (ctx : EvalContext) (target : FuncId)
+    (missing : ctx.functions target = none) (function : EvalFunction) :
+    resolveFunctionItemBody ctx target ≠ .ok function := by
+  intro impossible
+  cases errors : ctx.functionErrors target <;> cases declared : ctx.declared target <;>
+    simp [resolveFunctionItemBody, missing, errors, declared] at impossible
+
+/-- Only the nominal-item path defers argument lookup. Both actual lookup
+modes preserve state and transport values already held in the caller. -/
+theorem indirect_mode_arguments_success (held : Value)
+    (ids : List ValueId) (s final : MachineState) (args : List Value)
+    (valid : WellMintedState s)
+    (run : Sem.run (match held with
+      | .fnItem _ => pure []
+      | _ => ids.mapM Sem.lookupValue) s = .ok (args, final)) :
+    final = s ∧ MintedArgs s.nextFrameLineage args := by
+  cases held
+  case fnItem target =>
+    cases run
+    exact ⟨rfl, fun _ member => by cases member⟩
+  all_goals exact lookup_args_success ids s final args valid run
+
+/-- Deferred nominal application performs the real ordered argument lookups
+only after its original header check; all legacy paths retain their old law. -/
+theorem deferred_indirect_arguments_success (ctx : EvalContext) (held : Value)
+    (address : Addr) (sig : FuncTyId) (ids : List ValueId) (args : List Value) (conv : CallingConv)
+    (s final : MachineState) (resolved : FuncId × List Value) (valid : WellMintedState s)
+    (validHeld : MintedValue s.nextFrameLineage held) (incoming : MintedArgs s.nextFrameLineage args)
+    (run : Sem.run (deferredIndirectArguments ctx held address sig ids args conv) s = .ok (resolved, final)) :
+    final = s ∧ MintedArgs s.nextFrameLineage resolved.2 := by
+  cases held
+  case fnItem target =>
+    cases checked : functionItemCall ctx target sig conv with
+    | error error => simp only [deferredIndirectArguments, checked] at run; cases run
+    | ok id =>
+      simp only [deferredIndirectArguments, checked] at run
+      change Sem.run (ids.mapM Sem.lookupValue >>= fun values => pure (id, values)) s =
+        .ok (resolved, final) at run
+      change (Sem.run (ids.mapM Sem.lookupValue) s >>= fun pair =>
+        Except.ok ((id, pair.1), pair.2)) = .ok (resolved, final) at run
+      cases looked : Sem.run (ids.mapM Sem.lookupValue) s with
+      | error error =>
+        trustIrCompilerProof {
+          simp only [looked, bind, Except.bind] at run
+        } {
+          simp only [looked, bind, Except.bind] at run
+          cases run
+        }
+      | ok pair =>
+        obtain ⟨values, middle⟩ := pair
+        obtain ⟨same, transported⟩ := lookup_args_success ids s middle values valid looked
+        subst middle
+        simp only [looked, bind, Except.bind] at run
+        cases run
+        exact ⟨rfl, transported⟩
+  all_goals
+    exact indirect_arguments_success s.nextFrameLineage ctx _ address sig args conv
+      s final resolved validHeld incoming run
 
 end TrustIr.FrameLifetime

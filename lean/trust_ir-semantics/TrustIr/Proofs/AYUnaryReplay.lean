@@ -116,7 +116,7 @@ private def Node.buildUnary (ctx : EvalContext) (row : Row) (state : MachineStat
   match found : state.lookupValue site.operand with
   | some (.int width operand) =>
     if same : width = site.width then
-      let arg : SMTCheckedTerm (.bv site.width) := ⟨.bvConst site.width operand,[],site.positive,rfl⟩
+      let arg : SMTCheckedTerm (.bv site.width) := ⟨.bvConst site.width operand,[],site.positive,rfl,[],rfl⟩
       match built : site.toRequest arg with
       | .error reason => .error reason
       | .ok target => .ok (.request site arg target built operand SMTEnv.default

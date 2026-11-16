@@ -88,7 +88,7 @@ private theorem mapM_results {α β ε : Type} (rows : List α) (action : α →
       rw [List.mapM_cons]
       apply results_bind
       intro firstValue firstDecoded
-      have firstValid := valid first (List.mem_cons_self _ _) firstValue firstDecoded
+      have firstValid := valid first (trustIrListMemConsSelf first rest) firstValue firstDecoded
       apply results_bind
       intro restValues restDecoded
       have later := ih (fun row member => valid row (List.mem_cons_of_mem first member)) restValues restDecoded

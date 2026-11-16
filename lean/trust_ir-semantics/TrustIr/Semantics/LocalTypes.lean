@@ -19,6 +19,7 @@ trustIrDenseMatch
 def localResultTypes (direct : FuncId → Option FuncTyDef) (indirect : FuncTyTable) :
     Inst → Except SemError (List LocalTypeSource)
   | .MakeClosure ty _ _ => .ok [.declared (.Closure ty)]
+  | .BoxDeref ptrTy _ _ _ => .ok [.declared ptrTy]
   | .BinOp _ ty _ _ | .UnOp _ ty _ | .Load ty _ _ _
   | .AtomicLoad ty _ _ | .AtomicRMW _ ty _ _ _
   | .MakeAggregate ty _ _ | .ArraySplat ty _ | .ExtractField ty _ _

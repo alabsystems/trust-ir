@@ -63,8 +63,8 @@ theorem raw_terminal_request_success (model : ByteModel) (calleeId : ValueId) (s
     exact finish_request s.nextFrameLineage (.CallIndirectReq address sig values) s final result incoming tail
   all_goals cases tail
 
-/-- Original contextual terminal dispatch, including FnDef and closure capture
-preparation, preserves state and recursively minted call arguments. -/
+/-- Contextual terminal dispatch, including nominal item headers, legacy
+FnDef values and closure captures, preserves state and minted call arguments. -/
 theorem indirect_terminal_request_success (ctx : EvalContext) (depth : Nat) (cfg : CFG)
     (strategy : PanicStrategy) (calleeId : ValueId) (sig : FuncTyId) (args : List ValueId) (conv : CallingConv)
     (s final : MachineState) (result : InstrResult) (valid : WellMintedState s)
@@ -79,21 +79,39 @@ theorem indirect_terminal_request_success (ctx : EvalContext) (depth : Nat) (cfg
   obtain ⟨found,same⟩ := lookup_success s middle calleeId held looked
   subst middle
   have heldValid := valid.values calleeId held found
+  obtain ⟨unit, middle, checked, tail⟩ := split_bind_success _ _ s final result tail
+  have same := memory_check_success_state _ s middle unit checked
+  subst middle
+  cases unit
   cases held
   case nullPtr => cases tail
-  case fnDef held fn =>
+  case fnItem target _ =>
+    cases depth with
+    | zero => cases tail
+    | succ depth =>
+      obtain ⟨id, middle, header, tail⟩ := split_bind_success _ _ s final result tail
+      have same := memory_check_success_state _ s middle id header
+      subst middle
+      obtain ⟨values, middle, looked, tail⟩ := split_bind_success _ _ s final result tail
+      obtain ⟨same, incoming⟩ := lookup_args_success args s middle values valid looked
+      subst middle
+      obtain ⟨callee, middle, resolved, tail⟩ := split_bind_success _ _ s final result tail
+      have same := memory_check_success_state _ s middle callee resolved
+      subst middle
+      exact finish_request s.nextFrameLineage (.CallReq id values) s final result incoming tail
+  case fnDef held fn _ =>
     obtain ⟨values,middle,looked,tail⟩ := split_bind_success _ _ s final result tail
     obtain ⟨same,incoming⟩ := lookup_args_success args s middle values valid looked
     subst middle
     cases depth with
     | zero => cases tail
     | succ depth =>
-      cases checked : functionCall ctx held fn sig with
+      cases checked : functionCallWithConvention ctx held fn sig conv with
       | error error => simp only [checked] at tail; cases tail
       | ok id =>
         simp only [checked,pure_bind] at tail
         exact finish_request s.nextFrameLineage (.CallReq id values) s final result incoming tail
-  case typedClosure cid fn captures =>
+  case typedClosure cid fn captures _ =>
     obtain ⟨values,middle,looked,tail⟩ := split_bind_success _ _ s final result tail
     obtain ⟨same,incoming⟩ := lookup_args_success args s middle values valid looked
     subst middle

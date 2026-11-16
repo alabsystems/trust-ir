@@ -64,14 +64,14 @@ fn prepared_complete_fvar_envelope_propagates_persistent_hits_and_rechecks_sourc
         .unwrap();
     let left = chain(a.term().clone(), 30);
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[left.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&left))
         .unwrap();
     let root = Expr::apps(
         Expr::const_str("Nat.add"),
         [left, chain(b.term().clone(), 30)],
     );
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     let before = parts.counts().3;
     assert_eq!(
@@ -80,7 +80,7 @@ fn prepared_complete_fvar_envelope_propagates_persistent_hits_and_rechecks_sourc
                 &scope,
                 &ctx,
                 &[(c.clone(), a.term().clone())],
-                &[root.clone()]
+                std::slice::from_ref(&root)
             )
             .unwrap(),
         vec![root.clone()]
@@ -93,7 +93,7 @@ fn prepared_complete_fvar_envelope_propagates_persistent_hits_and_rechecks_sourc
                 &scope,
                 &ctx,
                 &[(gap, c.term().clone())],
-                &[root.clone()]
+                std::slice::from_ref(&root)
             )
             .unwrap(),
         vec![root.clone()]
@@ -140,7 +140,7 @@ fn prepared_materialize_then_substitute_prunes_only_the_returned_fully_checked_g
             [chain(Expr::nat_lit(0), 300), x.term().clone()],
         );
         parts
-            .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+            .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
             .unwrap();
         let result = if optimized {
             parts.substitute_materialized_in_external_context(
@@ -174,18 +174,18 @@ fn prepared_materialize_then_substitute_keeps_unused_shadow_and_sibling_refusals
     let c = scope.try_local(n()).unwrap();
     let mut parts = parts(&scope, 100_000);
     let mut ctx = parts
-        .charged_external_context(&scope, &[a.clone()])
+        .charged_external_context(&scope, std::slice::from_ref(&a))
         .unwrap();
     parts
         .charged_enable_external_materialization_reuse(&scope, &mut ctx)
         .unwrap();
     let mark = ctx.checkpoint();
     parts
-        .charged_extend_external_context(&scope, &mut ctx, &[b.clone()])
+        .charged_extend_external_context(&scope, &mut ctx, std::slice::from_ref(&b))
         .unwrap();
     let root = chain(b.term().clone(), 80);
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     ctx.restore(mark).unwrap();
     parts
@@ -228,7 +228,7 @@ fn prepared_materialize_then_substitute_checks_full_input_height_before_closed_p
         .unwrap();
     let root = chain(Expr::nat_lit(0), 300);
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     assert!(
         parts
@@ -334,7 +334,7 @@ fn prepared_materialization_reuse_preserves_ancestor_prefix_and_same_length_sibl
     let c = scope.try_local(n()).unwrap();
     let mut parts = parts(&scope, 100_000);
     let mut ctx = parts
-        .charged_external_context(&scope, &[a.clone()])
+        .charged_external_context(&scope, std::slice::from_ref(&a))
         .unwrap();
     parts
         .charged_enable_external_materialization_reuse(&scope, &mut ctx)
@@ -343,23 +343,27 @@ fn prepared_materialization_reuse_preserves_ancestor_prefix_and_same_length_sibl
     let before = parts.counts().3;
     assert_eq!(
         parts
-            .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+            .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
             .unwrap(),
         vec![root.clone()]
     );
     let cold = parts.counts().3 - before;
     let mark = ctx.checkpoint();
     parts
-        .charged_extend_external_context(&scope, &mut ctx, &[b.clone()])
+        .charged_extend_external_context(&scope, &mut ctx, std::slice::from_ref(&b))
         .unwrap();
     let before = parts.counts().3;
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     assert!(parts.counts().3 - before < cold);
     let sibling_root = chain(b.term().clone(), 80);
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[sibling_root.clone()])
+        .charged_materialize_external_context_fully(
+            &scope,
+            &ctx,
+            std::slice::from_ref(&sibling_root),
+        )
         .unwrap();
     ctx.restore(mark).unwrap();
     parts
@@ -396,17 +400,17 @@ fn prepared_materialization_reuse_restore_then_reextend_never_recycles_generatio
         .unwrap();
     let mark = ctx.checkpoint();
     parts
-        .charged_extend_external_context(&scope, &mut ctx, &[b.clone()])
+        .charged_extend_external_context(&scope, &mut ctx, std::slice::from_ref(&b))
         .unwrap();
     let root = chain(b.term().clone(), 80);
     let before = parts.counts().3;
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     let cold = parts.counts().3 - before;
     let before = parts.counts().3;
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     let hot = parts.counts().3 - before;
     assert!(hot < cold);
@@ -458,11 +462,15 @@ fn prepared_materialization_reuse_never_hides_unused_binder_or_same_spelled_exte
         )
         .unwrap();
     parts
-        .charged_extend_external_context(&scope, &mut ctx, &[b.clone()])
+        .charged_extend_external_context(&scope, &mut ctx, std::slice::from_ref(&b))
         .unwrap();
     assert_eq!(
         parts
-            .charged_materialize_external_context_fully(&scope, &ctx, &[ordinary.clone()])
+            .charged_materialize_external_context_fully(
+                &scope,
+                &ctx,
+                std::slice::from_ref(&ordinary)
+            )
             .unwrap(),
         vec![ordinary]
     );
@@ -484,7 +492,7 @@ fn prepared_materialization_reuse_checks_full_height_and_failed_enclosing_attemp
         .unwrap();
     let root = chain(Expr::nat_lit(0), 300);
     parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     let deep = chain(root, 16_084);
     assert!(
@@ -528,26 +536,26 @@ fn prepared_materialization_reuse_never_transfers_owner_or_changed_graph_admissi
     let b = scope.try_local(n()).unwrap();
     let mut owner = parts(&scope, 100_000);
     let mut ctx = owner
-        .charged_external_context(&scope, &[a.clone()])
+        .charged_external_context(&scope, std::slice::from_ref(&a))
         .unwrap();
     owner
         .charged_enable_external_materialization_reuse(&scope, &mut ctx)
         .unwrap();
     let root = chain(a.term().clone(), 80);
     owner
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap();
     let mut other = parts(&scope, 100_000);
     assert!(
         other
-            .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+            .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
             .is_err()
     );
     let mut foreign = LocalScope::new();
     assert_eq!(foreign.try_local(n()).unwrap().id(), a.id());
     assert!(
         owner
-            .charged_materialize_external_context_fully(&foreign, &ctx, &[root.clone()])
+            .charged_materialize_external_context_fully(&foreign, &ctx, std::slice::from_ref(&root))
             .is_err()
     );
     owner
@@ -576,14 +584,14 @@ fn prepared_materialization_reuse_typed_result_requires_original_decoded_kernel_
         .extend_base(OwnedProofCapture::Parameter(input.clone()))
         .unwrap();
     let mut ctx = parts
-        .charged_external_context(&scope, &[input.clone()])
+        .charged_external_context(&scope, std::slice::from_ref(&input))
         .unwrap();
     parts
         .charged_enable_external_materialization_reuse(&scope, &mut ctx)
         .unwrap();
     let root = chain(input.term().clone(), 80);
     let first = parts
-        .charged_materialize_external_context_fully(&scope, &ctx, &[root.clone()])
+        .charged_materialize_external_context_fully(&scope, &ctx, std::slice::from_ref(&root))
         .unwrap()
         .remove(0);
     let second = parts

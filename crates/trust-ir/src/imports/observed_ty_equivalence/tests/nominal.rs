@@ -234,6 +234,7 @@ fn enum_raw_direct_niche_untagged_and_nested_offsets_are_complete_identity() {
     let encodings = vec![
         EnumTagEncoding::Direct { tag_offset: 0 },
         EnumTagEncoding::Untagged,
+        EnumTagEncoding::SingleInhabited { variant: 1 },
         EnumTagEncoding::Niche {
             untagged_variant: 0,
             niche_variants_start: 1,
@@ -373,4 +374,36 @@ fn recursive_function_closure_and_record_pairs_use_the_same_active_path_rule() {
         fields: vec![field("r", tb.clone())],
     });
     equal(&a, &ta, &b, &tb);
+}
+
+#[test]
+fn nominal_item_ids_stay_distinct_within_one_module_even_with_identical_link_text() {
+    let mut module = Module::new("same-scope-items");
+    module
+        .func_types
+        .push(FuncTy::unrecorded(vec![], vec![], false));
+    for id in [7, 42] {
+        module.functions.push(crate::Function::new(
+            crate::FuncId::new(id),
+            "same_text",
+            crate::FuncTyId::new(0),
+            crate::BlockId::new(0),
+        ));
+    }
+    let one = Ty::FnItem(crate::FuncId::new(7));
+    let two = Ty::FnItem(crate::FuncId::new(42));
+    equal(&module, &one, &module, &one);
+    unequal(&module, &one, &module, &two);
+    module.functions.push(module.functions[0].clone());
+    unequal(&module, &one, &module, &one);
+}
+
+#[test]
+fn single_inhabited_selector_participates_in_raw_nominal_identity() {
+    let (mut a, ta, mut b, tb) = enum_pair();
+    a.enums[0].layout.as_mut().unwrap().encoding = EnumTagEncoding::SingleInhabited { variant: 1 };
+    b.enums[0].layout = a.enums[0].layout.clone();
+    equal(&a, &ta, &b, &tb);
+    b.enums[0].layout.as_mut().unwrap().encoding = EnumTagEncoding::SingleInhabited { variant: 0 };
+    unequal(&a, &ta, &b, &tb);
 }

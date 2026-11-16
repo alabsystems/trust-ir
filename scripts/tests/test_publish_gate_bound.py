@@ -11,9 +11,6 @@ An engine bound at or under that ceiling stops the gate before targo can say
 why (the engine's clock starts first), records a working gate as a FAILURE
 with nothing refuted, and signals the whole process tree. The measurements
 behind the numbers are in publish/DECISIONS.md (2026-09-30).
-
-A chain with no verified step has no such ceiling. Its bound needs only the
-allowance for the steps that carry no proof claim.
 """
 
 from __future__ import annotations
@@ -96,7 +93,7 @@ def problems(config: str, manifest: str) -> List[str]:
     command = committed(config, "CHECK_CMD") or ""
     steps = [step.strip() for step in command.split("&&")]
     verified = [index for index, step in enumerate(steps) if VERIFIED_STEP.search(step)]
-    if verified not in ([0], []):
+    if verified != [0]:
         found.append(
             f"the bound below assumes ONE verified step, run first; CHECK_CMD has verified steps at {verified}: "
             "re-derive the bound for this chain before changing this test"
@@ -112,15 +109,6 @@ def problems(config: str, manifest: str) -> List[str]:
         bound = int(raw)
         if not ENGINE_MIN <= bound <= ENGINE_MAX:
             found.append(f"CHECK_TIMEOUT_SECONDS_DEFAULT {bound} is outside the engine's {ENGINE_MIN}..{ENGINE_MAX}")
-    if not verified:
-        # An unverified chain has no targo ceiling to outlast: what is left is
-        # the allowance for the steps that carry no proof claim.
-        if bound < AFTER_THE_VERIFIED_STEP:
-            found.append(
-                f"the gate's bound {bound} s is under the {AFTER_THE_VERIFIED_STEP} s an unverified chain's "
-                "build and test steps are allowed"
-            )
-        return found
     needed = ceiling(manifest) + AFTER_THE_VERIFIED_STEP
     if bound < needed:
         found.append(
@@ -182,14 +170,31 @@ class TheGateOutlastsItsSteps(unittest.TestCase):
                 ceiling(manifest)
 
     def test_an_unverified_chain_needs_only_the_allowance_for_its_own_steps(self) -> None:
+        """Historical allowance control cannot admit an unverified-only release."""
+        chain = ('CHECK_CMD_DEFAULT="rustup run trust targo --unverified build --workspace && '
+                 'rustup run trust targo --unverified test"\n')
+        for bound in (7199, 7200, 36000):
+            with self.subTest(bound=bound):
+                self.assertTrue(any("ONE verified step" in problem for problem in
+                    problems(chain + f'CHECK_TIMEOUT_SECONDS_DEFAULT="{bound}"\n', BUDGET_ONLY)))
+        self.assertIn("is absent, so the engine applies 7200", "\n".join(problems(chain, BUDGET_ONLY)))
+
+    def test_an_unverified_only_release_chain_is_refused(self) -> None:
         chain = (
             'CHECK_CMD_DEFAULT="rustup run trust targo --unverified build --workspace && '
             'rustup run trust targo --unverified test"\n'
+            'CHECK_TIMEOUT_SECONDS_DEFAULT="36000"\n'
         )
-        self.assertEqual(problems(chain + 'CHECK_TIMEOUT_SECONDS_DEFAULT="7200"\n', BUDGET_ONLY), [])
-        found = problems(chain + 'CHECK_TIMEOUT_SECONDS_DEFAULT="7199"\n', BUDGET_ONLY)
-        self.assertTrue(any("an unverified chain's" in problem for problem in found), found)
-        self.assertIn("is absent, so the engine applies 7200", "\n".join(problems(chain, BUDGET_ONLY)))
+        self.assertTrue(any("ONE verified step" in problem for problem in problems(chain, BUDGET_ONLY)))
+
+    def test_maintained_release_command_keeps_verified_check_and_frontend_metadata(self) -> None:
+        command = committed((ROOT / "publish/config.sh").read_text(), "CHECK_CMD")
+        self.assertEqual(command, (
+            "rustup run trust targo trust check --allow-l0-gaps --locked --workspace --all-targets --all-features && "
+            "rustup run trust targo --unverified build --locked --workspace --all-targets --all-features && "
+            "rustup run trust targo --unverified test --locked --workspace --no-fail-fast && "
+            "rustup run trust targo metadata --locked --no-deps --manifest-path frontend/Cargo.toml --format-version 1 >/dev/null"
+        ))
 
     def test_a_second_verified_step_needs_a_new_derivation(self) -> None:
         config = (

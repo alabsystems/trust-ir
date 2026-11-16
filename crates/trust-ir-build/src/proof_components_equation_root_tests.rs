@@ -88,8 +88,8 @@ fn equation_root_same_owner_independent_inventories_cannot_share_generation_zero
     let x = scope.try_local(n()).unwrap();
     let value = succ(a.term().clone(), 40);
     let root = x.pi(equality(value.clone(), value));
-    let (mut parts, first) = fixture(&scope, &[a.clone()]);
-    run(&mut parts, &scope, &first, &root, &[Expr::nat_lit(0)])
+    let (mut parts, first) = fixture(&scope, std::slice::from_ref(&a));
+    let _ = run(&mut parts, &scope, &first, &root, &[Expr::nat_lit(0)])
         .0
         .unwrap();
     let mut second = parts.charged_external_context(&scope, &[b]).unwrap();
@@ -102,7 +102,7 @@ fn equation_root_same_owner_independent_inventories_cannot_share_generation_zero
     assert!(error.contains(&crate::term_scope::TermScopeError::OutOfScope(a.id()).to_string()));
     assert_eq!(first.inventory.equation_root_count(), 1);
     assert_eq!(second.inventory.equation_root_count(), 0);
-    run(&mut parts, &scope, &first, &root, &[Expr::nat_lit(1)])
+    let _ = run(&mut parts, &scope, &first, &root, &[Expr::nat_lit(1)])
         .0
         .unwrap();
 }
@@ -117,12 +117,12 @@ fn equation_root_unused_name_shadow_growth_is_checked_before_bad_arguments() {
     }
     let root = x.pi(result); // x never appears as an FVar.
     let (mut parts, mut context) = fixture(&scope, &[]);
-    run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+    let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
         .0
         .unwrap();
     assert_eq!(context.inventory.equation_root_count(), 1);
     parts
-        .charged_extend_external_context(&scope, &mut context, &[x.clone()])
+        .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&x))
         .unwrap();
     let before = parts.counts().3;
     let error = run(&mut parts, &scope, &context, &root, &[Expr::bvar(0)])
@@ -157,12 +157,12 @@ fn equation_root_unused_shared_names_in_types_and_let_values_are_retained() {
     ));
     assert!(!root.has_fvar_quick(), "every deferred name is unused");
     let (mut parts, mut context) = fixture(&scope, &[]);
-    run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+    let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
         .0
         .unwrap();
     assert_eq!(context.inventory.equation_root_count(), 1);
     parts
-        .charged_extend_external_context(&scope, &mut context, &[y.clone()])
+        .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&y))
         .unwrap();
     let error = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(1)])
         .0
@@ -180,19 +180,23 @@ fn equation_root_shadow_and_reduced_depth_keep_the_fresh_canonical_refusal() {
     }
     let root = x.pi(result);
     let (mut parts, mut context) = fixture(&scope, &[]);
-    run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+    let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
         .0
         .unwrap();
     assert_eq!(context.inventory.equation_root_count(), 1);
     parts
-        .charged_extend_external_context(&scope, &mut context, &[x.clone()])
+        .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&x))
         .unwrap();
     let limits = TermScopeLimits {
         max_visits: 10_000,
         max_depth: 20,
     };
-    let (canonical, _) =
-        scope.close_external_forest_fully_with_limits(&[root.clone()], &[x.clone()], &[1], limits);
+    let (canonical, _) = scope.close_external_forest_fully_with_limits(
+        std::slice::from_ref(&root),
+        std::slice::from_ref(&x),
+        &[1],
+        limits,
+    );
     let expected = crate::scoped_local::LocalScopeError::Closure(
         crate::term_scope::TermScopeError::ShadowedLocal(x.id()),
     );
@@ -208,7 +212,7 @@ fn equation_root_foreign_attempts_do_not_poison_the_owner_or_certify_another_gra
     let mut scope = LocalScope::new();
     let (x, root) = statement(&mut scope);
     let (mut parts, context) = fixture(&scope, &[]);
-    run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+    let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
         .0
         .unwrap();
     let (mut foreign_parts, _) = fixture(&scope, &[]);
@@ -272,14 +276,14 @@ fn equation_root_sibling_and_restored_then_extended_prefixes_recheck_actual_read
     for extra_after_restore in [false, true] {
         let (mut parts, mut context) = fixture(&scope, &[]);
         parts
-            .charged_extend_external_context(&scope, &mut context, &[a.clone()])
+            .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&a))
             .unwrap();
-        run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+        let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
             .0
             .unwrap();
         context.restore(0).unwrap();
         parts
-            .charged_extend_external_context(&scope, &mut context, &[b.clone()])
+            .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&b))
             .unwrap();
         if extra_after_restore {
             let c = scope.try_local(n()).unwrap();
@@ -324,7 +328,7 @@ fn equation_root_irrelevant_sibling_above_needed_prefix_reuses_but_still_checks_
     // The added ID is above the needed prefix but is an UNUSED declaration.
     // The independent name guard must still force canonical shadow refusal.
     parts
-        .charged_extend_external_context(&scope, &mut context, &[x.clone()])
+        .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&x))
         .unwrap();
     let error = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
         .0
@@ -357,11 +361,11 @@ fn equation_root_needed_prefix_includes_fvars_only_in_binder_types_and_let_value
         };
         let (mut parts, mut context) = fixture(&scope, &[]);
         parts
-            .charged_extend_external_context(&scope, &mut context, &[needed.clone()])
+            .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&needed))
             .unwrap();
         // This exercises scope/reference admission; argument typing remains a
         // mandatory later kernel check, not a materialization-cache premise.
-        run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+        let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
             .0
             .unwrap();
         context.restore(0).unwrap();
@@ -383,7 +387,7 @@ fn equation_root_complete_input_height_and_deeper_wrapper_refuse_freshly() {
     let (_, root) = statement(&mut scope);
     for wrap in [false, true] {
         let (mut parts, context) = fixture(&scope, &[]);
-        run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+        let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
             .0
             .unwrap();
         let candidate = if wrap {
@@ -419,7 +423,7 @@ fn equation_root_later_argument_arity_and_substitution_failures_poison_reuse() {
         vec![Expr::bvar(0)],
     ] {
         let (mut parts, context) = fixture(&scope, &[]);
-        run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+        let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
             .0
             .unwrap();
         let before = parts.counts().3;
@@ -469,7 +473,7 @@ fn equation_root_every_cold_and_warm_payment_prefix_keeps_the_same_limit() {
     );
     for cap in 0..=32 {
         let (mut parts, context) = fixture(&scope, &external);
-        run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
+        let _ = run(&mut parts, &scope, &context, &root, &[Expr::nat_lit(0)])
             .0
             .unwrap();
         let (result, stats) = scope.close_prepared_equation_forest_fully_with_limits(

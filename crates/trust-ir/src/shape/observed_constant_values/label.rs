@@ -16,6 +16,11 @@ impl State<'_> {
                 work.unsigned(captures.len() as u128, &mut self.label)?;
                 work.text("]", &mut self.label)
             }
+            Constant::FnItem(func) => {
+                work.text("fnitem<func.", &mut self.label)?;
+                work.unsigned(u128::from(func.index()), &mut self.label)?;
+                work.text(">", &mut self.label)
+            }
             Constant::FnDef(func) => {
                 work.text("fndef<func.", &mut self.label)?;
                 work.unsigned(u128::from(func.index()), &mut self.label)?;
@@ -49,6 +54,7 @@ impl State<'_> {
                     ConstantShape::TensorBlob { rank } => ("tensor_blob", rank as u128),
                     ConstantShape::Closure { .. }
                     | ConstantShape::FnDef
+                    | ConstantShape::FnItem
                     | ConstantShape::SymbolAddr => return Err(ObservedValueError::InvalidRange),
                 };
                 work.text(prefix, &mut self.label)?;

@@ -74,13 +74,19 @@ theorem expandedPrefix_effect (sourceRecurse targetRecurse : Recurse) (base : Ev
     (valueState : value ≠ names.state) (world : MachineState) :
     EffectRelation
       (Sem.run (do
+        let _ ← Sem.fromMemoryExcept (checkFunctionItemValues
+          (scopedContext base source (some sourceTypes)) (params.map (·.snd)) args)
         bindBlockParamsChecked params args
         evalBody sourceRecurse (scopedContext base source (some sourceTypes)) depth strategy rows
-        suspendValues base.byteModel frame value slot next) (callerWorld world))
+        let values ← suspendValues base.byteModel frame value slot next
+        checkedReturn (scopedContext base source (some sourceTypes)) values) (callerWorld world))
       (Sem.run (do
+        let _ ← Sem.fromMemoryExcept (checkFunctionItemValues
+          (scopedContext base target (some targetTypes)) (params.map (·.snd)) args)
         bindBlockParamsChecked params args
         evalBody targetRecurse (scopedContext base target (some targetTypes)) depth strategy rows
-        expandedValues (scopedContext base target (some targetTypes)) names frame value slot next)
+        let values ← expandedValues (scopedContext base target (some targetTypes)) names frame value slot next
+        checkedReturn (scopedContext base target (some targetTypes)) values)
         (callerWorld world)) := by
   rw [evalBody_congrOn sourceRecurse targetRecurse base source target headers effects
     (some sourceTypes) (some targetTypes) depth strategy rows rowTypes]
@@ -89,14 +95,25 @@ theorem expandedPrefix_effect (sourceRecurse targetRecurse : Recurse) (base : Ev
     rcases result with ⟨unit, after⟩
     cases unit
     exact SSAFreshFrames.bindBlockParamsChecked_preserves_fresh params args state after fresh ran
-  have prefixFresh := SSAFreshStep.bind_fresh (bindBlockParamsChecked params args)
-    (fun _ => evalBody targetRecurse (scopedContext base target (some targetTypes)) depth strategy rows)
-    paramsFresh (fun _ => evalBody_fresh _ _ _ _ _)
-  rw [← bind_assoc, ← bind_assoc]
-  apply effect_after_fresh_prefix _ _ _ prefixFresh
-  · intro state fresh
-    exact expandedValues_effect (scopedContext base target (some targetTypes)) targetTypes
-      names frame value slot next rfl indexType pointerState frameIndex valueIndex valuePointer valueState state fresh
+  have checks := itemValues_constantContext
+    (scopedContext base source (some sourceTypes))
+    (scopedContext base target (some targetTypes)) rfl (params.map (·.snd)) args
+  have returns (values : List Value) := checkedReturn_congr
+    (scopedContext base source (some sourceTypes))
+    (scopedContext base target (some targetTypes)) rfl rfl values
+  simp only [checks, returns]
+  apply effect_after_fresh_prefix _ _ _ (SSAFreshMemory.fromMemoryExcept_fresh _)
+  · intro afterCheck checkFresh
+    apply effect_after_fresh_prefix _ _ _ paramsFresh
+    · intro afterParams paramsFresh
+      apply effect_after_fresh_prefix _ _ _ (evalBody_fresh _ _ _ _ _)
+      · intro afterBody bodyFresh
+        apply checkedReturn_effect
+        exact expandedValues_effect (scopedContext base target (some targetTypes)) targetTypes
+          names frame value slot next rfl indexType pointerState frameIndex valueIndex
+          valuePointer valueState afterBody bodyFresh
+      · exact paramsFresh
+    · exact checkFresh
   · exact SSAFreshFrames.cleared_fresh world
 
 end TrustIr.GenericCoro.Prefix

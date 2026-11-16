@@ -96,12 +96,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rustc_abi::{BackendRepr, Integer, Primitive, Size, TagEncoding, VariantIdx, Variants};
+use rustc_middle::mir::interpret::{alloc_range, AllocId, GlobalAlloc, Scalar};
 use rustc_middle::mir::{
     AggregateKind, AssertKind, BasicBlock, BinOp as MirBinOp, Body, CastKind, ConstOperand,
     ConstValue, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind, TerminatorKind,
     UnOp as MirUnOp,
 };
-use rustc_middle::mir::interpret::{alloc_range, AllocId, GlobalAlloc, Scalar};
 use rustc_middle::ty::layout::LayoutCx;
 use rustc_middle::ty::{self, Instance, ScalarInt, Ty, TyCtxt};
 
@@ -128,9 +128,44 @@ pub fn bucket_reason(msg: &str) -> String {
     b
 }
 
+/// Fixed scalar carrier for a source pointer-sized integer. Keeping this decision
+/// pure lets the 32-bit path be checked on a 64-bit frontend host.
+fn pointer_sized_int_ty(pointer_bits: u32, signed: bool) -> Option<TIRTy> {
+    match (pointer_bits, signed) {
+        (32, true) => Some(TIRTy::I32),
+        (32, false) => Some(TIRTy::U32),
+        (64, true) => Some(TIRTy::I64),
+        (64, false) => Some(TIRTy::U64),
+        _ => None,
+    }
+}
+
+/// Target address lane shared by pointer casts, metadata, and pointer arithmetic.
+/// Unknown pointer widths are refused instead of silently using the host width.
+fn pointer_int_ty(tcx: TyCtxt<'_>, signed: bool) -> Result<TIRTy, String> {
+    pointer_sized_int_ty(u32::from(tcx.sess.target.pointer_width), signed).ok_or_else(|| {
+        format!(
+            "unsupported target pointer width {}",
+            tcx.sess.target.pointer_width
+        )
+    })
+}
+
+fn pointer_bytes(tcx: TyCtxt<'_>) -> u64 {
+    tcx.data_layout.pointer_size().bytes()
+}
+
+#[cfg(test)]
+#[path = "mir_lower_target_width_tests.rs"]
+mod target_width_tests;
+
+#[cfg(test)]
+#[path = "mir_lower_single_inhabited_tests.rs"]
+mod single_inhabited_tests;
+
 /// Map a CONCRETE rustc scalar `Ty` to a trust-ir scalar `Ty`. Returns None for
-/// anything that is not a fixed-width scalar int, bool, or float.
-fn scalar_tir_ty(ty: Ty<'_>) -> Option<TIRTy> {
+/// anything that is not a supported scalar int, bool, or float.
+fn scalar_tir_ty(tcx: TyCtxt<'_>, ty: Ty<'_>) -> Option<TIRTy> {
     match ty.kind() {
         ty::Bool => Some(TIRTy::Bool),
         ty::Int(i) => Some(match i {
@@ -139,7 +174,9 @@ fn scalar_tir_ty(ty: Ty<'_>) -> Option<TIRTy> {
             ty::IntTy::I32 => TIRTy::I32,
             ty::IntTy::I64 => TIRTy::I64,
             ty::IntTy::I128 => TIRTy::I128,
-            ty::IntTy::Isize => TIRTy::I64,
+            ty::IntTy::Isize => {
+                return pointer_sized_int_ty(u32::from(tcx.sess.target.pointer_width), true)
+            }
         }),
         ty::Uint(u) => Some(match u {
             ty::UintTy::U8 => TIRTy::U8,
@@ -147,7 +184,9 @@ fn scalar_tir_ty(ty: Ty<'_>) -> Option<TIRTy> {
             ty::UintTy::U32 => TIRTy::U32,
             ty::UintTy::U64 => TIRTy::U64,
             ty::UintTy::U128 => TIRTy::U128,
-            ty::UintTy::Usize => TIRTy::U64,
+            ty::UintTy::Usize => {
+                return pointer_sized_int_ty(u32::from(tcx.sess.target.pointer_width), false)
+            }
         }),
         // FLOATS: `f32`/`f64` are single-register scalar leaves with first-class
         // trust-ir types and full trust-cg codegen (fadd..frem, fcmp, fsqrt-family,
@@ -168,7 +207,7 @@ fn scalar_tir_ty(ty: Ty<'_>) -> Option<TIRTy> {
 /// admits thin pointers / references as `Ptr` (the leaf width of a `&T` / `*T` /
 /// `Box<T>` field). Returns None for fat pointers, aggregates, f16/f128, etc.
 fn memory_leaf_tir_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<TIRTy> {
-    if let Some(t) = scalar_tir_ty(ty) {
+    if let Some(t) = scalar_tir_ty(tcx, ty) {
         return Some(t);
     }
     match ty.kind() {
@@ -267,9 +306,9 @@ fn is_thin_pointee<'tcx>(tcx: TyCtxt<'tcx>, pointee: Ty<'tcx>) -> bool {
 
 /// RUNG 4: whether `ty` is a FAT pointer — a `&T`/`*T`/`Box<T>`-ish reference whose
 /// pointee is unsized (slice / str / dyn Trait), so the pointer is a `(data, meta)`
-/// ScalarPair: 16 bytes, two pointer-width lanes (data ptr at offset 0, metadata =
-/// length `usize` for slice/str or a vtable `*const ()` for dyn at offset 8). We
-/// model such a local as a 2-lane (Ptr, U64) memory slot. The DATA half (lane 0) is
+/// ScalarPair: two pointer-width lanes (data ptr at offset 0, metadata =
+/// length `usize` for slice/str or a vtable `*const ()` for dyn one word later).
+/// We model such a local as a two-word memory slot. The DATA half (lane 0) is
 /// the address `Deref`/`Index` walks; the METADATA half (lane 1) is read by
 /// `PtrMetadata`.
 fn fat_pointer_pointee<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<Ty<'tcx>> {
@@ -292,7 +331,7 @@ fn is_fat_pointer<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
 /// UNSIZED-LOCAL carrier (THREADS / `unsized_fn_params`): a LOCAL whose type is
 /// itself unsized (`dyn Trait` / `[T]` / `str` — the alloc-crate
 /// `<Box<dyn FnOnce>>::call_once` moves `*self` into such a local) is modeled as
-/// a 16-byte, 8-aligned (data, metadata) CARRIER slot — rustc's own by-value-
+/// a two-word, pointer-aligned (data, metadata) CARRIER slot — rustc's own by-value-
 /// unsized ABI (the value travels as its fat pair). Returns the carrier's
 /// (size, align), or `None` for every sized type and for unsized types without
 /// fat metadata (extern types), which stay on the fail-loud paths.
@@ -310,12 +349,15 @@ fn unsized_local_carrier<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<(u64, 
     if layout.is_sized() {
         return None;
     }
-    Some((16, 8))
+    Some((2 * pointer_bytes(cx.tcx), pointer_bytes(cx.tcx)))
 }
 
 /// Whether a trust-ir scalar type is signed (selects SDiv/SRem and signed ICmp).
 fn is_signed(t: &TIRTy) -> bool {
-    matches!(t, TIRTy::I8 | TIRTy::I16 | TIRTy::I32 | TIRTy::I64 | TIRTy::I128)
+    matches!(
+        t,
+        TIRTy::I8 | TIRTy::I16 | TIRTy::I32 | TIRTy::I64 | TIRTy::I128
+    )
 }
 
 /// Whether a trust-ir scalar type is a float (selects the FAdd..FRem / FCmp /
@@ -412,7 +454,7 @@ struct Cx<'tcx, 'm> {
     /// ADDITIVE (R3 stage 1 — &str-constant lowering): the per-function registry of
     /// MATERIALIZED `&'static str` / `&'static [u8]` LITERALS. Filled ONCE in the
     /// entry block by `materialize_str_consts` (byte content -> the literal's
-    /// immortal heap byte-image pointer + its 16-byte (ptr,len) fat-pair slot);
+    /// immortal heap byte-image pointer + its two-word (ptr,len) fat-pair slot);
     /// consulted by the call-arg emission and the fat-dst `Use(Constant)` assign.
     /// Content-keyed (a Vec: a function mentions a handful of literals at most),
     /// in FIRST-APPEARANCE order so emitted IR is deterministic. Functions with
@@ -463,7 +505,7 @@ struct StrConstMat {
     /// longer-lived structure — stays valid, matching `&'static` lifetime semantics,
     /// with NO runtime allocation.
     data_ptr: trust_ir::ValueId,
-    /// The 16-byte 2-lane fat-pair slot holding [data_ptr, len]: lane 0 the data
+    /// The two-word fat-pair slot holding [data_ptr, len]: lane 0 the data
     /// pointer, lane 1 the byte length — the standard fat-pointer slot shape.
     /// Its ADDRESS is what an `ArgAbi::AggByRef` call arg passes (exactly the
     /// convention a lowered callee models its own fat `&str` param with).
@@ -586,15 +628,14 @@ fn intern_alloc_global_at_depth<'tcx>(
     if let Some(gid) = cx.const_globals.borrow().get(&key).copied() {
         return Ok(gid);
     }
-    let alloc = match cx.tcx.global_alloc(alloc_id) {
-        GlobalAlloc::Memory(a) => a,
-        _ => {
-            return Err(
+    let alloc =
+        match cx.tcx.global_alloc(alloc_id) {
+            GlobalAlloc::Memory(a) => a,
+            _ => return Err(
                 "const provenance target is not a memory allocation — not resolvable to a global"
                     .to_string(),
-            )
-        }
-    };
+            ),
+        };
     let inner = alloc.inner();
     let size = inner.len() as u64;
     if size == 0 {
@@ -757,12 +798,12 @@ fn build_reloc_alloc_init_with<'tcx>(
         let addend = i64::from_le_bytes(le);
         let target = prov.alloc_id();
         let symbol = match tcx.global_alloc(target) {
-            GlobalAlloc::Function { instance } => {
-                tcx.symbol_name(instance).name.to_string()
-            }
+            GlobalAlloc::Function { instance } => tcx.symbol_name(instance).name.to_string(),
             GlobalAlloc::Static(def_id) => {
                 sink.note_static(def_id);
-                tcx.symbol_name(Instance::mono(tcx, def_id)).name.to_string()
+                tcx.symbol_name(Instance::mono(tcx, def_id))
+                    .name
+                    .to_string()
             }
             GlobalAlloc::Memory(_) => sink.intern_mem_alloc(target, depth + 1)?,
             // A `TypeId` provenance target: rustc codegen drops the provenance
@@ -804,7 +845,11 @@ fn intern_str_literal_global(cx: &Cx<'_, '_>, bytes: &[u8]) -> trust_ir::value::
     let hash = h.finish();
     let size = (bytes.len() as u64).max(1);
     // The frozen `init` length must equal `size` (validator pin): pad `""` to 1 byte.
-    let init: Vec<u8> = if bytes.is_empty() { vec![0u8] } else { bytes.to_vec() };
+    let init: Vec<u8> = if bytes.is_empty() {
+        vec![0u8]
+    } else {
+        bytes.to_vec()
+    };
     intern_global_spec(cx, InternKey::StrBytes(bytes.to_vec()), || PendingGlobal {
         // Global ids also disambiguate symbol names if distinct bytes hash alike.
         name: format!(
@@ -953,9 +998,7 @@ fn flush_pending_globals<'tcx>(cx: &Cx<'tcx, '_>, mb: &mut ModuleBuilder) {
             name: pg.name,
             ty: TIRTy::Array(elem, pg.size),
             mutable: pg.mutable || pg.tls.is_some(),
-            initializer: pg
-                .init
-                .map(|data| Constant::Bytes { data, utf8: false }),
+            initializer: pg.init.map(|data| Constant::Bytes { data, utf8: false }),
             linkage: trust_ir::Linkage::Internal,
             tls: pg.tls,
             // A `[u8; size]` blob is byte-aligned; consumer derives from type.
@@ -1002,9 +1045,7 @@ static REFERENCED_STATICS: std::sync::Mutex<Vec<rustc_span::def_id::DefId>> =
 /// a lowering panic elsewhere (the driver catches them per-module) must not
 /// wedge the registry.
 fn record_referenced_static(def_id: rustc_span::def_id::DefId) {
-    let mut v = REFERENCED_STATICS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut v = REFERENCED_STATICS.lock().unwrap_or_else(|e| e.into_inner());
     if !v.contains(&def_id) {
         v.push(def_id);
     }
@@ -1066,7 +1107,10 @@ impl<'a, 'tcx> StaticsEmit<'a, 'tcx> {
             trust_ir::Linkage::Internal,
             /*force_mutable=*/ false,
             // An anonymous CTFE allocation has no attributes to carry.
-            GlobalPlacement { section: None, retained: false },
+            GlobalPlacement {
+                section: None,
+                retained: false,
+            },
         )?;
         self.mb.add_global(g);
         Ok(name)
@@ -1198,11 +1242,7 @@ pub fn emit_statics_module<'tcx>(
     Vec<StaticDefReport>,
     Vec<(String, String)>,
 ) {
-    let roots = std::mem::take(
-        &mut *REFERENCED_STATICS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()),
-    );
+    let roots = std::mem::take(&mut *REFERENCED_STATICS.lock().unwrap_or_else(|e| e.into_inner()));
     if roots.is_empty() {
         return (None, Vec::new(), Vec::new());
     }
@@ -1234,7 +1274,10 @@ pub fn emit_statics_module<'tcx>(
             // A true `extern` block static has no Rust initializer to evaluate
             // (and `eval_static_initializer` has no metadata entry for it).
             if tcx.is_foreign_item(def_id) {
-                externs.push((sym, "foreign extern static (no Rust initializer)".to_string()));
+                externs.push((
+                    sym,
+                    "foreign extern static (no Rust initializer)".to_string(),
+                ));
                 continue;
             }
             let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1257,9 +1300,7 @@ pub fn emit_statics_module<'tcx>(
             // statics' base allocation Mut), the declared `static mut`, and the
             // !Freeze type check — an interior-mutable static placed in rodata
             // would fault on its first atomic store.
-            let declared_mut = tcx
-                .static_mutability(def_id)
-                .is_some_and(|m| m.is_mut());
+            let declared_mut = tcx.static_mutability(def_id).is_some_and(|m| m.is_mut());
             let interior_mut = !tcx
                 .normalize_erasing_regions(
                     ty::TypingEnv::fully_monomorphized(),
@@ -1356,7 +1397,14 @@ pub fn try_lower_minimal<'tcx>(
         classify_locals_and_ret_abi(tcx, instance, body, /*emit_self_recursion=*/ false)?;
     let sym = tcx.def_path_str(instance.def_id());
     let mut mb = ModuleBuilder::new(format!("mir::{sym}"));
-    lower_with_signature(&mut cx, &mut mb, /*wiring=*/ None, body, ret_abi, &address_taken)?;
+    lower_with_signature(
+        &mut cx,
+        &mut mb,
+        /*wiring=*/ None,
+        body,
+        ret_abi,
+        &address_taken,
+    )?;
     let mut module = mb.build().map_err(|fault| format!("BUILD: {fault}"))?;
     module.target_info = Some(emit_target_info(tcx));
     // Coverage path: "lowered-ok" == validate_module reports 0 errors.
@@ -1389,7 +1437,14 @@ pub fn lower_module_for_emit<'tcx>(
         classify_locals_and_ret_abi(tcx, instance, body, /*emit_self_recursion=*/ true)?;
     let sym = tcx.def_path_str(instance.def_id());
     let mut mb = ModuleBuilder::new(format!("mir::{sym}"));
-    lower_with_signature(&mut cx, &mut mb, /*wiring=*/ None, body, ret_abi, &address_taken)?;
+    lower_with_signature(
+        &mut cx,
+        &mut mb,
+        /*wiring=*/ None,
+        body,
+        ret_abi,
+        &address_taken,
+    )?;
     let mut module = mb.build().map_err(|fault| format!("BUILD: {fault}"))?;
     module.target_info = Some(emit_target_info(tcx));
     let errs = validate_module(&module);
@@ -1423,10 +1478,7 @@ struct ClosureMember<'tcx> {
 /// own leaf arithmetic (`checked_mul`/`wrapping_add`) — that has NO closure generic
 /// arg, so it stays an extern leaf (bound as a host symbol by the JIT harness),
 /// bounding the pull-in to exactly the combinator + the closure body.
-fn closure_chain_callee<'tcx>(
-    cx: &Cx<'tcx, '_>,
-    func: &Operand<'tcx>,
-) -> Option<Instance<'tcx>> {
+fn closure_chain_callee<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Option<Instance<'tcx>> {
     let callee = resolve_call_callee(cx, func)?;
     let did = callee.def_id();
     // Only a real Item body (a closure body, or a generic fn) — never a synthetic
@@ -1591,23 +1643,19 @@ pub fn referenced_item_callees<'tcx>(
     instance: Instance<'tcx>,
     body: &'tcx Body<'tcx>,
 ) -> Vec<Instance<'tcx>> {
-    let (cx, _ret, _at) = match classify_locals_and_ret_abi(
-        tcx,
-        instance,
-        body,
-        /*emit_self_recursion=*/ true,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            if std::env::var_os("TRUST_IR_PULL_DEBUG").is_some() {
-                eprintln!(
-                    "PULL-CLASSIFY-FAIL {:?} :: {e}",
-                    tcx.def_path_str(instance.def_id())
-                );
+    let (cx, _ret, _at) =
+        match classify_locals_and_ret_abi(tcx, instance, body, /*emit_self_recursion=*/ true) {
+            Ok(v) => v,
+            Err(e) => {
+                if std::env::var_os("TRUST_IR_PULL_DEBUG").is_some() {
+                    eprintln!(
+                        "PULL-CLASSIFY-FAIL {:?} :: {e}",
+                        tcx.def_path_str(instance.def_id())
+                    );
+                }
+                return Vec::new();
             }
-            return Vec::new();
-        }
-    };
+        };
     let mut out: Vec<Instance<'tcx>> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     // Whether a callee INSTANCE is lowerable HERE: either a real `Item` body with
@@ -1651,26 +1699,25 @@ pub fn referenced_item_callees<'tcx>(
             _ => false,
         }
     };
-    let push = |callee: Instance<'tcx>,
-                out: &mut Vec<Instance<'tcx>>,
-                    seen: &mut HashSet<String>| {
-        if !pullable(&callee) {
-            if std::env::var_os("TRUST_IR_PULL_DEBUG").is_some() {
-                eprintln!(
-                    "PULL-REJECT {:?} kind={:?} foreign={} mir={}",
-                    tcx.def_path_str(callee.def_id()),
-                    callee.def,
-                    tcx.is_foreign_item(callee.def_id()),
-                    tcx.is_mir_available(callee.def_id())
-                );
+    let push =
+        |callee: Instance<'tcx>, out: &mut Vec<Instance<'tcx>>, seen: &mut HashSet<String>| {
+            if !pullable(&callee) {
+                if std::env::var_os("TRUST_IR_PULL_DEBUG").is_some() {
+                    eprintln!(
+                        "PULL-REJECT {:?} kind={:?} foreign={} mir={}",
+                        tcx.def_path_str(callee.def_id()),
+                        callee.def,
+                        tcx.is_foreign_item(callee.def_id()),
+                        tcx.is_mir_available(callee.def_id())
+                    );
+                }
+                return;
             }
-            return;
-        }
-        let sym = tcx.symbol_name(callee).name.to_string();
-        if seen.insert(sym) {
-            out.push(callee);
-        }
-    };
+            let sym = tcx.symbol_name(callee).name.to_string();
+            if seen.insert(sym) {
+                out.push(callee);
+            }
+        };
     // (1) Direct `Call`-terminator callees.
     for data in body.basic_blocks.iter() {
         let Some(term) = data.terminator.as_ref() else {
@@ -1869,7 +1916,11 @@ pub fn referenced_item_callees<'tcx>(
                 }
             }
         }
-        let mut v = ConstAllocs { tcx, instance, ids: Vec::new() };
+        let mut v = ConstAllocs {
+            tcx,
+            instance,
+            ids: Vec::new(),
+        };
         v.visit_body(body);
         let mut work = v.ids;
         let mut seen_allocs: HashSet<AllocId> = HashSet::new();
@@ -1899,9 +1950,7 @@ pub fn referenced_item_callees<'tcx>(
                 // provenance so the Function targets are pulled. `seen_allocs` guards
                 // static→static cycles.
                 GlobalAlloc::Static(static_did) => {
-                    if !tcx.is_thread_local_static(static_did)
-                        && !tcx.is_foreign_item(static_did)
-                    {
+                    if !tcx.is_thread_local_static(static_did) && !tcx.is_foreign_item(static_did) {
                         if let Ok(Ok(init)) =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 tcx.eval_static_initializer(static_did)
@@ -2033,8 +2082,9 @@ pub fn lower_closure_for_emit<'tcx>(
         // Build a transient Cx for the frontier member to classify its callees.
         let m_instance = members[frontier].instance;
         let m_body = members[frontier].body;
-        let (cx, _ret, _at) =
-            classify_locals_and_ret_abi(tcx, m_instance, m_body, /*emit_self_recursion=*/ true)?;
+        let (cx, _ret, _at) = classify_locals_and_ret_abi(
+            tcx, m_instance, m_body, /*emit_self_recursion=*/ true,
+        )?;
         let callees = eligible_local_callees(&cx, m_body);
         drop(cx);
         for callee in callees {
@@ -2069,10 +2119,7 @@ pub fn lower_closure_for_emit<'tcx>(
     let sizing_externs = std::cell::RefCell::new(std::collections::HashMap::new());
     for m in &members {
         let (mut cx, ret_abi, address_taken) = classify_locals_and_ret_abi(
-            tcx,
-            m.instance,
-            m.body,
-            /*emit_self_recursion=*/ true,
+            tcx, m.instance, m.body, /*emit_self_recursion=*/ true,
         )?;
         let mut scratch = ModuleBuilder::new("mir::__sizing");
         let wiring = ClosureWiring {
@@ -2080,8 +2127,15 @@ pub fn lower_closure_for_emit<'tcx>(
             member_fids: &dummy_fids,
             shared_externs: &sizing_externs,
         };
-        lower_with_signature(&mut cx, &mut scratch, Some(&wiring), m.body, ret_abi, &address_taken)
-            .map_err(|e| format!("closure member `{}` failed to lower: {e}", m.symbol))?;
+        lower_with_signature(
+            &mut cx,
+            &mut scratch,
+            Some(&wiring),
+            m.body,
+            ret_abi,
+            &address_taken,
+        )
+        .map_err(|e| format!("closure member `{}` failed to lower: {e}", m.symbol))?;
         let built = scratch
             .build()
             .map_err(|fault| format!("closure member `{}` failed to build: {fault}", m.symbol))?;
@@ -2109,10 +2163,7 @@ pub fn lower_closure_for_emit<'tcx>(
     let mut shared_vtables = HashMap::new();
     for (i, m) in members.iter().enumerate() {
         let (mut cx, ret_abi, address_taken) = classify_locals_and_ret_abi(
-            tcx,
-            m.instance,
-            m.body,
-            /*emit_self_recursion=*/ true,
+            tcx, m.instance, m.body, /*emit_self_recursion=*/ true,
         )?;
         // A shared builder requires shared global identity, not per-body ids.
         cx.const_globals = std::cell::RefCell::new(std::mem::take(&mut shared_constants));
@@ -2122,8 +2173,15 @@ pub fn lower_closure_for_emit<'tcx>(
             member_fids: &member_fids,
             shared_externs: &shared_externs,
         };
-        lower_with_signature(&mut cx, &mut mb, Some(&wiring), m.body, ret_abi, &address_taken)
-            .map_err(|e| format!("closure member `{}` failed to lower: {e}", m.symbol))?;
+        lower_with_signature(
+            &mut cx,
+            &mut mb,
+            Some(&wiring),
+            m.body,
+            ret_abi,
+            &address_taken,
+        )
+        .map_err(|e| format!("closure member `{}` failed to lower: {e}", m.symbol))?;
         shared_constants = cx.const_globals.into_inner();
         shared_vtables = cx.dyn_vtables;
     }
@@ -2250,7 +2308,7 @@ fn classify_locals_and_ret_abi<'tcx, 'm>(
                 // the per-projection access paths additionally fail-loud on a
                 // non-scalar leaf. The slot `ptr` is filled in once the
                 // FunctionBuilder exists (entry-block alloca below).
-                // An UNSIZED local (`unsized_fn_params`) gets its 16-byte fat
+                // An UNSIZED local (`unsized_fn_params`) gets its two-word fat
                 // (data, metadata) CARRIER slot instead.
                 let (size, align) = match unsized_local_carrier(&cx, cty) {
                     Some(sa) => sa,
@@ -2324,9 +2382,7 @@ fn classify_locals_and_ret_abi<'tcx, 'm>(
                     // hidden pointer here would shift every argument register.
                     // Restricted to non-Rust-ABI fns so every Rust-ABI module's
                     // historical sret classification is byte-stable.
-                    Some(t) if instance_is_extern_c(cx.tcx, cx.instance) => {
-                        RetAbi::Scalar(t)
-                    }
+                    Some(t) if instance_is_extern_c(cx.tcx, cx.instance) => RetAbi::Scalar(t),
                     // RUNG 10: a small int/bool-lane struct/tuple pair returns BY
                     // VALUE as one SSA 2-tuple; everything else keeps the general
                     // sret hidden pointer.
@@ -2498,8 +2554,7 @@ fn pair_lane_tir_ty(scalar: &rustc_abi::Scalar) -> Option<TIRTy> {
     }
 }
 
-static PAIR_RET_BY_VALUE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PAIR_RET_BY_VALUE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Enable RUNG 10 before starting rustc. This is intentionally callable only
 /// by the sibling driver module; an undocumented ambient variable cannot
@@ -2648,7 +2703,10 @@ fn lower_with_signature<'tcx>(
     let abi_pin = pair_ret_enabled();
     if has_sret {
         param_tys.push(TIRTy::Ptr);
-        param_attrs.push(trust_ir::ParamAttrs { sret: abi_pin, ..Default::default() });
+        param_attrs.push(trust_ir::ParamAttrs {
+            sret: abi_pin,
+            ..Default::default()
+        });
     }
     // Which MIR arg locals are by-ref aggregates (memory-backed params).
     let mut agg_param: HashSet<Local> = HashSet::new();
@@ -2767,8 +2825,10 @@ fn lower_with_signature<'tcx>(
                     // `Ptr` (by-ref). RUNG 11 pins `byval`: this pointer carries a
                     // by-value aggregate through memory (the caller makes the copy).
                     param_tys.push(TIRTy::Ptr);
-                    param_attrs
-                        .push(trust_ir::ParamAttrs { byval: abi_pin, ..Default::default() });
+                    param_attrs.push(trust_ir::ParamAttrs {
+                        byval: abi_pin,
+                        ..Default::default()
+                    });
                     agg_param.insert(l);
                 }
             }
@@ -2836,7 +2896,13 @@ fn lower_with_signature<'tcx>(
     let mut fn_name: String = sym
         .replace("::", "__")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     // RUNG 9: a closure-COMBINATOR member (a non-local generic `Option::and_then` /
     // `map` / ... monomorphized at a CLOSURE type) has a `def_path_str` that DROPS
@@ -2849,12 +2915,14 @@ fn lower_with_signature<'tcx>(
     // existing member's name is byte-for-byte unchanged (additive). A closure BODY
     // already has a unique `def_path_str` (`..::{closure#N}`), so it is excluded.
     let is_combinator = !cx.instance.def_id().is_local()
-        && !matches!(cx.tcx.def_kind(cx.instance.def_id()), rustc_hir::def::DefKind::Closure)
-        && cx
-            .instance
-            .args
-            .iter()
-            .any(|a| a.as_type().is_some_and(|t| matches!(t.kind(), ty::Closure(..))));
+        && !matches!(
+            cx.tcx.def_kind(cx.instance.def_id()),
+            rustc_hir::def::DefKind::Closure
+        )
+        && cx.instance.args.iter().any(|a| {
+            a.as_type()
+                .is_some_and(|t| matches!(t.kind(), ty::Closure(..)))
+        });
     if is_combinator {
         // A stable 64-bit hash of the mangled symbol -> 16 hex chars. Deterministic
         // (same symbol -> same suffix), so the emitted module does not drift run to
@@ -3020,20 +3088,19 @@ fn lower_with_signature<'tcx>(
                         };
                         let try_inst = resolve_fnptr_operand(cx, body, &try_op.node)?;
                         let catch_inst = resolve_fnptr_operand(cx, body, &catch_op.node)?;
-                        let mut declare = |inst: Instance<'tcx>,
-                                           params: Vec<TIRTy>|
-                         -> trust_ir::FuncId {
-                            let dsym = cx.tcx.symbol_name(inst).name.to_string();
-                            if let Some(id) = extern_by_sym.get(&dsym) {
-                                *id
-                            } else {
-                                let cty = mb.add_func_type(params, Vec::new());
-                                let id = mb.function(dsym.clone(), cty).build();
-                                n_declared += 1;
-                                extern_by_sym.insert(dsym, id);
-                                id
-                            }
-                        };
+                        let mut declare =
+                            |inst: Instance<'tcx>, params: Vec<TIRTy>| -> trust_ir::FuncId {
+                                let dsym = cx.tcx.symbol_name(inst).name.to_string();
+                                if let Some(id) = extern_by_sym.get(&dsym) {
+                                    *id
+                                } else {
+                                    let cty = mb.add_func_type(params, Vec::new());
+                                    let id = mb.function(dsym.clone(), cty).build();
+                                    n_declared += 1;
+                                    extern_by_sym.insert(dsym, id);
+                                    id
+                                }
+                            };
                         let try_fid = declare(try_inst, vec![TIRTy::Ptr]);
                         let catch_fid = declare(catch_inst, vec![TIRTy::Ptr, TIRTy::Ptr]);
                         eh_edges
@@ -3120,7 +3187,11 @@ fn lower_with_signature<'tcx>(
                                     stride,
                                     memmove: declare_libc(
                                         "memmove",
-                                        vec![TIRTy::Ptr, TIRTy::Ptr, TIRTy::U64],
+                                        vec![
+                                            TIRTy::Ptr,
+                                            TIRTy::Ptr,
+                                            pointer_int_ty(cx.tcx, false)?,
+                                        ],
                                     ),
                                     order: CopyOperandOrder::SourceDestination,
                                 },
@@ -3128,7 +3199,11 @@ fn lower_with_signature<'tcx>(
                                     stride,
                                     memset: declare_libc(
                                         "memset",
-                                        vec![TIRTy::Ptr, TIRTy::I32, TIRTy::U64],
+                                        vec![
+                                            TIRTy::Ptr,
+                                            TIRTy::I32,
+                                            pointer_int_ty(cx.tcx, false)?,
+                                        ],
                                     ),
                                 },
                             }
@@ -3171,24 +3246,23 @@ fn lower_with_signature<'tcx>(
                         StableMemWrapper::WriteBytes => MemIntrinsicInline::ZstWriteBytes,
                     }
                 } else {
-                    let mut declare_libc =
-                        |sym: &str, params: Vec<TIRTy>| -> trust_ir::FuncId {
-                            if let Some(id) = extern_by_sym.get(sym) {
-                                *id
-                            } else {
-                                let cty = mb.add_func_type(params, Vec::new());
-                                let id = mb.function(sym.to_string(), cty).build();
-                                n_declared += 1;
-                                extern_by_sym.insert(sym.to_string(), id);
-                                id
-                            }
-                        };
+                    let mut declare_libc = |sym: &str, params: Vec<TIRTy>| -> trust_ir::FuncId {
+                        if let Some(id) = extern_by_sym.get(sym) {
+                            *id
+                        } else {
+                            let cty = mb.add_func_type(params, Vec::new());
+                            let id = mb.function(sym.to_string(), cty).build();
+                            n_declared += 1;
+                            extern_by_sym.insert(sym.to_string(), id);
+                            id
+                        }
+                    };
                     match wrapper {
                         StableMemWrapper::Copy(order) => MemIntrinsicInline::Copy {
                             stride,
                             memmove: declare_libc(
                                 "memmove",
-                                vec![TIRTy::Ptr, TIRTy::Ptr, TIRTy::U64],
+                                vec![TIRTy::Ptr, TIRTy::Ptr, pointer_int_ty(cx.tcx, false)?],
                             ),
                             order,
                         },
@@ -3196,7 +3270,7 @@ fn lower_with_signature<'tcx>(
                             stride,
                             memset: declare_libc(
                                 "memset",
-                                vec![TIRTy::Ptr, TIRTy::I32, TIRTy::U64],
+                                vec![TIRTy::Ptr, TIRTy::I32, pointer_int_ty(cx.tcx, false)?],
                             ),
                         },
                     }
@@ -3383,7 +3457,7 @@ fn lower_with_signature<'tcx>(
             // call. Lower it as an INDIRECT call through the receiver's vtable: at
             // emission, load the concrete method fn-pointer from `vtable[vtable_slot]`
             // and `CallIndirect` it, with the `&dyn` receiver replaced by its DATA
-            // pointer. `&dyn` is passed here as a pointer to the 16-byte {data, vtable}
+            // pointer. `&dyn` is passed here as a pointer to the two-word {data, vtable}
             // pair (fat pointers pass by pointer), and the concrete method's `self` is
             // a pointer to the env — both a leading `Ptr`, so the call's OWN arg/dest
             // ABI (`call_signature_params_returns`) is exactly the `CallIndirect`
@@ -3475,17 +3549,11 @@ fn lower_with_signature<'tcx>(
             // of dangling at whole-program link.
             if let Some(callee) = resolve_call_callee(cx, func) {
                 if let Some(idef) = cx.tcx.intrinsic(callee.def_id()) {
-                    if let Some(libm_sym) = libm_intrinsic_extern_symbol(
-                        idef.name.as_str(),
-                        idef.must_be_overridden,
-                    )? {
-                        let (params, returns) = call_signature_params_returns(
-                            cx,
-                            func,
-                            args,
-                            destination,
-                            pair_ok,
-                        )?;
+                    if let Some(libm_sym) =
+                        libm_intrinsic_extern_symbol(idef.name.as_str(), idef.must_be_overridden)?
+                    {
+                        let (params, returns) =
+                            call_signature_params_returns(cx, func, args, destination, pair_ok)?;
                         // The libm boundary is all-float scalars by construction;
                         // anything else is ABI drift — fail loud.
                         if !params
@@ -3652,8 +3720,7 @@ fn lower_with_signature<'tcx>(
                     id
                 };
                 eh_edges.record(eh, bb_raw.as_usize(), unwind);
-                assert_panic_blocks
-                    .insert(bb_raw.as_usize(), AssertPanicCall { fid, args: shape });
+                assert_panic_blocks.insert(bb_raw.as_usize(), AssertPanicCall { fid, args: shape });
             }
         }
     }
@@ -3943,8 +4010,7 @@ fn lower_with_signature<'tcx>(
     // the block's env is seeded with these params and so predecessors thread the
     // right values. The entry block's live-in is satisfied by `param_vals`.
     let mut block_param_locals: Vec<Vec<Local>> = vec![Vec::new(); n_bb];
-    let mut block_param_vals: Vec<HashMap<Local, trust_ir::ValueId>> =
-        vec![HashMap::new(); n_bb];
+    let mut block_param_vals: Vec<HashMap<Local, trust_ir::ValueId>> = vec![HashMap::new(); n_bb];
     for bb_idx in 0..n_bb {
         if bb_idx == 0 {
             continue;
@@ -4001,7 +4067,7 @@ fn lower_with_signature<'tcx>(
             continue;
         }
         let cty = cx.local_concrete_ty(local);
-        // An UNSIZED local's slot is its 16-byte fat CARRIER (see
+        // An UNSIZED local's slot is its two-word fat CARRIER (see
         // `unsized_local_carrier`).
         let (size, align) = match unsized_local_carrier(cx, cty) {
             Some(sa) => sa,
@@ -4025,8 +4091,11 @@ fn lower_with_signature<'tcx>(
     // stores the unwinder-provided exception object here; `UnwindResume` loads
     // it back for `Resume`. One 8-byte entry alloca, only for a body that
     // synthesizes pads — every other function's entry preamble is unchanged.
-    let exn_slot: Option<trust_ir::ValueId> =
-        if has_pads { Some(fb.alloca(TIRTy::Ptr)) } else { None };
+    let exn_slot: Option<trust_ir::ValueId> = if has_pads {
+        Some(fb.alloca(TIRTy::Ptr))
+    } else {
+        None
+    };
 
     // RUNG 10: zero-fill the pair-return slot's full span once at entry. The
     // whole-aggregate Load at `Return` reads `_0`'s full byte image — including
@@ -4098,9 +4167,7 @@ fn lower_with_signature<'tcx>(
             let slot = cx
                 .slot_ptr(sl)
                 .expect("spread tuple local has a memory slot allocated above");
-            for ((off, v), (_, abi)) in
-                spread_field_vals.iter().zip(spread_param_fields.iter())
-            {
+            for ((off, v), (_, abi)) in spread_field_vals.iter().zip(spread_param_fields.iter()) {
                 let addr = if *off == 0 {
                     slot
                 } else {
@@ -4235,7 +4302,14 @@ fn lower_with_signature<'tcx>(
             mir_bb: bb_idx,
             assert_sites: &mut assert_sites,
         };
-        lower_terminator(cx, &mut fb, &mut env, &mut tcx_term, &term.kind, term.source_info)?;
+        lower_terminator(
+            cx,
+            &mut fb,
+            &mut env,
+            &mut tcx_term,
+            &term.kind,
+            term.source_info,
+        )?;
     }
 
     // Amendment P (trust-ir wire v54): there is no shared assert trap block
@@ -4361,16 +4435,13 @@ fn lower_assign<'tcx>(
     }
 
     // A `Box<T> -> Box<dyn Trait>` UNSIZE (`Box::new(closure) as Box<dyn Fn>` —
-    // the panic-hook shape): the destination is a 16-byte (data, vtable) pair
+    // the panic-hook shape): the destination is a two-word (data, vtable) pair
     // behind an ADT (Box), which the Ref/RawPtr-only fat classification above
     // does not see. Route it through the dyn-unsize lowering (whose
     // classification admits Box on both sides). This shape previously failed
     // loud, so no already-emitted module drifts.
     if let Rvalue::Cast(
-        CastKind::PointerCoercion(
-            rustc_middle::ty::adjustment::PointerCoercion::Unsize,
-            _,
-        ),
+        CastKind::PointerCoercion(rustc_middle::ty::adjustment::PointerCoercion::Unsize, _),
         src_op,
         _,
     ) = rvalue
@@ -4380,20 +4451,19 @@ fn lower_assign<'tcx>(
         }
         // WRAPPER fat unsize (`Unique<[T; N]> -> Unique<[T]>`,
         // `NonNull<[T; N]> -> NonNull<[T]>` — rustc `unsize_ptr`'s Adt arm):
-        // the destination is a 16-byte (ptr, len) pair behind an ADT wrapper.
+        // the destination is a two-word (ptr, len) pair behind an ADT wrapper.
         // The data lane is the source's THIN pointer value; the len lane is
         // the differing tail's static array length.
         let dst_cty = cx.place_concrete_ty(place);
         if memory_leaf_tir_ty(cx.tcx, dst_cty).is_none() {
-            if let Some(n) =
-                custom_dst_unsize_len(cx, operand_concrete_ty(cx, src_op), dst_cty)
-            {
+            if let Some(n) = custom_dst_unsize_len(cx, operand_concrete_ty(cx, src_op), dst_cty) {
                 let thin = lower_cast_operand(cx, fb, env, src_op, &TIRTy::Ptr)?;
                 let dst_addr = place_address(cx, fb, env, place)?;
                 fb.store(TIRTy::Ptr, dst_addr, thin);
-                let meta_addr = gep_byte_offset(fb, dst_addr, 8);
-                let len_v = fb.iconst(TIRTy::U64, n as i128);
-                fb.store(TIRTy::U64, meta_addr, len_v);
+                let meta_addr = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+                let lane = pointer_int_ty(cx.tcx, false)?;
+                let len_v = fb.iconst(lane.clone(), n as i128);
+                fb.store(lane, meta_addr, len_v);
                 return Ok(());
             }
         }
@@ -4402,7 +4472,7 @@ fn lower_assign<'tcx>(
     // UNSIZED destination LOCAL (THREADS / `unsized_fn_params`): the alloc-crate
     // `<Box<dyn FnOnce>>::call_once` body moves the boxed pointee into an
     // unsized local (`_3: dyn FnOnce = move (*_1)`) before the virtual call. In
-    // the unsized-local model the local's slot is the 16-byte (data, metadata)
+    // the unsized-local model the local's slot is the two-word (data, metadata)
     // CARRIER; the move copies the CARRIER PAIR out of the source fat-pointer
     // cell (`_1`'s Box slot) — ownership of the pointee transfers with the
     // pair, exactly rustc's own by-value-unsized ABI. Only the two faithful
@@ -4526,8 +4596,10 @@ fn lower_assign<'tcx>(
             // (`GlobalAddr` / raw TypeId hash bytes) — never a wrong raw store.
             // Fat-pointer and Slice-value destinations were already routed
             // above; anything unresolvable still fails loud inside.
-            if matches!(c.const_.ty().kind(), ty::Adt(..) | ty::Tuple(..) | ty::Array(..))
-            {
+            if matches!(
+                c.const_.ty().kind(),
+                ty::Adt(..) | ty::Tuple(..) | ty::Array(..)
+            ) {
                 let addr = place_address(cx, fb, env, place)?;
                 store_const_agg_at(cx, fb, addr, dst_cty, c)?;
                 return Ok(());
@@ -4600,7 +4672,7 @@ fn lower_fat_pointer_assign<'tcx>(
     rvalue: &Rvalue<'tcx>,
 ) -> Result<(), String> {
     match rvalue {
-        // A whole fat-pointer copy: both slots are 16-byte 2-lane; copy lane by lane.
+        // A whole fat-pointer copy: both slots have two pointer-width lanes; copy lane by lane.
         Rvalue::Use(Operand::Copy(src) | Operand::Move(src), _) => {
             if !is_fat_pointer(cx.tcx, cx.place_concrete_ty(src)) {
                 return Err("fat-pointer dst from non-fat source Use (unmodelable)".to_string());
@@ -4613,15 +4685,15 @@ fn lower_fat_pointer_assign<'tcx>(
         // bytes were materialized in the entry block as an IMMORTAL heap image
         // (so this is lifetime-sound even when dst escapes the frame — incl. the
         // sret return slot); store the fat pair into dst's two lanes, mirroring
-        // `lower_unsize_assign`'s lane discipline (Ptr at +0, U64 length at +8).
+        // `lower_unsize_assign`'s lane discipline (Ptr at +0, target usize length one word later).
         Rvalue::Use(Operand::Constant(c), _) if str_const_bytes(cx, c).is_some() => {
             let mat = str_const_mat(cx, c)?;
             let (data_ptr, len) = (mat.data_ptr, mat.len);
             let dst_addr = place_address(cx, fb, env, dst)?;
             fb.store(TIRTy::Ptr, dst_addr, data_ptr);
-            let meta_addr = gep_byte_offset(fb, dst_addr, 8);
-            let len_v = fb.iconst(TIRTy::U64, len as i128);
-            fb.store(TIRTy::U64, meta_addr, len_v);
+            let meta_addr = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+            let len_v = fb.iconst(pointer_int_ty(cx.tcx, false)?, len as i128);
+            fb.store(pointer_int_ty(cx.tcx, false)?, meta_addr, len_v);
             Ok(())
         }
         // A reborrow `&(*base)` / `&raw (*base)`: the source place must be exactly a
@@ -4641,13 +4713,11 @@ fn lower_fat_pointer_assign<'tcx>(
             //     unsized tail's metadata IS the whole's metadata).
             // The produced fat pointer is (base.data + offset, base.metadata).
             // Anything else (mid-suffix Deref/Index, sized leaf) fails loud.
-            if let Some(deref_pos) = proj.iter().position(|e| matches!(e, ProjectionElem::Deref))
-            {
+            if let Some(deref_pos) = proj.iter().position(|e| matches!(e, ProjectionElem::Deref)) {
                 let prefix = &proj[..deref_pos];
                 let suffix = &proj[deref_pos + 1..];
-                let carrier_ty = cx.mono(
-                    Place::ty_from(src.local, prefix, &cx.body.local_decls, cx.tcx).ty,
-                );
+                let carrier_ty =
+                    cx.mono(Place::ty_from(src.local, prefix, &cx.body.local_decls, cx.tcx).ty);
                 let suffix_all_fields = suffix
                     .iter()
                     .all(|e| matches!(e, ProjectionElem::Field(..)));
@@ -4668,8 +4738,7 @@ fn lower_fat_pointer_assign<'tcx>(
                 if is_fat_pointer(cx.tcx, carrier_ty) {
                     if let [ProjectionElem::Subslice { from, to, from_end }] = suffix {
                         return lower_fat_subslice_reborrow(
-                            cx, fb, env, dst, src.local, prefix, carrier_ty, *from, *to,
-                            *from_end,
+                            cx, fb, env, dst, src.local, prefix, carrier_ty, *from, *to, *from_end,
                         );
                     }
                 }
@@ -4688,15 +4757,12 @@ fn lower_fat_pointer_assign<'tcx>(
         // `[T; N]`). We store both lanes. A `&dyn`/other unsize (vtable metadata) is
         // not modeled — fail loud.
         Rvalue::Cast(
-            CastKind::PointerCoercion(
-                rustc_middle::ty::adjustment::PointerCoercion::Unsize,
-                _,
-            ),
+            CastKind::PointerCoercion(rustc_middle::ty::adjustment::PointerCoercion::Unsize, _),
             src_op,
             _,
         ) => lower_unsize_assign(cx, fb, env, dst, src_op),
         // R2: a fat -> fat `Transmute` / `PtrToPtr` reinterpret (`*const str` <->
-        // `&str`, `*const [T]` <-> `*mut [U]`, ...). Both sides are 16-byte
+        // `&str`, `*const [T]` <-> `*mut [U]`, ...). Both sides have two pointer-width words
         // (data, metadata) pairs, so a transmute/ptr-cast between them is
         // BIT-PRESERVING: copy both lanes from the source. This is the fat-dst
         // dual of the thin-dst fat-source cast handled in `lower_cast` — together
@@ -4715,7 +4781,7 @@ fn lower_fat_pointer_assign<'tcx>(
 }
 
 /// RUNG 4 + DYN: lower a `dst = src as <unsized> (Unsize)` into `dst`'s 2-lane fat
-/// slot (data ptr at +0, metadata at +8). Two coercion families are modeled:
+/// slot (data ptr at +0, metadata one pointer word later). Two coercion families are modeled:
 ///   * ARRAY-to-slice/str (`&[T; N] -> &[T]/&str`): metadata lane is the static
 ///     array length `N` (a `usize`), read off the source pointee `[T; N]`.
 ///   * to-`dyn` (`&T -> &dyn Trait`, `&mut F -> &mut dyn FnMut`): metadata lane is
@@ -4744,31 +4810,29 @@ fn lower_unsize_assign<'tcx>(
         //   * supertrait UPCAST (`&dyn Error -> &dyn Debug`): the data lane is
         //     unchanged; the vtable lane is adjusted per
         //     `supertrait_vtable_slot` — `Some(idx)` loads the new vtable from
-        //     the OLD vtable's TraitVPtr slot at `idx * 8`; `None` (prefix
+        //     the OLD vtable's TraitVPtr slot at `idx * pointer_size`; `None` (prefix
         //     sharing) keeps the old vtable.
         if matches!(self_ty.kind(), ty::Dynamic(..)) {
             let (Operand::Copy(src) | Operand::Move(src)) = src_op else {
-                return Err(
-                    "dyn -> dyn coercion source is not a place (const dyn ref)".to_string(),
-                );
+                return Err("dyn -> dyn coercion source is not a place (const dyn ref)".to_string());
             };
             if dyn_identity_unsize(cx, self_ty, dyn_ty) {
                 return lower_fat_lane_copy(cx, fb, env, dst, src);
             }
             let src_addr = place_address(cx, fb, env, src)?;
             let data = fb.load(TIRTy::Ptr, src_addr);
-            let vt_addr = gep_byte_offset(fb, src_addr, 8);
+            let vt_addr = gep_byte_offset(fb, src_addr, pointer_bytes(cx.tcx));
             let vt = fb.load(TIRTy::Ptr, vt_addr);
             let vt2 = match cx.tcx.supertrait_vtable_slot((self_ty, dyn_ty)) {
                 Some(idx) => {
-                    let slot_addr = gep_byte_offset(fb, vt, (idx as u64) * 8);
+                    let slot_addr = gep_byte_offset(fb, vt, (idx as u64) * pointer_bytes(cx.tcx));
                     fb.load(TIRTy::Ptr, slot_addr)
                 }
                 None => vt,
             };
             let dst_addr = place_address(cx, fb, env, dst)?;
             fb.store(TIRTy::Ptr, dst_addr, data);
-            let dst_meta = gep_byte_offset(fb, dst_addr, 8);
+            let dst_meta = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
             fb.store(TIRTy::Ptr, dst_meta, vt2);
             return Ok(());
         }
@@ -4779,9 +4843,9 @@ fn lower_unsize_assign<'tcx>(
         // Lane 0: the data pointer — the source thin pointer VALUE.
         let data = lower_cast_operand(cx, fb, env, src_op, &TIRTy::Ptr)?;
         fb.store(TIRTy::Ptr, dst_addr, data);
-        // Lane 1: the vtable pointer (module global address) at offset 8.
+        // Lane 1: the vtable pointer (module global address) at one pointer word.
         let vptr = fb.global_addr(gid);
-        let meta_addr = gep_byte_offset(fb, dst_addr, 8);
+        let meta_addr = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
         fb.store(TIRTy::Ptr, meta_addr, vptr);
         return Ok(());
     }
@@ -4791,7 +4855,12 @@ fn lower_unsize_assign<'tcx>(
     let src_ty = operand_concrete_ty(cx, src_op);
     let src_pointee = match src_ty.kind() {
         ty::Ref(_, p, _) | ty::RawPtr(p, _) => *p,
-        _ => return Err(format!("Unsize source is not a pointer: {}", ty_family(src_ty))),
+        _ => {
+            return Err(format!(
+                "Unsize source is not a pointer: {}",
+                ty_family(src_ty)
+            ))
+        }
     };
     let len = match src_pointee.kind() {
         ty::Array(_elem, n) => n
@@ -4805,14 +4874,12 @@ fn lower_unsize_assign<'tcx>(
             let dstp = fat_pointer_pointee(cx.tcx, dst_ty)
                 .or_else(|| dst_ty.boxed_ty())
                 .ok_or_else(|| "Unsize destination has no pointee".to_string())?;
-            custom_dst_unsize_len(cx, cx.mono(src_pointee), cx.mono(dstp)).ok_or_else(
-                || {
-                    format!(
-                        "Unsize from non-array pointee {} (dyn/vtable not modeled)",
-                        ty_family(src_pointee)
-                    )
-                },
-            )?
+            custom_dst_unsize_len(cx, cx.mono(src_pointee), cx.mono(dstp)).ok_or_else(|| {
+                format!(
+                    "Unsize from non-array pointee {} (dyn/vtable not modeled)",
+                    ty_family(src_pointee)
+                )
+            })?
         }
     };
 
@@ -4821,10 +4888,10 @@ fn lower_unsize_assign<'tcx>(
     // Lane 0: the data pointer — the source thin pointer VALUE (a `Ptr`).
     let data = lower_cast_operand(cx, fb, env, src_op, &TIRTy::Ptr)?;
     fb.store(TIRTy::Ptr, dst_addr, data);
-    // Lane 1: the length metadata (`usize`) at offset 8.
-    let meta_addr = gep_byte_offset(fb, dst_addr, 8);
-    let len_v = fb.iconst(TIRTy::U64, len as i128);
-    fb.store(TIRTy::U64, meta_addr, len_v);
+    // Lane 1: the length metadata (`usize`) at one pointer word.
+    let meta_addr = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+    let len_v = fb.iconst(pointer_int_ty(cx.tcx, false)?, len as i128);
+    fb.store(pointer_int_ty(cx.tcx, false)?, meta_addr, len_v);
     Ok(())
 }
 
@@ -4852,11 +4919,7 @@ fn lower_unsize_assign<'tcx>(
 /// descend the (unique) differing field pairwise until the leaf `[T; N] ->
 /// [T]`, whose `N` is the fat pointer's metadata. `None` when the pair is not
 /// this shape (fail-closed at the caller).
-fn custom_dst_unsize_len<'tcx>(
-    cx: &Cx<'tcx, '_>,
-    src: Ty<'tcx>,
-    dst: Ty<'tcx>,
-) -> Option<u64> {
+fn custom_dst_unsize_len<'tcx>(cx: &Cx<'tcx, '_>, src: Ty<'tcx>, dst: Ty<'tcx>) -> Option<u64> {
     let mut src = src;
     let mut dst = dst;
     loop {
@@ -4872,10 +4935,7 @@ fn custom_dst_unsize_len<'tcx>(
             // A pointer field pair (`NonNull`'s `*const [T; N]` vs `*const
             // [T]`): the unsize happens through ONE pointer level — recurse
             // into the pointees.
-            (
-                ty::Ref(_, a, _) | ty::RawPtr(a, _),
-                ty::Ref(_, b, _) | ty::RawPtr(b, _),
-            ) => {
+            (ty::Ref(_, a, _) | ty::RawPtr(a, _), ty::Ref(_, b, _) | ty::RawPtr(b, _)) => {
                 src = *a;
                 dst = *b;
             }
@@ -4915,7 +4975,7 @@ fn dyn_unsize_types<'tcx>(
     src_op: &Operand<'tcx>,
 ) -> Option<(Ty<'tcx>, Ty<'tcx>)> {
     // The destination trait-object pointee: behind a `&dyn`/`*dyn` fat pointer,
-    // or behind a `Box<dyn Trait>` (same 16-byte (data, vtable) pair layout).
+    // or behind a `Box<dyn Trait>` (same two-word (data, vtable) pair layout).
     let dst_pointee = match fat_pointer_pointee(cx.tcx, dst_ty) {
         Some(p) => p,
         None => dst_ty.boxed_ty()?,
@@ -4941,10 +5001,7 @@ fn dyn_unsize_types<'tcx>(
 /// `(self_ty, dyn pointee)` keys in first-appearance order. Cleanup blocks are
 /// skipped under panic=abort (never lowered there), matching the consumer in
 /// `lower_unsize_assign`; the EH lane emits cleanup blocks, so it scans them.
-fn prescan_dyn_coercions<'tcx>(
-    cx: &Cx<'tcx, '_>,
-    body: &Body<'tcx>,
-) -> Vec<(Ty<'tcx>, Ty<'tcx>)> {
+fn prescan_dyn_coercions<'tcx>(cx: &Cx<'tcx, '_>, body: &Body<'tcx>) -> Vec<(Ty<'tcx>, Ty<'tcx>)> {
     let eh = eh_lane(cx.tcx);
     let mut out: Vec<(Ty<'tcx>, Ty<'tcx>)> = Vec::new();
     for (_bb, bdata) in body.basic_blocks.iter_enumerated() {
@@ -4957,10 +5014,7 @@ fn prescan_dyn_coercions<'tcx>(
             };
             let (place, rvalue) = &**bx;
             let Rvalue::Cast(
-                CastKind::PointerCoercion(
-                    rustc_middle::ty::adjustment::PointerCoercion::Unsize,
-                    _,
-                ),
+                CastKind::PointerCoercion(rustc_middle::ty::adjustment::PointerCoercion::Unsize, _),
                 src_op,
                 _,
             ) = rvalue
@@ -5082,7 +5136,9 @@ fn build_dyn_vtable_global<'tcx>(
         .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(self_ty))
         .map_err(|e| format!("dyn vtable: layout_of({self_ty:?}) failed: {e:?}"))?;
     if !layout.is_sized() {
-        return Err(format!("dyn vtable: concrete self type `{self_ty:?}` is unsized"));
+        return Err(format!(
+            "dyn vtable: concrete self type `{self_ty:?}` is unsized"
+        ));
     }
     let size = layout.size.bytes();
     let align = layout.align.abi.bytes();
@@ -5093,9 +5149,9 @@ fn build_dyn_vtable_global<'tcx>(
     // initializer encoder (`trust_ir_global_initializer_data`, since the
     // aggregate-`Int`-element-width fix) lays out each `Int` element at its DECLARED
     // type's width — `Usize` -> `ptr_size` — so the following method-pointer
-    // (`SymbolAddr`) relocations stay 8-aligned, exactly matching rustc's vtable
-    // layout (pointer slots at `slot_index * ptr_size`, read by the `Virtual`
-    // dispatch GEP `vtable + vslot * 8`). (This previously flattened each slot to
+    // (`SymbolAddr`) relocations occupy pointer-sized slots, matching rustc's
+    // vtable layout (slots at `slot_index * ptr_size`, read by the `Virtual`
+    // dispatch GEP `vtable + vslot * ptr_size`). (This previously flattened each slot to
     // `ptr_size` `U8` bytes to work around a trust-cg bug that laid `Int` aggregate
     // elements at 1 byte each; that bug is now fixed at the source, so the natural
     // per-slot `Int` encoding is used.)
@@ -5107,8 +5163,12 @@ fn build_dyn_vtable_global<'tcx>(
     };
     for entry in entries.iter() {
         match entry {
-            ty::VtblEntry::MetadataSize => push_uint_slot(&mut field_tys, &mut elems, u128::from(size)),
-            ty::VtblEntry::MetadataAlign => push_uint_slot(&mut field_tys, &mut elems, u128::from(align)),
+            ty::VtblEntry::MetadataSize => {
+                push_uint_slot(&mut field_tys, &mut elems, u128::from(size))
+            }
+            ty::VtblEntry::MetadataAlign => {
+                push_uint_slot(&mut field_tys, &mut elems, u128::from(align))
+            }
             ty::VtblEntry::MetadataDropInPlace => {
                 if self_ty.needs_drop(cx.tcx, ty::TypingEnv::fully_monomorphized()) {
                     let drop_instance = Instance::resolve_drop_glue(cx.tcx, self_ty);
@@ -5147,7 +5207,9 @@ fn build_dyn_vtable_global<'tcx>(
                 );
                 ensure_dyn_vtable(cx, mb, self_ty, sup_dyn)?;
                 field_tys.push(TIRTy::Ptr);
-                elems.push(Constant::symbol_addr(dyn_vtable_symbol_name(self_ty, sup_tr)));
+                elems.push(Constant::symbol_addr(dyn_vtable_symbol_name(
+                    self_ty, sup_tr,
+                )));
             }
         }
     }
@@ -5220,8 +5282,8 @@ fn lower_fat_subslice_reborrow<'tcx>(
         )?
     };
     let data = fb.load(TIRTy::Ptr, cell_addr);
-    let meta_addr = gep_byte_offset(fb, cell_addr, 8);
-    let len = fb.load(TIRTy::U64, meta_addr);
+    let meta_addr = gep_byte_offset(fb, cell_addr, pointer_bytes(cx.tcx));
+    let len = fb.load(pointer_int_ty(cx.tcx, false)?, meta_addr);
     // The element stride, from the slice/str pointee.
     let pointee = fat_pointer_pointee(cx.tcx, carrier_ty)
         .ok_or_else(|| "subslice reborrow: carrier has no pointee".to_string())?;
@@ -5234,11 +5296,7 @@ fn lower_fat_subslice_reborrow<'tcx>(
                 .map_err(|e| format!("subslice element layout_of failed: {e:?}"))?;
             tal.size.align_to(tal.align.abi).bytes()
         }
-        other => {
-            return Err(format!(
-                "subslice reborrow of non-slice pointee: {other:?}"
-            ))
-        }
+        other => return Err(format!("subslice reborrow of non-slice pointee: {other:?}")),
     };
     // data' = data + from * stride.
     let data2 = if from == 0 {
@@ -5248,23 +5306,23 @@ fn lower_fat_subslice_reborrow<'tcx>(
     };
     // len' per MIR Subslice semantics.
     let len2 = if from_end {
-        let k = fb.iconst(TIRTy::U64, (from + to) as i128);
-        fb.sub(TIRTy::U64, len, k)
+        let k = fb.iconst(pointer_int_ty(cx.tcx, false)?, (from + to) as i128);
+        fb.sub(pointer_int_ty(cx.tcx, false)?, len, k)
     } else {
         let n = to
             .checked_sub(from)
             .ok_or_else(|| "subslice reborrow: to < from".to_string())?;
-        fb.iconst(TIRTy::U64, n as i128)
+        fb.iconst(pointer_int_ty(cx.tcx, false)?, n as i128)
     };
     let dst_addr = place_address(cx, fb, env, dst)?;
     fb.store(TIRTy::Ptr, dst_addr, data2);
-    let dst_meta = gep_byte_offset(fb, dst_addr, 8);
-    fb.store(TIRTy::U64, dst_meta, len2);
+    let dst_meta = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+    fb.store(pointer_int_ty(cx.tcx, false)?, dst_meta, len2);
     Ok(())
 }
 
-/// Copy a 16-byte fat pointer's two pointer-width lanes from `src`'s slot to `dst`'s
-/// slot (data ptr at offset 0, metadata at offset 8). Both places are addressed
+/// Copy a two-word fat pointer's two pointer-width lanes from `src`'s slot to `dst`'s
+/// slot (data ptr at offset 0, metadata at one pointer word). Both places are addressed
 /// through the memory-place path.
 fn lower_fat_lane_copy<'tcx>(
     cx: &Cx<'tcx, '_>,
@@ -5275,13 +5333,21 @@ fn lower_fat_lane_copy<'tcx>(
 ) -> Result<(), String> {
     let dst_addr = place_address(cx, fb, env, dst)?;
     let src_addr = place_address(cx, fb, env, src)?;
-    // Lane 0 (data ptr) at offset 0; lane 1 (metadata) at offset 8. Copy both as
-    // I64 (pointer-width; the bits are preserved regardless of Ptr/usize typing).
-    for off in [0u64, 8] {
-        let sa = if off == 0 { src_addr } else { gep_byte_offset(fb, src_addr, off) };
-        let da = if off == 0 { dst_addr } else { gep_byte_offset(fb, dst_addr, off) };
-        let v = fb.load(TIRTy::I64, sa);
-        fb.store(TIRTy::I64, da, v);
+    // Lane 0 (data ptr) at offset 0; lane 1 (metadata) one word later. Copy
+    // both at the target word width, preserving their Ptr/usize bit patterns.
+    for off in [0u64, pointer_bytes(cx.tcx)] {
+        let sa = if off == 0 {
+            src_addr
+        } else {
+            gep_byte_offset(fb, src_addr, off)
+        };
+        let da = if off == 0 {
+            dst_addr
+        } else {
+            gep_byte_offset(fb, dst_addr, off)
+        };
+        let v = fb.load(pointer_int_ty(cx.tcx, true)?, sa);
+        fb.store(pointer_int_ty(cx.tcx, true)?, da, v);
     }
     Ok(())
 }
@@ -5321,8 +5387,8 @@ fn lower_fat_tail_reborrow<'tcx>(
     };
     // Load both lanes of the fat pointer.
     let data = fb.load(TIRTy::Ptr, cell_addr);
-    let meta_addr = gep_byte_offset(fb, cell_addr, 8);
-    let meta = fb.load(TIRTy::I64, meta_addr);
+    let meta_addr = gep_byte_offset(fb, cell_addr, pointer_bytes(cx.tcx));
+    let meta = fb.load(pointer_int_ty(cx.tcx, true)?, meta_addr);
     // Accumulate the static byte offsets of the unsized-tail Field descents.
     let pointee = fat_pointer_pointee(cx.tcx, carrier_ty)
         .ok_or_else(|| "fat reborrow: carrier has no pointee".to_string())?;
@@ -5359,14 +5425,14 @@ fn lower_fat_tail_reborrow<'tcx>(
     // Store the (data, metadata) pair into dst's 2-lane slot.
     let dst_addr = place_address(cx, fb, env, dst)?;
     fb.store(TIRTy::Ptr, dst_addr, data);
-    let dst_meta = gep_byte_offset(fb, dst_addr, 8);
-    fb.store(TIRTy::I64, dst_meta, meta);
+    let dst_meta = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+    fb.store(pointer_int_ty(cx.tcx, true)?, dst_meta, meta);
     Ok(())
 }
 
 /// R2: lower a fat-pointer DESTINATION produced by a bit-preserving `Transmute` /
 /// `PtrToPtr` cast (`*const str` <-> `&str`, `*const [T]` <-> `*mut [U]`, a
-/// 16-byte 2-field struct <-> a fat raw pointer). Both carrier types are the same
+/// two-word struct <-> a fat raw pointer). Both carrier types are the same
 /// size, so the reinterpret copies bytes verbatim:
 ///   * a str/byte LITERAL source stores the materialized (ptr, len) pair;
 ///   * a PLACE source copies the source slot's bytes (guarded: src size == dst
@@ -5388,9 +5454,9 @@ fn lower_fat_reinterpret_assign<'tcx>(
             let (data_ptr, len) = (mat.data_ptr, mat.len);
             let dst_addr = place_address(cx, fb, env, dst)?;
             fb.store(TIRTy::Ptr, dst_addr, data_ptr);
-            let meta_addr = gep_byte_offset(fb, dst_addr, 8);
-            let len_v = fb.iconst(TIRTy::U64, len as i128);
-            fb.store(TIRTy::U64, meta_addr, len_v);
+            let meta_addr = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+            let len_v = fb.iconst(pointer_int_ty(cx.tcx, false)?, len as i128);
+            fb.store(pointer_int_ty(cx.tcx, false)?, meta_addr, len_v);
             Ok(())
         }
         // A PLACE source of the SAME size as the fat destination: byte-preserving
@@ -5413,7 +5479,7 @@ fn lower_fat_reinterpret_assign<'tcx>(
 
 /// Lower `dst = Aggregate(RawPtr, [data, meta])` into a fat raw-pointer slot: the
 /// data pointer (op 0) at lane 0, the metadata (op 1, a `usize` slice length or a
-/// vtable `*const ()`) at lane 1 (+8). This is the `ptr::from_raw_parts` shape a
+/// vtable `*const ()`) at lane 1 (one pointer word later). This is the `ptr::from_raw_parts` shape a
 /// fat raw pointer is constructed by. A ZST/absent metadata operand is treated as
 /// a thin construction (no lane-1 store); fails loud if the operand list is not
 /// the expected (data, meta) pair.
@@ -5437,10 +5503,14 @@ fn lower_raw_ptr_from_parts<'tcx>(
     // Lane 0: the data pointer.
     let (data, _dt) = lower_operand(cx, fb, env, data_op)?;
     fb.store(TIRTy::Ptr, dst_addr, data);
-    // Lane 1: the metadata (`usize` length / vtable ptr) at +8.
+    // Lane 1: the metadata (`usize` length / vtable ptr) one pointer word later.
     let (meta, mt) = lower_operand(cx, fb, env, meta_op)?;
-    let meta_addr = gep_byte_offset(fb, dst_addr, 8);
-    let store_ty = if is_ptr_tir(&mt) { TIRTy::Ptr } else { TIRTy::U64 };
+    let meta_addr = gep_byte_offset(fb, dst_addr, pointer_bytes(cx.tcx));
+    let store_ty = if is_ptr_tir(&mt) {
+        TIRTy::Ptr
+    } else {
+        pointer_int_ty(cx.tcx, false)?
+    };
     fb.store(store_ty, meta_addr, meta);
     Ok(())
 }
@@ -5465,7 +5535,7 @@ fn lower_raw_ptr_from_parts<'tcx>(
 //     freed, so ESCAPING references (returned literals, literals stored into
 //     outliving structures) remain valid exactly like `&'static` rodata — the
 //     same `__rust_alloc` trust boundary as the landed `Arc::new` lowering;
-//   * a 16-byte (ptr,len) FAT-PAIR SLOT (stack alloca, [Ptr at +0, U64 len at
+//   * a two-word (ptr,len) FAT-PAIR SLOT (stack alloca, [Ptr at +0, U64 len at
 //     +8]) whose ADDRESS is the `ArgAbi::AggByRef` call-arg value — precisely
 //     the convention a lowered callee already models a fat `&str` param with.
 //
@@ -5582,15 +5652,16 @@ fn materialize_str_consts<'tcx>(
         // both leaked and perturbed the allocator happy path.
         let gid = intern_str_literal_global(cx, &bytes);
         let img = fb.global_addr(gid);
-        // The (ptr,len) fat-pair slot: the standard 16-byte 2-lane fat slot shape
-        // (`slot_lane_ty(16, 8)`), lane 0 = data Ptr, lane 1 = U64 length — the
+        // The (ptr,len) fat-pair slot: the standard two-word fat slot shape
+        // (two target pointer words), lane 0 = data Ptr, lane 1 = usize length — the
         // exact lane discipline `lower_unsize_assign` established.
-        let pair_ptr = fb.alloca_aligned(slot_lane_ty(16, 8)?, 8);
-        fb.note_alloc_extent(pair_ptr, 16);
+        let word = pointer_bytes(cx.tcx);
+        let pair_ptr = fb.alloca_aligned(slot_lane_ty(2 * word, word)?, word);
+        fb.note_alloc_extent(pair_ptr, 2 * word);
         fb.store(TIRTy::Ptr, pair_ptr, img);
-        let meta_addr = gep_byte_offset(fb, pair_ptr, 8);
-        let len_v = fb.iconst(TIRTy::U64, len as i128);
-        fb.store(TIRTy::U64, meta_addr, len_v);
+        let meta_addr = gep_byte_offset(fb, pair_ptr, pointer_bytes(cx.tcx));
+        let len_v = fb.iconst(pointer_int_ty(cx.tcx, false)?, len as i128);
+        fb.store(pointer_int_ty(cx.tcx, false)?, meta_addr, len_v);
         cx.str_consts.push((
             bytes,
             StrConstMat {
@@ -5651,7 +5722,9 @@ fn lower_checked_overflow_assign<'tcx>(
     let dst_ty = cx.place_concrete_ty(place);
     let (res_ty, flag_ty, off0, off1) = checked_tuple_layout(cx, dst_ty)?;
     if !matches!(flag_ty, TIRTy::Bool) {
-        return Err(format!("checked-overflow dest field 1 is not bool: {flag_ty:?}"));
+        return Err(format!(
+            "checked-overflow dest field 1 is not bool: {flag_ty:?}"
+        ));
     }
     let (lhs, _lt) = lower_operand(cx, fb, env, lhs_op)?;
     let (rhs, _rt) = lower_operand(cx, fb, env, rhs_op)?;
@@ -5660,9 +5733,17 @@ fn lower_checked_overflow_assign<'tcx>(
     // The destination tuple's BASE address (a memory-backed local, possibly itself
     // projected). Then byte-offset GEP to each field and Store.
     let base = place_address(cx, fb, env, place)?;
-    let a0 = if off0 == 0 { base } else { gep_byte_offset(fb, base, off0) };
+    let a0 = if off0 == 0 {
+        base
+    } else {
+        gep_byte_offset(fb, base, off0)
+    };
     fb.store(res_ty, a0, result);
-    let a1 = if off1 == 0 { base } else { gep_byte_offset(fb, base, off1) };
+    let a1 = if off1 == 0 {
+        base
+    } else {
+        gep_byte_offset(fb, base, off1)
+    };
     fb.store(TIRTy::Bool, a1, flag);
     Ok(())
 }
@@ -5734,6 +5815,8 @@ enum MirTagEncoding {
 
 /// The faithful in-memory enum layout (the subset RUNG 3 needs).
 struct MirEnumLayout {
+    /// Whether rustc supplied a physical tag/niche, rather than Variants::Single.
+    runtime_tag: bool,
     /// Byte offset the tag/niche is READ/written at.
     tag_offset: u64,
     /// trust-ir integer type to Load/Store the tag with (I8/I16/I32/I64).
@@ -5786,7 +5869,9 @@ fn tag_u128_to_i128(masked: u128, tag_bytes: u64) -> Result<i128, String> {
         if tag_bytes == 16 {
             return Ok(masked as i128);
         }
-        return Err(format!("enum tag is {tag_bytes} bytes (>16-byte tag unsupported)"));
+        return Err(format!(
+            "enum tag is {tag_bytes} bytes (>16-byte tag unsupported)"
+        ));
     }
     Ok(Size::from_bytes(tag_bytes).sign_extend(masked))
 }
@@ -5799,7 +5884,10 @@ fn mir_enum_layout<'tcx>(cx: &Cx<'tcx, '_>, enum_ty: Ty<'tcx>) -> Result<MirEnum
         return Err(format!("enum layout of non-ADT: {}", ty_family(enum_ty)));
     };
     if !adt.is_enum() {
-        return Err(format!("enum layout of non-enum ADT: {}", ty_family(enum_ty)));
+        return Err(format!(
+            "enum layout of non-enum ADT: {}",
+            ty_family(enum_ty)
+        ));
     }
     let lcx = LayoutCx::new(cx.tcx, ty::TypingEnv::fully_monomorphized());
     let tal = cx
@@ -5830,6 +5918,7 @@ fn mir_enum_layout<'tcx>(cx: &Cx<'tcx, '_>, enum_ty: Ty<'tcx>) -> Result<MirEnum
                 }
             }
             Ok(MirEnumLayout {
+                runtime_tag: false,
                 tag_offset: 0,
                 tag_ir_ty: TIRTy::I8,
                 // Single-variant enum: the sole discriminant is materialized as an
@@ -5891,10 +5980,8 @@ fn mir_enum_layout<'tcx>(cx: &Cx<'tcx, '_>, enum_ty: Ty<'tcx>) -> Result<MirEnum
                             continue;
                         }
                         if !niche_variants.contains(&idx) {
-                            return Err(
-                                "niche enum: variant neither untagged nor in niche range"
-                                    .to_string(),
-                            );
+                            return Err("niche enum: variant neither untagged nor in niche range"
+                                .to_string());
                         }
                         let rel = idx.as_u32().wrapping_sub(start) as u128;
                         let raw = rel.wrapping_add(*niche_start);
@@ -5910,6 +5997,7 @@ fn mir_enum_layout<'tcx>(cx: &Cx<'tcx, '_>, enum_ty: Ty<'tcx>) -> Result<MirEnum
             };
 
             Ok(MirEnumLayout {
+                runtime_tag: true,
                 tag_offset,
                 tag_ir_ty,
                 read_signed,
@@ -5965,6 +6053,7 @@ fn mir_coroutine_layout<'tcx>(
                 vec![(None, Vec::new()); idx.as_usize() + 1];
             variants[idx.as_usize()] = (Some(0i128), variant_field_offsets(idx));
             Ok(MirEnumLayout {
+                runtime_tag: false,
                 tag_offset: 0,
                 tag_ir_ty: TIRTy::I8,
                 read_signed: true,
@@ -6040,6 +6129,7 @@ fn mir_coroutine_layout<'tcx>(
             };
 
             Ok(MirEnumLayout {
+                runtime_tag: true,
                 tag_offset,
                 tag_ir_ty,
                 read_signed,
@@ -6047,9 +6137,7 @@ fn mir_coroutine_layout<'tcx>(
                 variants,
             })
         }
-        Variants::Empty => {
-            Err("coroutine layout is Variants::Empty (uninhabited)".to_string())
-        }
+        Variants::Empty => Err("coroutine layout is Variants::Empty (uninhabited)".to_string()),
     }
 }
 
@@ -6101,30 +6189,7 @@ fn lower_set_discriminant<'tcx>(
     // The enum's base address (the slot, or the loaded pointer for `(*r)`).
     let base = place_address(cx, fb, env, place)?;
 
-    match &layout.encoding {
-        MirTagEncoding::Direct => {
-            let Some(disc) = layout.variants.get(variant_index.as_usize()).and_then(|v| v.0) else {
-                // A single-variant enum (Variants::Single): no tag to write.
-                return Ok(());
-            };
-            store_tag(fb, base, layout.tag_offset, &layout.tag_ir_ty, disc);
-            Ok(())
-        }
-        MirTagEncoding::Niche {
-            untagged_variant, ..
-        } => {
-            if variant_index == *untagged_variant {
-                // The untagged (default) variant writes NO niche — its payload's
-                // own value occupies the niche field. Nothing to store.
-                return Ok(());
-            }
-            let Some(disc) = layout.variants.get(variant_index.as_usize()).and_then(|v| v.0) else {
-                return Err("SetDiscriminant niche variant has no encoded value".to_string());
-            };
-            store_tag(fb, base, layout.tag_offset, &layout.tag_ir_ty, disc);
-            Ok(())
-        }
-    }
+    set_discriminant_at(fb, base, &layout, variant_index)
 }
 
 /// Store a tag value of width `tag_ir_ty` at `base + tag_offset` (a byte-offset
@@ -6204,9 +6269,7 @@ fn lower_discriminant_assign<'tcx>(
                     // insurance for a future rustc that niches coroutine tags,
                     // not a shape today's layouts can produce.
                     let (uv, nvs, ns) = (*untagged_variant, *niche_variants_start, *niche_start);
-                    lower_niche_discriminant(
-                        cx, fb, env, src, &layout, &dst_ty, uv, nvs, ns,
-                    )?
+                    lower_niche_discriminant(cx, fb, env, src, &layout, &dst_ty, uv, nvs, ns)?
                 }
             }
         };
@@ -6540,7 +6603,10 @@ fn lower_repeat_assign<'tcx>(
 ) -> Result<(), String> {
     let agg_ty = cx.place_concrete_ty(dst);
     if !matches!(agg_ty.kind(), ty::Array(_, _)) {
-        return Err(format!("Rvalue::Repeat into non-array place {}", ty_family(agg_ty)));
+        return Err(format!(
+            "Rvalue::Repeat into non-array place {}",
+            ty_family(agg_ty)
+        ));
     }
     // Monomorphize the repeat count first: a CONST-GENERIC length
     // (`truncate_cstr::<MAX_WITH_NUL>`'s `[0; MAX_WITH_NUL]`) is an
@@ -6584,9 +6650,7 @@ fn lower_aggregate_assign<'tcx>(
     let base = place_address(cx, fb, env, dst)?;
 
     match kind {
-        AggregateKind::Tuple => {
-            store_aggregate_fields(cx, fb, env, agg_ty, base, 0, operands)
-        }
+        AggregateKind::Tuple => store_aggregate_fields(cx, fb, env, agg_ty, base, 0, operands),
         AggregateKind::Array(_elem) => {
             // An array `[e0, e1, ..]`: store each element at index*stride. The
             // element leaf type sizes the stride.
@@ -6595,7 +6659,12 @@ fn lower_aggregate_assign<'tcx>(
         AggregateKind::Adt(_def_id, variant_index, _args, _user_ty, _field_idx) => {
             let adt = match agg_ty.kind() {
                 ty::Adt(adt, _) => *adt,
-                _ => return Err(format!("Aggregate ADT of non-ADT type {}", ty_family(agg_ty))),
+                _ => {
+                    return Err(format!(
+                        "Aggregate ADT of non-ADT type {}",
+                        ty_family(agg_ty)
+                    ))
+                }
             };
             if adt.is_union() {
                 // RUNG 4: a union construction writes exactly ONE active field's
@@ -6641,7 +6710,16 @@ fn lower_aggregate_assign<'tcx>(
                     .get(variant_index.as_usize())
                     .ok_or_else(|| "Aggregate enum variant index out of range".to_string())?;
                 let field_offsets = field_offsets.clone();
-                store_variant_fields(cx, fb, env, adt, *variant_index, base, &field_offsets, operands)?;
+                store_variant_fields(
+                    cx,
+                    fb,
+                    env,
+                    adt,
+                    *variant_index,
+                    base,
+                    &field_offsets,
+                    operands,
+                )?;
                 // The discriminant tag (Direct: the tag value; Niche: niche or
                 // nothing for untagged).
                 set_discriminant_at(fb, base, &layout, *variant_index)?;
@@ -6796,8 +6874,16 @@ fn lower_aggregate_copy<'tcx>(
     let lanes = size / lane_align;
     for i in 0..lanes {
         let off = i * lane_align;
-        let sa = if off == 0 { src_addr } else { gep_byte_offset(fb, src_addr, off) };
-        let da = if off == 0 { dst_addr } else { gep_byte_offset(fb, dst_addr, off) };
+        let sa = if off == 0 {
+            src_addr
+        } else {
+            gep_byte_offset(fb, src_addr, off)
+        };
+        let da = if off == 0 {
+            dst_addr
+        } else {
+            gep_byte_offset(fb, dst_addr, off)
+        };
         let v = fb.load(lane.clone(), sa);
         fb.store(lane.clone(), da, v);
     }
@@ -6830,8 +6916,16 @@ fn copy_aggregate_bytes(
     let lanes = size / lane_align;
     for i in 0..lanes {
         let off = i * lane_align;
-        let sa = if off == 0 { src_addr } else { gep_byte_offset(fb, src_addr, off) };
-        let da = if off == 0 { dst_addr } else { gep_byte_offset(fb, dst_addr, off) };
+        let sa = if off == 0 {
+            src_addr
+        } else {
+            gep_byte_offset(fb, src_addr, off)
+        };
+        let da = if off == 0 {
+            dst_addr
+        } else {
+            gep_byte_offset(fb, dst_addr, off)
+        };
         let v = fb.load(lane.clone(), sa);
         fb.store(lane.clone(), da, v);
     }
@@ -6937,8 +7031,16 @@ fn lower_copy_nonoverlapping<'tcx>(
             let nbytes = n.saturating_mul(elem_size);
             if nbytes <= 64 {
                 for i in 0..nbytes {
-                    let sa = if i == 0 { src_v } else { gep_byte_offset(fb, src_v, i) };
-                    let da = if i == 0 { dst_v } else { gep_byte_offset(fb, dst_v, i) };
+                    let sa = if i == 0 {
+                        src_v
+                    } else {
+                        gep_byte_offset(fb, src_v, i)
+                    };
+                    let da = if i == 0 {
+                        dst_v
+                    } else {
+                        gep_byte_offset(fb, dst_v, i)
+                    };
                     let b = fb.load(TIRTy::I8, sa);
                     fb.store(TIRTy::I8, da, b);
                 }
@@ -7039,6 +7141,7 @@ fn to_i64_value(
     match tir {
         TIRTy::I64 => Ok(v),
         TIRTy::U64 => Ok(fb.cast(CastOp::Bitcast, TIRTy::U64, TIRTy::I64, v)),
+        TIRTy::I32 => Ok(fb.cast(CastOp::SExt, TIRTy::I32, TIRTy::I64, v)),
         TIRTy::U32 => Ok(fb.cast(CastOp::ZExt, TIRTy::U32, TIRTy::I64, v)),
         TIRTy::U16 => Ok(fb.cast(CastOp::ZExt, TIRTy::U16, TIRTy::I64, v)),
         TIRTy::U8 => Ok(fb.cast(CastOp::ZExt, TIRTy::U8, TIRTy::I64, v)),
@@ -7089,7 +7192,11 @@ fn store_one_field<'tcx>(
     // already-emitted structural_eq/subst_at IR does not drift).
     if let Some(leaf) = scalar_or_ptr_wrapper_leaf(cx, fty) {
         let (val, _vty) = lower_operand(cx, fb, env, op)?;
-        let addr = if off == 0 { base } else { gep_byte_offset(fb, base, off) };
+        let addr = if off == 0 {
+            base
+        } else {
+            gep_byte_offset(fb, base, off)
+        };
         fb.store(leaf, addr, val);
         return Ok(());
     }
@@ -7098,7 +7205,11 @@ fn store_one_field<'tcx>(
     // leaf; copy its bytes from the source operand's slot into the field slot.
     // The source must be a PLACE (a copy/move of an aggregate value) — a constant
     // aggregate field is not modeled (fail loud).
-    let addr = if off == 0 { base } else { gep_byte_offset(fb, base, off) };
+    let addr = if off == 0 {
+        base
+    } else {
+        gep_byte_offset(fb, base, off)
+    };
     // A CONSTANT nested-aggregate field (a compile-time struct/array constant held
     // in a field, e.g. a monomorphized `TableLayout`, or `RawTableInner::NEW` inside
     // `fallible_with_capacity` / `HashMap::new`): materialize its byte image into the
@@ -7149,7 +7260,10 @@ fn store_array_elems<'tcx>(
     operands: &rustc_index::IndexVec<rustc_abi::FieldIdx, Operand<'tcx>>,
 ) -> Result<(), String> {
     if !matches!(agg_ty.kind(), ty::Array(_, _)) {
-        return Err(format!("Aggregate Array of non-array type {}", ty_family(agg_ty)));
+        return Err(format!(
+            "Aggregate Array of non-array type {}",
+            ty_family(agg_ty)
+        ));
     }
     // The array's faithful per-element offsets (stride = size.align_to(align)).
     let layout = cx
@@ -7175,14 +7289,14 @@ fn set_discriminant_at(
 ) -> Result<(), String> {
     match &layout.encoding {
         MirTagEncoding::Direct => {
-            if let Some(disc) = layout.variants.get(variant_index.as_usize()).and_then(|v| v.0) {
-                // A `Variants::Single` records exactly one Some(0); a tagless enum
-                // has tag_bytes==1 sentinel but we only write a real tag for a
-                // multi-variant layout. Detect the single-variant tagless case: if
-                // ALL other variants are None and this one is Some, and there is
-                // genuinely no tag, the write is harmless (offset 0, the payload).
-                // To stay sound we skip the write for a single-inhabited-variant
-                // layout (no tag field exists).
+            if let Some(disc) = layout
+                .variants
+                .get(variant_index.as_usize())
+                .and_then(|v| v.0)
+            {
+                // Variants::Single has no runtime tag. Derive this from rustc's
+                // layout category, not the number of logical discriminants: a
+                // repr rule can retain a Direct tag even with one alternative.
                 if multi_variant_has_tag(layout) {
                     store_tag(fb, base, layout.tag_offset, &layout.tag_ir_ty, disc);
                 }
@@ -7195,19 +7309,21 @@ fn set_discriminant_at(
             if variant_index == *untagged_variant {
                 return Ok(());
             }
-            if let Some(disc) = layout.variants.get(variant_index.as_usize()).and_then(|v| v.0) {
-                store_tag(fb, base, layout.tag_offset, &layout.tag_ir_ty, disc);
-            }
+            let disc = layout
+                .variants
+                .get(variant_index.as_usize())
+                .and_then(|v| v.0)
+                .ok_or_else(|| "SetDiscriminant niche variant has no encoded value".to_string())?;
+            store_tag(fb, base, layout.tag_offset, &layout.tag_ir_ty, disc);
             Ok(())
         }
     }
 }
 
-/// Whether a layout genuinely has a runtime tag field (more than one variant
-/// carries a Direct Switch value). A `Variants::Single` layout records exactly one
-/// `Some(0)` and is tagless.
+/// Whether rustc supplied a runtime tag/niche. Variants::Single is tagless,
+/// independent of the number of declarations or logical discriminant values.
 fn multi_variant_has_tag(layout: &MirEnumLayout) -> bool {
-    layout.variants.iter().filter(|v| v.0.is_some()).count() > 1
+    layout.runtime_tag
 }
 
 /// Statement discriminant name for an unsupported-statement bail message.
@@ -7317,8 +7433,10 @@ fn operand_scalar_uses(cx: &Cx<'_, '_>, op: &Operand<'_>, out: &mut BTreeSet<Loc
 /// index local.
 fn place_scalar_uses(cx: &Cx<'_, '_>, place: &Place<'_>, out: &mut BTreeSet<Local>) {
     // A leading Deref of an SSA-pointer base reads that base pointer value.
-    if matches!(place.projection.as_ref().first(), Some(ProjectionElem::Deref))
-        && is_ssa(cx, place.local)
+    if matches!(
+        place.projection.as_ref().first(),
+        Some(ProjectionElem::Deref)
+    ) && is_ssa(cx, place.local)
     {
         out.insert(place.local);
     }
@@ -7350,9 +7468,7 @@ fn rvalue_scalar_uses(cx: &Cx<'_, '_>, rv: &Rvalue<'_>, out: &mut BTreeSet<Local
         Rvalue::Ref(_, _, place)
         | Rvalue::RawPtr(_, place)
         | Rvalue::CopyForDeref(place)
-        | Rvalue::Reborrow(_, _, place) => {
-            place_scalar_uses(cx, place, out)
-        }
+        | Rvalue::Reborrow(_, _, place) => place_scalar_uses(cx, place, out),
         Rvalue::Discriminant(place) => place_scalar_uses(cx, place, out),
         Rvalue::Aggregate(_, ops) => {
             for op in ops.iter() {
@@ -7426,7 +7542,10 @@ fn terminator_scalar_uses(cx: &Cx<'_, '_>, kind: &TerminatorKind<'_>, out: &mut 
 
 /// SSA-scalar locals DEFINED in a block (an Assign to a bare SSA scalar local, or
 /// a Call whose destination is a bare SSA scalar local).
-fn block_scalar_defs(cx: &Cx<'_, '_>, data: &rustc_middle::mir::BasicBlockData<'_>) -> BTreeSet<Local> {
+fn block_scalar_defs(
+    cx: &Cx<'_, '_>,
+    data: &rustc_middle::mir::BasicBlockData<'_>,
+) -> BTreeSet<Local> {
     let mut defs = BTreeSet::new();
     for stmt in &data.statements {
         if let StatementKind::Assign(boxed) = &stmt.kind {
@@ -7454,13 +7573,14 @@ fn block_scalar_upward_uses(
 ) -> BTreeSet<Local> {
     let mut defined: BTreeSet<Local> = BTreeSet::new();
     let mut uses: BTreeSet<Local> = BTreeSet::new();
-    let add_uses = |from: &BTreeSet<Local>, defined: &BTreeSet<Local>, uses: &mut BTreeSet<Local>| {
-        for &l in from {
-            if !defined.contains(&l) {
-                uses.insert(l);
+    let add_uses =
+        |from: &BTreeSet<Local>, defined: &BTreeSet<Local>, uses: &mut BTreeSet<Local>| {
+            for &l in from {
+                if !defined.contains(&l) {
+                    uses.insert(l);
+                }
             }
-        }
-    };
+        };
     for stmt in &data.statements {
         match &stmt.kind {
             StatementKind::Assign(boxed) => {
@@ -7639,14 +7759,18 @@ struct AssertPanicCall {
 /// than silently miscompiling.
 fn assert_panic_langcall(
     msg: &AssertKind<Operand<'_>>,
-) -> Option<(rustc_attr_ir::lang_items::LangItem, Vec<TIRTy>, AssertPanicArgs)> {
+) -> Option<(
+    rustc_attr_ir::lang_items::LangItem,
+    Vec<TIRTy>,
+    AssertPanicArgs,
+)> {
     use rustc_attr_ir::lang_items::LangItem;
     let loc_only = |li: LangItem| Some((li, vec![TIRTy::Ptr], AssertPanicArgs::LocationOnly));
     match msg {
         // Amendment P (trust-ir wire v54): a panic site's entry takes the
         // kind's operands as `usize` (the validator's V2 rule), so the
         // `usize` operands of these two entries are declared `Usize` and the
-        // emission bitcasts the frontend's `U64` image of a `usize` to it.
+        // emission bitcasts the frontend's target-width usize carrier to it.
         AssertKind::BoundsCheck { .. } => Some((
             LangItem::PanicBoundsCheck,
             vec![TIRTy::Usize, TIRTy::Usize, TIRTy::Ptr],
@@ -7658,9 +7782,7 @@ fn assert_panic_langcall(
             AssertPanicArgs::Misaligned,
         )),
         AssertKind::NullPointerDereference => loc_only(LangItem::PanicNullPointerDereference),
-        AssertKind::NullReferenceConstructed => {
-            loc_only(LangItem::PanicNullReferenceConstructed)
-        }
+        AssertKind::NullReferenceConstructed => loc_only(LangItem::PanicNullReferenceConstructed),
         AssertKind::Overflow(..)
         | AssertKind::OverflowNeg(_)
         | AssertKind::DivisionByZero(_)
@@ -7945,9 +8067,14 @@ fn record_assert_obligations<'tcx>(
         ));
         let id = mb
             .add_proof_obligation(|id| {
-                trust_ir::ProofObligation::new(id, kind, trust_ir::ProofStatus::Pending, description)
-                    .with_function(fid)
-                    .with_source(source)
+                trust_ir::ProofObligation::new(
+                    id,
+                    kind,
+                    trust_ir::ProofStatus::Pending,
+                    description,
+                )
+                .with_function(fid)
+                .with_source(source)
             })
             .map_err(|refusal| refusal.to_string())?;
         recorded.push((id, index));
@@ -8239,7 +8366,7 @@ fn get_panic_location<'tcx>(
 }
 
 /// Amendment P: the trust-ir `AssertKind` of a MIR assert (plan item P, wire
-/// v52), its `usize` operands lowered and bitcast from the frontend's `U64`
+/// v52), its `usize` operands lowered and bitcast from the frontend's target-width
 /// image of a `usize` to `Usize` (the validator types kind operands
 /// `usize`). The location-only kinds trust-ir has no kind for — coroutine
 /// resume and null reference constructed — are `Unspecified`; their panic
@@ -8304,9 +8431,8 @@ fn tir_assert_kind<'tcx>(
     })
 }
 
-/// A MIR `usize` operand as a trust-ir `Usize` value: the frontend images a
-/// `usize` as `U64`, so that image is bitcast (same width on every target the
-/// frontend lowers for); an operand of any other type is refused.
+/// Bridge the target-width scalar carrier of a MIR `usize` to the nominal
+/// `Usize` panic ABI type. A same-width bitcast is required by the IR type system.
 fn lower_usize_operand<'tcx>(
     cx: &Cx<'tcx, '_>,
     fb: &mut trust_ir_build::FunctionBuilder<'_>,
@@ -8314,10 +8440,13 @@ fn lower_usize_operand<'tcx>(
     op: &Operand<'tcx>,
 ) -> Result<trust_ir::ValueId, String> {
     let (v, t) = lower_operand(cx, fb, env, op)?;
-    match t {
-        TIRTy::Usize => Ok(v),
-        TIRTy::U64 => Ok(fb.cast(CastOp::Bitcast, TIRTy::U64, TIRTy::Usize, v)),
-        other => Err(format!("Assert kind operand is not usize ({other:?})")),
+    let expected = pointer_int_ty(cx.tcx, false)?;
+    if t == TIRTy::Usize {
+        Ok(v)
+    } else if t == expected {
+        Ok(fb.cast(CastOp::Bitcast, expected, TIRTy::Usize, v))
+    } else {
+        Err(format!("Assert kind operand is not target usize ({t:?})"))
     }
 }
 
@@ -8359,8 +8488,7 @@ fn span_caller_location_const<'tcx>(
 /// `ReifyShim`).
 fn callee_needs_caller_location<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> bool {
     eh_lane(cx.tcx)
-        && resolve_call_callee(cx, func)
-            .is_some_and(|i| i.def.requires_caller_location(cx.tcx))
+        && resolve_call_callee(cx, func).is_some_and(|i| i.def.requires_caller_location(cx.tcx))
 }
 
 /// The successors of a MIR terminator AS THIS LOWERING EMITS THEM: the normal
@@ -8497,10 +8625,7 @@ fn compute_scalar_live_in(
 /// Resolve a call-`func` operand to its monomorphized callee `Instance` (for the
 /// stable symbol name). `None` for an indirect call or a callee that does not
 /// resolve. Mirrors trust-cg's `resolve_call_callee`.
-fn resolve_call_callee<'tcx>(
-    cx: &Cx<'tcx, '_>,
-    func: &Operand<'tcx>,
-) -> Option<Instance<'tcx>> {
+fn resolve_call_callee<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Option<Instance<'tcx>> {
     // The callee is statically known when the `func` operand's TYPE is a `FnDef` —
     // either an `FnDef` CONSTANT (`f(x)`), or a `Copy`/`Move` of a `FnDef`-typed
     // ZST value (`(move _self)(x)` inside a `FnPtrShim` body, where `_self:
@@ -8539,9 +8664,7 @@ fn atomic_orderings_from_args<'tcx>(
             .try_to_branch()
             .and_then(|b| b.first().and_then(|cc| cc.try_to_leaf()))
             .or_else(|| c.try_to_leaf())
-            .ok_or_else(|| {
-                "atomic intrinsic ordering is not a resolved const value".to_string()
-            })?;
+            .ok_or_else(|| "atomic intrinsic ordering is not a resolved const value".to_string())?;
         let disc = si.to_uint(si.size());
         out.push(match disc {
             0 => TIROrdering::Relaxed,
@@ -8570,19 +8693,15 @@ fn atomic_int_lane<'tcx>(cx: &Cx<'tcx, '_>, t: Ty<'tcx>) -> Result<(TIRTy, bool)
     let leaf = cast_scalar_tir_ty(cx, t)
         .ok_or_else(|| format!("atomic intrinsic T is not a scalar ({})", ty_family(t)))?;
     if matches!(leaf, TIRTy::Ptr) {
-        return Ok((TIRTy::U64, true));
+        return Ok((pointer_int_ty(cx.tcx, false)?, true));
     }
-    if int_bit_width(&leaf).is_none()
-        || matches!(leaf, TIRTy::I128 | TIRTy::U128 | TIRTy::Bool)
-    {
+    if int_bit_width(&leaf).is_none() || matches!(leaf, TIRTy::I128 | TIRTy::U128 | TIRTy::Bool) {
         return Err(format!("atomic intrinsic T lane not supported ({leaf:?})"));
     }
     Ok((leaf, false))
 }
 
-fn atomic_ordering_from_args<'tcx>(
-    args: ty::GenericArgsRef<'tcx>,
-) -> Result<TIROrdering, String> {
+fn atomic_ordering_from_args<'tcx>(args: ty::GenericArgsRef<'tcx>) -> Result<TIROrdering, String> {
     let ord_const = args
         .iter()
         .find_map(|a| a.as_const())
@@ -8603,7 +8722,9 @@ fn atomic_ordering_from_args<'tcx>(
         2 => Ok(TIROrdering::Acquire),
         3 => Ok(TIROrdering::AcqRel),
         4 => Ok(TIROrdering::SeqCst),
-        n => Err(format!("atomic intrinsic ordering discriminant {n} out of range 0..=4")),
+        n => Err(format!(
+            "atomic intrinsic ordering discriminant {n} out of range 0..=4"
+        )),
     }
 }
 
@@ -8749,11 +8870,7 @@ fn call_is_self_recursive<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> bool
 /// not by a bare method name. Cross-crate MIR may retain these `#[inline(always)]`
 /// core wrappers as calls, so their pointer semantics must not escape the
 /// frontend's intrinsic/MIR-domain checks as opaque extern declarations.
-fn raw_ptr_method_named<'tcx>(
-    cx: &Cx<'tcx, '_>,
-    func: &Operand<'tcx>,
-    method: &str,
-) -> bool {
+fn raw_ptr_method_named<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>, method: &str) -> bool {
     let Some(callee) = resolve_call_callee(cx, func) else {
         return false;
     };
@@ -8784,15 +8901,11 @@ enum StableMemWrapper {
     WriteBytes,
 }
 
-fn stable_mem_wrapper<'tcx>(
-    cx: &Cx<'tcx, '_>,
-    func: &Operand<'tcx>,
-) -> Option<StableMemWrapper> {
+fn stable_mem_wrapper<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Option<StableMemWrapper> {
     let callee = resolve_call_callee(cx, func)?;
     let path = cx.tcx.def_path_str(callee.def_id());
-    let free = |name: &str| {
-        path == format!("core::ptr::{name}") || path == format!("std::ptr::{name}")
-    };
+    let free =
+        |name: &str| path == format!("core::ptr::{name}") || path == format!("std::ptr::{name}");
     let raw_method = |namespace: &str, name: &str| {
         path.ends_with(&format!("::{name}"))
             && (path.starts_with(&format!("core::ptr::{namespace}::"))
@@ -8850,7 +8963,10 @@ fn arc_deref_inline_offset<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Opt
     // user method literally named `deref` on a non-Deref trait must not be
     // misclassified into pointer arithmetic).
     let trait_method = cx.tcx.opt_associated_item(did)?.trait_item_def_id()?;
-    let trait_did = cx.tcx.opt_associated_item(trait_method)?.trait_container(cx.tcx)?;
+    let trait_did = cx
+        .tcx
+        .opt_associated_item(trait_method)?
+        .trait_container(cx.tcx)?;
     if Some(trait_did) != cx.tcx.lang_items().deref_trait() {
         return None;
     }
@@ -8860,11 +8976,7 @@ fn arc_deref_inline_offset<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Opt
     // generic args, so a different `Deref` impl (Rc, Box, &T, a user smart pointer)
     // is rejected.
     let impl_did = cx.tcx.opt_associated_item(did)?.impl_container(cx.tcx)?;
-    let self_ty = cx.normalize_ty(
-        cx.tcx
-            .type_of(impl_did)
-            .instantiate(cx.tcx, callee.args),
-    );
+    let self_ty = cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
     let ty::Adt(adt_def, adt_args) = self_ty.kind() else {
         return None;
     };
@@ -8968,11 +9080,7 @@ fn arc_new_inner_layout<'tcx>(
     };
     // The impl's `Self` (instantiated with the call's generic args) must be the
     // `Arc` diagnostic ADT — the canonical, stable identifier for `alloc::sync::Arc`.
-    let self_ty = cx.normalize_ty(
-        cx.tcx
-            .type_of(impl_did)
-            .instantiate(cx.tcx, callee.args),
-    );
+    let self_ty = cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
     let ty::Adt(adt_def, adt_args) = self_ty.kind() else {
         return Ok(None);
     };
@@ -9006,7 +9114,8 @@ fn arc_new_inner_layout<'tcx>(
     let total_size = (data_offset + data_size).next_multiple_of(block_align);
     // The pointee's data Store form: a single scalar (typed Store) or an aggregate
     // (typed-field memcpy from the source slot). A ZST pointee Stores nothing.
-    let data_scalar = scalar_tir_ty(pointee).or_else(|| memory_leaf_tir_ty(cx.tcx, pointee));
+    let data_scalar =
+        scalar_tir_ty(cx.tcx, pointee).or_else(|| memory_leaf_tir_ty(cx.tcx, pointee));
     Ok(Some(ArcInnerLayout {
         data_offset,
         total_size,
@@ -9090,8 +9199,10 @@ fn saturating_add_msg_call<'tcx>(
     let a1 = cx.mono(sig.inputs()[1]);
     let a2 = cx.mono(sig.inputs()[2]);
     let ret = cx.mono(sig.output());
-    let lane = uint_lane_tir(a0)?;
-    if uint_lane_tir(a1) != Some(lane.clone()) || uint_lane_tir(ret) != Some(lane.clone()) {
+    let lane = uint_lane_tir(cx.tcx, a0)?;
+    if uint_lane_tir(cx.tcx, a1) != Some(lane.clone())
+        || uint_lane_tir(cx.tcx, ret) != Some(lane.clone())
+    {
         return None;
     }
     if !is_str_or_byteslice_ref(a2) {
@@ -9141,7 +9252,7 @@ fn uint_max_const(
 
 /// The trust-ir lane type of an UNSIGNED fixed-width integer (`u8..u128`/`usize`),
 /// or `None` for anything else (signed / non-integer).
-fn uint_lane_tir(ty: Ty<'_>) -> Option<TIRTy> {
+fn uint_lane_tir(tcx: TyCtxt<'_>, ty: Ty<'_>) -> Option<TIRTy> {
     match ty.kind() {
         ty::Uint(u) => Some(match u {
             ty::UintTy::U8 => TIRTy::U8,
@@ -9149,7 +9260,9 @@ fn uint_lane_tir(ty: Ty<'_>) -> Option<TIRTy> {
             ty::UintTy::U32 => TIRTy::U32,
             ty::UintTy::U64 => TIRTy::U64,
             ty::UintTy::U128 => TIRTy::U128,
-            ty::UintTy::Usize => TIRTy::U64,
+            ty::UintTy::Usize => {
+                return pointer_sized_int_ty(u32::from(tcx.sess.target.pointer_width), false)
+            }
         }),
         _ => None,
     }
@@ -9263,7 +9376,7 @@ enum IterKind {
 
 /// The faithful per-iterator cursor model + element layout, derived from the
 /// element type's `tcx.layout_of`. The cursor lives in the iterator local's
-/// memory slot as two pointer words: `cur_ptr @ 0`, `end_ptr @ 8`.
+/// memory slot as two pointer words: `cur_ptr @ 0`, `end_ptr @ pointer_size`.
 #[derive(Clone)]
 struct IterModel {
     kind: IterKind,
@@ -9352,7 +9465,10 @@ fn collect_scalar_leaves<'tcx>(
             }
             Ok(())
         }
-        _ => Err(format!("Vec field has unexpected aggregate leaf: {}", ty_family(ty))),
+        _ => Err(format!(
+            "Vec field has unexpected aggregate leaf: {}",
+            ty_family(ty)
+        )),
     }
 }
 
@@ -9362,7 +9478,11 @@ fn vec_field_offsets<'tcx>(cx: &Cx<'tcx, '_>, vec_ty: Ty<'tcx>) -> Result<VecFie
     collect_scalar_leaves(cx, vec_ty, 0, &mut leaves)?;
     // Expect exactly one pointer leaf + two integer leaves (cap, len).
     let ptr_leaves: Vec<u64> = leaves.iter().filter(|(_, p)| *p).map(|(o, _)| *o).collect();
-    let mut int_leaves: Vec<u64> = leaves.iter().filter(|(_, p)| !*p).map(|(o, _)| *o).collect();
+    let mut int_leaves: Vec<u64> = leaves
+        .iter()
+        .filter(|(_, p)| !*p)
+        .map(|(o, _)| *o)
+        .collect();
     if ptr_leaves.len() != 1 || int_leaves.len() != 2 {
         return Err(format!(
             "Vec layout is not the expected 1-ptr + 2-usize triple ({} ptr, {} int leaves)",
@@ -9424,7 +9544,11 @@ fn into_iter_inline<'tcx>(
     let Some(trait_method) = assoc.trait_item_def_id() else {
         return Ok(None);
     };
-    let Some(trait_did) = cx.tcx.opt_associated_item(trait_method).and_then(|a| a.trait_container(cx.tcx)) else {
+    let Some(trait_did) = cx
+        .tcx
+        .opt_associated_item(trait_method)
+        .and_then(|a| a.trait_container(cx.tcx))
+    else {
         return Ok(None);
     };
     if !cx
@@ -9440,11 +9564,7 @@ fn into_iter_inline<'tcx>(
     let Some(impl_did) = assoc.impl_container(cx.tcx) else {
         return Ok(None);
     };
-    let self_ty = cx.normalize_ty(
-        cx.tcx
-            .type_of(impl_did)
-            .instantiate(cx.tcx, callee.args),
-    );
+    let self_ty = cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
     // Peel a leading shared reference: `&Vec<T>` / `&[T]` -> borrowed slice iter.
     let (recv_ty, borrowed) = match self_ty.kind() {
         ty::Ref(_, inner, _) => (*inner, true),
@@ -9511,7 +9631,6 @@ fn into_iter_inline<'tcx>(
     }))
 }
 
-
 /// THREADS: the REAL `vec::IntoIter<T, A>` field offsets — `(ptr, end, buf,
 /// cap)` — from `tcx.layout_of` + the ADT's FIELD NAMES (robust to layout
 /// reorder). The inlined cursor ops and every REAL `IntoIter` body then share
@@ -9565,7 +9684,11 @@ fn iter_next_inline<'tcx>(
     let Some(trait_method) = assoc.trait_item_def_id() else {
         return Ok(None);
     };
-    let Some(trait_did) = cx.tcx.opt_associated_item(trait_method).and_then(|a| a.trait_container(cx.tcx)) else {
+    let Some(trait_did) = cx
+        .tcx
+        .opt_associated_item(trait_method)
+        .and_then(|a| a.trait_container(cx.tcx))
+    else {
         return Ok(None);
     };
     if !cx
@@ -9587,11 +9710,7 @@ fn iter_next_inline<'tcx>(
     let Some(impl_did) = assoc.impl_container(cx.tcx) else {
         return Ok(None);
     };
-    let self_ty = cx.normalize_ty(
-        cx.tcx
-            .type_of(impl_did)
-            .instantiate(cx.tcx, callee.args),
-    );
+    let self_ty = cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
     let ty::Adt(adt, adt_args) = self_ty.kind() else {
         return Ok(None);
     };
@@ -9607,7 +9726,7 @@ fn iter_next_inline<'tcx>(
     // below because `Bytes<'a>` has NO type generic arg: its element is `u8` BY
     // DEFINITION (`impl Iterator for Bytes<'_> { type Item = u8; .. }`). Cursor
     // shape: `Bytes` wraps `Copied<slice::Iter<'_, u8>>` = the same (cur,end)
-    // pointer pair at +0/+8 the `str::bytes` cursor-init inline writes. Any
+    // pointer pair at consecutive target words the `str::bytes` cursor-init inline writes. Any
     // OTHER no-type-arg iterator (e.g. `Chars`) still fails loud below.
     if path == "core::str::iter::Bytes"
         || path.ends_with("str::iter::Bytes")
@@ -9689,9 +9808,9 @@ fn iter_next_inline<'tcx>(
 //   * `str::as_bytes(&self) -> &[u8]` — in core this is a transmute: IDENTITY
 //     on the (ptr,len) fat pair. Inlined as a 2-lane copy into the fat dest.
 //   * `str::len(&self) -> usize` — the fat pair's METADATA lane. Inlined as a
-//     single load at +8.
+//     single load at the second target word.
 //   * `str::bytes(&self) -> str::Bytes<'_>` — a cursor init: `cur = data ptr`,
-//     `end = ptr + len` (stride 1), stored at +0/+8 of the `Bytes` slot —
+//     `end = ptr + len` (stride 1), stored at consecutive pointer words of the `Bytes` slot —
 //     exactly the convention the landed slice-iterator model established
 //     (`into_iter` cursor-init / `lower_iter_next`).
 //   * `<[u8]>::iter(&self) -> slice::Iter<'_, u8>` — the same cursor init from
@@ -9712,7 +9831,7 @@ fn iter_next_inline<'tcx>(
 // FAITHFULNESS: the (ptr,len) pair IS the fat-pointer value the rest of the
 // lowering already models (`lower_unsize_assign` lane discipline; sret pairs);
 // `as_bytes`/`len` read it exactly as native does. The iterator cursor layout
-// (`cur@0,end@8`) is internal to the module: it is written and read ONLY by
+// (`cur@0,end@pointer_size`) is internal to the module: it is written and read ONLY by
 // these inlines + `lower_iter_next` — an iterator state never crosses an
 // extern boundary on any emitted surface (same discipline as the landed
 // slice-iterator model).
@@ -9726,10 +9845,10 @@ enum StrInlineOp {
     /// `str::as_bytes` — identity on the fat pair: copy both lanes into the
     /// fat `&[u8]` destination slot.
     AsBytes,
-    /// `str::len` — load the metadata lane (+8) of the arg pair.
+    /// `str::len` — load the second pointer word of the arg pair.
     Len,
     /// `str::bytes` / `<[u8]>::iter` — cursor init: `cur = ptr@0`,
-    /// `end = ptr + len` (stride 1 byte), stored at +0/+8 of the destination
+    /// `end = ptr + len` (stride 1 byte), stored at consecutive pointer words of the destination
     /// iterator slot.
     ByteCursorInit,
     /// The blanket `IntoIterator::into_iter` identity over a modeled
@@ -9791,11 +9910,8 @@ fn str_inline_op<'tcx>(
     match assoc.trait_item_def_id() {
         // INHERENT methods: `str::{as_bytes,len,bytes}` and `<[u8]>::iter`.
         None => {
-            let self_ty = cx.normalize_ty(
-                cx.tcx
-                    .type_of(impl_did)
-                    .instantiate(cx.tcx, callee.args),
-            );
+            let self_ty =
+                cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
             if self_ty.is_str() {
                 return Ok(match cx.tcx.item_name(did).as_str() {
                     "as_bytes" => Some(StrInlineOp::AsBytes),
@@ -9832,17 +9948,11 @@ fn str_inline_op<'tcx>(
             // The blanket identity impl's UNINSTANTIATED Self is the bare type
             // param `I`; every concrete impl (`&[T]`, `&Vec<T>`, `Vec<T>`, ...)
             // has a constructed Self and is NOT touched here.
-            if !matches!(
-                cx.tcx.type_of(impl_did).skip_binder().kind(),
-                ty::Param(_)
-            ) {
+            if !matches!(cx.tcx.type_of(impl_did).skip_binder().kind(), ty::Param(_)) {
                 return Ok(None);
             }
-            let self_ty = cx.normalize_ty(
-                cx.tcx
-                    .type_of(impl_did)
-                    .instantiate(cx.tcx, callee.args),
-            );
+            let self_ty =
+                cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
             if !is_modeled_u8_iter_state(cx, self_ty) {
                 return Ok(None);
             }
@@ -9931,11 +10041,7 @@ fn box_new_uninit_inline<'tcx>(
     let Some(impl_did) = assoc.impl_container(cx.tcx) else {
         return Ok(None);
     };
-    let self_ty = cx.normalize_ty(
-        cx.tcx
-            .type_of(impl_did)
-            .instantiate(cx.tcx, callee.args),
-    );
+    let self_ty = cx.normalize_ty(cx.tcx.type_of(impl_did).instantiate(cx.tcx, callee.args));
     // `Box<T>` is the `owned_box` LANG item (not a diagnostic item) — check the
     // resolved Self via `Ty::is_box` (it inspects the `owned_box` lang-item ADT),
     // so a user struct named `Box` or `Rc`/`Arc` is rejected.
@@ -10054,8 +10160,7 @@ fn is_closure_rust_call<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> bool {
         // every DIRECT caller must classify args with the same spread rule.
         // (`Virtual` dyn calls never reach here — the pre-pass routes them.)
         rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn => {
-            cx.tcx.fn_sig(callee.def_id()).skip_binder().abi()
-                == rustc_abi::ExternAbi::RustCall
+            cx.tcx.fn_sig(callee.def_id()).skip_binder().abi() == rustc_abi::ExternAbi::RustCall
         }
         _ => false,
     }
@@ -10263,7 +10368,7 @@ fn classify_call_arg<'tcx>(
                         }
                         // An UNSIZED local argument (`unsized_fn_params`: the
                         // by-value `dyn FnOnce` receiver of the virtual
-                        // `call_once`) passes the ADDRESS of its 16-byte fat
+                        // `call_once`) passes the ADDRESS of its two-word fat
                         // carrier slot — the same pointer-to-(data,vtable) form
                         // the virtual-dispatch emission reads through.
                         if unsized_local_carrier(cx, cty).is_some() {
@@ -10328,7 +10433,7 @@ fn classify_call_arg<'tcx>(
                 return Ok(ArgAbi::Zst);
             }
             // A bare scalar constant (int / bool) is a Scalar arg.
-            if let Some(t) = scalar_tir_ty(cty) {
+            if let Some(t) = scalar_tir_ty(cx.tcx, cty) {
                 return Ok(ArgAbi::Scalar(t));
             }
             // ADDITIVE: a constant whose type is a transparent single-scalar-field
@@ -10345,7 +10450,7 @@ fn classify_call_arg<'tcx>(
             // call arg (a fat-pointer constant, e.g. `String::from("Tree.rec")`,
             // `push_str(".rec")`). Its bytes are materialized once per function
             // in the entry block (`materialize_str_consts`: immortal heap image
-            // + 16-byte (ptr,len) pair slot); the call passes the PAIR SLOT's
+            // + two-word (ptr,len) pair slot); the call passes the PAIR SLOT's
             // address — the same AggByRef convention a lowered callee models its
             // own fat `&str` param with, so both sides agree by construction.
             if str_const_bytes(cx, c).is_some() {
@@ -10362,7 +10467,10 @@ fn classify_call_arg<'tcx>(
             if const_agg_bytes(cx, c).is_ok() {
                 return Ok(ArgAbi::AggByRef);
             }
-            Err(format!("call arg constant of non-scalar type {}", ty_family(cty)))
+            Err(format!(
+                "call arg constant of non-scalar type {}",
+                ty_family(cty)
+            ))
         }
         Operand::RuntimeChecks(_) => Err("call arg: RuntimeChecks".to_string()),
     }
@@ -10438,8 +10546,9 @@ fn call_signature_params_returns<'tcx>(
                 // A closure spread field is classified via `scalar_or_ptr_wrapper_leaf`
                 // (never by-value pair), so this is unreachable.
                 ArgAbi::PairByValue(_) => {
-                    return Err("closure spread arg unexpectedly a by-value pair (RUNG 11)"
-                        .to_string())
+                    return Err(
+                        "closure spread arg unexpectedly a by-value pair (RUNG 11)".to_string()
+                    )
                 }
             }
         }
@@ -10808,7 +10917,11 @@ fn slot_lane_ty(size: u64, align: u64) -> Result<TIRTy, String> {
         // `Mask::valid`/`to_bitmask`, which this pipeline lowers with scalar
         // lane accesses only).
         a if a >= 16 && a.is_power_of_two() => TIRTy::I128,
-        other => return Err(format!("memory slot alignment {other} unsupported [size={size}]")),
+        other => {
+            return Err(format!(
+                "memory slot alignment {other} unsupported [size={size}]"
+            ))
+        }
     };
     let lane_w = if align >= 16 { 16 } else { align };
     if size % lane_w != 0 {
@@ -10847,13 +10960,12 @@ fn place_leaf_tir_ty<'tcx>(cx: &Cx<'tcx, '_>, place: &Place<'tcx>) -> Result<TIR
     // no already-lowered function drifts): a non-niche `Option<usize>` is a
     // `ScalarPair`, NOT a `Scalar`, so it stays a by-ref aggregate and is never
     // misread as one scalar here.
-    cast_scalar_tir_ty(cx, leaf)
-        .ok_or_else(|| {
-            format!(
-                "place leaf is not a memory scalar: {} [leaf={leaf:?} place={place:?}]",
-                ty_family(leaf)
-            )
-        })
+    cast_scalar_tir_ty(cx, leaf).ok_or_else(|| {
+        format!(
+            "place leaf is not a memory scalar: {} [leaf={leaf:?} place={place:?}]",
+            ty_family(leaf)
+        )
+    })
 }
 
 /// A single-access scalar LEAF, like `memory_leaf_tir_ty`, but also admitting a
@@ -11100,23 +11212,25 @@ fn walk_projection_address<'tcx>(
                 // index local (its address escapes elsewhere — e.g. `{begin}`
                 // formatted by-ref in `slice_error_fail_rt` — while also
                 // indexing here) is a typed Load from its slot.
-                let idx_val = match cx.model.get(index_local) {
+                let (idx_val, idx_ty) = match cx.model.get(index_local) {
                     Some(LocalModel::Memory(_)) => {
                         let p = cx.slot_ptr(*index_local).ok_or_else(|| {
                             "index local slot not allocated (classification bug)".to_string()
                         })?;
                         let leaf = cast_scalar_tir_ty(cx, cx.local_concrete_ty(*index_local))
-                            .ok_or_else(|| {
-                                "memory-backed index local is not scalar".to_string()
-                            })?;
-                        fb.load(leaf, p)
+                            .ok_or_else(|| "memory-backed index local is not scalar".to_string())?;
+                        (fb.load(leaf.clone(), p), leaf)
                     }
-                    _ => env.get(index_local).copied().ok_or_else(|| {
-                        format!(
-                            "index local read before assignment in block (needs phi) \
-                             [local={index_local:?} proj={projection:?}]"
-                        )
-                    })?,
+                    Some(LocalModel::Ssa(leaf)) => {
+                        let value = env.get(index_local).copied().ok_or_else(|| {
+                            format!(
+                                "index local read before assignment in block (needs phi) \
+                                 [local={index_local:?} proj={projection:?}]"
+                            )
+                        })?;
+                        (value, leaf.clone())
+                    }
+                    _ => return Err("index local is not a scalar".to_string()),
                 };
                 if let Some(elem_leaf) = memory_leaf_tir_ty(cx.tcx, elem_layout.ty) {
                     // Scalar element: a single typed GEP (idx * sizeof(leaf)). Keeps
@@ -11124,17 +11238,9 @@ fn walk_projection_address<'tcx>(
                     addr = fb.gep(elem_leaf, addr, vec![idx_val]);
                 } else {
                     // Aggregate element: GEP by the byte stride `idx * stride`.
-                    // Multiply in the index local's own integer lane (usize -> U64),
+                    // Multiply in the index local's own target-width integer lane,
                     // so the `mul` operand types match (the validator checks this).
-                    let stride = elem_layout
-                        .size
-                        .align_to(elem_layout.align.abi)
-                        .bytes();
-                    let idx_ty = cx
-                        .local_ty
-                        .get(index_local)
-                        .cloned()
-                        .unwrap_or(TIRTy::U64);
+                    let stride = elem_layout.size.align_to(elem_layout.align.abi).bytes();
                     let stride_c = fb.iconst(idx_ty.clone(), stride as i128);
                     let byte = fb.mul(idx_ty, idx_val, stride_c);
                     addr = fb.gep(TIRTy::I8, addr, vec![byte]);
@@ -11167,10 +11273,8 @@ fn walk_projection_address<'tcx>(
                                 .try_to_target_usize(cx.tcx)
                                 .ok_or("from_end ConstantIndex: array length not constant")?;
                             if n < *offset {
-                                return Err(
-                                    "from_end ConstantIndex offset exceeds array length"
-                                        .to_string(),
-                                );
+                                return Err("from_end ConstantIndex offset exceeds array length"
+                                    .to_string());
                             }
                             byte_offset += (n - offset) * stride;
                         }
@@ -11183,19 +11287,16 @@ fn walk_projection_address<'tcx>(
                                      fat cell [base={base_ty:?} proj={projection:?}]"
                                 )
                             })?;
-                            let len_addr = gep_byte_offset(fb, cell, 8);
-                            let len = fb.load(TIRTy::U64, len_addr);
-                            let offc = fb.iconst(TIRTy::U64, *offset as i128);
-                            let idx = fb.sub(TIRTy::U64, len, offc);
-                            let stride_c = fb.iconst(TIRTy::U64, stride as i128);
-                            let byte = fb.mul(TIRTy::U64, idx, stride_c);
+                            let len_addr = gep_byte_offset(fb, cell, pointer_bytes(cx.tcx));
+                            let len = fb.load(pointer_int_ty(cx.tcx, false)?, len_addr);
+                            let offc = fb.iconst(pointer_int_ty(cx.tcx, false)?, *offset as i128);
+                            let idx = fb.sub(pointer_int_ty(cx.tcx, false)?, len, offc);
+                            let stride_c =
+                                fb.iconst(pointer_int_ty(cx.tcx, false)?, stride as i128);
+                            let byte = fb.mul(pointer_int_ty(cx.tcx, false)?, idx, stride_c);
                             addr = fb.gep(TIRTy::I8, addr, vec![byte]);
                         }
-                        _ => {
-                            return Err(
-                                "from_end ConstantIndex on non-array/slice".to_string()
-                            )
-                        }
+                        _ => return Err("from_end ConstantIndex on non-array/slice".to_string()),
                     }
                 }
                 cur_layout = elem_layout;
@@ -11226,15 +11327,12 @@ fn walk_projection_address<'tcx>(
                             n.checked_sub(from + to)
                                 .ok_or("Subslice bounds exceed array length")?
                         } else {
-                            to.checked_sub(*from)
-                                .ok_or("Subslice: to < from")?
+                            to.checked_sub(*from).ok_or("Subslice: to < from")?
                         };
                         let sub_ty = Ty::new_array(cx.tcx, *el, sub_n);
                         cur_layout = cx
                             .tcx
-                            .layout_of(
-                                ty::TypingEnv::fully_monomorphized().as_query_input(sub_ty),
-                            )
+                            .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(sub_ty))
                             .map_err(|e| format!("subarray layout_of failed: {e:?}"))?;
                         fat_cell = None;
                     }
@@ -11316,8 +11414,10 @@ fn simd_vector_lanes_any<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<(TIRTy
         Primitive::Float(f) => match f {
             rustc_abi::Float::F32 => TIRTy::F32,
             rustc_abi::Float::F64 => TIRTy::F64,
-            rustc_abi::Float::F16 | rustc_abi::Float::F16B
-            | rustc_abi::Float::F128 | rustc_abi::Float::PpcF128 => return None,
+            rustc_abi::Float::F16
+            | rustc_abi::Float::F16B
+            | rustc_abi::Float::F128
+            | rustc_abi::Float::PpcF128 => return None,
         },
         _ => return None,
     };
@@ -11326,7 +11426,7 @@ fn simd_vector_lanes_any<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<(TIRTy
 
 /// Whether a pointer to `pointee` is FAT with a COUNT metadata lane (a slice /
 /// str, or an unsized-tail STRUCT whose tail is a slice — `OsStr`,
-/// `os_str::bytes::Slice`): the lane at cell+8 is the element count a
+/// `os_str::bytes::Slice`): the second pointer word is the element count a
 /// `from_end` ConstantIndex/Subslice can subtract from. A `dyn` pointee's
 /// metadata is a VTABLE pointer — excluded. Sized pointees are thin.
 fn pointee_metadata_is_count<'tcx>(cx: &Cx<'tcx, '_>, pointee: Ty<'tcx>) -> bool {
@@ -11337,10 +11437,9 @@ fn pointee_metadata_is_count<'tcx>(cx: &Cx<'tcx, '_>, pointee: Ty<'tcx>) -> bool
                 return false;
             }
             // Unsized struct/tuple: metadata equals the TAIL's metadata; walk it.
-            let tail = cx.tcx.struct_tail_for_codegen(
-                pointee,
-                ty::TypingEnv::fully_monomorphized(),
-            );
+            let tail = cx
+                .tcx
+                .struct_tail_for_codegen(pointee, ty::TypingEnv::fully_monomorphized());
             matches!(tail.kind(), ty::Slice(_) | ty::Str)
         }
         _ => false,
@@ -11355,7 +11454,10 @@ fn element_layout<'tcx>(
 ) -> Result<rustc_middle::ty::layout::TyAndLayout<'tcx>, String> {
     match arr_layout.ty.kind() {
         ty::Array(_, _) | ty::Slice(_) => Ok(arr_layout.field(lcx, 0)),
-        _ => Err(format!("Index of non-array type: {}", ty_family(arr_layout.ty))),
+        _ => Err(format!(
+            "Index of non-array type: {}",
+            ty_family(arr_layout.ty)
+        )),
     }
 }
 
@@ -11474,9 +11576,10 @@ fn lower_place_value<'tcx>(
     // Bare SSA scalar local.
     if place.projection.is_empty() {
         if let Some(LocalModel::Ssa(t)) = cx.model.get(&place.local) {
-            let v = env.get(&place.local).copied().ok_or_else(|| {
-                "local read before assignment in block (needs phi)".to_string()
-            })?;
+            let v = env
+                .get(&place.local)
+                .copied()
+                .ok_or_else(|| "local read before assignment in block (needs phi)".to_string())?;
             return Ok((v, t.clone()));
         }
     }
@@ -11505,7 +11608,7 @@ fn lower_const_operand<'tcx>(
     // const-eval'd value is a `ConstValue::Scalar` whose ScalarInt is the inner scalar
     // bits, read at its own width by `const_value_to_i128`. (Needed for the SwissTable
     // group scan's `repeat(Tag(0x01))` / `Tag::DELETED` byte constants.)
-    let tir = scalar_tir_ty(cty)
+    let tir = scalar_tir_ty(cx.tcx, cty)
         .or_else(|| cast_scalar_tir_ty(cx, cty))
         .ok_or_else(|| format!("constant of non-scalar type {}", ty_family(cty)))?;
     let cv = match ct.eval(cx.tcx, ty::TypingEnv::fully_monomorphized(), c.span) {
@@ -11550,8 +11653,13 @@ fn lower_const_operand<'tcx>(
             if val == 0 {
                 fb.null_ptr()
             } else {
-                let iv = fb.iconst(TIRTy::U64, val);
-                fb.cast(CastOp::IntToPtr, TIRTy::U64, TIRTy::Ptr, iv)
+                let iv = fb.iconst(pointer_int_ty(cx.tcx, false)?, val);
+                fb.cast(
+                    CastOp::IntToPtr,
+                    pointer_int_ty(cx.tcx, false)?,
+                    TIRTy::Ptr,
+                    iv,
+                )
             }
         } else {
             fb.iconst(tir.clone(), val)
@@ -11605,8 +11713,13 @@ fn lower_ptr_const_value<'tcx>(
             if addr == 0 {
                 Ok(fb.null_ptr())
             } else {
-                let iv = fb.iconst(TIRTy::U64, addr as i128);
-                Ok(fb.cast(CastOp::IntToPtr, TIRTy::U64, TIRTy::Ptr, iv))
+                let iv = fb.iconst(pointer_int_ty(cx.tcx, false)?, addr as i128);
+                Ok(fb.cast(
+                    CastOp::IntToPtr,
+                    pointer_int_ty(cx.tcx, false)?,
+                    TIRTy::Ptr,
+                    iv,
+                ))
             }
         }
         // A reference to an interned const allocation.
@@ -11676,15 +11789,17 @@ fn materialize_const_ref<'tcx>(
                 .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(p))
                 .map_err(|e| format!("const-ref pointee layout_of failed: {e:?}"))?;
             if !layout.is_sized() {
-                return Err(format!(
-                    "const-ref pointee is unsized: {}",
-                    ty_family(p)
-                ));
+                return Err(format!("const-ref pointee is unsized: {}", ty_family(p)));
             }
             if layout.size.bytes() == 0 {
                 let addr = layout.align.abi.bytes().max(1);
-                let iv = fb.iconst(TIRTy::U64, addr as i128);
-                return Ok(fb.cast(CastOp::IntToPtr, TIRTy::U64, TIRTy::Ptr, iv));
+                let iv = fb.iconst(pointer_int_ty(cx.tcx, false)?, addr as i128);
+                return Ok(fb.cast(
+                    CastOp::IntToPtr,
+                    pointer_int_ty(cx.tcx, false)?,
+                    TIRTy::Ptr,
+                    iv,
+                ));
             }
             layout.size.bytes()
         }
@@ -11706,23 +11821,40 @@ fn materialize_const_ref<'tcx>(
             // `statics` module DEFINES this symbol with its real CTFE bytes
             // (the `SymbolAddr` here stays a plain extern reference).
             record_referenced_static(def_id);
-            let name = cx.tcx.symbol_name(Instance::mono(cx.tcx, def_id)).name.to_string();
+            let name = cx
+                .tcx
+                .symbol_name(Instance::mono(cx.tcx, def_id))
+                .name
+                .to_string();
             let base = fb.const_value(TIRTy::Ptr, Constant::symbol_addr(name));
             let off = offset.bytes();
-            return Ok(if off == 0 { base } else { gep_byte_offset(fb, base, off) });
+            return Ok(if off == 0 {
+                base
+            } else {
+                gep_byte_offset(fb, base, off)
+            });
         }
         GlobalAlloc::Function { instance } => {
             let name = cx.tcx.symbol_name(instance).name.to_string();
             let base = fb.const_value(TIRTy::Ptr, Constant::symbol_addr(name));
             let off = offset.bytes();
-            return Ok(if off == 0 { base } else { gep_byte_offset(fb, base, off) });
+            return Ok(if off == 0 {
+                base
+            } else {
+                gep_byte_offset(fb, base, off)
+            });
         }
         // A `TypeId` provenance pointer VALUE: rustc codegen drops the
         // provenance — the runtime value IS the offset bytes (a type-id hash
         // half) reinterpreted as a pointer.
         GlobalAlloc::TypeId { .. } => {
-            let iv = fb.iconst(TIRTy::U64, offset.bytes() as i128);
-            return Ok(fb.cast(CastOp::IntToPtr, TIRTy::U64, TIRTy::Ptr, iv));
+            let iv = fb.iconst(pointer_int_ty(cx.tcx, false)?, offset.bytes() as i128);
+            return Ok(fb.cast(
+                CastOp::IntToPtr,
+                pointer_int_ty(cx.tcx, false)?,
+                TIRTy::Ptr,
+                iv,
+            ));
         }
         // A const-ref to a symbolic VTable is not addressable here: vtable globals are
         // materialized ONLY in the pre-`fb` dyn-coercion pass (`materialize_dyn_vtables`,
@@ -11848,7 +11980,7 @@ fn const_agg_bytes<'tcx>(cx: &Cx<'tcx, '_>, c: &ConstOperand<'tcx>) -> Result<Ve
     // is the scalar-const path's job, and a fat-pointer (str/slice) constant is
     // the str-literal path's job. Reject those so this helper's classification
     // predicate (`is_ok()`) does not shadow either.
-    if scalar_tir_ty(cty).is_some()
+    if scalar_tir_ty(cx.tcx, cty).is_some()
         || memory_leaf_tir_ty(cx.tcx, cty).is_some()
         || is_fat_pointer(cx.tcx, cty)
         || is_str_or_byteslice_ref(cty)
@@ -11991,7 +12123,11 @@ fn store_agg_bytes_at<'tcx>(
             _ => return Err(format!("const aggregate lane width {align} unsupported")),
         };
         let cst = fb.iconst(lane_ty.clone(), signed);
-        let a = if off == 0 { addr } else { gep_byte_offset(fb, addr, off) };
+        let a = if off == 0 {
+            addr
+        } else {
+            gep_byte_offset(fb, addr, off)
+        };
         fb.store(lane_ty.clone(), a, cst);
     }
     Ok(())
@@ -12035,7 +12171,7 @@ fn store_const_agg_at<'tcx>(
     // or a `&'static str` stored through an enum-payload field. Its 2-lane
     // image is (address of the interned allocation, metadata): store both.
     if let ConstValue::Slice { alloc_id, meta } = cv {
-        if size != 16 {
+        if size != 2 * pointer_bytes(cx.tcx) {
             return Err(format!(
                 "const Slice value into a non-fat ({size}-byte) destination"
             ));
@@ -12043,9 +12179,10 @@ fn store_const_agg_at<'tcx>(
         let gid = intern_alloc_global(cx, alloc_id)?;
         let data = fb.global_addr(gid);
         fb.store(TIRTy::Ptr, addr, data);
-        let meta_addr = gep_byte_offset(fb, addr, 8);
-        let m = fb.iconst(TIRTy::U64, meta as i128);
-        fb.store(TIRTy::U64, meta_addr, m);
+        let meta_addr = gep_byte_offset(fb, addr, pointer_bytes(cx.tcx));
+        let lane = pointer_int_ty(cx.tcx, false)?;
+        let m = fb.iconst(lane.clone(), meta as i128);
+        fb.store(lane, meta_addr, m);
         return Ok(());
     }
     let ConstValue::Indirect { alloc_id, offset } = cv else {
@@ -12096,7 +12233,11 @@ fn store_const_agg_at<'tcx>(
         } else {
             gep_byte_offset(fb, base, addend)
         };
-        let field_addr = if rel == 0 { addr } else { gep_byte_offset(fb, addr, rel) };
+        let field_addr = if rel == 0 {
+            addr
+        } else {
+            gep_byte_offset(fb, addr, rel)
+        };
         fb.store(TIRTy::Ptr, field_addr, ptr);
     }
     Ok(())
@@ -12151,8 +12292,10 @@ fn cast_scalar_tir_ty<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Option<TIRTy> {
         Primitive::Float(f) => match f {
             rustc_abi::Float::F32 => Some(TIRTy::F32),
             rustc_abi::Float::F64 => Some(TIRTy::F64),
-            rustc_abi::Float::F16 | rustc_abi::Float::F16B
-            | rustc_abi::Float::F128 | rustc_abi::Float::PpcF128 => None,
+            rustc_abi::Float::F16
+            | rustc_abi::Float::F16B
+            | rustc_abi::Float::F128
+            | rustc_abi::Float::PpcF128 => None,
         },
     }
 }
@@ -12206,10 +12349,14 @@ fn lower_cast_operand<'tcx>(
             }
         }
         Operand::Constant(_) => {
-            let (v, _t) = lower_const_operand(cx, fb, match op {
-                Operand::Constant(c) => c,
-                _ => unreachable!(),
-            })?;
+            let (v, _t) = lower_const_operand(
+                cx,
+                fb,
+                match op {
+                    Operand::Constant(c) => c,
+                    _ => unreachable!(),
+                },
+            )?;
             Ok(v)
         }
         Operand::RuntimeChecks(_) => Err("cast operand: RuntimeChecks".to_string()),
@@ -12218,8 +12365,8 @@ fn lower_cast_operand<'tcx>(
 
 /// RUNG 4: lower `dst = PtrMetadata(op)` where `op` is a FAT pointer modeled as a
 /// 2-lane slot. The metadata (slice/str length `usize`, or dyn vtable `*const ()`)
-/// is lane 1, at slot byte offset 8. We compute the operand place's base address
-/// and load the metadata at +8 with the destination's scalar width. Bails loud for
+/// is lane 1, one target pointer word after the data. We compute the operand place's base address
+/// and load the metadata there with the destination's scalar width. Bails loud for
 /// a non-place operand or a non-fat pointer (whose metadata is the zero-sized unit).
 fn lower_ptr_metadata<'tcx>(
     cx: &Cx<'tcx, '_>,
@@ -12238,11 +12385,11 @@ fn lower_ptr_metadata<'tcx>(
             ty_family(pty)
         ));
     }
-    // The fat pointer's slot base address, then +8 to the metadata lane. The
+    // The fat pointer's slot base address, then one word to the metadata lane. The
     // destination scalar type (`usize` for a slice/str length, `Ptr` for a vtable)
     // sizes the load.
     let base = place_address(cx, fb, env, place)?;
-    let meta_addr = gep_byte_offset(fb, base, 8);
+    let meta_addr = gep_byte_offset(fb, base, pointer_bytes(cx.tcx));
     Ok(fb.load(dst_ty.clone(), meta_addr))
 }
 
@@ -12340,7 +12487,7 @@ fn lower_cast<'tcx>(
                 .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(src_rust))
                 .map_err(|e| format!("Transmute source layout_of failed: {e:?}"))?;
             let dst_size = match dst_ty {
-                TIRTy::Ptr => 8,
+                TIRTy::Ptr => pointer_bytes(cx.tcx),
                 t => int_lane_size(t),
             };
             if dst_size == 0 || layout.size.bytes() != dst_size {
@@ -12392,14 +12539,19 @@ fn lower_cast<'tcx>(
         // PtrToPtr the validator admits.
         CastKind::PtrToPtr
         | CastKind::FnPtrToPtr
-        | CastKind::PointerCoercion(rustc_middle::ty::adjustment::PointerCoercion::UnsafeFnPointer, _) => {
+        | CastKind::PointerCoercion(
+            rustc_middle::ty::adjustment::PointerCoercion::UnsafeFnPointer,
+            _,
+        ) => {
             let v = lower_cast_operand(cx, fb, env, op, &src_tir)?;
             if is_ptr_tir(&src_tir) && is_ptr_tir(dst_ty) {
                 Ok(v) // identity
             } else if is_ptr_tir(&src_tir) || is_ptr_tir(dst_ty) {
                 Ok(fb.cast(CastOp::PtrToPtr, src_tir, dst_ty.clone(), v))
             } else {
-                Err(format!("PtrToPtr between non-pointers {src_tir:?} -> {dst_ty:?}"))
+                Err(format!(
+                    "PtrToPtr between non-pointers {src_tir:?} -> {dst_ty:?}"
+                ))
             }
         }
 
@@ -12420,17 +12572,35 @@ fn lower_cast<'tcx>(
                 }
             }
             let v = lower_cast_operand(cx, fb, env, op, &src_tir)?;
-            transmute_cast(fb, v, &src_tir, dst_ty)
+            transmute_cast(
+                fb,
+                v,
+                &src_tir,
+                dst_ty,
+                u32::from(cx.tcx.sess.target.pointer_width),
+            )
         }
 
         // `ptr as usize` / `usize as *ptr` provenance reinterprets.
         CastKind::PointerExposeProvenance if is_ptr_tir(&src_tir) && dst_ty.is_integer() => {
             let v = lower_cast_operand(cx, fb, env, op, &src_tir)?;
-            ptr_int_cast(fb, v, &src_tir, dst_ty)
+            ptr_int_cast(
+                fb,
+                v,
+                &src_tir,
+                dst_ty,
+                u32::from(cx.tcx.sess.target.pointer_width),
+            )
         }
         CastKind::PointerWithExposedProvenance if src_tir.is_integer() && is_ptr_tir(dst_ty) => {
             let v = lower_cast_operand(cx, fb, env, op, &src_tir)?;
-            ptr_int_cast(fb, v, &src_tir, dst_ty)
+            ptr_int_cast(
+                fb,
+                v,
+                &src_tir,
+                dst_ty,
+                u32::from(cx.tcx.sess.target.pointer_width),
+            )
         }
 
         // `float as int`: Rust `as` SATURATES (out-of-range clamps to the int's
@@ -12466,12 +12636,8 @@ fn lower_cast<'tcx>(
         CastKind::FloatToFloat if is_float_tir(&src_tir) && is_float_tir(dst_ty) => {
             let v = lower_cast_operand(cx, fb, env, op, &src_tir)?;
             match (&src_tir, dst_ty) {
-                (TIRTy::F32, TIRTy::F64) => {
-                    Ok(fb.cast(CastOp::FPExt, TIRTy::F32, TIRTy::F64, v))
-                }
-                (TIRTy::F64, TIRTy::F32) => {
-                    Ok(fb.cast(CastOp::FPTrunc, TIRTy::F64, TIRTy::F32, v))
-                }
+                (TIRTy::F32, TIRTy::F64) => Ok(fb.cast(CastOp::FPExt, TIRTy::F32, TIRTy::F64, v)),
+                (TIRTy::F64, TIRTy::F32) => Ok(fb.cast(CastOp::FPTrunc, TIRTy::F64, TIRTy::F32, v)),
                 (s, d) if *s == *d => Ok(v),
                 (s, d) => Err(format!("FloatToFloat cast {s:?} -> {d:?} unsupported")),
             }
@@ -12571,23 +12737,23 @@ fn simd_lane_cast(
     }
 }
 
-/// A `ptr <-> int` reinterpret: PtrToInt / IntToPtr. The pointer is 64-bit, so the
-/// integer side must be 64-bit-equivalent for the op the validator admits.
+/// A `ptr <-> int` reinterpret: PtrToInt / IntToPtr. The intermediate integer
+/// has the compilation target's pointer width, independently of the frontend host.
 fn ptr_int_cast(
     fb: &mut trust_ir_build::FunctionBuilder<'_>,
     val: trust_ir::ValueId,
     src: &TIRTy,
     dst: &TIRTy,
+    pointer_bits: u32,
 ) -> Result<trust_ir::ValueId, String> {
+    let lane = pointer_sized_int_ty(pointer_bits, false)
+        .ok_or_else(|| format!("unsupported target pointer width {pointer_bits}"))?;
     if is_ptr_tir(src) && dst.is_integer() {
-        // PtrToInt yields a pointer-width integer; if the destination is a narrower
-        // int, follow with a trunc. (usize/isize are 64-bit, the common case = no
-        // trunc.)
-        let as_u64 = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::U64, val);
-        Ok(int_cast(fb, as_u64, &TIRTy::U64, dst))
+        let address = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, lane.clone(), val);
+        Ok(int_cast(fb, address, &lane, dst))
     } else if src.is_integer() && is_ptr_tir(dst) {
-        let as_u64 = int_cast(fb, val, src, &TIRTy::U64);
-        Ok(fb.cast(CastOp::IntToPtr, TIRTy::U64, TIRTy::Ptr, as_u64))
+        let address = int_cast(fb, val, src, &lane);
+        Ok(fb.cast(CastOp::IntToPtr, lane, TIRTy::Ptr, address))
     } else {
         Err(format!("ptr<->int cast between {src:?} and {dst:?}"))
     }
@@ -12601,6 +12767,7 @@ fn transmute_cast(
     val: trust_ir::ValueId,
     src: &TIRTy,
     dst: &TIRTy,
+    pointer_bits: u32,
 ) -> Result<trust_ir::ValueId, String> {
     let sp = is_ptr_tir(src);
     let dp = is_ptr_tir(dst);
@@ -12608,8 +12775,12 @@ fn transmute_cast(
         // ptr <-> ptr: identity.
         (true, true) => Ok(val),
         // ptr -> int / int -> ptr.
-        (true, false) if dst.is_integer() => ptr_int_cast(fb, val, src, dst),
-        (false, true) if src.is_integer() => ptr_int_cast(fb, val, src, dst),
+        (true, false) if int_bit_width(dst) == Some(pointer_bits) => {
+            ptr_int_cast(fb, val, src, dst, pointer_bits)
+        }
+        (false, true) if int_bit_width(src) == Some(pointer_bits) => {
+            ptr_int_cast(fb, val, src, dst, pointer_bits)
+        }
         // int <-> int.
         (false, false) if src.is_integer() && dst.is_integer() => {
             match (int_bit_width(src), int_bit_width(dst)) {
@@ -12655,6 +12826,40 @@ fn transmute_cast(
     }
 }
 
+/// Scale an element offset in the target address lane. Wrapping offsets use
+/// integer-pointer arithmetic because a negative GEP index is outside the IR's
+/// allocation-relative GEP contract. Integer resizing preserves source signedness.
+fn pointer_offset_value(
+    fb: &mut trust_ir_build::FunctionBuilder<'_>,
+    ptr: trust_ir::ValueId,
+    count: trust_ir::ValueId,
+    count_ty: &TIRTy,
+    stride: u64,
+    pointer_bits: u32,
+    integer_address: bool,
+) -> Result<trust_ir::ValueId, String> {
+    let lane = pointer_sized_int_ty(pointer_bits, true)
+        .ok_or_else(|| format!("unsupported target pointer width {pointer_bits}"))?;
+    if stride == 0 {
+        return Ok(ptr);
+    }
+    if int_bit_width(count_ty).is_none() {
+        return Err(format!(
+            "pointer offset count is not an integer ({count_ty:?})"
+        ));
+    }
+    let count = int_cast(fb, count, count_ty, &lane);
+    let step = fb.iconst(lane.clone(), stride as i128);
+    let bytes = fb.binop(BinOp::Mul, lane.clone(), count, step);
+    if integer_address {
+        let address = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, lane.clone(), ptr);
+        let advanced = fb.binop(BinOp::Add, lane.clone(), address, bytes);
+        Ok(fb.cast(CastOp::IntToPtr, lane, TIRTy::Ptr, advanced))
+    } else {
+        Ok(fb.gep(TIRTy::I8, ptr, vec![bytes]))
+    }
+}
+
 /// Lower an Rvalue producing a value of `dst_ty`.
 fn lower_rvalue<'tcx>(
     cx: &Cx<'tcx, '_>,
@@ -12685,13 +12890,11 @@ fn lower_rvalue<'tcx>(
             Ok(v)
         }
         // RUNG 1: address-of a place -> the place's ADDRESS (a Ptr).
-        Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => {
-            place_address(cx, fb, env, place)
-        }
+        Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => place_address(cx, fb, env, place),
         Rvalue::UnaryOp(unop, op) => {
             // RUNG 4: `PtrMetadata(p)` reads the METADATA half of a pointer. For a
             // FAT pointer (`&[T]`/`&str`/`&dyn`) modeled as a 2-lane slot, the
-            // metadata (slice/str length, or dyn vtable) lives at slot offset 8 —
+            // metadata (slice/str length, or dyn vtable) lives one target pointer word into the slot —
             // load it there. For a THIN pointer the metadata is the unit `()` (zero
             // bytes); MIR rarely emits PtrMetadata on a thin pointer, so bail loud.
             // Note: PtrMetadata reads a PLACE, so we must NOT pre-lower the operand
@@ -12767,48 +12970,15 @@ fn lower_rvalue<'tcx>(
                     }
                     _ => false,
                 };
-                if signed_count && !statically_nonnegative {
-                    // Rust's `offset` admits negative in-allocation steps, but a
-                    // negative TrustIr GEP index is UB by the format contract
-                    // (interpreter + Lean model both reject it). Lower the
-                    // general signed case through the format's sanctioned
-                    // C-raw-pointer path instead: PtrToInt -> signed byte
-                    // arithmetic -> IntToPtr (precedent: the ptr_offset_from
-                    // lowering above). This is exactly Rust's `offset` at the
-                    // machine level; the GEP fast path below stays reserved for
-                    // counts proven non-negative (unsigned or constant >= 0).
-                    // Unblocks `slice::Iter::next_back` (`end.offset(-1)`) once
-                    // the stable-wrapper inlining exposes its raw Offset.
-                    let idx = if matches!(rt, TIRTy::I64) {
-                        rhs
-                    } else {
-                        coerce_int_width(fb, rhs, &rt, &TIRTy::I64)?
-                    };
-                    let addr = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::I64, lhs);
-                    let stride_c = fb.iconst(TIRTy::I64, stride as i128);
-                    let byte_off = fb.binop(BinOp::Mul, TIRTy::I64, idx, stride_c);
-                    let addr2 = fb.binop(BinOp::Add, TIRTy::I64, addr, byte_off);
-                    return Ok(fb.cast(CastOp::IntToPtr, TIRTy::I64, TIRTy::Ptr, addr2));
-                }
-                // Scale the element count by the byte stride, then GEP i8. The count
-                // is an `isize`/`usize`; normalize it to a single I64 index type so
-                // the stride multiply has matching operand types (the validator
-                // rejects mixed-signedness binops). `coerce_int_width` is a no-op
-                // when `rt` is already a 64-bit int, but it RETYPES a `u64`/`i64`
-                // pointer-count to I64 so the `mul` below type-checks.
-                let idx = if matches!(rt, TIRTy::I64) {
-                    rhs
-                } else if matches!(rt, TIRTy::U64) {
-                    // Same bit width, only the signedness label differs: a free
-                    // reinterpret to I64 (the index space the GEP expects).
-                    fb.cast(CastOp::Bitcast, TIRTy::U64, TIRTy::I64, rhs)
-                } else {
-                    coerce_int_width(fb, rhs, &rt, &TIRTy::I64)?
-                };
-                let stride_c = fb.iconst(TIRTy::I64, stride as i128);
-                let byte_off = fb.binop(BinOp::Mul, TIRTy::I64, idx, stride_c);
-                let res = fb.gep(TIRTy::I8, lhs, vec![byte_off]);
-                return Ok(res);
+                return pointer_offset_value(
+                    fb,
+                    lhs,
+                    rhs,
+                    &rt,
+                    stride,
+                    u32::from(cx.tcx.sess.target.pointer_width),
+                    signed_count && !statically_nonnegative,
+                );
             }
             // The validator requires both binop operands to share a type. MIR
             // shifts permit a shift-amount of a DIFFERENT (often narrower) integer
@@ -12818,10 +12988,7 @@ fn lower_rvalue<'tcx>(
             // types in well-typed MIR.
             if matches!(
                 binop,
-                MirBinOp::Shl
-                    | MirBinOp::ShlUnchecked
-                    | MirBinOp::Shr
-                    | MirBinOp::ShrUnchecked
+                MirBinOp::Shl | MirBinOp::ShlUnchecked | MirBinOp::Shr | MirBinOp::ShrUnchecked
             ) && rt != lt
             {
                 rhs = coerce_int_width(fb, rhs, &rt, &lt)?;
@@ -12948,7 +13115,8 @@ fn lower_binop(
     let cmp3_dst_ty = dst_ty.clone();
     let arith =
         |fb: &mut trust_ir_build::FunctionBuilder<'_>, b: BinOp| fb.binop(b, dst_ty, lhs, rhs);
-    let cmp = |fb: &mut trust_ir_build::FunctionBuilder<'_>, c: ICmpOp| fb.icmp(c, opnd_ty, lhs, rhs);
+    let cmp =
+        |fb: &mut trust_ir_build::FunctionBuilder<'_>, c: ICmpOp| fb.icmp(c, opnd_ty, lhs, rhs);
     match op {
         MirBinOp::Add | MirBinOp::AddUnchecked => Ok(arith(fb, BinOp::Add)),
         MirBinOp::Sub | MirBinOp::SubUnchecked => Ok(arith(fb, BinOp::Sub)),
@@ -13087,9 +13255,9 @@ fn lower_terminator<'tcx>(
                 // it by value.
                 RetAbi::Pair(pr) => {
                     let ret_local = Local::from_u32(0);
-                    let slot = cx.slot_ptr(ret_local).ok_or_else(|| {
-                        "pair return: _0 has no memory slot".to_string()
-                    })?;
+                    let slot = cx
+                        .slot_ptr(ret_local)
+                        .ok_or_else(|| "pair return: _0 has no memory slot".to_string())?;
                     let v = fb.load(pr.tuple_ty(), slot);
                     fb.ret(vec![v]);
                 }
@@ -13124,9 +13292,7 @@ fn lower_terminator<'tcx>(
                         0 => false_target = Some(target),
                         1 => true_target = Some(target),
                         other => {
-                            return Err(format!(
-                                "bool SwitchInt has non-0/1 case value {other}"
-                            ));
+                            return Err(format!("bool SwitchInt has non-0/1 case value {other}"));
                         }
                     }
                 }
@@ -13194,9 +13360,9 @@ fn lower_terminator<'tcx>(
             let source_ty = cx.mono(discr.ty(&cx.body.local_decls, cx.tcx));
             let source_bits = match source_ty.kind() {
                 ty::Int(ty::IntTy::Isize) | ty::Uint(ty::UintTy::Usize) => pointer_bits,
-                _ => t.bit_width_with(pointer_bits).ok_or_else(|| {
-                    format!("switch selector {t} has no source integer width")
-                })?,
+                _ => t
+                    .bit_width_with(pointer_bits)
+                    .ok_or_else(|| format!("switch selector {t} has no source integer width"))?,
             };
             let mut cases: Vec<SwitchCase> = Vec::new();
             for (val, target) in targets.iter() {
@@ -13249,22 +13415,16 @@ fn lower_terminator<'tcx>(
                 if callee_sym == "llvm.aarch64.neon.umaxp.v16i8"
                     || callee_sym == "llvm.aarch64.neon.umaxp.v8i8"
                 {
-                    let ret_bb = target.ok_or_else(|| {
-                        "neon umaxp: call must have a return target".to_string()
-                    })?;
+                    let ret_bb = target
+                        .ok_or_else(|| "neon umaxp: call must have a return target".to_string())?;
                     let [a, b] = &args[..] else {
                         return Err("neon umaxp: expected exactly two args".to_string());
                     };
-                    let (se, sc) =
-                        simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
-                            .ok_or_else(|| {
-                                "neon umaxp: non-int-vector operand".to_string()
-                            })?;
+                    let (se, sc) = simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                        .ok_or_else(|| "neon umaxp: non-int-vector operand".to_string())?;
                     let w = int_lane_size(&se);
                     if w == 0 || sc == 0 || sc % 2 != 0 {
-                        return Err(format!(
-                            "neon umaxp: unsupported lane shape {se:?} x {sc}"
-                        ));
+                        return Err(format!("neon umaxp: unsupported lane shape {se:?} x {sc}"));
                     }
                     // umaxp is UNSIGNED: compare the lanes as their unsigned
                     // int type so the max select is `Uge`.
@@ -13330,9 +13490,8 @@ fn lower_terminator<'tcx>(
                 if callee_sym == "llvm.aarch64.neon.tbl1.v16i8"
                     || callee_sym == "llvm.aarch64.neon.tbl1.v8i8"
                 {
-                    let ret_bb = target.ok_or_else(|| {
-                        "neon tbl1: call must have a return target".to_string()
-                    })?;
+                    let ret_bb = target
+                        .ok_or_else(|| "neon tbl1: call must have a return target".to_string())?;
                     let [tbl, idx] = &args[..] else {
                         return Err("neon tbl1: expected exactly two args".to_string());
                     };
@@ -13342,11 +13501,8 @@ fn lower_terminator<'tcx>(
                         simd_int_vector_lanes(cx, operand_concrete_ty(cx, &tbl.node))
                             .ok_or_else(|| "neon tbl1: non-int-vector table".to_string())?;
                     // Index / output lane count = the DESTINATION lane count.
-                    let (_de, dc) =
-                        simd_int_vector_lanes(cx, cx.place_concrete_ty(destination))
-                            .ok_or_else(|| {
-                                "neon tbl1: non-int-vector destination".to_string()
-                            })?;
+                    let (_de, dc) = simd_int_vector_lanes(cx, cx.place_concrete_ty(destination))
+                        .ok_or_else(|| "neon tbl1: non-int-vector destination".to_string())?;
                     if n_lanes == 0 || (n_lanes & (n_lanes - 1)) != 0 {
                         return Err(format!(
                             "neon tbl1: table lane count {n_lanes} not a power of two"
@@ -13421,13 +13577,8 @@ fn lower_terminator<'tcx>(
                         let [a, b] = &args[..] else {
                             return Err(format!("neon {callee_sym}: expected two args"));
                         };
-                        let (se, sc) = simd_int_vector_lanes(
-                            cx,
-                            operand_concrete_ty(cx, &a.node),
-                        )
-                        .ok_or_else(|| {
-                            format!("neon {callee_sym}: non-int-vector operand")
-                        })?;
+                        let (se, sc) = simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                            .ok_or_else(|| format!("neon {callee_sym}: non-int-vector operand"))?;
                         let w = int_lane_size(&se);
                         if w != 2 {
                             return Err(format!(
@@ -13441,8 +13592,16 @@ fn lower_terminator<'tcx>(
                         let sh = fb.iconst(TIRTy::I32, 15);
                         for i in 0..sc {
                             let off = i * w;
-                            let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                            let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                            let aa = if off == 0 {
+                                a_ptr
+                            } else {
+                                gep_byte_offset(fb, a_ptr, off)
+                            };
+                            let bb = if off == 0 {
+                                b_ptr
+                            } else {
+                                gep_byte_offset(fb, b_ptr, off)
+                            };
                             let va = fb.load(se.clone(), aa);
                             let vb = fb.load(se.clone(), bb);
                             let aw = int_cast(fb, va, &se, &TIRTy::I32);
@@ -13454,7 +13613,11 @@ fn lower_terminator<'tcx>(
                             let under = fb.icmp(ICmpOp::Slt, TIRTy::I32, r1, loc);
                             let r2 = fb.select(TIRTy::I32, under, loc, r1);
                             let rr = int_cast(fb, r2, &TIRTy::I32, &se);
-                            let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                            let dd = if off == 0 {
+                                dst_ptr
+                            } else {
+                                gep_byte_offset(fb, dst_ptr, off)
+                            };
                             fb.store(se.clone(), dd, rr);
                         }
                     } else {
@@ -13466,20 +13629,13 @@ fn lower_terminator<'tcx>(
                         let [a] = &args[..] else {
                             return Err(format!("neon {callee_sym}: expected one arg"));
                         };
-                        let (se, sc) = simd_int_vector_lanes(
-                            cx,
-                            operand_concrete_ty(cx, &a.node),
-                        )
-                        .ok_or_else(|| {
-                            format!("neon {callee_sym}: non-int-vector operand")
-                        })?;
-                        let (de, _dc) = simd_int_vector_lanes(
-                            cx,
-                            cx.place_concrete_ty(destination),
-                        )
-                        .ok_or_else(|| {
-                            format!("neon {callee_sym}: non-int-vector destination")
-                        })?;
+                        let (se, sc) = simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                            .ok_or_else(|| format!("neon {callee_sym}: non-int-vector operand"))?;
+                        let (de, _dc) =
+                            simd_int_vector_lanes(cx, cx.place_concrete_ty(destination))
+                                .ok_or_else(|| {
+                                    format!("neon {callee_sym}: non-int-vector destination")
+                                })?;
                         let sw = int_lane_size(&se);
                         let dw = int_lane_size(&de);
                         // uqxtn: unsigned dest [0,255]; sqxtn: signed [-128,127];
@@ -13496,7 +13652,11 @@ fn lower_terminator<'tcx>(
                         let loc = fb.iconst(we.clone(), lo);
                         for i in 0..sc {
                             let soff = i * sw;
-                            let sa = if soff == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, soff) };
+                            let sa = if soff == 0 {
+                                a_ptr
+                            } else {
+                                gep_byte_offset(fb, a_ptr, soff)
+                            };
                             let v = fb.load(se.clone(), sa);
                             let vw = int_cast(fb, v, &se, &we);
                             let over = fb.icmp(ICmpOp::Sgt, we.clone(), vw, hic);
@@ -13505,7 +13665,11 @@ fn lower_terminator<'tcx>(
                             let v2 = fb.select(we.clone(), under, loc, v1);
                             let r = int_cast(fb, v2, &we, &de);
                             let doff = i * dw;
-                            let dd = if doff == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, doff) };
+                            let dd = if doff == 0 {
+                                dst_ptr
+                            } else {
+                                gep_byte_offset(fb, dst_ptr, doff)
+                            };
                             fb.store(de.clone(), dd, r);
                         }
                     }
@@ -13530,16 +13694,12 @@ fn lower_terminator<'tcx>(
                     let [a, b] = &args[..] else {
                         return Err(format!("neon {callee_sym}: expected exactly two args"));
                     };
-                    let (se, sc) =
-                        simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
-                            .ok_or_else(|| {
-                                format!("neon {callee_sym}: non-int-vector data operand")
-                            })?;
-                    let (be, _bc) =
-                        simd_int_vector_lanes(cx, operand_concrete_ty(cx, &b.node))
-                            .ok_or_else(|| {
-                                format!("neon {callee_sym}: non-int-vector shift operand")
-                            })?;
+                    let (se, sc) = simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                        .ok_or_else(|| format!("neon {callee_sym}: non-int-vector data operand"))?;
+                    let (be, _bc) = simd_int_vector_lanes(cx, operand_concrete_ty(cx, &b.node))
+                        .ok_or_else(|| {
+                            format!("neon {callee_sym}: non-int-vector shift operand")
+                        })?;
                     let w = int_lane_size(&se);
                     let bits = (w * 8) as i128;
                     let a_ptr = operand_place_address(cx, fb, env, &a.node)?;
@@ -13547,8 +13707,16 @@ fn lower_terminator<'tcx>(
                     let dst_ptr = place_address(cx, fb, env, destination)?;
                     for i in 0..sc {
                         let off = i * w;
-                        let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                        let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                        let aa = if off == 0 {
+                            a_ptr
+                        } else {
+                            gep_byte_offset(fb, a_ptr, off)
+                        };
+                        let bb = if off == 0 {
+                            b_ptr
+                        } else {
+                            gep_byte_offset(fb, b_ptr, off)
+                        };
                         let av = fb.load(se.clone(), aa);
                         let cnt = fb.load(be.clone(), bb);
                         // Sign-extend the count to i32 for the direction/range logic.
@@ -13570,7 +13738,11 @@ fn lower_terminator<'tcx>(
                         let picked = fb.select(se.clone(), is_left, left, right);
                         let zse = fb.iconst(se.clone(), 0);
                         let res = fb.select(se.clone(), in_range, picked, zse);
-                        let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                        let dd = if off == 0 {
+                            dst_ptr
+                        } else {
+                            gep_byte_offset(fb, dst_ptr, off)
+                        };
                         fb.store(se.clone(), dd, res);
                     }
                     let edge = tc.edge_args(env, ret_bb)?;
@@ -13591,15 +13763,10 @@ fn lower_terminator<'tcx>(
                     let [a, b] = &args[..] else {
                         return Err(format!("neon {callee_sym}: expected exactly two args"));
                     };
-                    let (se, sc) =
-                        simd_vector_lanes_any(cx, operand_concrete_ty(cx, &a.node))
-                            .ok_or_else(|| {
-                                format!("neon {callee_sym}: non-SIMD-vector operand")
-                            })?;
+                    let (se, sc) = simd_vector_lanes_any(cx, operand_concrete_ty(cx, &a.node))
+                        .ok_or_else(|| format!("neon {callee_sym}: non-SIMD-vector operand"))?;
                     if !is_float_tir(&se) {
-                        return Err(format!(
-                            "neon {callee_sym}: non-float lane type {se:?}"
-                        ));
+                        return Err(format!("neon {callee_sym}: non-float lane type {se:?}"));
                     }
                     let op = if callee_sym.starts_with("llvm.aarch64.neon.fmin.") {
                         BinOp::FMin
@@ -13612,12 +13779,24 @@ fn lower_terminator<'tcx>(
                     let dst_ptr = place_address(cx, fb, env, destination)?;
                     for i in 0..sc {
                         let off = i * w;
-                        let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                        let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                        let aa = if off == 0 {
+                            a_ptr
+                        } else {
+                            gep_byte_offset(fb, a_ptr, off)
+                        };
+                        let bb = if off == 0 {
+                            b_ptr
+                        } else {
+                            gep_byte_offset(fb, b_ptr, off)
+                        };
                         let va = fb.load(se.clone(), aa);
                         let vb = fb.load(se.clone(), bb);
                         let r = fb.binop(op, se.clone(), va, vb);
-                        let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                        let dd = if off == 0 {
+                            dst_ptr
+                        } else {
+                            gep_byte_offset(fb, dst_ptr, off)
+                        };
                         fb.store(se.clone(), dd, r);
                     }
                     let edge = tc.edge_args(env, ret_bb)?;
@@ -13640,16 +13819,10 @@ fn lower_terminator<'tcx>(
                     let [a] = &args[..] else {
                         return Err(format!("neon {callee_sym}: expected exactly one arg"));
                     };
-                    let (se, sc) =
-                        simd_vector_lanes_any(cx, operand_concrete_ty(cx, &a.node))
-                            .ok_or_else(|| {
-                                format!("neon {callee_sym}: non-SIMD-vector source")
-                            })?;
-                    let (de, dc) =
-                        simd_vector_lanes_any(cx, cx.place_concrete_ty(destination))
-                            .ok_or_else(|| {
-                                format!("neon {callee_sym}: non-SIMD-vector destination")
-                            })?;
+                    let (se, sc) = simd_vector_lanes_any(cx, operand_concrete_ty(cx, &a.node))
+                        .ok_or_else(|| format!("neon {callee_sym}: non-SIMD-vector source"))?;
+                    let (de, dc) = simd_vector_lanes_any(cx, cx.place_concrete_ty(destination))
+                        .ok_or_else(|| format!("neon {callee_sym}: non-SIMD-vector destination"))?;
                     if sc != dc {
                         return Err(format!(
                             "neon {callee_sym}: lane count mismatch {sc} != {dc}"
@@ -13660,10 +13833,18 @@ fn lower_terminator<'tcx>(
                     let src_ptr = operand_place_address(cx, fb, env, &a.node)?;
                     let dst_ptr = place_address(cx, fb, env, destination)?;
                     for i in 0..sc {
-                        let sa = if i == 0 { src_ptr } else { gep_byte_offset(fb, src_ptr, i * sw) };
+                        let sa = if i == 0 {
+                            src_ptr
+                        } else {
+                            gep_byte_offset(fb, src_ptr, i * sw)
+                        };
                         let v = fb.load(se.clone(), sa);
                         let c = simd_lane_cast(fb, v, &se, &de);
-                        let da = if i == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, i * dw) };
+                        let da = if i == 0 {
+                            dst_ptr
+                        } else {
+                            gep_byte_offset(fb, dst_ptr, i * dw)
+                        };
                         fb.store(de.clone(), da, c);
                     }
                     let edge = tc.edge_args(env, ret_bb)?;
@@ -13684,9 +13865,8 @@ fn lower_terminator<'tcx>(
                     let [p] = &args[..] else {
                         return Err(format!("neon {callee_sym}: expected exactly one arg"));
                     };
-                    let (n_lanes, elem_bytes) = parse_vni_shape(callee_sym).ok_or_else(|| {
-                        format!("neon {callee_sym}: cannot parse lane shape")
-                    })?;
+                    let (n_lanes, elem_bytes) = parse_vni_shape(callee_sym)
+                        .ok_or_else(|| format!("neon {callee_sym}: cannot parse lane shape"))?;
                     let lane_ty = match elem_bytes {
                         1 => TIRTy::U8,
                         2 => TIRTy::U16,
@@ -13710,13 +13890,21 @@ fn lower_terminator<'tcx>(
                         // `.0[i] = src[2i]`, `.1[i] = src[2i+1]` (deinterleave).
                         let s0off = (2 * i) * elem_bytes;
                         let s1off = (2 * i + 1) * elem_bytes;
-                        let s0 = if s0off == 0 { src_v } else { gep_byte_offset(fb, src_v, s0off) };
+                        let s0 = if s0off == 0 {
+                            src_v
+                        } else {
+                            gep_byte_offset(fb, src_v, s0off)
+                        };
                         let s1 = gep_byte_offset(fb, src_v, s1off);
                         let b0 = fb.load(lane_ty.clone(), s0);
                         let b1 = fb.load(lane_ty.clone(), s1);
                         let d0off = i * elem_bytes;
                         let d1off = vec_bytes + i * elem_bytes;
-                        let d0 = if d0off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, d0off) };
+                        let d0 = if d0off == 0 {
+                            dst_ptr
+                        } else {
+                            gep_byte_offset(fb, dst_ptr, d0off)
+                        };
                         let d1 = gep_byte_offset(fb, dst_ptr, d1off);
                         fb.store(lane_ty.clone(), d0, b0);
                         fb.store(lane_ty.clone(), d1, b1);
@@ -13832,8 +14020,9 @@ fn lower_terminator<'tcx>(
                         // integer compute lane. Fence has no `T`.
                         let t_arg = callee.args.iter().find_map(|a| a.as_type());
                         let lane_info = match t_arg {
-                            Some(t) if iname != "atomic_fence"
-                                && iname != "atomic_singlethreadfence" =>
+                            Some(t)
+                                if iname != "atomic_fence"
+                                    && iname != "atomic_singlethreadfence" =>
                             {
                                 Some(atomic_int_lane(cx, t)?)
                             }
@@ -13870,9 +14059,7 @@ fn lower_terminator<'tcx>(
                             }
                             "atomic_load" => {
                                 let [src] = &args[..] else {
-                                    return Err(
-                                        "atomic_load: expected exactly one arg".to_string()
-                                    );
+                                    return Err("atomic_load: expected exactly one arg".to_string());
                                 };
                                 let (ptr, pty) = lower_operand(cx, fb, env, &src.node)?;
                                 if !matches!(pty, TIRTy::Ptr) {
@@ -13915,8 +14102,7 @@ fn lower_terminator<'tcx>(
                                         "atomic_cxchg: expected exactly three args".to_string()
                                     );
                                 };
-                                let failure =
-                                    orderings.get(1).copied().unwrap_or(ordering);
+                                let failure = orderings.get(1).copied().unwrap_or(ordering);
                                 let (ptr, pty) = lower_operand(cx, fb, env, &dst.node)?;
                                 if !matches!(pty, TIRTy::Ptr) {
                                     return Err(format!(
@@ -13929,14 +14115,8 @@ fn lower_terminator<'tcx>(
                                     lane_info.ok_or_else(|| "atomic_cxchg: no T".to_string())?;
                                 let exp = to_lane(fb, exp, &ety, &lane);
                                 let des = to_lane(fb, des, &dty, &lane);
-                                let (old, ok) = fb.cmpxchg(
-                                    lane.clone(),
-                                    ptr,
-                                    exp,
-                                    des,
-                                    ordering,
-                                    failure,
-                                );
+                                let (old, ok) =
+                                    fb.cmpxchg(lane.clone(), ptr, exp, des, ordering, failure);
                                 // Bind the `(T, bool)` tuple destination: store the
                                 // old value at field 0 and the success flag at field
                                 // 1's layout offset.
@@ -13980,8 +14160,7 @@ fn lower_terminator<'tcx>(
                                 // expansion of an unsupported RMW.
                                 let [dst, src] = &args[..] else {
                                     return Err(
-                                        "atomic_nand: expected exactly two args"
-                                            .to_string(),
+                                        "atomic_nand: expected exactly two args".to_string()
                                     );
                                 };
                                 let (ptr, pty) = lower_operand(cx, fb, env, &dst.node)?;
@@ -13991,16 +14170,14 @@ fn lower_terminator<'tcx>(
                                     ));
                                 }
                                 let (val, vty) = lower_operand(cx, fb, env, &src.node)?;
-                                let (lane, is_ptr) = lane_info
-                                    .ok_or_else(|| "atomic_nand: no T".to_string())?;
+                                let (lane, is_ptr) =
+                                    lane_info.ok_or_else(|| "atomic_nand: no T".to_string())?;
                                 if is_ptr {
                                     // No `AtomicPtr::fetch_nand` exists in Rust; a
                                     // pointer-typed `T` here is shape drift.
-                                    return Err(
-                                        "atomic_nand: pointer-typed T is not a Rust \
+                                    return Err("atomic_nand: pointer-typed T is not a Rust \
                                          shape"
-                                            .to_string(),
-                                    );
+                                        .to_string());
                                 }
                                 let val = to_lane(fb, val, &vty, &lane);
                                 // CmpXchg FAILURE ordering: the strongest
@@ -14011,8 +14188,7 @@ fn lower_terminator<'tcx>(
                                     TIROrdering::AcqRel => TIROrdering::Acquire,
                                     o => o,
                                 };
-                                let old0 =
-                                    fb.atomic_load(lane.clone(), ptr, TIROrdering::Relaxed);
+                                let old0 = fb.atomic_load(lane.clone(), ptr, TIROrdering::Relaxed);
                                 let retry = fb.create_block();
                                 let done = fb.create_block();
                                 let old = fb.add_block_param(retry, lane.clone());
@@ -14020,14 +14196,8 @@ fn lower_terminator<'tcx>(
                                 fb.switch_to_block(retry);
                                 let anded = fb.binop(BinOp::And, lane.clone(), old, val);
                                 let newv = fb.unop(UnOp::Not, lane.clone(), anded);
-                                let (cur, ok) = fb.cmpxchg(
-                                    lane.clone(),
-                                    ptr,
-                                    old,
-                                    newv,
-                                    ordering,
-                                    failure,
-                                );
+                                let (cur, ok) =
+                                    fb.cmpxchg(lane.clone(), ptr, old, newv, ordering, failure);
                                 fb.condbr(ok, done, vec![], retry, vec![cur]);
                                 // `cur` dominates `done` (its sole predecessor is
                                 // the loop block), so it binds directly.
@@ -14044,10 +14214,8 @@ fn lower_terminator<'tcx>(
                                 // LSE opcode family.
                                 let op = rmw_op.expect("is_atomic admits only known ops");
                                 let [dst, src] = &args[..] else {
-                                    return Err(
-                                        "atomic RMW intrinsic: expected exactly two args"
-                                            .to_string(),
-                                    );
+                                    return Err("atomic RMW intrinsic: expected exactly two args"
+                                        .to_string());
                                 };
                                 let (ptr, pty) = lower_operand(cx, fb, env, &dst.node)?;
                                 if !matches!(pty, TIRTy::Ptr) {
@@ -14087,9 +14255,7 @@ fn lower_terminator<'tcx>(
                     // drops on the spawn-hook path, ...).
                     if matches!(iname, "ptr_offset_from" | "ptr_offset_from_unsigned") {
                         let [a, b] = &args[..] else {
-                            return Err(
-                                "ptr_offset_from: expected exactly two args".to_string()
-                            );
+                            return Err("ptr_offset_from: expected exactly two args".to_string());
                         };
                         let t_arg = callee
                             .args
@@ -14101,7 +14267,7 @@ fn lower_terminator<'tcx>(
                             "ptr_offset_from: call must have a return target".to_string()
                         })?;
                         let signed = iname == "ptr_offset_from";
-                        let lane = if signed { TIRTy::I64 } else { TIRTy::U64 };
+                        let lane = pointer_int_ty(cx.tcx, signed)?;
                         let (av, aty) = lower_operand(cx, fb, env, &a.node)?;
                         let (bv, bty) = lower_operand(cx, fb, env, &b.node)?;
                         let ai = if matches!(aty, TIRTy::Ptr) {
@@ -14148,23 +14314,15 @@ fn lower_terminator<'tcx>(
                             let (pv, pty) = lower_operand(cx, fb, env, &p.node)?;
                             let (cv, cty) = lower_operand(cx, fb, env, &c.node)?;
                             if matches!(pty, TIRTy::Ptr) {
-                                let v = if stride == 0 {
-                                    pv
-                                } else {
-                                    let idx = if matches!(cty, TIRTy::I64) {
-                                        cv
-                                    } else {
-                                        coerce_int_width(fb, cv, &cty, &TIRTy::I64)?
-                                    };
-                                    let addr =
-                                        fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::I64, pv);
-                                    let stride_c = fb.iconst(TIRTy::I64, stride as i128);
-                                    let byte_off =
-                                        fb.binop(BinOp::Mul, TIRTy::I64, idx, stride_c);
-                                    let addr2 =
-                                        fb.binop(BinOp::Add, TIRTy::I64, addr, byte_off);
-                                    fb.cast(CastOp::IntToPtr, TIRTy::I64, TIRTy::Ptr, addr2)
-                                };
+                                let v = pointer_offset_value(
+                                    fb,
+                                    pv,
+                                    cv,
+                                    &cty,
+                                    stride,
+                                    u32::from(cx.tcx.sess.target.pointer_width),
+                                    true,
+                                )?;
                                 bind_call_destination(cx, fb, env, destination, v)?;
                                 let edge = tc.edge_args(env, *ret_bb)?;
                                 fb.br(tc.target_block(*ret_bb), edge);
@@ -14243,9 +14401,18 @@ fn lower_terminator<'tcx>(
                                 };
                                 let mut steps: Vec<(i128, i128)> = Vec::new();
                                 if iname == "bitreverse" {
-                                    steps.push((mask_to_width(0x5555_5555_5555_5555_5555_5555_5555_5555), 1));
-                                    steps.push((mask_to_width(0x3333_3333_3333_3333_3333_3333_3333_3333), 2));
-                                    steps.push((mask_to_width(0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f), 4));
+                                    steps.push((
+                                        mask_to_width(0x5555_5555_5555_5555_5555_5555_5555_5555),
+                                        1,
+                                    ));
+                                    steps.push((
+                                        mask_to_width(0x3333_3333_3333_3333_3333_3333_3333_3333),
+                                        2,
+                                    ));
+                                    steps.push((
+                                        mask_to_width(0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f),
+                                        4,
+                                    ));
                                 }
                                 let mut half = 8;
                                 while half < width {
@@ -14317,10 +14484,7 @@ fn lower_terminator<'tcx>(
                     // emission (fail-closed).
                     if iname == "carrying_mul_add" {
                         let dest_is_ssa = destination.projection.is_empty()
-                            && matches!(
-                                cx.model.get(&destination.local),
-                                Some(LocalModel::Ssa(_))
-                            );
+                            && matches!(cx.model.get(&destination.local), Some(LocalModel::Ssa(_)));
                         if let ([a, b, c, d], Some(ret_bb)) = (&args[..], target) {
                             let (av, at) = lower_operand(cx, fb, env, &a.node)?;
                             let (bv, bt) = lower_operand(cx, fb, env, &b.node)?;
@@ -14344,7 +14508,8 @@ fn lower_terminator<'tcx>(
                                     let lo = fb.cast(CastOp::Trunc, wide.clone(), lane.clone(), w);
                                     let sh = fb.iconst(wide.clone(), bits as i128);
                                     let hiw = fb.binop(BinOp::LShr, wide.clone(), w, sh);
-                                    let hi = fb.cast(CastOp::Trunc, wide.clone(), lane.clone(), hiw);
+                                    let hi =
+                                        fb.cast(CastOp::Trunc, wide.clone(), lane.clone(), hiw);
                                     let addr = place_address(cx, fb, env, destination)?;
                                     fb.store(lane.clone(), addr, lo);
                                     // RUNG 2a: a STATIC, layout-derived lane
@@ -14402,24 +14567,18 @@ fn lower_terminator<'tcx>(
                     // semantics; `T`'s layout is static).
                     if tc.eh && idef.name.as_str() == "typed_swap_nonoverlapping" {
                         let [a, b] = &args[..] else {
-                            return Err(
-                                "typed_swap_nonoverlapping: expected two args".to_string()
-                            );
+                            return Err("typed_swap_nonoverlapping: expected two args".to_string());
                         };
                         let ty_arg = callee
                             .args
                             .iter()
                             .find_map(|ga| ga.as_type())
-                            .ok_or_else(|| {
-                                "typed_swap_nonoverlapping: no type arg".to_string()
-                            })?;
+                            .ok_or_else(|| "typed_swap_nonoverlapping: no type arg".to_string())?;
                         let (size, align) = memory_layout_size_align(cx, ty_arg)?;
                         let (av, at) = lower_operand(cx, fb, env, &a.node)?;
                         let (bv, bt) = lower_operand(cx, fb, env, &b.node)?;
                         if !matches!(at, TIRTy::Ptr) || !matches!(bt, TIRTy::Ptr) {
-                            return Err(
-                                "typed_swap_nonoverlapping: non-pointer args".to_string()
-                            );
+                            return Err("typed_swap_nonoverlapping: non-pointer args".to_string());
                         }
                         let tmp = fb.alloca_aligned(slot_lane_ty(size, align)?, align);
                         fb.note_alloc_extent(tmp, size);
@@ -14427,8 +14586,7 @@ fn lower_terminator<'tcx>(
                         copy_aggregate_bytes(fb, bv, av, size, align)?;
                         copy_aggregate_bytes(fb, tmp, bv, size, align)?;
                         let ret_bb = target.ok_or_else(|| {
-                            "typed_swap_nonoverlapping: call must have a return target"
-                                .to_string()
+                            "typed_swap_nonoverlapping: call must have a return target".to_string()
                         })?;
                         let edge = tc.edge_args(env, ret_bb)?;
                         fb.br(tc.target_block(ret_bb), edge);
@@ -14442,8 +14600,7 @@ fn lower_terminator<'tcx>(
                         let c = fb.bool_const(false);
                         bind_call_destination(cx, fb, env, destination, c)?;
                         let ret_bb = target.ok_or_else(|| {
-                            "is_val_statically_known: call must have a return target"
-                                .to_string()
+                            "is_val_statically_known: call must have a return target".to_string()
                         })?;
                         let edge = tc.edge_args(env, ret_bb)?;
                         fb.br(tc.target_block(ret_bb), edge);
@@ -14463,11 +14620,10 @@ fn lower_terminator<'tcx>(
                         if let Some(ty_arg) = callee.args.iter().find_map(|a| a.as_type()) {
                             if let Ok((size, align)) = memory_layout_size_align(cx, ty_arg) {
                                 let val = if want_size { size } else { align };
-                                let c = fb.iconst(TIRTy::U64, val as i128);
+                                let c = fb.iconst(pointer_int_ty(cx.tcx, false)?, val as i128);
                                 bind_call_destination(cx, fb, env, destination, c)?;
                                 let ret_bb = target.ok_or_else(|| {
-                                    "size/align_of_val: call must have a return target"
-                                        .to_string()
+                                    "size/align_of_val: call must have a return target".to_string()
                                 })?;
                                 let edge = tc.edge_args(env, ret_bb)?;
                                 fb.br(tc.target_block(ret_bb), edge);
@@ -14475,7 +14631,7 @@ fn lower_terminator<'tcx>(
                             }
                             // THREADS: an UNSIZED `T` — the value's size/align is
                             // METADATA-derived. The single arg is a FAT pointer
-                            // place whose 16-byte cell holds (data, metadata):
+                            // place whose two-word cell holds (data, metadata):
                             //   * `dyn Trait`: metadata = vtable; size = vt[1],
                             //     align = vt[2] (rustc's vtable header layout).
                             //   * `[T]` / `str`: metadata = element count;
@@ -14491,8 +14647,7 @@ fn lower_terminator<'tcx>(
                                 ty::Slice(elem) => {
                                     // `size_of::<T>()` is already the array
                                     // stride (padded to align).
-                                    let (es, ea) =
-                                        memory_layout_size_align(cx, cx.mono(*elem))?;
+                                    let (es, ea) = memory_layout_size_align(cx, cx.mono(*elem))?;
                                     Some(Some((es, ea)))
                                 }
                                 _ => None,
@@ -14500,44 +14655,49 @@ fn lower_terminator<'tcx>(
                             if let Some(meta_kind) = mdesc {
                                 let [arg] = &args[..] else {
                                     return Err(
-                                        "size/align_of_val: expected exactly one arg"
-                                            .to_string(),
+                                        "size/align_of_val: expected exactly one arg".to_string()
                                     );
                                 };
                                 let (Operand::Copy(place) | Operand::Move(place)) = &arg.node
                                 else {
-                                    return Err(
-                                        "size/align_of_val: arg is not a place".to_string()
-                                    );
+                                    return Err("size/align_of_val: arg is not a place".to_string());
                                 };
                                 // The fat CELL address (the pointer operand is a
                                 // fat local/place; its slot holds the pair).
                                 let cell = place_address(cx, fb, env, place)?;
-                                let meta_addr = gep_byte_offset(fb, cell, 8);
+                                let meta_addr = gep_byte_offset(fb, cell, pointer_bytes(cx.tcx));
                                 let v = match meta_kind {
                                     // dyn: read the vtable's size/align slot.
                                     None => {
                                         let vt = fb.load(TIRTy::Ptr, meta_addr);
-                                        let slot = if want_size { 8 } else { 16 };
+                                        let slot =
+                                            pointer_bytes(cx.tcx) * if want_size { 1 } else { 2 };
                                         let a = gep_byte_offset(fb, vt, slot);
-                                        fb.load(TIRTy::U64, a)
+                                        fb.load(pointer_int_ty(cx.tcx, false)?, a)
                                     }
                                     // slice/str: size = count * stride; align const.
                                     Some((stride, ea)) => {
                                         if want_size {
-                                            let count = fb.load(TIRTy::U64, meta_addr);
-                                            let s =
-                                                fb.iconst(TIRTy::U64, stride as i128);
-                                            fb.binop(BinOp::Mul, TIRTy::U64, count, s)
+                                            let count =
+                                                fb.load(pointer_int_ty(cx.tcx, false)?, meta_addr);
+                                            let s = fb.iconst(
+                                                pointer_int_ty(cx.tcx, false)?,
+                                                stride as i128,
+                                            );
+                                            fb.binop(
+                                                BinOp::Mul,
+                                                pointer_int_ty(cx.tcx, false)?,
+                                                count,
+                                                s,
+                                            )
                                         } else {
-                                            fb.iconst(TIRTy::U64, ea as i128)
+                                            fb.iconst(pointer_int_ty(cx.tcx, false)?, ea as i128)
                                         }
                                     }
                                 };
                                 bind_call_destination(cx, fb, env, destination, v)?;
                                 let ret_bb = target.ok_or_else(|| {
-                                    "size/align_of_val: call must have a return target"
-                                        .to_string()
+                                    "size/align_of_val: call must have a return target".to_string()
                                 })?;
                                 let edge = tc.edge_args(env, ret_bb)?;
                                 fb.br(tc.target_block(ret_bb), edge);
@@ -14589,13 +14749,11 @@ fn lower_terminator<'tcx>(
                                 let [a, b] = &args[..] else {
                                     return Err(format!("{simd_name}: expected exactly two args"));
                                 };
-                                let (se, sc) = simd_int_vector_lanes(
-                                    cx,
-                                    operand_concrete_ty(cx, &a.node),
-                                )
-                                .ok_or_else(|| {
-                                    format!("{simd_name}: non-int-vector source")
-                                })?;
+                                let (se, sc) =
+                                    simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                                        .ok_or_else(|| {
+                                            format!("{simd_name}: non-int-vector source")
+                                        })?;
                                 let total = int_lane_size(&se) * sc; // TOTAL bytes
                                 let a_ptr = operand_place_address(cx, fb, env, &a.node)?;
                                 let b_ptr = operand_place_address(cx, fb, env, &b.node)?;
@@ -14605,8 +14763,7 @@ fn lower_terminator<'tcx>(
                                     // register — byte lanes, bit-exact for ANY
                                     // element width. `total==8` keeps hashbrown's
                                     // `uint8x8_t` group-scan `orr.8b` byte-for-byte.
-                                    let vi8 =
-                                        TIRTy::Vector(Box::new(TIRTy::I8), total as u32);
+                                    let vi8 = TIRTy::Vector(Box::new(TIRTy::I8), total as u32);
                                     let va = fb.load(vi8.clone(), a_ptr);
                                     let vb = fb.load(vi8.clone(), b_ptr);
                                     let r = fb.binop(BinOp::Or, vi8.clone(), va, vb);
@@ -14617,12 +14774,24 @@ fn lower_terminator<'tcx>(
                                     // an i8 tail (bitwise, so chunking is exact).
                                     let mut off = 0u64;
                                     while off + 8 <= total {
-                                        let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                        let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                        let aa = if off == 0 {
+                                            a_ptr
+                                        } else {
+                                            gep_byte_offset(fb, a_ptr, off)
+                                        };
+                                        let bb = if off == 0 {
+                                            b_ptr
+                                        } else {
+                                            gep_byte_offset(fb, b_ptr, off)
+                                        };
                                         let va = fb.load(TIRTy::U64, aa);
                                         let vb = fb.load(TIRTy::U64, bb);
                                         let r = fb.binop(BinOp::Or, TIRTy::U64, va, vb);
-                                        let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                        let dd = if off == 0 {
+                                            dst_ptr
+                                        } else {
+                                            gep_byte_offset(fb, dst_ptr, off)
+                                        };
                                         fb.store(TIRTy::U64, dd, r);
                                         off += 8;
                                     }
@@ -14651,13 +14820,11 @@ fn lower_terminator<'tcx>(
                                 let [a, b] = &args[..] else {
                                     return Err(format!("{simd_name}: expected exactly two args"));
                                 };
-                                let (se, sc) = simd_int_vector_lanes(
-                                    cx,
-                                    operand_concrete_ty(cx, &a.node),
-                                )
-                                .ok_or_else(|| {
-                                    format!("{simd_name}: non-int-vector source")
-                                })?;
+                                let (se, sc) =
+                                    simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                                        .ok_or_else(|| {
+                                            format!("{simd_name}: non-int-vector source")
+                                        })?;
                                 // The SIGNED lane spelling trust-cg's NEON vector
                                 // ICmp requires (`<N x i{8,16,32,64}>`); the compare
                                 // signedness rides on the ICmpOp, not this type.
@@ -14697,10 +14864,8 @@ fn lower_terminator<'tcx>(
                                         | (TIRTy::I64, 2)
                                 );
                                 if neon_shape {
-                                    let vty =
-                                        TIRTy::Vector(Box::new(slane.clone()), sc as u32);
-                                    let vbool =
-                                        TIRTy::Vector(Box::new(TIRTy::Bool), sc as u32);
+                                    let vty = TIRTy::Vector(Box::new(slane.clone()), sc as u32);
+                                    let vbool = TIRTy::Vector(Box::new(TIRTy::Bool), sc as u32);
                                     let va = fb.load(vty.clone(), a_ptr);
                                     let vb = fb.load(vty.clone(), b_ptr);
                                     let mask = fb.icmp(op, vty, va, vb);
@@ -14716,13 +14881,25 @@ fn lower_terminator<'tcx>(
                                     let zero = fb.iconst(slane.clone(), 0);
                                     for i in 0..sc {
                                         let off = i * w;
-                                        let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                        let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                        let aa = if off == 0 {
+                                            a_ptr
+                                        } else {
+                                            gep_byte_offset(fb, a_ptr, off)
+                                        };
+                                        let bb = if off == 0 {
+                                            b_ptr
+                                        } else {
+                                            gep_byte_offset(fb, b_ptr, off)
+                                        };
                                         let va = fb.load(slane.clone(), aa);
                                         let vb = fb.load(slane.clone(), bb);
                                         let bit = fb.icmp(op, slane.clone(), va, vb);
                                         let mask = fb.select(slane.clone(), bit, ones, zero);
-                                        let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                        let dd = if off == 0 {
+                                            dst_ptr
+                                        } else {
+                                            gep_byte_offset(fb, dst_ptr, off)
+                                        };
                                         fb.store(slane.clone(), dd, mask);
                                     }
                                 }
@@ -14748,11 +14925,9 @@ fn lower_terminator<'tcx>(
                                 let [x] = &args[..] else {
                                     return Err("simd_splat: expected exactly one arg".to_string());
                                 };
-                                let (se, sc) = simd_int_vector_lanes(
-                                    cx,
-                                    cx.place_concrete_ty(destination),
-                                )
-                                .unwrap_or((TIRTy::I8, 8));
+                                let (se, sc) =
+                                    simd_int_vector_lanes(cx, cx.place_concrete_ty(destination))
+                                        .unwrap_or((TIRTy::I8, 8));
                                 // The signed lane type `vector.pack_lanes` admits.
                                 let slane = match se {
                                     TIRTy::I8 | TIRTy::U8 => TIRTy::I8,
@@ -14773,14 +14948,13 @@ fn lower_terminator<'tcx>(
                                     lane,
                                 ) {
                                     Ok(splat_op) => {
-                                        let vec = fb
-                                            .dialect_op(splat_op)
-                                            .into_iter()
-                                            .next()
-                                            .ok_or_else(|| {
-                                                "simd_splat: pack_lanes produced no result"
-                                                    .to_string()
-                                            })?;
+                                        let vec =
+                                            fb.dialect_op(splat_op).into_iter().next().ok_or_else(
+                                                || {
+                                                    "simd_splat: pack_lanes produced no result"
+                                                        .to_string()
+                                                },
+                                            )?;
                                         fb.store(vty.clone(), dst_ptr, vec);
                                     }
                                     // A width `vector.pack_lanes` does not admit
@@ -14828,21 +15002,19 @@ fn lower_terminator<'tcx>(
                                         })?
                                     }
                                     _ => {
-                                        return Err(
-                                            "simd_extract: lane index must be a constant".to_string(),
-                                        )
+                                        return Err("simd_extract: lane index must be a constant"
+                                            .to_string())
                                     }
                                 };
                                 let result_ty =
-                                    scalar_tir_ty(cx.place_concrete_ty(destination))
+                                    scalar_tir_ty(cx.tcx, cx.place_concrete_ty(destination))
                                         .ok_or_else(|| {
                                             "simd_extract: non-scalar result element".to_string()
                                         })?;
                                 let elem_bytes = int_lane_size(&result_ty);
                                 if elem_bytes == 0 {
-                                    return Err(
-                                        "simd_extract: unsupported result element width".to_string(),
-                                    );
+                                    return Err("simd_extract: unsupported result element width"
+                                        .to_string());
                                 }
                                 let off = lane * elem_bytes;
                                 let addr = if off == 0 {
@@ -14869,8 +15041,8 @@ fn lower_terminator<'tcx>(
                                 let (se, sc) =
                                     simd_vector_lanes_any(cx, operand_concrete_ty(cx, &vec.node))
                                         .ok_or_else(|| {
-                                            format!("{simd_name}: non-SIMD-vector source")
-                                        })?;
+                                        format!("{simd_name}: non-SIMD-vector source")
+                                    })?;
                                 let lane = match &idx.node {
                                     Operand::Constant(c) => {
                                         const_operand_u64(cx, c).ok_or_else(|| {
@@ -14896,8 +15068,16 @@ fn lower_terminator<'tcx>(
                                 // Copy all source lanes into the destination.
                                 for i in 0..sc {
                                     let off = i * w;
-                                    let sa = if off == 0 { vec_ptr } else { gep_byte_offset(fb, vec_ptr, off) };
-                                    let da = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let sa = if off == 0 {
+                                        vec_ptr
+                                    } else {
+                                        gep_byte_offset(fb, vec_ptr, off)
+                                    };
+                                    let da = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     let v = fb.load(se.clone(), sa);
                                     fb.store(se.clone(), da, v);
                                 }
@@ -14905,7 +15085,11 @@ fn lower_terminator<'tcx>(
                                 let (val_v, val_ty) = lower_operand(cx, fb, env, &val.node)?;
                                 let vcast = simd_lane_cast(fb, val_v, &val_ty, &se);
                                 let loff = lane * w;
-                                let la = if loff == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, loff) };
+                                let la = if loff == 0 {
+                                    dst_ptr
+                                } else {
+                                    gep_byte_offset(fb, dst_ptr, loff)
+                                };
                                 fb.store(se.clone(), la, vcast);
                             }
                             // `simd_shr(a, b)`: per-lane shift right (logical
@@ -14913,9 +15097,7 @@ fn lower_terminator<'tcx>(
                             // `vshrn_n_u16`'s widened-lane shift.
                             "simd_shr" | "simd_shl" => {
                                 let [a, b] = &args[..] else {
-                                    return Err(format!(
-                                        "{simd_name}: expected exactly two args"
-                                    ));
+                                    return Err(format!("{simd_name}: expected exactly two args"));
                                 };
                                 let (se, sc) =
                                     simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
@@ -14935,12 +15117,24 @@ fn lower_terminator<'tcx>(
                                 };
                                 for i in 0..sc {
                                     let off = i * w;
-                                    let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                    let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                    let aa = if off == 0 {
+                                        a_ptr
+                                    } else {
+                                        gep_byte_offset(fb, a_ptr, off)
+                                    };
+                                    let bb = if off == 0 {
+                                        b_ptr
+                                    } else {
+                                        gep_byte_offset(fb, b_ptr, off)
+                                    };
                                     let va = fb.load(se.clone(), aa);
                                     let vb = fb.load(se.clone(), bb);
                                     let r = fb.binop(op, se.clone(), va, vb);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, r);
                                 }
                             }
@@ -14948,9 +15142,7 @@ fn lower_terminator<'tcx>(
                             // byte-image-exact in pointer-width chunks.
                             "simd_and" | "simd_xor" => {
                                 let [a, b] = &args[..] else {
-                                    return Err(format!(
-                                        "{simd_name}: expected exactly two args"
-                                    ));
+                                    return Err(format!("{simd_name}: expected exactly two args"));
                                 };
                                 let (se, sc) =
                                     simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
@@ -14967,15 +15159,31 @@ fn lower_terminator<'tcx>(
                                 let a_ptr = operand_place_address(cx, fb, env, &a.node)?;
                                 let b_ptr = operand_place_address(cx, fb, env, &b.node)?;
                                 let dst_ptr = place_address(cx, fb, env, destination)?;
-                                let op = if simd_name == "simd_and" { BinOp::And } else { BinOp::Xor };
+                                let op = if simd_name == "simd_and" {
+                                    BinOp::And
+                                } else {
+                                    BinOp::Xor
+                                };
                                 for i in 0..(total / 8) {
                                     let off = i * 8;
-                                    let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                    let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                    let aa = if off == 0 {
+                                        a_ptr
+                                    } else {
+                                        gep_byte_offset(fb, a_ptr, off)
+                                    };
+                                    let bb = if off == 0 {
+                                        b_ptr
+                                    } else {
+                                        gep_byte_offset(fb, b_ptr, off)
+                                    };
                                     let va = fb.load(TIRTy::U64, aa);
                                     let vb = fb.load(TIRTy::U64, bb);
                                     let r = fb.binop(op, TIRTy::U64, va, vb);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(TIRTy::U64, dd, r);
                                 }
                             }
@@ -14999,9 +15207,10 @@ fn lower_terminator<'tcx>(
                                     ));
                                 }
                                 let dst_tir =
-                                    scalar_tir_ty(cx.place_concrete_ty(destination)).ok_or_else(
-                                        || "simd_bitmask: non-scalar destination".to_string(),
-                                    )?;
+                                    scalar_tir_ty(cx.tcx, cx.place_concrete_ty(destination))
+                                        .ok_or_else(|| {
+                                            "simd_bitmask: non-scalar destination".to_string()
+                                        })?;
                                 let src_ptr = operand_place_address(cx, fb, env, &a.node)?;
                                 let w = int_lane_size(&se);
                                 let top = (w * 8 - 1) as i128;
@@ -15040,17 +15249,13 @@ fn lower_terminator<'tcx>(
                                         .ok_or_else(|| {
                                             "simd_shuffle: non-int-vector source".to_string()
                                         })?;
-                                let (de, dc) = simd_int_vector_lanes(
-                                    cx,
-                                    cx.place_concrete_ty(destination),
-                                )
-                                .ok_or_else(|| {
-                                    "simd_shuffle: non-int-vector destination".to_string()
-                                })?;
+                                let (de, dc) =
+                                    simd_int_vector_lanes(cx, cx.place_concrete_ty(destination))
+                                        .ok_or_else(|| {
+                                            "simd_shuffle: non-int-vector destination".to_string()
+                                        })?;
                                 if de != se {
-                                    return Err(
-                                        "simd_shuffle: element type mismatch".to_string()
-                                    );
+                                    return Err("simd_shuffle: element type mismatch".to_string());
                                 }
                                 let Operand::Constant(ic) = &idx.node else {
                                     return Err(
@@ -15082,10 +15287,18 @@ fn lower_terminator<'tcx>(
                                             "simd_shuffle: lane index {lane} out of range"
                                         ));
                                     };
-                                    let sa = if li == 0 { src } else { gep_byte_offset(fb, src, li * w) };
+                                    let sa = if li == 0 {
+                                        src
+                                    } else {
+                                        gep_byte_offset(fb, src, li * w)
+                                    };
                                     let v = fb.load(se.clone(), sa);
                                     let off = (i as u64) * w;
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, v);
                                 }
                             }
@@ -15096,9 +15309,7 @@ fn lower_terminator<'tcx>(
                             // emitted as scalar lane accesses.
                             "simd_cast" | "simd_as" => {
                                 let [a] = &args[..] else {
-                                    return Err(format!(
-                                        "{simd_name}: expected exactly one arg"
-                                    ));
+                                    return Err(format!("{simd_name}: expected exactly one arg"));
                                 };
                                 // `simd_vector_lanes_any` on BOTH ends so a FLOAT
                                 // source or destination is admitted: `vcvtq_f32_s32`
@@ -15112,13 +15323,11 @@ fn lower_terminator<'tcx>(
                                         .ok_or_else(|| {
                                             format!("{simd_name}: non-SIMD-vector source")
                                         })?;
-                                let (de, dc) = simd_vector_lanes_any(
-                                    cx,
-                                    cx.place_concrete_ty(destination),
-                                )
-                                .ok_or_else(|| {
-                                    format!("{simd_name}: non-SIMD-vector destination")
-                                })?;
+                                let (de, dc) =
+                                    simd_vector_lanes_any(cx, cx.place_concrete_ty(destination))
+                                        .ok_or_else(|| {
+                                            format!("{simd_name}: non-SIMD-vector destination")
+                                        })?;
                                 if sc != dc {
                                     return Err(format!(
                                         "{simd_name}: lane count mismatch {sc} != {dc}"
@@ -15207,32 +15416,22 @@ fn lower_terminator<'tcx>(
                             // (`simd_and` then `simd_ne` vs the zero vector).
                             "simd_gt" | "simd_le" | "simd_ne" => {
                                 let [a, b] = &args[..] else {
-                                    return Err(format!(
-                                        "{simd_name}: expected exactly two args"
-                                    ));
+                                    return Err(format!("{simd_name}: expected exactly two args"));
                                 };
-                                let (se, sc) = simd_vector_lanes_any(
-                                    cx,
-                                    operand_concrete_ty(cx, &a.node),
-                                )
-                                .ok_or_else(|| {
-                                    format!("{simd_name}: non-SIMD-vector source")
-                                })?;
+                                let (se, sc) =
+                                    simd_vector_lanes_any(cx, operand_concrete_ty(cx, &a.node))
+                                        .ok_or_else(|| {
+                                            format!("{simd_name}: non-SIMD-vector source")
+                                        })?;
                                 // Element byte width + the same-width signed int
                                 // MASK lane type (all-ones `-1` = 0xFF..FF when
                                 // true, 0 when false; the compare's output is an
                                 // integer mask regardless of input float-ness).
                                 let (w, mask_ty) = match &se {
-                                    TIRTy::I8 | TIRTy::U8 | TIRTy::Bool => {
-                                        (1u64, TIRTy::I8)
-                                    }
+                                    TIRTy::I8 | TIRTy::U8 | TIRTy::Bool => (1u64, TIRTy::I8),
                                     TIRTy::I16 | TIRTy::U16 => (2, TIRTy::I16),
-                                    TIRTy::I32 | TIRTy::U32 | TIRTy::F32 => {
-                                        (4, TIRTy::I32)
-                                    }
-                                    TIRTy::I64 | TIRTy::U64 | TIRTy::F64 => {
-                                        (8, TIRTy::I64)
-                                    }
+                                    TIRTy::I32 | TIRTy::U32 | TIRTy::F32 => (4, TIRTy::I32),
+                                    TIRTy::I64 | TIRTy::U64 | TIRTy::F64 => (8, TIRTy::I64),
                                     _ => {
                                         return Err(format!(
                                             "{simd_name}: unsupported element \
@@ -15240,12 +15439,9 @@ fn lower_terminator<'tcx>(
                                         ))
                                     }
                                 };
-                                let a_ptr =
-                                    operand_place_address(cx, fb, env, &a.node)?;
-                                let b_ptr =
-                                    operand_place_address(cx, fb, env, &b.node)?;
-                                let dst_ptr =
-                                    place_address(cx, fb, env, destination)?;
+                                let a_ptr = operand_place_address(cx, fb, env, &a.node)?;
+                                let b_ptr = operand_place_address(cx, fb, env, &b.node)?;
+                                let dst_ptr = place_address(cx, fb, env, destination)?;
                                 let ones = fb.iconst(mask_ty.clone(), -1);
                                 let zero = fb.iconst(mask_ty.clone(), 0);
                                 let float = is_float_tir(&se);
@@ -15293,12 +15489,7 @@ fn lower_terminator<'tcx>(
                                         };
                                         fb.icmp(op, se.clone(), va, vb)
                                     };
-                                    let mask = fb.select(
-                                        mask_ty.clone(),
-                                        bit,
-                                        ones,
-                                        zero,
-                                    );
+                                    let mask = fb.select(mask_ty.clone(), bit, ones, zero);
                                     let dd = if off == 0 {
                                         dst_ptr
                                     } else {
@@ -15323,9 +15514,7 @@ fn lower_terminator<'tcx>(
                             // fail-closed here — the float class handles them.
                             "simd_add" | "simd_sub" | "simd_mul" => {
                                 let [a, b] = &args[..] else {
-                                    return Err(format!(
-                                        "{simd_name}: expected exactly two args"
-                                    ));
+                                    return Err(format!("{simd_name}: expected exactly two args"));
                                 };
                                 // `simd_vector_lanes_any` (not the int-only shape)
                                 // so FLOAT-lane vectors (`vaddq_f32`/`vmulq_f32`,
@@ -15356,12 +15545,24 @@ fn lower_terminator<'tcx>(
                                 };
                                 for i in 0..sc {
                                     let off = i * w;
-                                    let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                    let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                    let aa = if off == 0 {
+                                        a_ptr
+                                    } else {
+                                        gep_byte_offset(fb, a_ptr, off)
+                                    };
+                                    let bb = if off == 0 {
+                                        b_ptr
+                                    } else {
+                                        gep_byte_offset(fb, b_ptr, off)
+                                    };
                                     let va = fb.load(se.clone(), aa);
                                     let vb = fb.load(se.clone(), bb);
                                     let r = fb.binop(op, se.clone(), va, vb);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, r);
                                 }
                             }
@@ -15388,9 +15589,7 @@ fn lower_terminator<'tcx>(
                                             format!("{simd_name}: non-SIMD-vector source")
                                         })?;
                                 if !is_float_tir(&se) {
-                                    return Err(format!(
-                                        "{simd_name}: non-float lane type {se:?}"
-                                    ));
+                                    return Err(format!("{simd_name}: non-float lane type {se:?}"));
                                 }
                                 let x_ptr = operand_place_address(cx, fb, env, &x.node)?;
                                 let y_ptr = operand_place_address(cx, fb, env, &y.node)?;
@@ -15399,15 +15598,31 @@ fn lower_terminator<'tcx>(
                                 let w = simd_lane_bytes(&se);
                                 for i in 0..sc {
                                     let off = i * w;
-                                    let xa = if off == 0 { x_ptr } else { gep_byte_offset(fb, x_ptr, off) };
-                                    let ya = if off == 0 { y_ptr } else { gep_byte_offset(fb, y_ptr, off) };
-                                    let za = if off == 0 { z_ptr } else { gep_byte_offset(fb, z_ptr, off) };
+                                    let xa = if off == 0 {
+                                        x_ptr
+                                    } else {
+                                        gep_byte_offset(fb, x_ptr, off)
+                                    };
+                                    let ya = if off == 0 {
+                                        y_ptr
+                                    } else {
+                                        gep_byte_offset(fb, y_ptr, off)
+                                    };
+                                    let za = if off == 0 {
+                                        z_ptr
+                                    } else {
+                                        gep_byte_offset(fb, z_ptr, off)
+                                    };
                                     let xv = fb.load(se.clone(), xa);
                                     let yv = fb.load(se.clone(), ya);
                                     let zv = fb.load(se.clone(), za);
                                     let prod = fb.binop(BinOp::FMul, se.clone(), xv, yv);
                                     let r = fb.binop(BinOp::FAdd, se.clone(), prod, zv);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, r);
                                 }
                             }
@@ -15418,9 +15633,7 @@ fn lower_terminator<'tcx>(
                             // element vectors reach here (NEON has no `vnegq_u*`).
                             "simd_neg" => {
                                 let [a] = &args[..] else {
-                                    return Err(
-                                        "simd_neg: expected exactly one arg".to_string()
-                                    );
+                                    return Err("simd_neg: expected exactly one arg".to_string());
                                 };
                                 let (se, sc) =
                                     simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
@@ -15432,10 +15645,18 @@ fn lower_terminator<'tcx>(
                                 let w = int_lane_size(&se);
                                 for i in 0..sc {
                                     let off = i * w;
-                                    let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
+                                    let aa = if off == 0 {
+                                        a_ptr
+                                    } else {
+                                        gep_byte_offset(fb, a_ptr, off)
+                                    };
                                     let va = fb.load(se.clone(), aa);
                                     let r = fb.unop(UnOp::Neg, se.clone(), va);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, r);
                                 }
                             }
@@ -15474,16 +15695,32 @@ fn lower_terminator<'tcx>(
                                 let zero_m = fb.iconst(me.clone(), 0);
                                 for i in 0..sc {
                                     let moff = i * mw;
-                                    let ma = if moff == 0 { m_ptr } else { gep_byte_offset(fb, m_ptr, moff) };
+                                    let ma = if moff == 0 {
+                                        m_ptr
+                                    } else {
+                                        gep_byte_offset(fb, m_ptr, moff)
+                                    };
                                     let mv = fb.load(me.clone(), ma);
                                     let cond = fb.icmp(ICmpOp::Ne, me.clone(), mv, zero_m);
                                     let off = i * w;
-                                    let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                    let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                    let aa = if off == 0 {
+                                        a_ptr
+                                    } else {
+                                        gep_byte_offset(fb, a_ptr, off)
+                                    };
+                                    let bb = if off == 0 {
+                                        b_ptr
+                                    } else {
+                                        gep_byte_offset(fb, b_ptr, off)
+                                    };
                                     let va = fb.load(se.clone(), aa);
                                     let vb = fb.load(se.clone(), bb);
                                     let r = fb.select(se.clone(), cond, va, vb);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, r);
                                 }
                             }
@@ -15502,19 +15739,15 @@ fn lower_terminator<'tcx>(
                             // sum seeds the fold with its accumulator operand `y`
                             // (which is `0` for the bare `vaddvq_*`), left-to-right;
                             // max/min seed with lane 0.
-                            "simd_reduce_add_ordered"
-                            | "simd_reduce_max"
-                            | "simd_reduce_min" => {
+                            "simd_reduce_add_ordered" | "simd_reduce_max" | "simd_reduce_min" => {
                                 let a = args.first().ok_or_else(|| {
                                     format!("{simd_name}: expected at least one arg")
                                 })?;
-                                let (elem, sc) = simd_int_vector_lanes(
-                                    cx,
-                                    operand_concrete_ty(cx, &a.node),
-                                )
-                                .ok_or_else(|| {
-                                    format!("{simd_name}: non-int-vector source")
-                                })?;
+                                let (elem, sc) =
+                                    simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                                        .ok_or_else(|| {
+                                            format!("{simd_name}: non-int-vector source")
+                                        })?;
                                 let w = int_lane_size(&elem);
                                 if w == 0 || sc == 0 {
                                     return Err(format!(
@@ -15522,8 +15755,7 @@ fn lower_terminator<'tcx>(
                                          {elem:?} x {sc}"
                                     ));
                                 }
-                                let src_ptr =
-                                    operand_place_address(cx, fb, env, &a.node)?;
+                                let src_ptr = operand_place_address(cx, fb, env, &a.node)?;
                                 let signed = is_signed(&elem);
                                 // Seed with lane 0.
                                 let mut acc = fb.load(elem.clone(), src_ptr);
@@ -15531,60 +15763,36 @@ fn lower_terminator<'tcx>(
                                 // `acc_arg + lane0 + lane1 + ...` (left-to-right).
                                 if simd_name == "simd_reduce_add_ordered" {
                                     if let Some(accum) = args.get(1) {
-                                        let (av, aty) = lower_operand(
-                                            cx,
-                                            fb,
-                                            env,
-                                            &accum.node,
-                                        )?;
+                                        let (av, aty) = lower_operand(cx, fb, env, &accum.node)?;
                                         let seed = int_cast(fb, av, &aty, &elem);
-                                        acc = fb.binop(
-                                            BinOp::Add,
-                                            elem.clone(),
-                                            seed,
-                                            acc,
-                                        );
+                                        acc = fb.binop(BinOp::Add, elem.clone(), seed, acc);
                                     }
                                 }
                                 for i in 1..sc {
                                     let p = gep_byte_offset(fb, src_ptr, i * w);
                                     let lane = fb.load(elem.clone(), p);
                                     acc = match simd_name {
-                                        "simd_reduce_add_ordered" => fb.binop(
-                                            BinOp::Add,
-                                            elem.clone(),
-                                            acc,
-                                            lane,
-                                        ),
+                                        "simd_reduce_add_ordered" => {
+                                            fb.binop(BinOp::Add, elem.clone(), acc, lane)
+                                        }
                                         "simd_reduce_max" => {
-                                            let op = if signed {
-                                                ICmpOp::Sgt
-                                            } else {
-                                                ICmpOp::Ugt
-                                            };
-                                            let c = fb
-                                                .icmp(op, elem.clone(), lane, acc);
+                                            let op = if signed { ICmpOp::Sgt } else { ICmpOp::Ugt };
+                                            let c = fb.icmp(op, elem.clone(), lane, acc);
                                             fb.select(elem.clone(), c, lane, acc)
                                         }
                                         // simd_reduce_min
                                         _ => {
-                                            let op = if signed {
-                                                ICmpOp::Slt
-                                            } else {
-                                                ICmpOp::Ult
-                                            };
-                                            let c = fb
-                                                .icmp(op, elem.clone(), lane, acc);
+                                            let op = if signed { ICmpOp::Slt } else { ICmpOp::Ult };
+                                            let c = fb.icmp(op, elem.clone(), lane, acc);
                                             fb.select(elem.clone(), c, lane, acc)
                                         }
                                     };
                                 }
                                 // The reduce result IS the element type; cast to the
                                 // destination scalar type only if it differs.
-                                let dst_ty = scalar_tir_ty(
-                                    cx.place_concrete_ty(destination),
-                                )
-                                .unwrap_or_else(|| elem.clone());
+                                let dst_ty =
+                                    scalar_tir_ty(cx.tcx, cx.place_concrete_ty(destination))
+                                        .unwrap_or_else(|| elem.clone());
                                 let r = int_cast(fb, acc, &elem, &dst_ty);
                                 bind_call_destination(cx, fb, env, destination, r)?;
                             }
@@ -15601,17 +15809,13 @@ fn lower_terminator<'tcx>(
                             // integer arithmetic, so byte-exact.
                             "simd_saturating_add" | "simd_saturating_sub" => {
                                 let [a, b] = &args[..] else {
-                                    return Err(format!(
-                                        "{simd_name}: expected exactly two args"
-                                    ));
+                                    return Err(format!("{simd_name}: expected exactly two args"));
                                 };
-                                let (se, sc) = simd_int_vector_lanes(
-                                    cx,
-                                    operand_concrete_ty(cx, &a.node),
-                                )
-                                .ok_or_else(|| {
-                                    format!("{simd_name}: non-int-vector source")
-                                })?;
+                                let (se, sc) =
+                                    simd_int_vector_lanes(cx, operand_concrete_ty(cx, &a.node))
+                                        .ok_or_else(|| {
+                                            format!("{simd_name}: non-int-vector source")
+                                        })?;
                                 let w = int_lane_size(&se);
                                 // Signed wide type = 2x the lane width. A 64-bit
                                 // lane would need a 128-bit detour the backend
@@ -15631,10 +15835,7 @@ fn lower_terminator<'tcx>(
                                 // constants.
                                 let bits = w * 8;
                                 let (lo, hi) = if is_signed(&se) {
-                                    (
-                                        -(1i128 << (bits - 1)),
-                                        (1i128 << (bits - 1)) - 1,
-                                    )
+                                    (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
                                 } else {
                                     (0i128, (1i128 << bits) - 1)
                                 };
@@ -15643,18 +15844,23 @@ fn lower_terminator<'tcx>(
                                 } else {
                                     BinOp::Sub
                                 };
-                                let a_ptr =
-                                    operand_place_address(cx, fb, env, &a.node)?;
-                                let b_ptr =
-                                    operand_place_address(cx, fb, env, &b.node)?;
-                                let dst_ptr =
-                                    place_address(cx, fb, env, destination)?;
+                                let a_ptr = operand_place_address(cx, fb, env, &a.node)?;
+                                let b_ptr = operand_place_address(cx, fb, env, &b.node)?;
+                                let dst_ptr = place_address(cx, fb, env, destination)?;
                                 let hic = fb.iconst(we.clone(), hi);
                                 let loc = fb.iconst(we.clone(), lo);
                                 for i in 0..sc {
                                     let off = i * w;
-                                    let aa = if off == 0 { a_ptr } else { gep_byte_offset(fb, a_ptr, off) };
-                                    let bb = if off == 0 { b_ptr } else { gep_byte_offset(fb, b_ptr, off) };
+                                    let aa = if off == 0 {
+                                        a_ptr
+                                    } else {
+                                        gep_byte_offset(fb, a_ptr, off)
+                                    };
+                                    let bb = if off == 0 {
+                                        b_ptr
+                                    } else {
+                                        gep_byte_offset(fb, b_ptr, off)
+                                    };
                                     let va = fb.load(se.clone(), aa);
                                     let vb = fb.load(se.clone(), bb);
                                     let aw = int_cast(fb, va, &se, &we);
@@ -15665,7 +15871,11 @@ fn lower_terminator<'tcx>(
                                     let under = fb.icmp(ICmpOp::Slt, we.clone(), s1, loc);
                                     let s2 = fb.select(we.clone(), under, loc, s1);
                                     let r = int_cast(fb, s2, &we, &se);
-                                    let dd = if off == 0 { dst_ptr } else { gep_byte_offset(fb, dst_ptr, off) };
+                                    let dd = if off == 0 {
+                                        dst_ptr
+                                    } else {
+                                        gep_byte_offset(fb, dst_ptr, off)
+                                    };
                                     fb.store(se.clone(), dd, r);
                                 }
                             }
@@ -15715,7 +15925,7 @@ fn lower_terminator<'tcx>(
                         let nx = fb.unop(UnOp::Not, xty.clone(), xv);
                         let masked = fb.binop(BinOp::And, xty.clone(), xm1, nx);
                         let pc = fb.unop(UnOp::CtPop, xty.clone(), masked);
-                        let dst_ty = scalar_tir_ty(cx.place_concrete_ty(destination))
+                        let dst_ty = scalar_tir_ty(cx.tcx, cx.place_concrete_ty(destination))
                             .unwrap_or(TIRTy::U32);
                         let r = int_cast(fb, pc, &xty, &dst_ty);
                         bind_call_destination(cx, fb, env, destination, r)?;
@@ -15783,18 +15993,13 @@ fn lower_terminator<'tcx>(
                     // signed zeros the instruction's choice is one of the two the
                     // intrinsic explicitly allows.
                     let float_binop = match idef.name.as_str() {
-                        "minimum_number_nsz_f32" | "minimum_number_nsz_f64" => {
-                            Some(BinOp::FMin)
-                        }
-                        "maximum_number_nsz_f32" | "maximum_number_nsz_f64" => {
-                            Some(BinOp::FMax)
-                        }
+                        "minimum_number_nsz_f32" | "minimum_number_nsz_f64" => Some(BinOp::FMin),
+                        "maximum_number_nsz_f32" | "maximum_number_nsz_f64" => Some(BinOp::FMax),
                         _ => None,
                     };
                     if let Some(fop) = float_binop {
                         let ret_bb = target.ok_or_else(|| {
-                            "float min/max intrinsic: call must have a return target"
-                                .to_string()
+                            "float min/max intrinsic: call must have a return target".to_string()
                         })?;
                         let [x, y] = &args[..] else {
                             return Err(format!(
@@ -15838,9 +16043,7 @@ fn lower_terminator<'tcx>(
                             "powi intrinsic: call must have a return target".to_string()
                         })?;
                         let [a0, b0] = &args[..] else {
-                            return Err(
-                                "powi intrinsic: expected exactly two args".to_string()
-                            );
+                            return Err("powi intrinsic: expected exactly two args".to_string());
                         };
                         let (av, aty) = lower_operand(cx, fb, env, &a0.node)?;
                         let (bv, bty) = lower_operand(cx, fb, env, &b0.node)?;
@@ -15892,15 +16095,7 @@ fn lower_terminator<'tcx>(
             // byte-exact libc memmove / libc memset for non-ZST elements, an
             // exact no-op for ZST elements — never the byte-scaled harness leaf.
             if let Some(mi) = tc.mem_intrinsic {
-                return lower_mem_intrinsic_inline(
-                    cx,
-                    fb,
-                    env,
-                    tc,
-                    mi,
-                    args,
-                    *target,
-                );
+                return lower_mem_intrinsic_inline(cx, fb, env, tc, mi, args, *target);
             }
             // A cross-crate raw-pointer `offset` / `wrapping_offset` wrapper,
             // inlined through the preselected faithful pointer-arithmetic lane.
@@ -15926,15 +16121,18 @@ fn lower_terminator<'tcx>(
                 };
                 let (arg_ptr, arg_ty) = lower_operand(cx, fb, env, &arg.node)?;
                 if !matches!(arg_ty, TIRTy::Ptr) {
-                    return Err(format!("Arc::deref inline: arg is not a pointer ({arg_ty:?})"));
+                    return Err(format!(
+                        "Arc::deref inline: arg is not a pointer ({arg_ty:?})"
+                    ));
                 }
-                // `arg_ptr` = `&Arc<T>` = address of the 8-byte thin Arc pointer.
+                // `arg_ptr` = `&Arc<T>` = address of the pointer-sized thin Arc value.
                 let arc_thin = fb.load(TIRTy::Ptr, arg_ptr);
                 // `&(*self.ptr).data` = thin pointer + ArcInner data offset.
                 let data_ref = gep_byte_offset(fb, arc_thin, off);
                 bind_call_destination(cx, fb, env, destination, data_ref)?;
-                let ret_bb = target
-                    .ok_or_else(|| "Arc::deref inline: deref call must have a return target".to_string())?;
+                let ret_bb = target.ok_or_else(|| {
+                    "Arc::deref inline: deref call must have a return target".to_string()
+                })?;
                 let edge = tc.edge_args(env, ret_bb)?;
                 fb.br(tc.target_block(ret_bb), edge);
                 return Ok(());
@@ -15968,7 +16166,7 @@ fn lower_terminator<'tcx>(
                 // `strong = 1` at offset 0, `weak = 1` at offset `pointer_size`. Both
                 // are `AtomicUsize` — a `pointer_size` integer; the RUNG-5 read never
                 // touches them, but a faithful block initializes them as Rust does.
-                let counter_ty = if ptr_size == 8 { TIRTy::U64 } else { TIRTy::U32 };
+                let counter_ty = pointer_int_ty(cx.tcx, false)?;
                 let one = fb.iconst(counter_ty.clone(), 1);
                 fb.store(counter_ty.clone(), base, one);
                 let weak_addr = gep_byte_offset(fb, base, ptr_size);
@@ -15990,9 +16188,7 @@ fn lower_terminator<'tcx>(
                         // Aggregate pointee: copy `size_of::<T>` bytes lane-by-lane
                         // from the arg's source slot into `base + data_offset`.
                         let (Operand::Copy(place) | Operand::Move(place)) = &arg.node else {
-                            return Err(
-                                "Arc::new inline: aggregate arg is not a place".to_string()
-                            );
+                            return Err("Arc::new inline: aggregate arg is not a place".to_string());
                         };
                         let src_addr = place_address(cx, fb, env, place)?;
                         copy_aggregate_bytes(
@@ -16041,7 +16237,7 @@ fn lower_terminator<'tcx>(
             // `(cur,end)` cursor init. The single arg is a pointer to the SOURCE Vec
             // (a `&Vec` for borrowed, or the moved-Vec slot for owned); read its
             // `{ptr@0, len@<2*ptr_size>}`, compute `end = ptr + len*stride`, and Store
-            // the two cursor words into the destination iterator slot (`cur@0,end@8`).
+            // the two cursor words into the destination iterator slot (`cur@0,end@pointer_size`).
             // No `call`, no extern. (The Vec's buffer is leaked — owned `into_iter`
             // just copies the buffer pointer; the leak model owns this.)
             if let Some(model) = tc.into_iter_model.clone() {
@@ -16085,10 +16281,10 @@ fn lower_terminator<'tcx>(
                 };
                 let base = fb.load(TIRTy::Ptr, ptr_addr);
                 let len_addr = gep_byte_offset(fb, vec_ptr, model.vec_len_off);
-                let len = fb.load(TIRTy::I64, len_addr);
+                let len = fb.load(pointer_int_ty(cx.tcx, true)?, len_addr);
                 // `end = base + len * stride` (i8-element GEP by a byte count).
-                let stride = fb.iconst(TIRTy::I64, model.stride as i128);
-                let byte_len = fb.binop(BinOp::Mul, TIRTy::I64, len, stride);
+                let stride = fb.iconst(pointer_int_ty(cx.tcx, true)?, model.stride as i128);
+                let byte_len = fb.binop(BinOp::Mul, pointer_int_ty(cx.tcx, true)?, len, stride);
                 let end = fb.gep(TIRTy::I8, base, vec![byte_len]);
                 // Store the cursor at the MODEL's offsets — the REAL `ptr`/`end`
                 // fields for an owned `vec::IntoIter` (THREADS: real bodies
@@ -16118,16 +16314,17 @@ fn lower_terminator<'tcx>(
                     } else {
                         gep_byte_offset(fb, vec_ptr, model.vec_cap_off)
                     };
-                    let cap = fb.load(TIRTy::I64, src_cap_addr);
+                    let cap = fb.load(pointer_int_ty(cx.tcx, true)?, src_cap_addr);
                     let dst_cap_addr = if cap_off == 0 {
                         iter_ptr
                     } else {
                         gep_byte_offset(fb, iter_ptr, cap_off)
                     };
-                    fb.store(TIRTy::I64, dst_cap_addr, cap);
+                    fb.store(pointer_int_ty(cx.tcx, true)?, dst_cap_addr, cap);
                 }
-                let ret_bb = target
-                    .ok_or_else(|| "into_iter inline: call must have a return target".to_string())?;
+                let ret_bb = target.ok_or_else(|| {
+                    "into_iter inline: call must have a return target".to_string()
+                })?;
                 let edge = tc.edge_args(env, ret_bb)?;
                 fb.br(tc.target_block(ret_bb), edge);
                 return Ok(());
@@ -16157,7 +16354,7 @@ fn lower_terminator<'tcx>(
                 if !args.is_empty() {
                     return Err("Box::new_uninit inline: expected zero args".to_string());
                 }
-                let count = fb.iconst(TIRTy::I64, layout.total_size as i128);
+                let count = fb.iconst(pointer_int_ty(cx.tcx, true)?, layout.total_size as i128);
                 let buf = fb.heap_alloc(
                     TIRTy::I8,
                     Some(count),
@@ -16195,20 +16392,20 @@ fn lower_terminator<'tcx>(
                 };
                 fb.store(TIRTy::Ptr, ptr_addr, box_ptr);
                 // `cap = N` at `cap_off`, `len = N` at `len_off`.
-                let n = fb.iconst(TIRTy::I64, layout.count as i128);
+                let n = fb.iconst(pointer_int_ty(cx.tcx, true)?, layout.count as i128);
                 let cap_addr = if vfo.cap_off == 0 {
                     vec_ptr
                 } else {
                     gep_byte_offset(fb, vec_ptr, vfo.cap_off)
                 };
-                fb.store(TIRTy::I64, cap_addr, n);
-                let n2 = fb.iconst(TIRTy::I64, layout.count as i128);
+                fb.store(pointer_int_ty(cx.tcx, true)?, cap_addr, n);
+                let n2 = fb.iconst(pointer_int_ty(cx.tcx, true)?, layout.count as i128);
                 let len_addr = if vfo.len_off == 0 {
                     vec_ptr
                 } else {
                     gep_byte_offset(fb, vec_ptr, vfo.len_off)
                 };
-                fb.store(TIRTy::I64, len_addr, n2);
+                fb.store(pointer_int_ty(cx.tcx, true)?, len_addr, n2);
                 let ret_bb = target
                     .ok_or_else(|| "box->Vec inline: call must have a return target".to_string())?;
                 let edge = tc.edge_args(env, ret_bb)?;
@@ -16231,45 +16428,48 @@ fn lower_terminator<'tcx>(
                     StrInlineOp::AsBytes => {
                         let pair = str_call_arg_pair_addr(cx, fb, env, &arg.node)?;
                         let dst = place_address(cx, fb, env, destination)?;
-                        for off in [0u64, 8] {
-                            let sa = if off == 0 { pair } else { gep_byte_offset(fb, pair, off) };
-                            let da = if off == 0 { dst } else { gep_byte_offset(fb, dst, off) };
-                            let v = fb.load(TIRTy::I64, sa);
-                            fb.store(TIRTy::I64, da, v);
+                        for off in [0u64, pointer_bytes(cx.tcx)] {
+                            let sa = if off == 0 {
+                                pair
+                            } else {
+                                gep_byte_offset(fb, pair, off)
+                            };
+                            let da = if off == 0 {
+                                dst
+                            } else {
+                                gep_byte_offset(fb, dst, off)
+                            };
+                            let v = fb.load(pointer_int_ty(cx.tcx, true)?, sa);
+                            fb.store(pointer_int_ty(cx.tcx, true)?, da, v);
                         }
                     }
                     // `str::len`: the metadata lane (+8) of the arg pair.
                     StrInlineOp::Len => {
                         let pair = str_call_arg_pair_addr(cx, fb, env, &arg.node)?;
-                        let len_addr = gep_byte_offset(fb, pair, 8);
-                        let len = fb.load(TIRTy::U64, len_addr);
+                        let len_addr = gep_byte_offset(fb, pair, pointer_bytes(cx.tcx));
+                        let len = fb.load(pointer_int_ty(cx.tcx, false)?, len_addr);
                         bind_call_destination(cx, fb, env, destination, len)?;
                     }
                     // `str::bytes` / `<[u8]>::iter`: cursor init `cur = data ptr`,
-                    // `end = ptr + len` (stride 1 byte) at +0/+8 of the iterator
+                    // `end = ptr + len` (stride 1 byte) at consecutive pointer words of the iterator
                     // slot — the exact shape `lower_iter_next` consumes.
                     StrInlineOp::ByteCursorInit => {
                         let pair = str_call_arg_pair_addr(cx, fb, env, &arg.node)?;
                         let base = fb.load(TIRTy::Ptr, pair);
-                        let len_addr = gep_byte_offset(fb, pair, 8);
-                        let len = fb.load(TIRTy::I64, len_addr);
+                        let len_addr = gep_byte_offset(fb, pair, pointer_bytes(cx.tcx));
+                        let len = fb.load(pointer_int_ty(cx.tcx, true)?, len_addr);
                         let end = fb.gep(TIRTy::I8, base, vec![len]);
                         let dst = place_address(cx, fb, env, destination)?;
                         fb.store(TIRTy::Ptr, dst, base);
-                        let end_addr = gep_byte_offset(
-                            fb,
-                            dst,
-                            cx.tcx.data_layout.pointer_size().bytes(),
-                        );
+                        let end_addr =
+                            gep_byte_offset(fb, dst, cx.tcx.data_layout.pointer_size().bytes());
                         fb.store(TIRTy::Ptr, end_addr, end);
                     }
                     // Blanket `into_iter` identity: a `size_of::<I>` aggregate
                     // copy from the arg's iterator slot to the destination's.
                     StrInlineOp::IterIdentity { size, align } => {
                         let (Operand::Copy(place) | Operand::Move(place)) = &arg.node else {
-                            return Err(
-                                "into_iter identity: arg is not a place".to_string()
-                            );
+                            return Err("into_iter identity: arg is not a place".to_string());
                         };
                         let src = place_address(cx, fb, env, place)?;
                         let dst = place_address(cx, fb, env, destination)?;
@@ -16300,8 +16500,12 @@ fn lower_terminator<'tcx>(
             // RUNG 3: the call's ABI return form (must agree with the pre-pass
             // `call_extern_signature`, including the RUNG 10 in-module-edge
             // decision).
-            let call_ret =
-                call_return_abi(cx, destination, tc.pair_ret_ok, callee_is_extern_c(cx, func))?;
+            let call_ret = call_return_abi(
+                cx,
+                destination,
+                tc.pair_ret_ok,
+                callee_is_extern_c(cx, func),
+            )?;
             let has_sret = call_ret.has_sret();
 
             // Build the trust-ir arg list in signature order: [sret ptr]? ++ per
@@ -16321,9 +16525,7 @@ fn lower_terminator<'tcx>(
             // tuple slot at its field offset), a by-value aggregate field by ref (a
             // pointer into the tuple slot). This matches the closure body's untupled
             // signature exactly.
-            if is_closure_rust_call(cx, func)
-                || matches!(tc.virtual_dispatch, Some((_, _, true)))
-            {
+            if is_closure_rust_call(cx, func) || matches!(tc.virtual_dispatch, Some((_, _, true))) {
                 // THREADS: a CONSTANT args tuple (`f(None)` in
                 // `try_with_current` -> `const (None,)`) is materialized into
                 // ONE stack slot the first spread field touches; later fields
@@ -16351,10 +16553,8 @@ fn lower_terminator<'tcx>(
                         // A closure receiver is classified with `pair_value_ok=false`,
                         // so it is never a by-value pair — unreachable.
                         SpreadSlot::Whole(_, ArgAbi::PairByValue(_)) => {
-                            return Err(
-                                "closure receiver unexpectedly a by-value pair (RUNG 11)"
-                                    .to_string(),
-                            )
+                            return Err("closure receiver unexpectedly a by-value pair (RUNG 11)"
+                                .to_string())
                         }
                         SpreadSlot::TupleField { tuple, off, abi } => {
                             let base = match &tuple {
@@ -16372,14 +16572,13 @@ fn lower_terminator<'tcx>(
                                         a
                                     }
                                 },
-                                _ => {
-                                    return Err(
-                                        "closure args tuple is not a place".to_string()
-                                    )
-                                }
+                                _ => return Err("closure args tuple is not a place".to_string()),
                             };
-                            let addr =
-                                if off == 0 { base } else { gep_byte_offset(fb, base, off) };
+                            let addr = if off == 0 {
+                                base
+                            } else {
+                                gep_byte_offset(fb, base, off)
+                            };
                             match abi {
                                 ArgAbi::Scalar(t) => {
                                     // Load the spread scalar field by value.
@@ -16405,63 +16604,61 @@ fn lower_terminator<'tcx>(
                     }
                 }
             } else {
-            for a in args.iter() {
-                match classify_call_arg(cx, &a.node, tc.pair_ret_ok)? {
-                    ArgAbi::Scalar(t) => {
-                        let v = lower_scalar_call_arg(cx, fb, env, &a.node, &t)?;
-                        arg_vals.push(v);
-                    }
-                    ArgAbi::AggByRef => match &a.node {
-                        // A str/byte-slice LITERAL arg (R3 stage 1) passes the ADDRESS
-                        // of its materialized (ptr,len) pair slot; ANY OTHER aggregate
-                        // constant (R1: an enum/struct/tuple value — `None`, `Layout`,
-                        // ...) is materialized into a fresh stack slot at the call
-                        // site and passed by that slot's address. The two are
-                        // distinguished exactly as `classify_call_arg` admitted them.
-                        Operand::Constant(c) => {
-                            let addr = if str_const_bytes(cx, c).is_some() {
-                                str_const_mat(cx, c)?.pair_ptr
-                            } else {
-                                materialize_const_aggregate(cx, fb, c)?
-                            };
-                            arg_vals.push(addr);
-                        }
-                        // Pass a pointer to the source aggregate's slot (by-ref ABI).
-                        // An UNSIZED arg place passes its fat CARRIER cell address.
-                        Operand::Copy(place) | Operand::Move(place) => {
-                            let addr = match unsized_arg_carrier_addr(cx, fb, env, place) {
-                                Some(r) => r?,
-                                None => place_address(cx, fb, env, place)?,
-                            };
-                            arg_vals.push(addr);
-                        }
-                        _ => {
-                            return Err("by-value aggregate call arg is not a place".to_string())
-                        }
-                    },
-                    ArgAbi::Zst => {}
-                    // RUNG 11: pass the small pair BY VALUE as ONE SSA 2-tuple — a
-                    // single whole-aggregate Load of the source slot (byte-congruent
-                    // with the callee's whole-aggregate spill Store: `pair_ret_model`
-                    // pins tuple-offset == field-offset). HONEST BOUNDARY: the
-                    // source's inter-lane padding must be INITIALIZED (the whole-agg
-                    // Load reads the full byte image, padding included). In the
-                    // supported whole-program path a small-pair value originates from
-                    // a by-value return (RUNG 10 spill) or a by-value pair param
-                    // (RUNG 11 spill), both of which zero padding — the exact dual of
-                    // RUNG 10's `_0` entry zero-fill.
-                    ArgAbi::PairByValue(pr) => match &a.node {
-                        Operand::Copy(place) | Operand::Move(place) => {
-                            let addr = place_address(cx, fb, env, place)?;
-                            let v = fb.load(pr.tuple_ty(), addr);
+                for a in args.iter() {
+                    match classify_call_arg(cx, &a.node, tc.pair_ret_ok)? {
+                        ArgAbi::Scalar(t) => {
+                            let v = lower_scalar_call_arg(cx, fb, env, &a.node, &t)?;
                             arg_vals.push(v);
                         }
-                        _ => {
-                            return Err("by-value pair call arg is not a place".to_string())
-                        }
-                    },
+                        ArgAbi::AggByRef => match &a.node {
+                            // A str/byte-slice LITERAL arg (R3 stage 1) passes the ADDRESS
+                            // of its materialized (ptr,len) pair slot; ANY OTHER aggregate
+                            // constant (R1: an enum/struct/tuple value — `None`, `Layout`,
+                            // ...) is materialized into a fresh stack slot at the call
+                            // site and passed by that slot's address. The two are
+                            // distinguished exactly as `classify_call_arg` admitted them.
+                            Operand::Constant(c) => {
+                                let addr = if str_const_bytes(cx, c).is_some() {
+                                    str_const_mat(cx, c)?.pair_ptr
+                                } else {
+                                    materialize_const_aggregate(cx, fb, c)?
+                                };
+                                arg_vals.push(addr);
+                            }
+                            // Pass a pointer to the source aggregate's slot (by-ref ABI).
+                            // An UNSIZED arg place passes its fat CARRIER cell address.
+                            Operand::Copy(place) | Operand::Move(place) => {
+                                let addr = match unsized_arg_carrier_addr(cx, fb, env, place) {
+                                    Some(r) => r?,
+                                    None => place_address(cx, fb, env, place)?,
+                                };
+                                arg_vals.push(addr);
+                            }
+                            _ => {
+                                return Err("by-value aggregate call arg is not a place".to_string())
+                            }
+                        },
+                        ArgAbi::Zst => {}
+                        // RUNG 11: pass the small pair BY VALUE as ONE SSA 2-tuple — a
+                        // single whole-aggregate Load of the source slot (byte-congruent
+                        // with the callee's whole-aggregate spill Store: `pair_ret_model`
+                        // pins tuple-offset == field-offset). HONEST BOUNDARY: the
+                        // source's inter-lane padding must be INITIALIZED (the whole-agg
+                        // Load reads the full byte image, padding included). In the
+                        // supported whole-program path a small-pair value originates from
+                        // a by-value return (RUNG 10 spill) or a by-value pair param
+                        // (RUNG 11 spill), both of which zero padding — the exact dual of
+                        // RUNG 10's `_0` entry zero-fill.
+                        ArgAbi::PairByValue(pr) => match &a.node {
+                            Operand::Copy(place) | Operand::Move(place) => {
+                                let addr = place_address(cx, fb, env, place)?;
+                                let v = fb.load(pr.tuple_ty(), addr);
+                                arg_vals.push(v);
+                            }
+                            _ => return Err("by-value pair call arg is not a place".to_string()),
+                        },
+                    }
                 }
-            }
             }
             // `#[track_caller]` ABI (rustc `codegen_call_terminator` parity): a
             // callee that `requires_caller_location` receives ONE extra
@@ -16487,13 +16684,13 @@ fn lower_terminator<'tcx>(
             // `CallIndirect` signature was registered from the call's own arg/dest ABI.
             if let Some((sig, vslot, _is_rc)) = tc.virtual_dispatch {
                 let base = has_sret as usize;
-                let recv = *arg_vals.get(base).ok_or_else(|| {
-                    "virtual dispatch: missing &dyn receiver arg".to_string()
-                })?;
+                let recv = *arg_vals
+                    .get(base)
+                    .ok_or_else(|| "virtual dispatch: missing &dyn receiver arg".to_string())?;
                 let data = fb.load(TIRTy::Ptr, recv);
-                let vtable_addr = gep_byte_offset(fb, recv, 8);
+                let vtable_addr = gep_byte_offset(fb, recv, pointer_bytes(cx.tcx));
                 let vtable = fb.load(TIRTy::Ptr, vtable_addr);
-                let slot_addr = gep_byte_offset(fb, vtable, (vslot as u64) * 8);
+                let slot_addr = gep_byte_offset(fb, vtable, (vslot as u64) * pointer_bytes(cx.tcx));
                 let fnptr = fb.load(TIRTy::Ptr, slot_addr);
                 arg_vals[base] = data;
                 ctgt = Some(CallTarget::Indirect(fnptr, sig));
@@ -16715,7 +16912,10 @@ fn lower_terminator<'tcx>(
         // path (a panic mid-drop), which we route to a trap. The normal path — what
         // matters for executing whnf/def_eq — lowers and validates.
         TerminatorKind::Drop {
-            place, target, unwind, ..
+            place,
+            target,
+            unwind,
+            ..
         } => {
             // VIRTUAL (dyn) drop: `Drop((*_fat))` on a `dyn Trait` pointee —
             // the `drop_glue::<dyn Trait>` shim shape. Load the fat cell's
@@ -16731,7 +16931,7 @@ fn lower_terminator<'tcx>(
                 // The fat (data, vtable) CELL: the base local's own slot.
                 let cell = place_address(cx, fb, env, &Place::from(place.local))?;
                 let data = fb.load(TIRTy::Ptr, cell);
-                let vt_addr = gep_byte_offset(fb, cell, 8);
+                let vt_addr = gep_byte_offset(fb, cell, pointer_bytes(cx.tcx));
                 let vt = fb.load(TIRTy::Ptr, vt_addr);
                 // Vtable slot 0 = drop_in_place::<concrete> (rustc layout:
                 // [drop, size, align, methods...]). The frontend's SYNTHESIZED
@@ -16739,9 +16939,14 @@ fn lower_terminator<'tcx>(
                 // guard the dispatch so a no-drop pointee just skips (the
                 // faithful semantics: nothing to drop).
                 let fnp = fb.load(TIRTy::Ptr, vt);
-                let fnp_i = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::U64, fnp);
-                let zero = fb.iconst(TIRTy::U64, 0);
-                let is_null = fb.icmp(ICmpOp::Eq, TIRTy::U64, fnp_i, zero);
+                let fnp_i = fb.cast(
+                    CastOp::PtrToInt,
+                    TIRTy::Ptr,
+                    pointer_int_ty(cx.tcx, false)?,
+                    fnp,
+                );
+                let zero = fb.iconst(pointer_int_ty(cx.tcx, false)?, 0);
+                let is_null = fb.icmp(ICmpOp::Eq, pointer_int_ty(cx.tcx, false)?, fnp_i, zero);
                 let call_blk = fb.create_block();
                 let cont_blk = fb.create_block();
                 fb.condbr(is_null, cont_blk, vec![], call_blk, vec![]);
@@ -16973,9 +17178,7 @@ fn lower_invoke_call<'tcx>(
             fb.invoke_void(fid, args, bind_blk, vec![], pad);
             None
         }
-        CallRet::Direct(_) | CallRet::Pair(_) => {
-            Some(fb.invoke(fid, args, bind_blk, vec![], pad))
-        }
+        CallRet::Direct(_) | CallRet::Pair(_) => Some(fb.invoke(fid, args, bind_blk, vec![], pad)),
     };
     fb.switch_to_block(bind_blk);
     match (call_ret, result) {
@@ -17022,7 +17225,9 @@ fn resolve_fnptr_operand<'tcx>(
         if p.projection.is_empty() {
             for data in body.basic_blocks.iter() {
                 for stmt in &data.statements {
-                    let StatementKind::Assign(bx) = &stmt.kind else { continue };
+                    let StatementKind::Assign(bx) = &stmt.kind else {
+                        continue;
+                    };
                     let (pl, rv) = &**bx;
                     if pl.local != p.local || !pl.projection.is_empty() {
                         continue;
@@ -17070,23 +17275,20 @@ fn lower_mem_intrinsic_inline<'tcx>(
     args: &[rustc_span::Spanned<Operand<'tcx>>],
     target: Option<BasicBlock>,
 ) -> Result<(), String> {
-    // Scale an element count (I64/U64 isize/usize operand) to a U64 byte total.
+    // libc size_t and the Rust element count share the target address width.
     let scale_to_bytes = |fb: &mut trust_ir_build::FunctionBuilder<'_>,
                           count: trust_ir::ValueId,
                           ct: &TIRTy,
                           stride: u64|
      -> Result<trust_ir::ValueId, String> {
-        let count_u = match ct {
-            TIRTy::U64 => count,
-            TIRTy::I64 => fb.cast(CastOp::Bitcast, TIRTy::I64, TIRTy::U64, count),
-            other => {
-                return Err(format!(
-                    "mem intrinsic inline: count operand is not a 64-bit int ({other:?})"
-                ))
-            }
-        };
-        let stride_c = fb.iconst(TIRTy::U64, stride as i128);
-        Ok(fb.binop(BinOp::Mul, TIRTy::U64, count_u, stride_c))
+        let lane = pointer_int_ty(cx.tcx, false)?;
+        let signed_lane = pointer_int_ty(cx.tcx, true)?;
+        if ct != &lane && ct != &signed_lane {
+            return Err(format!("mem intrinsic count is not target-sized ({ct:?})"));
+        }
+        let count_u = int_cast(fb, count, ct, &lane);
+        let stride_c = fb.iconst(lane.clone(), stride as i128);
+        Ok(fb.binop(BinOp::Mul, lane, count_u, stride_c))
     };
     match mi {
         MemIntrinsicInline::ZstCopy => {
@@ -17101,7 +17303,11 @@ fn lower_mem_intrinsic_inline<'tcx>(
             };
             // Zero-sized elements cover zero bytes regardless of `count`.
         }
-        MemIntrinsicInline::Copy { stride, memmove, order } => {
+        MemIntrinsicInline::Copy {
+            stride,
+            memmove,
+            order,
+        } => {
             let [first_op, second_op, n_op] = &args[..] else {
                 return Err("copy intrinsic inline: expected 3 args".to_string());
             };
@@ -17137,8 +17343,8 @@ fn lower_mem_intrinsic_inline<'tcx>(
             // Returns unit: nothing to bind.
         }
     }
-    let ret_bb = target
-        .ok_or_else(|| "mem intrinsic inline: call must have a return target".to_string())?;
+    let ret_bb =
+        target.ok_or_else(|| "mem intrinsic inline: call must have a return target".to_string())?;
     let edge = tc.edge_args(env, ret_bb)?;
     fb.br(tc.target_block(ret_bb), edge);
     Ok(())
@@ -17194,22 +17400,18 @@ fn lower_raw_ptr_offset_inline<'tcx>(
         RawPtrOffsetInline::Gep { stride } | RawPtrOffsetInline::Integer { stride } => stride,
     };
     let result = if stride == 0 {
-        // Every ZST element offset is zero bytes; do not evaluate an otherwise
-        // unrepresentable negative index into TrustIR GEP.
         ptr
     } else {
         let (count, count_ty) = lower_operand(cx, fb, env, &count_op.node)?;
-        let count_i64 = to_i64_value(fb, count, &count_ty)?;
-        let stride_value = fb.iconst(TIRTy::I64, stride as i128);
-        let byte_offset = fb.binop(BinOp::Mul, TIRTy::I64, count_i64, stride_value);
-        match inline {
-            RawPtrOffsetInline::Gep { .. } => fb.gep(TIRTy::I8, ptr, vec![byte_offset]),
-            RawPtrOffsetInline::Integer { .. } => {
-                let addr = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::I64, ptr);
-                let advanced = fb.binop(BinOp::Add, TIRTy::I64, addr, byte_offset);
-                fb.cast(CastOp::IntToPtr, TIRTy::I64, TIRTy::Ptr, advanced)
-            }
-        }
+        pointer_offset_value(
+            fb,
+            ptr,
+            count,
+            &count_ty,
+            stride,
+            u32::from(cx.tcx.sess.target.pointer_width),
+            matches!(inline, RawPtrOffsetInline::Integer { .. }),
+        )?
     };
     bind_call_destination(cx, fb, env, destination, result)?;
     let ret_bb = target
@@ -17257,7 +17459,9 @@ fn lower_iter_next<'tcx>(
         .variants
         .get(some_variant.as_usize())
         .and_then(|v| v.1.first().copied())
-        .ok_or_else(|| "next inline: Option Some variant has no payload field offset".to_string())?;
+        .ok_or_else(|| {
+            "next inline: Option Some variant has no payload field offset".to_string()
+        })?;
 
     // The destination Option slot's base address (a memory place).
     let dst_addr = place_address(cx, fb, env, destination)?;
@@ -17274,9 +17478,19 @@ fn lower_iter_next<'tcx>(
     let cur = fb.load(TIRTy::Ptr, cur_addr);
     let end_addr = gep_byte_offset(fb, iter_ptr, model.end_off);
     let end = fb.load(TIRTy::Ptr, end_addr);
-    let cur_i = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::U64, cur);
-    let end_i = fb.cast(CastOp::PtrToInt, TIRTy::Ptr, TIRTy::U64, end);
-    let lt = fb.icmp(ICmpOp::Ult, TIRTy::U64, cur_i, end_i);
+    let cur_i = fb.cast(
+        CastOp::PtrToInt,
+        TIRTy::Ptr,
+        pointer_int_ty(cx.tcx, false)?,
+        cur,
+    );
+    let end_i = fb.cast(
+        CastOp::PtrToInt,
+        TIRTy::Ptr,
+        pointer_int_ty(cx.tcx, false)?,
+        end,
+    );
+    let lt = fb.icmp(ICmpOp::Ult, pointer_int_ty(cx.tcx, false)?, cur_i, end_i);
 
     let some_blk = fb.create_block();
     let none_blk = fb.create_block();

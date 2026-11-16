@@ -76,7 +76,7 @@ fn materialized_capture_prunes_only_actual_bound_inventory_and_replays_frozen_ty
         ),
         32,
     );
-    let mut p = parts(&scope, &[a.clone()]);
+    let mut p = parts(&scope, std::slice::from_ref(&a));
     let root = p
         .materialize_scoped_terms(&scope, &[a.clone(), x.clone(), unused.clone()], &[original])
         .unwrap()
@@ -104,7 +104,7 @@ fn materialized_capture_prunes_only_actual_bound_inventory_and_replays_frozen_ty
         .unwrap();
     let optimized = p.counts().3 - before;
     assert_eq!(reference.get_app_num_args(), 0);
-    let mut canonical = parts(&scope, &[a.clone()]);
+    let mut canonical = parts(&scope, std::slice::from_ref(&a));
     let before = canonical.counts().3;
     let other = canonical.bind_scoped(&mut scope, &[], ty, value).unwrap();
     let ordinary = canonical.counts().3 - before;
@@ -138,13 +138,14 @@ fn materialized_capture_does_not_cache_ancestor_prunes_or_add_unused_capture_abi
         .unwrap()
         .remove(0);
     let wrapper = succ(root);
-    p.bind_scoped(
-        &mut scope,
-        &[],
-        Expr::arrow(n(), Expr::arrow(n(), n())),
-        x.lam(unused.lam(wrapper.clone())),
-    )
-    .unwrap();
+    let _ = p
+        .bind_scoped(
+            &mut scope,
+            &[],
+            Expr::arrow(n(), Expr::arrow(n(), n())),
+            x.lam(unused.lam(wrapper.clone())),
+        )
+        .unwrap();
     assert!(
         !p.dependencies.contains_key(&DependencyKey(wrapper.clone())),
         "a context-dependent ancestor must not publish a context-free empty summary"
@@ -247,7 +248,11 @@ fn materialized_capture_complete_height_bound_falls_back_under_a_deeper_reuse() 
     let x = scope.try_local(n()).unwrap();
     let mut p = parts(&scope, &[]);
     let root = p
-        .materialize_scoped_terms(&scope, &[x.clone()], &[tower(x.term().clone(), 16)])
+        .materialize_scoped_terms(
+            &scope,
+            std::slice::from_ref(&x),
+            &[tower(x.term().clone(), 16)],
+        )
         .unwrap()
         .remove(0);
     let value = x.lam(root);
@@ -277,7 +282,11 @@ fn materialized_capture_every_publication_cutoff_is_paid_and_failures_poison_reu
         );
         p.set_base(&scope, vec![]).unwrap();
         let mut declarations = 0;
-        match p.materialize_scoped_terms(&scope, &[x.clone()], &[input.clone()]) {
+        match p.materialize_scoped_terms(
+            &scope,
+            std::slice::from_ref(&x),
+            std::slice::from_ref(&input),
+        ) {
             Ok(mut roots) => {
                 successes += 1;
                 assert_eq!(p.materialized_capture_roots, 1);
@@ -303,17 +312,21 @@ fn materialized_capture_every_publication_cutoff_is_paid_and_failures_poison_reu
     }
     assert!(successes > 0 && successes < 96);
     let mut p = parts(&scope, &[]);
-    p.materialize_scoped_terms(&scope, &[x.clone()], &[input])
+    p.materialize_scoped_terms(&scope, std::slice::from_ref(&x), &[input])
         .unwrap();
     let before = p.materialized_capture_roots;
     let invalid = x.lam(Expr::nat_lit(0)); // even UNUSED named shadow must refuse
-    let (canonical, _) = scope.close_external_forest(&[invalid.clone()], &[x.clone()], &[1]);
+    let (canonical, _) = scope.close_external_forest(
+        std::slice::from_ref(&invalid),
+        std::slice::from_ref(&x),
+        &[1],
+    );
     let expected = canonical.unwrap_err();
     assert!(
         matches!(&expected, crate::scoped_local::LocalScopeError::Closure(crate::term_scope::TermScopeError::ShadowedLocal(id)) if *id == x.id())
     );
     assert_eq!(
-        p.materialize_scoped_terms(&scope, &[x.clone()], &[invalid])
+        p.materialize_scoped_terms(&scope, std::slice::from_ref(&x), &[invalid])
             .unwrap_err(),
         expected.to_string(),
     );
@@ -334,17 +347,17 @@ fn materialized_capture_every_publication_cutoff_is_paid_and_failures_poison_reu
 fn materialized_capture_upper_bound_never_certifies_a_cold_invalid_defining_value() {
     let mut scope = LocalScope::new();
     let a = scope.try_local(n()).unwrap();
-    let mut p = parts(&scope, &[a.clone()]);
+    let mut p = parts(&scope, std::slice::from_ref(&a));
     let invalid = Expr::apps(
         Expr::const_str("Nat.add"),
         [a.term().clone(), Expr::const_str("True.intro")],
     );
     let root = p
-        .materialize_scoped_terms(&scope, &[a.clone()], &[invalid])
+        .materialize_scoped_terms(&scope, std::slice::from_ref(&a), &[invalid])
         .unwrap()
         .remove(0);
     assert_eq!(p.materialized_capture_roots, 1);
-    p.bind_scoped(&mut scope, &[], n(), root).unwrap();
+    let _ = p.bind_scoped(&mut scope, &[], n(), root).unwrap();
     let claim = scope.close(&a.pi(Expr::const_str("True"))).unwrap();
     let error = replay(
         p,
@@ -366,10 +379,14 @@ fn materialized_capture_removed_external_cannot_become_a_hidden_root_assumption(
     let x = scope.try_local(n()).unwrap();
     let mut p = parts(&scope, &[]);
     let root = p
-        .materialize_scoped_terms(&scope, &[x.clone()], &[tower(x.term().clone(), 12)])
+        .materialize_scoped_terms(
+            &scope,
+            std::slice::from_ref(&x),
+            &[tower(x.term().clone(), 12)],
+        )
         .unwrap()
         .remove(0);
-    p.bind_scoped(&mut scope, &[], n(), root).unwrap();
+    let _ = p.bind_scoped(&mut scope, &[], n(), root).unwrap();
     let error = p
         .close_scoped(
             &scope,
@@ -396,7 +413,11 @@ fn materialized_capture_later_binding_failure_disables_previous_guarded_entries_
     );
     p.set_base(&scope, vec![]).unwrap();
     let root = p
-        .materialize_scoped_terms(&scope, &[x.clone()], &[tower(x.term().clone(), 8)])
+        .materialize_scoped_terms(
+            &scope,
+            std::slice::from_ref(&x),
+            &[tower(x.term().clone(), 8)],
+        )
         .unwrap()
         .remove(0);
     let before = p.counts().3;
@@ -417,13 +438,13 @@ fn materialized_capture_failed_forest_publishes_no_successful_root_prefix() {
     let missing = scope.try_local(n()).unwrap();
     let mut p = parts(&scope, &[]);
     let roots = [tower(x.term().clone(), 8), missing.term().clone()];
-    let (canonical, _) = scope.close_external_forest(&roots, &[x.clone()], &[1, 1]);
+    let (canonical, _) = scope.close_external_forest(&roots, std::slice::from_ref(&x), &[1, 1]);
     let expected = canonical.unwrap_err();
     assert!(
         matches!(&expected, crate::scoped_local::LocalScopeError::Closure(crate::term_scope::TermScopeError::OutOfScope(id)) if *id == missing.id())
     );
     let error = p
-        .materialize_scoped_terms(&scope, &[x.clone()], &roots)
+        .materialize_scoped_terms(&scope, std::slice::from_ref(&x), &roots)
         .unwrap_err();
     assert_eq!(error, expected.to_string());
     assert!(p.materialized_capture_failed);
@@ -441,7 +462,7 @@ fn materialized_capture_existing_prefix_and_fresh_late_root_pay_both_complete_pu
     let mut roots = vec![old.clone(); 31];
     roots.push(fresh.clone());
     let (canonical, stats) =
-        scope.close_external_forest(&roots, &[x.clone()], &vec![1; roots.len()]);
+        scope.close_external_forest(&roots, std::slice::from_ref(&x), &vec![1; roots.len()]);
     canonical.unwrap();
     let mut saw_success = false;
     let mut saw_failed_publication = false;
@@ -454,7 +475,7 @@ fn materialized_capture_existing_prefix_and_fresh_late_root_pay_both_complete_pu
             },
         );
         p.set_base(&scope, vec![]).unwrap();
-        if p.materialize_scoped_terms(&scope, &[x.clone()], &[old.clone()])
+        if p.materialize_scoped_terms(&scope, std::slice::from_ref(&x), std::slice::from_ref(&old))
             .is_err()
         {
             assert!(p.counts().3 <= cap);
@@ -463,7 +484,7 @@ fn materialized_capture_existing_prefix_and_fresh_late_root_pay_both_complete_pu
         }
         assert_eq!(p.materialized_capture_roots, 1);
         let before = p.counts().3;
-        match p.materialize_scoped_terms(&scope, &[x.clone()], &roots) {
+        match p.materialize_scoped_terms(&scope, std::slice::from_ref(&x), &roots) {
             Ok(_) => {
                 saw_success = true;
                 assert_eq!(p.materialized_capture_roots, 2);

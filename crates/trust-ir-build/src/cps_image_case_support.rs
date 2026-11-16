@@ -195,9 +195,7 @@ impl ExprFolderOpt for Scan<'_, '_, '_, '_> {
             return None;
         };
         if !self.possible {
-            let Some(possible) = self.root_possible(expression) else {
-                return None;
-            };
+            let possible = self.root_possible(expression)?;
             self.possible = possible;
         }
         let summary = Summary {

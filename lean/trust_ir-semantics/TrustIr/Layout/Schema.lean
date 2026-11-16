@@ -27,6 +27,10 @@ structure Environment where
   closures : List ClosureTy := []
   tupleLayouts : List TupleLayoutDescriptor := []
   closureLayouts : List ClosureLayoutDescriptor := []
+  /-- Original declaration headers only. Missing or duplicate item identities
+      cannot acquire a layout from a body or an inferred function pointer. -/
+  functions : List (FuncId × FuncTyId) := []
+  funcTypes : List FuncTyDef := []
 
 inductive Mode where
   | shape
@@ -38,6 +42,9 @@ inductive Error where
   | missingStruct (id : Nat)
   | missingEnum (id : Nat)
   | missingClosure (id : Nat)
+  | missingFunction (id : Nat)
+  | ambiguousFunction (id : Nat)
+  | missingFunctionSignature (id signature : Nat)
   | missingMetadata (kind : String) (id : Nat) (field : String)
   | incoherent (kind : String) (id : Nat)
   | missingTarget (kind : String)

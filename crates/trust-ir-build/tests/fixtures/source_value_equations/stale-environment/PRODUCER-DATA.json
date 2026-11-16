@@ -1,0 +1,147 @@
+{
+  "producer_source": "5b8de1228598ac3fe06e43bdafbc8187362b6360",
+  "producer_tree": "ff290521230098f1fdf573b7703ba7b83d658c7b",
+  "Cargo_lock_sha256": "652a4520f9a7bd45acbfc5e2c2de79dd4e5c449ad863d8136bf2ca42c410818f",
+  "qualification_result": "$HOME/.cache/trust-cg-bitvec-cohort-20261110/producer-qualification.json",
+  "qualification_result_sha256": "da4408eba88b462661c7c342e611ab7e3e19df139886b3cd1d86f7ce5c3fdc6e",
+  "actual_selected_tests_passed": 5,
+  "source_inputs_unchanged": true,
+  "files": {
+    "boundActualEquation/DATA.txt": {
+      "bytes": 187,
+      "sha256": "9057a9d0b0b25b1dc8186bf05e4326b54d95d73ef745ae724b17e34d871656dc"
+    },
+    "boundActualEquation/definition-0.name.bin": {
+      "bytes": 47,
+      "sha256": "e74553594922f5ae86cc06cb02d55943a2f849a018e746cbc39ed68413fbd50c"
+    },
+    "boundActualEquation/definition-0.type.bin": {
+      "bytes": 126,
+      "sha256": "bb88e4de868f4e3efc494e5c406cb2abd0dbc770e8978b1660033b395443dc74"
+    },
+    "boundActualEquation/definition-0.value.bin": {
+      "bytes": 297,
+      "sha256": "b521fde90da85e165fefe5e26d00194b1cb8c5a22035452ee32d954968662fe4"
+    },
+    "boundActualEquation/equation-closure-digest.bin": {
+      "bytes": 32,
+      "sha256": "17ef78bd02d330510d56574aed9297baf7b011118a0a542379482249898a59ca"
+    },
+    "boundActualEquation/module.bin": {
+      "bytes": 5742,
+      "sha256": "9097ac44c889ce97a1009497afcc22ca3bca5e01953bfa72014749f3405ce7e8"
+    },
+    "boundActualEquation/source-closure-digest.bin": {
+      "bytes": 32,
+      "sha256": "a913fcff2ee3684f6c77d76f3c09cb5478f589380dccb932238768ef86277dae"
+    },
+    "boundActualEquation/theorem.name.bin": {
+      "bytes": 67,
+      "sha256": "123dc129009edd0617d232851ecaab9569eb0e12d58c4ac1d4a4468113bb4e9a"
+    },
+    "boundActualEquation/theorem.type.bin": {
+      "bytes": 701,
+      "sha256": "ba6d1130a561c6da08382db03b654db37d4dd7db4189a2042c468448f642694d"
+    },
+    "boundActualEquation/theorem.value.bin": {
+      "bytes": 311,
+      "sha256": "57f3def1d8ad3534f4013c0a1016bd10ae237f563ca486caf0d31159e17b2d5d"
+    },
+    "boundField/DATA.txt": {
+      "bytes": 246,
+      "sha256": "7a2bfdff3ca834f6285450da70fc4c54030282c24614a6bbf2872558b2ab69aa"
+    },
+    "boundField/definition-0.name.bin": {
+      "bytes": 46,
+      "sha256": "9f3c56ed62715403eb5fb492403839d4ca60b5ece1dd532f83940288efc90a58"
+    },
+    "boundField/definition-0.type.bin": {
+      "bytes": 158,
+      "sha256": "887a0e98e9953d5e45407c522ea0027350372b5f333bc1632d5a230e9aba50cb"
+    },
+    "boundField/definition-0.value.bin": {
+      "bytes": 225,
+      "sha256": "eb0a407d4c7b52acea1ce180b37fe55607267fce9f122da4a8a660ce5d0408f4"
+    },
+    "boundField/definition-1.name.bin": {
+      "bytes": 38,
+      "sha256": "fc95c2a5fab061f3a02b1f7e8cee0bc4121d132781521489923c60521fdb3dec"
+    },
+    "boundField/definition-1.type.bin": {
+      "bytes": 126,
+      "sha256": "bb88e4de868f4e3efc494e5c406cb2abd0dbc770e8978b1660033b395443dc74"
+    },
+    "boundField/definition-1.value.bin": {
+      "bytes": 340,
+      "sha256": "a4e025c8e2bb2cdfe5b28adb456dfa3ec7a5638ccffcb6e52c6c63b2b14ea303"
+    },
+    "boundField/equation-closure-digest.bin": {
+      "bytes": 32,
+      "sha256": "ad7561c8c1656562e319f646e57e3451915661f3bc77e0797f36ce2eda56dbca"
+    },
+    "boundField/module.bin": {
+      "bytes": 5494,
+      "sha256": "a6426bc98e514ac971a9ab3e8e987ca7d2bcae7a1dd203ef56c885c0f495e420"
+    },
+    "boundField/source-closure-digest.bin": {
+      "bytes": 32,
+      "sha256": "6ef83e4dbf764733f3dc8f46cb6c30cefbbe4900dba78ac77f5d5a0d18f93ea3"
+    },
+    "boundField/theorem.name.bin": {
+      "bytes": 65,
+      "sha256": "c8d2345dbfc531fa73bc9499f41d35da64330d4d3fb4e8e71c660b68b395f374"
+    },
+    "boundField/theorem.type.bin": {
+      "bytes": 618,
+      "sha256": "ca7a645f7990a463f2a782f82901a57835c46c03f0e70ba3c3e95b381de49c46"
+    },
+    "boundField/theorem.value.bin": {
+      "bytes": 7514,
+      "sha256": "05581856bb6d6ed150a487f230958ca6937e19eabe5f33ef59a9f16d27bd62cc"
+    },
+    "boundMask/DATA.txt": {
+      "bytes": 167,
+      "sha256": "161dc94c09b4a8508c628f4b8e6543a2862c82d0e944b2f176dd561750ffc352"
+    },
+    "boundMask/definition-0.name.bin": {
+      "bytes": 37,
+      "sha256": "a7d6ad01a0887bf41095a1ad05449ca0719b9e56d16a0021b4e1fd7dea92d78c"
+    },
+    "boundMask/definition-0.type.bin": {
+      "bytes": 126,
+      "sha256": "bb88e4de868f4e3efc494e5c406cb2abd0dbc770e8978b1660033b395443dc74"
+    },
+    "boundMask/definition-0.value.bin": {
+      "bytes": 298,
+      "sha256": "d563c72eabe02df84f83cf3dddf6444bffbc3cf4f8a4070beedb39df291558d3"
+    },
+    "boundMask/equation-closure-digest.bin": {
+      "bytes": 32,
+      "sha256": "30fbd6d1d3163ed2441fe9e3831d1728dd77add8ac030a04d29e96fd5cd8f2ad"
+    },
+    "boundMask/module.bin": {
+      "bytes": 5377,
+      "sha256": "9abe07eaa9613393926433db906a791a450c5f55afa40832a57e9b338e8ed8b1"
+    },
+    "boundMask/source-closure-digest.bin": {
+      "bytes": 32,
+      "sha256": "2e44e5e6ac268bb9d0701613a1a831d43a360f9377f73788d800138a9a85b687"
+    },
+    "boundMask/theorem.name.bin": {
+      "bytes": 68,
+      "sha256": "0ef47e51b47908bff7298fc106506fcb448a102b400b78fa92dc34d5e9a15454"
+    },
+    "boundMask/theorem.type.bin": {
+      "bytes": 544,
+      "sha256": "d38d773c7083e6481c1a9448aad5274992e8078508330082d464e41ef79b13cb"
+    },
+    "boundMask/theorem.value.bin": {
+      "bytes": 78595,
+      "sha256": "88770435cb631abe7aecb726b95b644e601188ae4c868d80af9a3f775a9590f0"
+    }
+  },
+  "scope": "Actual producer DATA from canonical source pipelines; separate consumer chooses authoritative source/environment, rederives full goal and audits proof. This package carries no proof grade/license/SDK/release/completion authority. Separate independent source-equation consumer has not yet qualified this data.",
+  "previous_producer_source": "bfd472616bd5fcc2f9f12a30a14d5faf942e3137",
+  "consumer_qualification": "Seven separate read-only IR producer-data tests passed with Clean 5b8de1228; no body/runtime/ABI/NoUB/machine-code license or completeness claim",
+  "consumer_log_sha256": "36d38d708301dddd66c93809f1d1d8d96bccbf7ad5b6fcc0990e79113be3a766"
+}

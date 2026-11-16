@@ -1,6 +1,6 @@
 // Copyright 2026 Andrew Yates | Licensed under the Apache License, Version 2.0
 
-//! Actual MIR switch extraction: host64 Isize and the unchanged U128 chain.
+//! Actual host MIR extraction: pointer-width switches and memory indices.
 //! Pure unit controls separately retain source32/selector64 typed refusal;
 //! this is not a new 32-bit ABI or cross-target executable support claim.
 
@@ -134,5 +134,69 @@ fn actual_u128_switch_keeps_the_existing_canonical_eq_branch_chain() {
         (6, 0),
     ] {
         assert_eq!(run(&module, id, Ty::U128, value), expected);
+    }
+}
+
+#[test]
+fn actual_address_taken_usize_indexes_aggregate_elements() {
+    let module = emit("memory_backed_aggregate_index");
+    assert_eq!(module.target_info.as_ref().unwrap().pointer_size, 8);
+    let id = function(&module, "memory_backed_aggregate_index");
+    let lowered = module
+        .functions
+        .iter()
+        .find(|function| function.id == id)
+        .unwrap();
+    let nodes = lowered.instructions().collect::<Vec<_>>();
+    let definition = |value| {
+        nodes
+            .iter()
+            .find(|node| node.results.contains(&value))
+            .copied()
+    };
+    // Require the real path under regression: a 16-byte aggregate-element
+    // stride multiplied by a usize loaded from a cell whose address crosses
+    // the helper call. An SSA-only index would not exercise the old refusal.
+    assert!(
+        nodes.iter().any(|node| {
+            let Inst::BinOp {
+                op: trust_ir::inst::BinOp::Mul,
+                ty: Ty::U64,
+                lhs,
+                rhs,
+            } = &node.inst
+            else {
+                return false;
+            };
+            let Some(index) = definition(*lhs) else {
+                return false;
+            };
+            let Inst::Load {
+                ty: Ty::U64, ptr, ..
+            } = &index.inst
+            else {
+                return false;
+            };
+            let is_stride = definition(*rhs).is_some_and(|node| {
+                matches!(
+                    &node.inst,
+                    Inst::Const {
+                        ty: Ty::U64,
+                        value: Constant::Int(16)
+                    }
+                )
+            });
+            let is_cell =
+                definition(*ptr).is_some_and(|node| matches!(node.inst, Inst::Alloca { .. }));
+            let address_passed = nodes.iter().any(|node| match &node.inst {
+                Inst::Call { args, .. } | Inst::CallCannotUnwind { args, .. } => args.contains(ptr),
+                _ => false,
+            });
+            is_stride && is_cell && address_passed
+        }),
+        "the actual MIR must use an address-taken index for an aggregate projection"
+    );
+    for (index, expected) in [(0, 2204), (1, 3306), (2, 1102)] {
+        assert_eq!(run(&module, id, Ty::U64, index), expected);
     }
 }

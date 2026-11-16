@@ -18,6 +18,14 @@ theorem stepInstWithContext_congr (base : EvalContext)
     (types : TypesAgreeOn (operandIds inst) sourceTypes targetTypes) :
     stepInstWithContext (scopedContext base source sourceTypes) inst =
       stepInstWithContext (scopedContext base target targetTypes) inst := by
+  have frameTypes (value : Value) :
+      bindingFrameTypes (scopedContext base source sourceTypes) value =
+        bindingFrameTypes (scopedContext base target targetTypes) value := rfl
+  have itemLanes (fuel : Nat) (ty : Ty) (value : Value) :
+      checkFunctionItemLanes (scopedContext base source sourceTypes) fuel ty value =
+        checkFunctionItemLanes (scopedContext base target targetTypes) fuel ty value :=
+    itemLanes_constantContext_eq (scopedContext base source sourceTypes)
+      (scopedContext base target targetTypes) rfl fuel ty value
   cases inst
   case Const ty constant =>
     rw [stepInstWithContext_const_scoped, stepInstWithContext_const_scoped]
@@ -26,10 +34,19 @@ theorem stepInstWithContext_congr (base : EvalContext)
   case ArraySplat ty valueId =>
     cases types with
     | absent =>
-      simp only [stepInstWithContext, scopedContext]
+      simp only [stepInstWithContext, scopedContext, EvalContext.types]
     | present sourceTable targetTable agree =>
       have read := agree valueId ((trustIrListMemConsSelf _ _))
-      simp only [stepInstWithContext, scopedContext, pure_bind, read]
+      simp only [stepInstWithContext, scopedContext, EvalContext.types, pure_bind, read]
+  case Cast op srcTy dstTy operand =>
+    rw [stepInstWithContext_cast_eq, stepInstWithContext_cast_eq]
+    rfl
+  case BindSlot frame slot value =>
+    simp only [stepInstWithContext, frameTypes, itemLanes] <;> rfl
+  case LoadSlot frame slot ty =>
+    simp only [stepInstWithContext, frameTypes, itemLanes] <;> rfl
+  case CloseFrame frame =>
+    simp only [stepInstWithContext, frameTypes] <;> rfl
   case Alloca ty count align =>
     simp only [stepInstWithContext]
     have equal := semAllocateUsing_reader_congr base.memoryLayout

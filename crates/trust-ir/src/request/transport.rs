@@ -151,8 +151,20 @@ pub fn rehydrate_native_bundle_transport_payload(
     // erase a difference in that identity. Compare the rehydrated JSON, keeping
     // inline and reference encodings equally valid and ignoring object key order.
     // This checks content only, not admission or proof.
-    let restored = serde_json::to_value(&bundle)
+    let mut restored = serde_json::to_value(&bundle)
         .map_err(|error| format!("restored native bundle cannot be encoded: {error}"))?;
+    // Before v70, the empty closure-layout table was the trailing skipped
+    // field. Appending the blob table made it always emitted for positional
+    // codecs. Its absence still decodes to the exact same empty table; compare
+    // that one historical spelling without accepting any lost input fields.
+    if value.pointer("/module/closure_layouts").is_none()
+        && restored.pointer("/module/closure_layouts") == Some(&serde_json::json!([]))
+        && let Some(module) = restored
+            .get_mut("module")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        module.remove("closure_layouts");
+    }
     if restored != value {
         return Err("native bundle transport loses fields during typed decoding".into());
     }

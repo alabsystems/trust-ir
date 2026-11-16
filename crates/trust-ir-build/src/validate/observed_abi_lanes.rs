@@ -12,10 +12,11 @@ use trust_ir::interpret::{
     ExecutionObserver, ExecutionPhase, ExecutionProgress, ExecutionSite, ObservedSession,
     ObservedValueError,
 };
-use trust_ir::shape::TyLayoutShape;
+use trust_ir::shape::{EnumLayoutShape, TyLayoutShape};
 use trust_ir::ty::{EnumDef, EnumTagEncoding, FieldDef};
 use trust_ir::value::{EnumId, StructId};
 use trust_ir::{LayoutError, LayoutTable};
+mod direct_storage;
 mod engine;
 mod memo;
 mod resume;
@@ -39,6 +40,7 @@ enum Rule {
     Untagged { variant: usize },
     Niche { dataful: usize },
     Direct { widest: usize },
+    DirectWithUninhabited { widest: usize },
 }
 #[derive(Clone, Copy)]
 enum Owner {
@@ -78,6 +80,8 @@ enum Action<'a> {
 struct State<'a> {
     frames: Vec<Frame<'a>>,
     layout: Option<Result<Arc<TyLayoutShape>, LayoutError>>,
+    enum_layout: Option<Result<Arc<EnumLayoutShape>, LayoutError>>,
+    ranges: Vec<(u64, u64, u64)>,
 }
 /// Private derived DATA for this exact immutable module, not layout, type,
 /// producer/ABI/source/module/proof authority. The actual full caller owns it
@@ -178,7 +182,9 @@ impl State<'_> {
     }
     fn retire<O: ExecutionObserver>(&mut self, w: &mut Work<'_, '_, O>) -> R {
         let result = self.retire_layout(w);
+        let enum_result = self.retire_enum_layout(w);
+        w.rows(take(&mut self.ranges));
         w.rows(take(&mut self.frames));
-        result
+        result.and(enum_result)
     }
 }

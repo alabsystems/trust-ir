@@ -1,0 +1,25 @@
+[package]
+name = "trust-ir-source-value-stage-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+autotests = false
+
+[workspace]
+resolver = "2"
+
+[features]
+default = ["clean-tv-anchor"]
+clean-tv-anchor = ["trust-ir-build/clean-tv-anchor"]
+
+[dependencies]
+trust-ir = { path = "../../../trust-ir", features = ["serde", "binary", "parser", "fmt", "diff", "clean-expr-codec"] }
+trust-ir-build = { path = "../..", default-features = false }
+
+[[test]]
+name = "source_value_equation"
+path = "../source_value_equation.rs"
+
+[[test]]
+name = "source_value_equation_producer"
+path = "source_value_equation_producer.rs"

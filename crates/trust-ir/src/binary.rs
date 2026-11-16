@@ -17,6 +17,11 @@ use std::io::{self, Cursor, Read as IoRead, Write as IoWrite};
 
 use sha2::{Digest, Sha256};
 
+use crate::box_validity::{
+    BoxDerefSite, BoxFactSession, BoxPointeeG, BoxValidityFact, BoxValidityNonClaim,
+    ConjunctEvidence, JudgedBody, PremiseRoot, ProducingSession, StandingAssumption,
+    ValidityConjunct, ValidityEvidence,
+};
 use crate::canonicalize::FunctionCanonicalPlan;
 #[cfg(test)]
 use crate::constant::Constant;
@@ -42,8 +47,8 @@ use crate::proof::{
 use crate::ty::FuncTy;
 use crate::ty::{
     ClosureTy, EnumDef, EnumDefG, EnumLayoutDescriptor, EnumTagEncoding, EnumTagRepr, EnumVariant,
-    EnumVariantG, FatPtrKind, FieldDef, FieldDefG, FuncTyG, RecordDef, SetRepr, StructDef,
-    StructDefG, StructRepr, Ty, TyG, TypeOrigin,
+    EnumVariantG, FatPtrKind, FieldDef, FieldDefG, FieldStorageLayout, FuncTyG, RecordDef, SetRepr,
+    StructDef, StructDefG, StructRepr, Ty, TyG, TypeOrigin, UninhabitedVariantLayout,
 };
 use crate::value::{
     BlockId, ClosureTyId, EnumId, FuncId, FuncTyId, GlobalId, ProofId, ProofTag, RecordId,
@@ -790,6 +795,25 @@ const MAGIC: &[u8; 8] = &crate::codec::TRUST_IR_BINARY_MAGIC;
 // changed module; a function body's identity does not, because its image
 // holds no table (the body names the digest, never the bytes). No digest
 // domain moves: the blob digest is plain SHA-256 of the bytes.
+// v74 (the Box deref with its carried validity fact, ADDITIVE;
+// `docs/SPEC_RATIFICATIONS.md` §28). `Inst::BoxDeref` is Inst tag 77: the
+// pointer type, the pointee shape (BoxPointee tag 0 `Sized`, then its type),
+// the operand, then the fact in struct order: the site (16 raw bytes of item
+// hash, a v32 ordinal), the session (a JudgedBody byte, a ProducingSession
+// byte), a counted evidence list (a ValidityConjunct byte, then a
+// ValidityEvidence: tag 0 `Premise` = a PremiseRoot byte and a counted
+// StandingAssumption list, tag 1 `DominatingCheck` = a
+// presence-prefixed v64 alignment, tag 2 `Obligation` = a proof id), and a
+// counted BoxValidityNonClaim list. Read-gated `version >= 74`: an older
+// header carrying tag 77 is refused with `InvalidTag(77)`
+// (`refuse/blob_box_deref_below_its_version`) rather than read, and every
+// nested byte outside its closed list is `InvalidTag`
+// (`refuse/blob_box_deref_premise_root_unknown`). The fact has NO optional
+// spelling: a `BoxDeref` without one cannot be written or read. The writer
+// selects 74 only for a module that carries the instruction, so every other
+// module keeps its bytes and its digests; `RawV38` / `CanonicalV38` refuse
+// (`BoxDerefRequiresV74`), which heads the highest-wins chain. No digest
+// domain moves.
 /// Latest format version supported by this build. Writers select v38 for
 /// legacy modules, v39 only when a nominal dialect type occurs, v40 only when a
 /// `FatPtrKind::ContainerVtable` occurs, and v41 only when a contract-surface
@@ -838,10 +862,19 @@ const MAGIC: &[u8; 8] = &crate::codec::TRUST_IR_BINARY_MAGIC;
 /// `Constant::TensorBlob` or a blob table row v70
 /// (`TENSOR_BLOB_FORMAT_VERSION`).
 ///
+/// Direct reserved-storage profiles select v72 and encoding tag 4,
+/// preserving physical extents alongside unchanged source types.
+///
+/// `Ty::FnItem` and `Constant::FnItem` select v73, with tags 42 and 19
+/// respectively, each carrying the exact nominal `FuncId` as VInt32.
+/// Existing function pointer tags and every earlier main image stay unchanged.
+///
+/// An `Inst::BoxDeref` selects v74 (`BOX_DEREF_VALIDITY_FORMAT_VERSION`).
+///
 /// `VERSION` may only equal the highest `shipped` row of
 /// `crates/trust-ir/wire_versions.tsv`; raising it without flipping that
 /// reserved row to `shipped` fails the `wire_version_ledger` test.
-pub const VERSION: u32 = 71;
+pub const VERSION: u32 = 74;
 /// Latest supported TrustIR binary wire-format version.
 pub const FORMAT_VERSION: u32 = VERSION;
 /// Baseline encoding retained for modules without v39 nominal dialect types
@@ -863,6 +896,16 @@ pub const HANDLE_TYPE_FORMAT_VERSION: u32 = 43;
 pub const STORAGE_LAYOUT_FORMAT_VERSION: u32 = 64;
 /// Payload-only enum image with an explicit sole inhabited variant selector.
 pub const SINGLE_INHABITED_ENUM_FORMAT_VERSION: u32 = 65;
+/// Direct storage profiles preserve unreachable source fields and repr padding.
+pub const UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION: u32 = 72;
+/// Nominal zero-storage function items, distinct from reified function pointers.
+pub const FN_ITEM_IDENTITY_FORMAT_VERSION: u32 = 73;
+
+#[cfg(test)]
+mod fn_item_identity_tests;
+#[cfg(test)]
+#[path = "binary/uninhabited_direct_storage_tests.rs"]
+mod uninhabited_direct_storage_tests;
 /// Format version selected when any `Module.imports` row is recorded under an
 /// identity scheme other than the legacy V2 (`ModuleImport.scheme`, WS4.10).
 pub const IMPORT_SCHEME_FORMAT_VERSION: u32 = 44;
@@ -1087,6 +1130,11 @@ mod tensor_map_reduce_view_tests;
 #[cfg(test)]
 #[path = "binary/tensor_region_tests.rs"]
 mod tensor_region_tests;
+
+/// The Box deref with its carried validity fact (`Inst::BoxDeref`, Inst tag
+/// 77). Raised PER MODULE by the instruction string collector, so a module
+/// without the instruction keeps the version it wrote before, byte for byte.
+pub const BOX_DEREF_VALIDITY_FORMAT_VERSION: u32 = 74;
 
 #[cfg(test)]
 #[path = "binary/param_pointee_place_tests.rs"]
@@ -1403,6 +1451,14 @@ pub enum BinaryProjectionError {
     /// A v38 projection cannot represent runtime closure construction (v63).
     MakeClosureRequiresV63,
     StorageRequiresV64,
+    /// A legacy projection cannot represent a single-inhabited layout or an
+    /// empty nominal enum declaration (v65).
+    SingleInhabitedRequiresV65,
+    /// A v38 projection cannot represent an `Inst::BoxDeref` (v74): the
+    /// instruction and its mandatory validity fact have no older spelling,
+    /// and a projection never narrows one to a plain cast. Heads the
+    /// highest-wins chain.
+    BoxDerefRequiresV74,
     /// A legacy projection cannot erase a declared closure's nominal source identity.
     ClosureOriginRequiresV66,
     /// A v38 projection cannot represent the tensor region (v67, PKG-U13a): a
@@ -1415,9 +1471,13 @@ pub enum BinaryProjectionError {
     /// PKG-U13d).
     TensorGatherScatterRequiresV69,
     /// A v38 projection cannot represent a content-addressed weight blob (v70,
-    /// PKG-U13e): a `Constant::TensorBlob` or a blob table row. Heads the
-    /// highest-wins chain.
+    /// PKG-U13e): a `Constant::TensorBlob` or a blob table row. Participates
+    /// in the highest-wins chain.
     TensorBlobRequiresV70,
+    /// A legacy projection cannot preserve physical storage for dead Direct rows.
+    UninhabitedDirectStorageRequiresV72,
+    /// A legacy projection cannot preserve nominal zero-storage function items.
+    FnItemIdentityRequiresV73,
     /// NO binary version can represent a module completeness claim
     /// (`Module.completeness`, WS5.3b) yet: its carrier is a member of the
     /// next open wire batch and no number has been reserved for it. Every
@@ -1557,7 +1617,16 @@ impl core::fmt::Display for BinaryProjectionError {
                 "a nominal type-origin key or a declared closure layout requires a v58 binary \
                  projection",
             ),
+            Self::FnItemIdentityRequiresV73 => {
+                f.write_str("nominal function item identity requires wire v73")
+            }
             Self::StorageRequiresV64 => f.write_str("storage-only layout requires wire v64"),
+            Self::SingleInhabitedRequiresV65 => {
+                f.write_str("single-inhabited or empty nominal enum requires wire v65")
+            }
+            Self::BoxDerefRequiresV74 => f.write_str(
+                "an Inst::BoxDeref and its validity fact require a v74 binary projection",
+            ),
             Self::ClosureOriginRequiresV66 => {
                 f.write_str("closure source identity requires wire v66")
             }
@@ -1577,6 +1646,9 @@ impl core::fmt::Display for BinaryProjectionError {
                 "a tensor type (Ty::Tensor) or a tensor contraction (Inst::TensorContract) \
                  requires a v67 binary projection",
             ),
+            Self::UninhabitedDirectStorageRequiresV72 => {
+                f.write_str("Direct enum storage for uninhabited variants requires wire v72")
+            }
             Self::MakeClosureRequiresV63 => {
                 f.write_str("an Inst::MakeClosure requires a v63 binary projection")
             }
@@ -1909,6 +1981,15 @@ fn validate_omitted_obligation_references<V>(
                 for annotation in &node.proofs {
                     if let Some(id) = annotation.backing_obligation() {
                         retained(id, "instruction proof annotation")?;
+                    }
+                }
+                // v72: obligation evidence cites a row by id; omitting that
+                // row would leave the projected fact citing nothing.
+                if let InstG::BoxDeref { fact, .. } = &node.inst {
+                    for entry in &fact.evidence {
+                        if let ValidityEvidence::Obligation { obligation } = &entry.evidence {
+                            retained(*obligation, "Box validity evidence")?;
+                        }
                     }
                 }
                 if let Some(context) = &node.proof_context {
@@ -2655,6 +2736,12 @@ fn collect_strings_into<X: WireExt>(
     }
 
     for ed in &module.enums {
+        if matches!(
+            ed.layout.as_ref().map(|layout| &layout.encoding),
+            Some(EnumTagEncoding::DirectWithUninhabited { .. })
+        ) {
+            pool.raise_to(UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION);
+        }
         if ed.variants.is_empty()
             || ed.layout.as_ref().is_some_and(|layout| {
                 matches!(layout.encoding, EnumTagEncoding::SingleInhabited { .. })
@@ -3159,6 +3246,7 @@ fn collect_constant_strings<X: WireExt>(c: &ConstantG<X>, pool: &mut StringPoolB
         }
         // v70: the reader gates Constant tag 18 likewise.
         ConstantG::TensorBlob { .. } => pool.raise_to(TENSOR_BLOB_FORMAT_VERSION),
+        ConstantG::FnItem(_) => pool.raise_to(FN_ITEM_IDENTITY_FORMAT_VERSION),
         _ => {}
     }
 }
@@ -3182,6 +3270,7 @@ fn collect_type_identity_strings<X: WireExt>(ty: &TyG<X>, pool: &mut StringPoolB
         // v67: type tag 41 is read-gated, so any tensor occurrence raises the
         // header; its element is an inline child `visit_types` reaches next.
         TyG::Tensor(..) => pool.raise_to(TENSOR_FORMAT_VERSION),
+        TyG::FnItem(_) => pool.raise_to(FN_ITEM_IDENTITY_FORMAT_VERSION),
         TyG::Handle(ty) => {
             pool.raise_to(HANDLE_TYPE_FORMAT_VERSION);
             pool.intern(&ty.name);
@@ -3239,6 +3328,10 @@ fn collect_inst_strings<X: WireExt>(inst: &InstG<X>, pool: &mut StringPoolBuilde
         InstG::TensorGather { .. } | InstG::TensorScatter { .. }
     ) {
         pool.raise_to(TENSOR_GATHER_SCATTER_FORMAT_VERSION);
+    }
+    // v72: Inst tag 77 is read-gated likewise.
+    if matches!(inst, InstG::BoxDeref { .. }) {
+        pool.raise_to(BOX_DEREF_VALIDITY_FORMAT_VERSION);
     }
     if matches!(
         inst,
@@ -3700,6 +3793,10 @@ fn write_ty<X: WireExt>(buf: &mut impl BinarySink, pool: &SealedStringPool, ty: 
             write_u8(buf, 20);
             write_func_ty_id(buf, *id);
         }
+        TyG::FnItem(id) => {
+            write_u8(buf, 42);
+            write_func_id(buf, *id);
+        }
         TyG::Ref(inner) => {
             write_u8(buf, 21);
             write_ty(buf, pool, inner);
@@ -4031,6 +4128,7 @@ fn read_ty_inner<X: WireExt>(r: &mut Reader<'_>) -> Result<TyG<X>, BinaryError> 
         }
         19 => Ok(TyG::Enum(r.read_enum_id()?)),
         20 => Ok(TyG::Func(r.read_func_ty_id()?)),
+        42 if r.version >= FN_ITEM_IDENTITY_FORMAT_VERSION => Ok(TyG::FnItem(r.read_func_id()?)),
         21 => Ok(TyG::Ref(Box::new(read_ty(r)?))),
         22 => Ok(TyG::RefMut(Box::new(read_ty(r)?))),
         23 => Ok(TyG::PtrConst(Box::new(read_ty(r)?))),
@@ -4190,6 +4288,10 @@ fn write_constant<X: WireExt>(
             write_u8(buf, 9);
             write_func_id(buf, *func);
         }
+        ConstantG::FnItem(func) => {
+            write_u8(buf, 19);
+            write_func_id(buf, *func);
+        }
         ConstantG::SymbolAddr { symbol, addend } => {
             write_u8(buf, 12);
             write_str(buf, pool, symbol);
@@ -4321,6 +4423,9 @@ fn read_constant_inner<X: WireExt>(r: &mut Reader<'_>) -> Result<ConstantG<X>, B
             Ok(ConstantG::Closure { func, captures })
         }
         9 => Ok(ConstantG::FnDef(r.read_func_id()?)),
+        19 if r.version >= FN_ITEM_IDENTITY_FORMAT_VERSION => {
+            Ok(ConstantG::FnItem(r.read_func_id()?))
+        }
         12 => {
             let symbol = r.read_str()?;
             let addend = r.read_u64()? as i64;
@@ -4701,6 +4806,149 @@ fn read_assert_kind(r: &mut Reader<'_>) -> Result<AssertKind, BinaryError> {
         5 => Ok(AssertKind::NullPtr),
         _ => Err(BinaryError::InvalidTag(tag)),
     }
+}
+
+// v74: the tag spaces of an `Inst::BoxDeref` payload. Each is only ever
+// written inside a tag-77 instruction, which is itself read-gated on v74, and
+// each is CLOSED: a byte outside the list is `InvalidTag`, so a premise root,
+// standing assumption, conjunct, session word or non-claim this build does
+// not know is refused at decode rather than carried as something else
+// (`refuse/blob_box_deref_premise_root_unknown`).
+tag_enum!(write_validity_conjunct, read_validity_conjunct, ValidityConjunct,
+    NonNull => 0, Aligned => 1, Dereferenceable => 2, MetadataValid => 3,
+);
+
+tag_enum!(write_premise_root, read_premise_root, PremiseRoot,
+    ParamByValue => 0, AllocPostcondition => 1, ReturnedBoxDischarged => 2,
+    ReturnedBoxAssumed => 3, ReferenceArgBoxValid => 4,
+);
+
+tag_enum!(write_standing_assumption, read_standing_assumption, StandingAssumption,
+    SafeBody => 0, SoundCallees => 1, BoxUnique => 2,
+);
+
+tag_enum!(write_judged_body, read_judged_body, JudgedBody,
+    VerificationSnapshot => 0, OptimizedFallback => 1,
+);
+
+tag_enum!(write_producing_session, read_producing_session, ProducingSession,
+    ProofSession => 0, NonProofSession => 1,
+);
+
+tag_enum!(write_box_validity_non_claim, read_box_validity_non_claim, BoxValidityNonClaim,
+    Uniqueness => 0, PointeeValidity => 1, Allocator => 2,
+);
+
+/// v72: the pointee shape of a tag-77 instruction. Tag 0 is the only shape:
+/// a wide pointee has no byte yet.
+fn write_box_pointee<X: WireExt>(
+    buf: &mut impl BinarySink,
+    pool: &SealedStringPool,
+    pointee: &BoxPointeeG<X>,
+) {
+    match pointee {
+        BoxPointeeG::Sized { ty } => {
+            write_u8(buf, 0);
+            write_ty(buf, pool, ty);
+        }
+    }
+}
+
+fn read_box_pointee<X: WireExt>(r: &mut Reader<'_>) -> Result<BoxPointeeG<X>, BinaryError> {
+    let tag = r.read_u8()?;
+    match tag {
+        0 => Ok(BoxPointeeG::Sized { ty: read_ty(r)? }),
+        _ => Err(BinaryError::InvalidTag(tag)),
+    }
+}
+
+/// v72: one conjunct's evidence.
+fn write_validity_evidence(buf: &mut impl BinarySink, evidence: &ValidityEvidence) {
+    match evidence {
+        ValidityEvidence::Premise { root, standing } => {
+            write_u8(buf, 0);
+            write_premise_root(buf, root);
+            write_count(buf, "standing-assumption list", standing.len());
+            for assumption in standing {
+                write_standing_assumption(buf, assumption);
+            }
+        }
+        ValidityEvidence::DominatingCheck { align } => {
+            write_u8(buf, 1);
+            write_opt_u64(buf, *align);
+        }
+        ValidityEvidence::Obligation { obligation } => {
+            write_u8(buf, 2);
+            write_proof_id(buf, *obligation);
+        }
+    }
+}
+
+fn read_validity_evidence(r: &mut Reader<'_>) -> Result<ValidityEvidence, BinaryError> {
+    let tag = r.read_u8()?;
+    match tag {
+        0 => {
+            let root = read_premise_root(r)?;
+            let n = r.read_checked_len()?;
+            let mut standing = Vec::with_capacity(n);
+            for _ in 0..n {
+                standing.push(read_standing_assumption(r)?);
+            }
+            Ok(ValidityEvidence::Premise { root, standing })
+        }
+        1 => Ok(ValidityEvidence::DominatingCheck {
+            align: read_opt_u64(r)?,
+        }),
+        2 => Ok(ValidityEvidence::Obligation {
+            obligation: r.read_proof_id()?,
+        }),
+        _ => Err(BinaryError::InvalidTag(tag)),
+    }
+}
+
+/// v72: the validity fact of a tag-77 instruction, in struct order. Nothing
+/// in it is optional.
+fn write_box_validity_fact(buf: &mut impl BinarySink, fact: &BoxValidityFact) {
+    buf.extend_from_slice(&fact.site.item);
+    write_v32(buf, fact.site.ordinal);
+    write_judged_body(buf, &fact.session.judged);
+    write_producing_session(buf, &fact.session.producing);
+    write_count(buf, "validity-evidence list", fact.evidence.len());
+    for entry in &fact.evidence {
+        write_validity_conjunct(buf, &entry.conjunct);
+        write_validity_evidence(buf, &entry.evidence);
+    }
+    write_count(buf, "validity non-claim list", fact.not_claimed.len());
+    for non_claim in &fact.not_claimed {
+        write_box_validity_non_claim(buf, non_claim);
+    }
+}
+
+fn read_box_validity_fact(r: &mut Reader<'_>) -> Result<BoxValidityFact, BinaryError> {
+    let item = r.read_array::<16>()?;
+    let ordinal = r.read_v32()?;
+    let judged = read_judged_body(r)?;
+    let producing = read_producing_session(r)?;
+    let n = r.read_checked_len()?;
+    let mut evidence = Vec::with_capacity(n);
+    for _ in 0..n {
+        let conjunct = read_validity_conjunct(r)?;
+        evidence.push(ConjunctEvidence {
+            conjunct,
+            evidence: read_validity_evidence(r)?,
+        });
+    }
+    let n = r.read_checked_len()?;
+    let mut not_claimed = Vec::with_capacity(n);
+    for _ in 0..n {
+        not_claimed.push(read_box_validity_non_claim(r)?);
+    }
+    Ok(BoxValidityFact {
+        site: BoxDerefSite { item, ordinal },
+        session: BoxFactSession { judged, producing },
+        evidence,
+        not_claimed,
+    })
 }
 
 tag_enum!(write_icmp_op, read_icmp_op, ICmpOp,
@@ -5831,6 +6079,20 @@ fn write_inst<X: WireExt>(
             write_projected_value_id(buf, canonical, *src);
             write_vec_value_id(buf, canonical, coords);
         }
+        // v72: the pointer type, the pointee shape, the operand, then the
+        // mandatory validity fact.
+        InstG::BoxDeref {
+            ptr_ty,
+            pointee,
+            operand,
+            fact,
+        } => {
+            write_u8(buf, 77);
+            write_ty(buf, pool, ptr_ty);
+            write_box_pointee(buf, pool, pointee);
+            write_projected_value_id(buf, canonical, *operand);
+            write_box_validity_fact(buf, fact);
+        }
         InstG::DialectOp(op) => {
             write_u8(buf, 44);
             write_dialect_inst(buf, pool, canonical, op);
@@ -6521,6 +6783,14 @@ fn read_inst<X: WireExt>(r: &mut Reader<'_>) -> Result<InstG<X>, BinaryError> {
             init: r.read_value_id()?,
             src: r.read_value_id()?,
             coords: read_vec_value_id(r)?,
+        }),
+        // v72: read-gated, so an older header carrying tag 77 is
+        // `InvalidTag` (`refuse/blob_box_deref_below_its_version`).
+        77 if r.version >= BOX_DEREF_VALIDITY_FORMAT_VERSION => Ok(InstG::BoxDeref {
+            ptr_ty: read_ty(r)?,
+            pointee: read_box_pointee(r)?,
+            operand: r.read_value_id()?,
+            fact: Box::new(read_box_validity_fact(r)?),
         }),
         44 => Ok(InstG::DialectOp(Box::new(read_dialect_inst(r)?))),
         45 => Ok(InstG::PtrData {
@@ -7608,6 +7878,24 @@ fn write_enum_def<X: WireExt>(
                     write_u8(buf, 3);
                     write_v32(buf, *variant);
                 }
+                EnumTagEncoding::DirectWithUninhabited {
+                    tag_offset,
+                    variants,
+                } => {
+                    write_u8(buf, 4);
+                    write_v64(buf, *tag_offset);
+                    write_count(buf, "UninhabitedVariantLayout profiles", variants.len());
+                    for row in variants {
+                        write_v32(buf, row.variant);
+                        write_v64(buf, row.size);
+                        write_v64(buf, row.align);
+                        write_count(buf, "FieldStorageLayout profiles", row.fields.len());
+                        for field in &row.fields {
+                            write_v64(buf, field.size);
+                            write_v64(buf, field.align);
+                        }
+                    }
+                }
             }
             write_v64(buf, layout.size);
             write_v64(buf, layout.align);
@@ -7723,6 +8011,46 @@ fn read_enum_def<X: WireExt>(r: &mut Reader<'_>) -> Result<EnumDefG<X>, BinaryEr
                     3 if r.version >= SINGLE_INHABITED_ENUM_FORMAT_VERSION => {
                         EnumTagEncoding::SingleInhabited {
                             variant: r.read_v32()?,
+                        }
+                    }
+                    4 if r.version >= UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION => {
+                        let tag_offset = r.read_v64()?;
+                        let count = r.read_checked_len()?;
+                        r.reserve_checked(count.checked_mul(4).ok_or_else(|| {
+                            BinaryError::TooLarge {
+                                declared: usize::MAX,
+                                remaining: r.bytes_remaining(),
+                            }
+                        })?)?;
+                        let mut variants = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            let variant = r.read_v32()?;
+                            let size = r.read_v64()?;
+                            let align = r.read_v64()?;
+                            let count = r.read_checked_len()?;
+                            r.reserve_checked(count.checked_mul(2).ok_or_else(|| {
+                                BinaryError::TooLarge {
+                                    declared: usize::MAX,
+                                    remaining: r.bytes_remaining(),
+                                }
+                            })?)?;
+                            let mut fields = Vec::with_capacity(count);
+                            for _ in 0..count {
+                                fields.push(FieldStorageLayout {
+                                    size: r.read_v64()?,
+                                    align: r.read_v64()?,
+                                });
+                            }
+                            variants.push(UninhabitedVariantLayout {
+                                variant,
+                                size,
+                                align,
+                                fields,
+                            });
+                        }
+                        EnumTagEncoding::DirectWithUninhabited {
+                            tag_offset,
+                            variants,
                         }
                     }
                     tag => return Err(BinaryError::InvalidTag(tag)),
@@ -9705,6 +10033,10 @@ fn write_native_adapter_input(
             write_proof_digest(buf, body_digest);
         }
         NativeAdapterInput::TrustIrModule => write_u8(buf, 1),
+        NativeAdapterInput::RustThir { source_digest } => {
+            write_u8(buf, 2);
+            write_proof_digest(buf, source_digest);
+        }
     }
 }
 
@@ -9717,6 +10049,9 @@ fn read_native_adapter_input(
             body_digest: read_proof_digest(r)?,
         }),
         1 => Ok(NativeAdapterInput::TrustIrModule),
+        2 => Ok(NativeAdapterInput::RustThir {
+            source_digest: read_proof_digest(r)?,
+        }),
         t => Err(BinaryError::InvalidTag(t)),
     }
 }
@@ -10779,67 +11114,77 @@ impl<'m> ProjectedModuleBinaryPlan<'m> {
             // Every version the writer can select above the projected v38 must
             // map to a refusal here; the highest requirement wins so the error
             // names the feature that actually forbids the projection.
-            return Err(if pool.minimum_version() >= TENSOR_BLOB_FORMAT_VERSION {
-                BinaryProjectionError::TensorBlobRequiresV70
-            } else if pool.minimum_version() >= TENSOR_GATHER_SCATTER_FORMAT_VERSION {
-                BinaryProjectionError::TensorGatherScatterRequiresV69
-            } else if pool.minimum_version() >= TENSOR_MAP_REDUCE_VIEW_FORMAT_VERSION {
-                BinaryProjectionError::TensorMapReduceViewRequiresV68
-            } else if pool.minimum_version() >= TENSOR_FORMAT_VERSION {
-                BinaryProjectionError::TensorRequiresV67
-            } else if pool.minimum_version() >= CLOSURE_ORIGIN_FORMAT_VERSION {
-                BinaryProjectionError::ClosureOriginRequiresV66
-            } else if pool.minimum_version() >= STORAGE_LAYOUT_FORMAT_VERSION {
-                BinaryProjectionError::StorageRequiresV64
-            } else if pool.minimum_version() >= MAKE_CLOSURE_FORMAT_VERSION {
-                BinaryProjectionError::MakeClosureRequiresV63
-            } else if pool.minimum_version() >= PARAM_POINTEE_PLACE_FORMAT_VERSION {
-                BinaryProjectionError::ParamPointeePlaceRequiresV62
-            } else if pool.minimum_version() >= CERTIFICATE_BINDING_FORMAT_VERSION {
-                BinaryProjectionError::CertificateBindingRequiresV61
-            } else if pool.minimum_version() >= SIGNATURE_ABI_FORMAT_VERSION {
-                BinaryProjectionError::SignatureAbiRequiresCurrentFormat
-            } else if pool.minimum_version() >= EFFECT_SUMMARY_FORMAT_VERSION {
-                BinaryProjectionError::EffectSummaryRequiresV59
-            } else if pool.minimum_version() >= NOMINAL_IDENTITY_FORMAT_VERSION {
-                BinaryProjectionError::NominalIdentityRequiresV58
-            } else if pool.minimum_version() >= UNWIND_TWINS_FORMAT_VERSION {
-                BinaryProjectionError::UnwindTwinsRequiresV56
-            } else if pool.minimum_version() >= DROP_GLUE_FORMAT_VERSION {
-                BinaryProjectionError::DropGlueRequiresV55
-            } else if pool.minimum_version() >= PANIC_SITE_FORMAT_VERSION {
-                BinaryProjectionError::PanicSiteRequiresV54
-            } else if pool.minimum_version() >= CALL_UNWIND_BOUNDARY_FORMAT_VERSION {
-                BinaryProjectionError::CallUnwindBoundaryRequiresV53
-            } else if pool.minimum_version() >= ASSERT_KIND_FORMAT_VERSION {
-                BinaryProjectionError::AssertKindRequiresV52
-            } else if pool.minimum_version() >= INST_WIRE_BATCH_FORMAT_VERSION {
-                BinaryProjectionError::InstWireBatchRequiresV51
-            } else if pool.minimum_version() >= ARRAY_SPLAT_FORMAT_VERSION {
-                BinaryProjectionError::ArraySplatRequiresV50
-            } else if pool.minimum_version() >= UNINIT_LANE_FORMAT_VERSION {
-                BinaryProjectionError::UninitLaneRequiresV49
-            } else if pool.minimum_version() >= WEAK_CMPXCHG_FORMAT_VERSION {
-                BinaryProjectionError::WeakCmpXchgRequiresV48
-            } else if pool.minimum_version() >= DROP_INST_FORMAT_VERSION {
-                BinaryProjectionError::DropInstRequiresV47
-            } else if pool.minimum_version() >= SPEC_CARRIER_FORMAT_VERSION {
-                BinaryProjectionError::SpecCarrierRequiresV46
-            } else if pool.minimum_version() >= ABI_SURFACE_FORMAT_VERSION {
-                BinaryProjectionError::AbiSurfaceRequiresV45
-            } else if pool.minimum_version() >= IMPORT_SCHEME_FORMAT_VERSION {
-                BinaryProjectionError::ImportSchemeRequiresV44
-            } else if pool.minimum_version() >= HANDLE_TYPE_FORMAT_VERSION {
-                BinaryProjectionError::HandleTypeRequiresV43
-            } else if pool.minimum_version() >= TUPLE_LAYOUT_FORMAT_VERSION {
-                BinaryProjectionError::TupleLayoutRequiresV42
-            } else if pool.minimum_version() >= CONTRACT_SURFACE_FORMAT_VERSION {
-                BinaryProjectionError::ContractSurfaceRequiresV41
-            } else if pool.minimum_version() >= CONTAINER_VTABLE_FORMAT_VERSION {
-                BinaryProjectionError::ContainerVtableRequiresV40
-            } else {
-                BinaryProjectionError::DialectTypeRequiresV39
-            });
+            return Err(
+                if pool.minimum_version() >= BOX_DEREF_VALIDITY_FORMAT_VERSION {
+                    BinaryProjectionError::BoxDerefRequiresV74
+                } else if pool.minimum_version() >= FN_ITEM_IDENTITY_FORMAT_VERSION {
+                    BinaryProjectionError::FnItemIdentityRequiresV73
+                } else if pool.minimum_version() >= UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION {
+                    BinaryProjectionError::UninhabitedDirectStorageRequiresV72
+                } else if pool.minimum_version() >= TENSOR_BLOB_FORMAT_VERSION {
+                    BinaryProjectionError::TensorBlobRequiresV70
+                } else if pool.minimum_version() >= TENSOR_GATHER_SCATTER_FORMAT_VERSION {
+                    BinaryProjectionError::TensorGatherScatterRequiresV69
+                } else if pool.minimum_version() >= TENSOR_MAP_REDUCE_VIEW_FORMAT_VERSION {
+                    BinaryProjectionError::TensorMapReduceViewRequiresV68
+                } else if pool.minimum_version() >= TENSOR_FORMAT_VERSION {
+                    BinaryProjectionError::TensorRequiresV67
+                } else if pool.minimum_version() >= CLOSURE_ORIGIN_FORMAT_VERSION {
+                    BinaryProjectionError::ClosureOriginRequiresV66
+                } else if pool.minimum_version() >= SINGLE_INHABITED_ENUM_FORMAT_VERSION {
+                    BinaryProjectionError::SingleInhabitedRequiresV65
+                } else if pool.minimum_version() >= STORAGE_LAYOUT_FORMAT_VERSION {
+                    BinaryProjectionError::StorageRequiresV64
+                } else if pool.minimum_version() >= MAKE_CLOSURE_FORMAT_VERSION {
+                    BinaryProjectionError::MakeClosureRequiresV63
+                } else if pool.minimum_version() >= PARAM_POINTEE_PLACE_FORMAT_VERSION {
+                    BinaryProjectionError::ParamPointeePlaceRequiresV62
+                } else if pool.minimum_version() >= CERTIFICATE_BINDING_FORMAT_VERSION {
+                    BinaryProjectionError::CertificateBindingRequiresV61
+                } else if pool.minimum_version() >= SIGNATURE_ABI_FORMAT_VERSION {
+                    BinaryProjectionError::SignatureAbiRequiresCurrentFormat
+                } else if pool.minimum_version() >= EFFECT_SUMMARY_FORMAT_VERSION {
+                    BinaryProjectionError::EffectSummaryRequiresV59
+                } else if pool.minimum_version() >= NOMINAL_IDENTITY_FORMAT_VERSION {
+                    BinaryProjectionError::NominalIdentityRequiresV58
+                } else if pool.minimum_version() >= UNWIND_TWINS_FORMAT_VERSION {
+                    BinaryProjectionError::UnwindTwinsRequiresV56
+                } else if pool.minimum_version() >= DROP_GLUE_FORMAT_VERSION {
+                    BinaryProjectionError::DropGlueRequiresV55
+                } else if pool.minimum_version() >= PANIC_SITE_FORMAT_VERSION {
+                    BinaryProjectionError::PanicSiteRequiresV54
+                } else if pool.minimum_version() >= CALL_UNWIND_BOUNDARY_FORMAT_VERSION {
+                    BinaryProjectionError::CallUnwindBoundaryRequiresV53
+                } else if pool.minimum_version() >= ASSERT_KIND_FORMAT_VERSION {
+                    BinaryProjectionError::AssertKindRequiresV52
+                } else if pool.minimum_version() >= INST_WIRE_BATCH_FORMAT_VERSION {
+                    BinaryProjectionError::InstWireBatchRequiresV51
+                } else if pool.minimum_version() >= ARRAY_SPLAT_FORMAT_VERSION {
+                    BinaryProjectionError::ArraySplatRequiresV50
+                } else if pool.minimum_version() >= UNINIT_LANE_FORMAT_VERSION {
+                    BinaryProjectionError::UninitLaneRequiresV49
+                } else if pool.minimum_version() >= WEAK_CMPXCHG_FORMAT_VERSION {
+                    BinaryProjectionError::WeakCmpXchgRequiresV48
+                } else if pool.minimum_version() >= DROP_INST_FORMAT_VERSION {
+                    BinaryProjectionError::DropInstRequiresV47
+                } else if pool.minimum_version() >= SPEC_CARRIER_FORMAT_VERSION {
+                    BinaryProjectionError::SpecCarrierRequiresV46
+                } else if pool.minimum_version() >= ABI_SURFACE_FORMAT_VERSION {
+                    BinaryProjectionError::AbiSurfaceRequiresV45
+                } else if pool.minimum_version() >= IMPORT_SCHEME_FORMAT_VERSION {
+                    BinaryProjectionError::ImportSchemeRequiresV44
+                } else if pool.minimum_version() >= HANDLE_TYPE_FORMAT_VERSION {
+                    BinaryProjectionError::HandleTypeRequiresV43
+                } else if pool.minimum_version() >= TUPLE_LAYOUT_FORMAT_VERSION {
+                    BinaryProjectionError::TupleLayoutRequiresV42
+                } else if pool.minimum_version() >= CONTRACT_SURFACE_FORMAT_VERSION {
+                    BinaryProjectionError::ContractSurfaceRequiresV41
+                } else if pool.minimum_version() >= CONTAINER_VTABLE_FORMAT_VERSION {
+                    BinaryProjectionError::ContainerVtableRequiresV40
+                } else {
+                    BinaryProjectionError::DialectTypeRequiresV39
+                },
+            );
         }
         Ok(Self {
             module,
@@ -18562,6 +18907,7 @@ mod tests {
                 Ty::Storage(_) => 40,
                 // v67 tensor region.
                 Ty::Tensor(_, _) => 41,
+                Ty::FnItem(_) => 42,
                 Ty::Ext(e) => e.unreachable(),
             }
         }
@@ -18608,6 +18954,7 @@ mod tests {
             Ty::handle("Nat", "trust_bignum::Nat"),
             Ty::Storage(crate::StorageLayout::new(80, 8)),
             Ty::Tensor(Box::new(Ty::I32), 2),
+            Ty::FnItem(FuncId::new(7)),
         ];
 
         for ty in &samples {
@@ -18634,6 +18981,7 @@ mod tests {
                 // Appended out of source order.
                 Constant::Array(_) => 8,
                 Constant::FnDef(_) => 9,
+                Constant::FnItem(_) => 19,
                 Constant::PhantomData => 10,
                 Constant::Vector(_) => 11,
                 Constant::SymbolAddr { .. } => 12,
@@ -18666,6 +19014,7 @@ mod tests {
             },
             Constant::Array(vec![]),
             Constant::FnDef(FuncId::new(0)),
+            Constant::FnItem(FuncId::new(7)),
             Constant::PhantomData,
             Constant::Vector(vec![]),
             Constant::SymbolAddr {
@@ -19638,6 +19987,18 @@ mod wire_version_ledger {
                     TENSOR_GATHER_SCATTER_FORMAT_VERSION,
                 ),
                 ("TENSOR_BLOB_FORMAT_VERSION", TENSOR_BLOB_FORMAT_VERSION),
+                (
+                    "BOX_DEREF_VALIDITY_FORMAT_VERSION",
+                    BOX_DEREF_VALIDITY_FORMAT_VERSION,
+                ),
+                (
+                    "UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION",
+                    UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION,
+                ),
+                (
+                    "FN_ITEM_IDENTITY_FORMAT_VERSION",
+                    FN_ITEM_IDENTITY_FORMAT_VERSION,
+                ),
             ],
             aliases: vec![
                 // Compile-time asserted equal to BASE_FORMAT_VERSION.
@@ -20264,6 +20625,9 @@ mod wire_version_ledger {
             "TENSOR_MAP_REDUCE_VIEW_FORMAT_VERSION",
             "TENSOR_GATHER_SCATTER_FORMAT_VERSION",
             "TENSOR_BLOB_FORMAT_VERSION",
+            "BOX_DEREF_VALIDITY_FORMAT_VERSION",
+            "UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION",
+            "FN_ITEM_IDENTITY_FORMAT_VERSION",
             "PROJECTED_MODULE_BINARY_VERSION",
             "AMBIGUOUS_LINEAGE_VERSIONS",
             "NATIVE_BUNDLE_VERSION",

@@ -16,7 +16,8 @@
 // compiler's call sites are unchanged; backends (e.g. `clean`) depend on this
 // leaf crate via the universal-IR sibling path (`../trust-ir/crates/...`)
 // instead of reaching into the Trust repo. Leaf by construction: depends only
-// on serde + rustc-hash, never on trust-types/trust-verifier-api.
+// on serde + rustc-hash (and opt-in serde_json), never on
+// trust-types/trust-verifier-api.
 //
 // Author: Andrew Yates <andrewyates.name@gmail.com>
 // Copyright 2026 Andrew Yates | License: Apache 2.0
@@ -29,9 +30,13 @@ pub mod formula_census;
 pub mod formula_dag;
 pub mod fx;
 pub mod interner;
+#[cfg(feature = "proof-json")]
+pub mod proof_json;
 pub mod rat;
 pub mod sort;
 pub mod translation_validation;
+#[cfg(feature = "proof-json")]
+pub mod trust_formula_v1;
 
 pub use assurance::{AssuranceLevel, ProofStrength, ReasoningKind, TrustSpecVariableOrigin};
 pub use block::BlockId;

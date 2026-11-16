@@ -20,6 +20,20 @@ that backlog is real, but it is no longer a missing *tag*.
 
 ## Unreleased
 
+### Added
+
+- `Inst::BoxDeref` (wire v74, Inst tag 77): a Box deref that carries a
+  `BoxValidityFact` with per-conjunct evidence, its session and its explicit
+  non-claims. The one admitted evidence kind is a named premise on a pinned
+  root; dominating-check and obligation evidence have a wire spelling and are
+  refused wherever they appear. Nine validator rules refuse a missing,
+  malformed, out-of-scope or self-contradicted fact;
+  `CodegenAdmission::with_require_box_validity_evidence` sets a consumer
+  evidence floor that separates roots a session verified nothing behind from
+  the others. The pinned roots cover no measured program; a later wire
+  version extends them. The instruction is outside the lowering-target subset
+  and SemR. See `docs/SPEC_RATIFICATIONS.md` §28.
+
 ### Fixed
 
 - AY raw float-to-integer conversion uses truncation toward zero instead of
@@ -43,8 +57,6 @@ that backlog is real, but it is no longer a missing *tag*.
 - SMT-LIB datatype declarations and sort references now use the same symbol
   escaping as formula terms, preserving namespaced and spaced source names in
   datatype, constructor, and selector positions, including recursive fields.
-
-### Added
 
 - Content-addressed weight blobs (wire v70; Trust PKG-U13e).
   `Constant::TensorBlob { digest, dims }` (Constant tag 18) names an integer

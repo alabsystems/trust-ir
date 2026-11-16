@@ -12,6 +12,7 @@ pub(super) enum Key<'a> {
         method: MethodKey,
     },
     DynDrop(PrincipalKey),
+    FnItem(FuncId),
 }
 
 #[derive(Clone, Copy)]
@@ -30,12 +31,13 @@ impl<'a> Key<'a> {
                 method: *method,
             },
             PoolKey::DynDrop(principal) => Self::DynDrop(*principal),
+            PoolKey::FnItem(id) => Self::FnItem(*id),
         }
     }
 
     pub(super) fn principal(self) -> Option<PrincipalKey> {
         match self {
-            Self::Fn(_) => None,
+            Self::Fn(_) | Self::FnItem(_) => None,
             Self::DynMethod { principal, .. } | Self::DynDrop(principal) => Some(principal),
         }
     }
@@ -43,6 +45,7 @@ impl<'a> Key<'a> {
     pub(super) fn with_principal(self, principal: PrincipalKey) -> Self {
         match self {
             Self::Fn(shape) => Self::Fn(shape),
+            Self::FnItem(id) => Self::FnItem(id),
             Self::DynMethod { method, .. } => Self::DynMethod { principal, method },
             Self::DynDrop(_) => Self::DynDrop(principal),
         }
@@ -53,6 +56,7 @@ impl<'a> Key<'a> {
             Self::Fn(_) => 0,
             Self::DynMethod { .. } => 1,
             Self::DynDrop(_) => 2,
+            Self::FnItem(_) => 3,
         }
     }
 }
@@ -81,6 +85,7 @@ pub(super) fn compare<O: ExecutionObserver>(
             },
         ) => Ok((lp, lm).cmp(&(rp, rm))),
         (Key::DynDrop(left), Key::DynDrop(right)) => Ok(left.cmp(&right)),
+        (Key::FnItem(left), Key::FnItem(right)) => Ok(left.cmp(&right)),
         _ => Err(ObservedValueError::InvalidRange),
     }
 }
@@ -123,6 +128,7 @@ pub(super) fn copy_key<O: ExecutionObserver>(
         Key::Fn(shape) => PoolKey::Fn(copy_shape(shape, session, site)?),
         Key::DynMethod { principal, method } => PoolKey::DynMethod { principal, method },
         Key::DynDrop(principal) => PoolKey::DynDrop(principal),
+        Key::FnItem(id) => PoolKey::FnItem(id),
     })
 }
 

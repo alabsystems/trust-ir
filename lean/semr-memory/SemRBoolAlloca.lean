@@ -171,6 +171,14 @@ theorem boolAlloca_reused_ssa_control :
       some (.ptr Memory.empty.nextAddr (some ⟨Memory.empty.nextAllocId⟩)) := by
   rfl
 
+theorem semAlloca_bool_exhausted_identity_refuses :
+    Sem.run (semAlloca .Bool none) exhaustedIdentityState =
+      .error (.ub "allocation identifier increment overflows u64") := rfl
+
+theorem semAlloca_bool_exhausted_address_refuses :
+    Sem.run (semAlloca .Bool none) exhaustedAddressState =
+      .error (.outOfMemory "allocation next-address increment exceeds u64") := rfl
+
 /-- False goals for an independent kernel's TypeMismatch controls. -/
 def WrongAllocaPlainLoad : Prop :=
   Sem.run (do let ptr ← semAlloca .Bool none; semLoad .Bool ptr) MachineState.empty =

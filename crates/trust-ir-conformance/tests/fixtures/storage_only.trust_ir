@@ -7,6 +7,7 @@ struct @StorageParent { head: u64 @0, backing: storage<80, 8> @8, tail: u64 @88 
 functy.0 = () -> (u64)
 
 fn @root(functy.0) {
+    ; #body-gate: ungated
 bb0:
     %0 = alloca struct.0
     %1 = const i64 88

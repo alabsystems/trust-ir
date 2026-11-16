@@ -48,7 +48,10 @@ pub(super) fn validate<O: ExecutionObserver>(
                 }
             }
         }
-        EnumTagEncoding::Direct { tag_offset } => direct(frame, desc, *tag_offset, work)?,
+        EnumTagEncoding::Direct { tag_offset }
+        | EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
+            direct(frame, desc, *tag_offset, work)?
+        }
         EnumTagEncoding::Niche { .. } => niche::validate(frame, module, desc, work)?,
     }
     Ok((
@@ -148,8 +151,7 @@ pub(super) fn copy<O: ExecutionObserver>(
         work.poll()?;
         return Err(error);
     }
-    // The encoding contains only bounded scalar payloads; no derived clone of
-    // the recursively owned offset rows occurs.
+    // Copy recursively owned profile storage under the original observer too.
     let encoding = match &desc.encoding {
         EnumTagEncoding::Untagged => EnumTagEncoding::Untagged,
         EnumTagEncoding::SingleInhabited { variant } => {
@@ -158,6 +160,23 @@ pub(super) fn copy<O: ExecutionObserver>(
         EnumTagEncoding::Direct { tag_offset } => EnumTagEncoding::Direct {
             tag_offset: *tag_offset,
         },
+        EnumTagEncoding::DirectWithUninhabited {
+            tag_offset,
+            variants,
+        } => {
+            let copied = match copy_profiles(variants, work) {
+                Ok(copied) => copied,
+                Err(error) => {
+                    work.retire_rows(rows);
+                    work.poll()?;
+                    return Err(error);
+                }
+            };
+            EnumTagEncoding::DirectWithUninhabited {
+                tag_offset: *tag_offset,
+                variants: copied,
+            }
+        }
         EnumTagEncoding::Niche {
             untagged_variant,
             niche_variants_start,
@@ -180,4 +199,42 @@ pub(super) fn copy<O: ExecutionObserver>(
         align: desc.align,
         variant_field_offsets: rows,
     })
+}
+
+fn copy_profiles<O: ExecutionObserver>(
+    source: &[crate::ty::UninhabitedVariantLayout],
+    work: &mut Work<'_, '_, O>,
+) -> R<Vec<crate::ty::UninhabitedVariantLayout>> {
+    use crate::ty::{FieldStorageLayout, UninhabitedVariantLayout};
+    let mut rows = Vec::new();
+    let mut fields = Vec::new();
+    let result = (|| {
+        for row in source {
+            work.poll()?;
+            for field in &row.fields {
+                work.reserve(&mut fields)?;
+                work.admit(2, size_of::<FieldStorageLayout>())?;
+                fields.push(FieldStorageLayout {
+                    size: field.size,
+                    align: field.align,
+                });
+            }
+            work.reserve(&mut rows)?;
+            work.admit(4, size_of::<UninhabitedVariantLayout>())?;
+            rows.push(UninhabitedVariantLayout {
+                variant: row.variant,
+                size: row.size,
+                align: row.align,
+                fields: core::mem::take(&mut fields),
+            });
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        work.retire_storage_fields(fields);
+        work.retire_storage_profiles(rows);
+        work.poll()?;
+        return Err(error);
+    }
+    Ok(rows)
 }

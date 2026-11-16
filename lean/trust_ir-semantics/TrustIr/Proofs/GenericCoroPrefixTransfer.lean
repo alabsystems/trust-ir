@@ -10,7 +10,11 @@ namespace TrustIr.GenericCoro.Prefix
 def evalTransfer (recurse : Recurse) (ctx : EvalContext) (callDepth : Nat)
     (cfg : CFG) (block : BasicBlock) (strat : PanicStrategy) (result : StepResult) : Sem (List Value) := do
   match result with
-  | .Ret values => pure values
+  | .Ret values =>
+    if let some expected := ctx.functionReturnTypes then
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected values)
+      pure values
+    else pure values
   | .Stuck => Sem.throwUB "reached unreachable"
   | .Continue nextPc nextArgs =>
     recurse ctx callDepth cfg nextPc nextArgs strat
@@ -194,6 +198,7 @@ theorem evalLayer_eq_transfer (recurse : Recurse) (ctx : EvalContext) (callDepth
         -- drop runs the `Call` / `Invoke` rules below verbatim, and an
         -- unresolved one reaches the bare `stepInst`, which refuses it.
         let block := ctx.resolveBlock blk
+        let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (block.params.map (·.snd)) args)
         bindBlockParamsChecked block.params args
         evalBody recurse ctx callDepth strat (bodyInstsWithResultDests block.body block.bodyResultDests)
         -- Under `.unwind` a failing `AssertInvoke` enters its pad and `Resume`
@@ -212,6 +217,17 @@ def terminalClosureCheck (term : Inst) (frame : StackFrame) : Bool :=
     | some (.typedClosure _ _ _) => true
     | _ => false
   | _ => false
+
+/-- A missing executable body cannot reach any continuation. Factor its
+    exact declared/undefined error before instantiating callback contexts. -/
+private theorem lookupDirectCallee_missing_bind {α : Type} (ctx : EvalContext) (id : FuncId)
+    (declaredMessage missingMessage : String) (missing : ctx.functions id = none)
+    (next : EvalFunction → Sem α) :
+    (ctx.lookupDirectCallee id declaredMessage missingMessage >>= next) =
+      (if ctx.declared id then Sem.throwUnsupported .interproceduralCall declaredMessage
+       else Sem.throwTypeError missingMessage) := by
+  simp only [EvalContext.lookupDirectCallee, missing]
+  split <;> rfl
 
 private theorem storedClosure_branch_bind {α β : Type} (stored : Option Value)
     (yes no : Sem α) (next : α → Sem β) :
@@ -342,8 +358,12 @@ private theorem terminalCall_congr (sourceRecurse targetRecurse : Recurse) (base
     | none =>
       cases targetFound : target id with
       | none =>
-        simp only [terminalCall, EvalContext.lookupDirectCallee, scopedContext, sourceFound, targetFound]
-        split <;> rfl
+        simp only [terminalCall]
+        rw [lookupDirectCallee_missing_bind (scopedContext base source types) id
+            "Call: callee is a bodyless declaration" "Call: undefined function" sourceFound,
+          lookupDirectCallee_missing_bind (scopedContext base target types) id
+            "Call: callee is a bodyless declaration" "Call: undefined function" targetFound]
+        rfl
       | some function => rw [sourceFound, targetFound] at related; cases related
     | some sourceFunction =>
       cases targetFound : target id with
@@ -493,9 +513,9 @@ private theorem terminalIndirect_congr (sourceRecurse targetRecurse : Recurse) (
               have framed := callFrameWith_eq_of_effectRelation
                 (checkReturns base sourceFunction.body.returnTys true false "CallIndirect: ")
                 (checkReturns_equivariant base sourceFunction.body.returnTys true false "CallIndirect: ")
-                (sourceRecurse (scopedContext base source sourceFunction.localTypes) depth
+                (sourceRecurse (calleeContext base source sourceFunction) depth
                   sourceFunction.cfg sourceFunction.entryBlock args strategy)
-                (targetRecurse (scopedContext base target targetFunction.localTypes) depth
+                (targetRecurse (calleeContext base target targetFunction) depth
                   targetFunction.cfg targetFunction.entryBlock args strategy)
                 (effects id sourceFunction targetFunction sourceFound targetFound depth args strategy)
               simp only [
@@ -654,9 +674,9 @@ private theorem terminalInvoke_congr (sourceRecurse targetRecurse : Recurse) (ba
     have framed := invokeFrameWith_eq_of_effectRelation strategy
       (checkReturns base sourceFunction.body.returnTys true false "Invoke: ")
       (checkReturns_equivariant base sourceFunction.body.returnTys true false "Invoke: ")
-      (sourceRecurse (scopedContext base source sourceFunction.localTypes) depth
+      (sourceRecurse (calleeContext base source sourceFunction) depth
         sourceFunction.cfg sourceFunction.entryBlock args strategy)
-      (targetRecurse (scopedContext base target targetFunction.localTypes) depth
+      (targetRecurse (calleeContext base target targetFunction) depth
         targetFunction.cfg targetFunction.entryBlock args strategy)
       (invokeNormal targetRecurse (scopedContext base target types) (depth + 1)
         cfg block strategy normal normalArgs)
@@ -779,9 +799,9 @@ private theorem terminalInvokeIndirect_congr (sourceRecurse targetRecurse : Recu
               have framed := invokeFrameWith_eq_of_effectRelation strategy
                 (checkReturns base sourceFunction.body.returnTys true false "InvokeIndirect: ")
                 (checkReturns_equivariant base sourceFunction.body.returnTys true false "InvokeIndirect: ")
-                (sourceRecurse (scopedContext base source sourceFunction.localTypes) depth
+                (sourceRecurse (calleeContext base source sourceFunction) depth
                   sourceFunction.cfg sourceFunction.entryBlock args strategy)
-                (targetRecurse (scopedContext base target targetFunction.localTypes) depth
+                (targetRecurse (calleeContext base target targetFunction) depth
                   targetFunction.cfg targetFunction.entryBlock args strategy)
                 (invokeNormal targetRecurse (scopedContext base target types) (depth + 1)
                   cfg block strategy normal normalArgs)
@@ -792,6 +812,19 @@ private theorem terminalInvokeIndirect_congr (sourceRecurse targetRecurse : Recu
                 show (scopedContext base target types).functions id = some targetFunction from targetFound,
                 pure_bind, scopedContext_forFunction, ← body, checkReturns_scoped_function,
                 normalEqual, unwindEqual, framed]
+
+/-- Exact Ret branch congruence includes its optional nominal lane check. -/
+theorem evalTransfer_ret_scoped_congr (sourceRecurse targetRecurse : Recurse) (base : EvalContext)
+    (source target : FuncId → Option EvalFunction) (sourceTypes targetTypes : Option LocalTypeTable)
+    (depth : Nat) (sourceCFG targetCFG : CFG) (block : BasicBlock)
+    (strategy : PanicStrategy) (values : List Value) :
+    evalTransfer sourceRecurse (scopedContext base source sourceTypes) depth sourceCFG block strategy (.Ret values) =
+      evalTransfer targetRecurse (scopedContext base target targetTypes) depth targetCFG block strategy (.Ret values) := by
+  simp only [evalTransfer,
+    show (scopedContext base source sourceTypes).functionReturnTypes =
+      (scopedContext base target targetTypes).functionReturnTypes from rfl,
+    itemValues_constantContext (scopedContext base source sourceTypes)
+      (scopedContext base target targetTypes) rfl]
 
 /-- Complete terminal transfer congruence for the actual evaluator layer.
     Callee effects and same-CFG callbacks are precisely the two smaller-fuel
@@ -807,7 +840,9 @@ theorem evalTransfer_congr (sourceRecurse targetRecurse : Recurse) (base : EvalC
     evalTransfer sourceRecurse (scopedContext base source types) depth cfg block strategy result =
       evalTransfer targetRecurse (scopedContext base target types) depth cfg block strategy result := by
   cases result with
-  | Ret values => rfl
+  | Ret values =>
+    exact evalTransfer_ret_scoped_congr sourceRecurse targetRecurse base source target types types
+      depth cfg cfg block strategy values
   | Stuck => rfl
   | Continue next args => exact sameCFG types depth cfg next args strategy
   | CallReq id args =>

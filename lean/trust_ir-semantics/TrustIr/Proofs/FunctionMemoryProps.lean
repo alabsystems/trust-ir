@@ -109,4 +109,16 @@ theorem functionTargetAt_above_table (model : ByteModel) (ids : List FuncId) (ad
   have hlen : ids.length ≤ address - 1 := by omega
   exact functionTargetAt_unregistered model ids address hzero hrange (CompilerCompat.listGet?_outside ids (address - 1) hlen)
 
+/-- A function-address table contains no authenticated signature declarations,
+    so it cannot by itself authorize a nominal zero-byte item image. -/
+theorem encodeFnItemWithoutPlan (model : ByteModel) (order : FunctionAddressOrder)
+    (target : FuncId) (value : Value) :
+    encodeMemoryWithFunctions model order (.FnItem target) value =
+      .error (.unsupported .layout "function item Store requires a prepared source plan") := rfl
+
+theorem decodeFnItemWithoutPlan (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (target : FuncId) (bytes : List UInt8) :
+    decodeMemoryWithFunctions model order memory (.FnItem target) bytes =
+      .error (.unsupported .layout "function item Load requires a prepared source plan") := rfl
+
 end TrustIr

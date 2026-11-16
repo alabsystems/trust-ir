@@ -241,6 +241,10 @@ pub enum ConstantG<X> {
         /// The extent of each axis, outermost first.
         dims: Vec<u64>,
     },
+    /// The zero-byte singleton of exactly `Ty::FnItem(func)`. It does not
+    /// materialize an address; `FnDef` retains its existing pointer meaning.
+    /// Appended after all existing constructors for positional serde stability.
+    FnItem(crate::value::FuncId),
 }
 
 /// The level-R constant: [`ConstantG`] with no extension.
@@ -382,6 +386,7 @@ impl<X: PartialEq> PartialEq for ConstantG<X> {
                 },
             ) => fa == fb && ca == cb,
             (FnDef(a), FnDef(b)) => a == b,
+            (FnItem(a), FnItem(b)) => a == b,
             (
                 SymbolAddr {
                     symbol: sa,
@@ -440,7 +445,7 @@ impl<X: core::hash::Hash> core::hash::Hash for ConstantG<X> {
                 func.hash(state);
                 captures.hash(state);
             }
-            FnDef(func) => func.hash(state),
+            FnDef(func) | FnItem(func) => func.hash(state),
             SymbolAddr { symbol, addend } => {
                 symbol.hash(state);
                 addend.hash(state);
@@ -511,6 +516,7 @@ impl Constant {
             | Self::Float(_)
             | Self::Bool(_)
             | Self::FnDef(_)
+            | Self::FnItem(_)
             | Self::SymbolAddr { .. }
             | Self::PhantomData
             | Self::Uninit
@@ -668,6 +674,7 @@ impl Constant {
                             | Self::Float(_)
                             | Self::Bool(_)
                             | Self::FnDef(_)
+                            | Self::FnItem(_)
                             | Self::SymbolAddr { .. }
                             | Self::PhantomData
                             | Self::Uninit
@@ -802,8 +809,10 @@ impl Constant {
                 | Constant::Float(_)
                 | Constant::Bool(_)
                 | Constant::FnDef(_)
+                | Constant::FnItem(_)
                 | Constant::SymbolAddr { .. }
-                | Constant::PhantomData => ClassKey::Leaf(node),
+                | Constant::PhantomData
+                | Constant::TensorBlob { .. } => ClassKey::Leaf(node),
                 _ => {
                     let children: Vec<usize> = results.drain(frame.first_result..).collect();
                     let list = matches!(node, Constant::Array(_) | Constant::Aggregate(_));

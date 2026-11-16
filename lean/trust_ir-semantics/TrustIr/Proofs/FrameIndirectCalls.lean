@@ -19,6 +19,16 @@ private theorem split_bind_success {α β : Type} (action : Sem α) (next : α �
   | error error => simp [step, bind, Except.bind] at run
   | ok pair => exact ⟨pair.1, pair.2, rfl, by simpa [step] using run⟩
 
+private theorem split_indirect_mode_success {β : Type} (held : Value) (ids : List ValueId)
+    (next : List Value → Sem β) (state final : MachineState) (result : β)
+    (run : Sem.run (match held with
+      | .fnItem _ => do let values ← pure []; next values
+      | _ => do let values ← ids.mapM Sem.lookupValue; next values) state = .ok (result, final)) :
+    ∃ values middle,
+      Sem.run (match held with | .fnItem _ => pure [] | _ => ids.mapM Sem.lookupValue) state = .ok (values, middle) ∧
+      Sem.run (next values) middle = .ok (result, final) := by
+  cases held <;> exact split_bind_success _ _ state final result run
+
 private theorem lookup_success (s final : MachineState) (id : ValueId) (value : Value)
     (run : Sem.run (Sem.lookupValue id) s = .ok (value, final)) :
     s.lookupValue id = some value ∧ final = s := by
@@ -86,23 +96,34 @@ theorem indirect_call_body_success (recurse : Recurse) (ctx : EvalContext) (dept
   obtain ⟨found,same⟩ := lookup_success s middle calleeId held looked
   subst middle
   have heldValid := valid.values calleeId held found
+  obtain ⟨unit, middle, checked, tail⟩ := split_bind_success _ _ s final outcome tail
+  have same := memory_check_success_state _ s middle unit checked
+  subst middle
+  cases unit
   obtain ⟨address,middle,checked,tail⟩ := split_bind_success _ _ s final outcome tail
   have same := address_readonly held s (address,middle) checked
   change middle = s at same
   subst middle
-  obtain ⟨values,middle,looked,tail⟩ := split_bind_success _ _ s final outcome tail
-  obtain ⟨same,incoming⟩ := lookup_args_success args s middle values valid looked
+  obtain ⟨values,middle,looked,tail⟩ := split_indirect_mode_success held args _ s final outcome tail
+  obtain ⟨same,incoming⟩ := indirect_mode_arguments_success held args s middle values valid looked
   subst middle
   cases depth with
   | zero => cases tail
   | succ depth =>
     obtain ⟨resolved,middle,prepared,tail⟩ := split_bind_success _ _ s final outcome tail
-    obtain ⟨same,preparedValid⟩ := indirect_arguments_success s.nextFrameLineage ctx held address sig values conv s middle resolved heldValid incoming prepared
+    obtain ⟨same,preparedValid⟩ := deferred_indirect_arguments_success ctx held address sig args values conv s middle resolved valid heldValid incoming prepared
     subst middle
     cases target : ctx.functions resolved.1 with
     | none =>
-      simp [target,Sem.throwTypeError,Sem.run,StateT.run,StateT.bind,StateT.lift,throw,throwThe,
-        MonadExceptOf.throw,bind,pure,Except.bind,Except.pure] at tail
+      cases held <;> try
+        simp [target,Sem.throwTypeError,Sem.run,StateT.run,StateT.bind,StateT.lift,throw,throwThe,
+          MonadExceptOf.throw,bind,pure,Except.bind,Except.pure] at tail
+      case fnItem targetId =>
+        cases body : resolveFunctionItemBody ctx resolved.1 with
+        | ok callee => exact False.elim (function_item_body_missing ctx resolved.1 target callee body)
+        | error error =>
+          simp [body,Sem.fromMemoryExcept,Sem.run,StateT.run,StateT.bind,StateT.lift,
+            throw,throwThe,MonadExceptOf.throw,bind,pure,Except.bind,Except.pure] at tail
     | some callee =>
       simp only [target,pure_bind] at tail
       obtain ⟨unit,middle,checked,tail⟩ := split_bind_success _ _ s final outcome tail
@@ -253,6 +274,10 @@ theorem call_frame_layer_success (recurse : Recurse) (ctx : EvalContext) (depth 
   | some block =>
     obtain ⟨sites,⟨control⟩⟩ := grammar pc block found
     simp only [evalLayer,found] at run
+    obtain ⟨unit, checkedState, checked, run⟩ := split_bind_success _ _ s final values run
+    have same := memory_check_success_state _ s checkedState unit checked
+    subst checkedState
+    cases unit
     obtain ⟨unit,bound,params,tail⟩ := split_bind_success _ _ s final values run
     cases unit
     have boundValid := valid.checked_params_success _ args s bound incoming params
@@ -269,8 +294,10 @@ theorem call_frame_layer_success (recurse : Recurse) (ctx : EvalContext) (depth 
       obtain ⟨afterValid,returned,nextHistory⟩ := recursive ctx cfg depth next nextArgs afterBody final values grammar program bodyValid transported tail
       exact ⟨afterValid,returned,paramsHistory.trans (bodyHistory.trans nextHistory)⟩
     | Ret returned =>
-      change Except.ok (returned,afterBody) = Except.ok (values,final) at tail
-      cases tail
+      change Sem.run (GenericCoro.checkedReturn ctx returned) afterBody = .ok (values,final) at tail
+      obtain ⟨same, equal⟩ := checked_return_success ctx returned values afterBody final tail
+      subst final
+      subst values
       exact ⟨bodyValid,transported,paramsHistory.trans bodyHistory⟩
     | Stuck =>
       change Except.error (SemError.ub "reached unreachable") = Except.ok (values,final) at tail

@@ -41,21 +41,29 @@ def evalBodyStep (recurse : Recurse) (ctx : EvalContext) (callDepth : Nat)
       ctx.bindCallResults inst resultDests retVals
   | .CallIndirect calleeValId sig argIds conv => do
     let calleeVal ← Sem.lookupValue calleeValId
+    let _ ← Sem.fromMemoryExcept (checkFunctionItemCalleeType ctx calleeValId calleeVal)
     -- Validate a pointer before argument lookup as before. A nominal
     -- closure is resolved only after the same call-depth boundary.
     let addr ← match calleeVal with
       | .ptr a _ => pure a
       | .fnDef _ _ => pure 0
+      | .fnItem _ => pure 0
       | .typedClosure _ _ _ => pure 0
       | .nullPtr => Sem.throwTypeError "CallIndirect: null function pointer"
       | _ => Sem.throwTypeError "CallIndirect: callee is not a pointer or typed closure"
-    let args ← argIds.mapM Sem.lookupValue
+    let args ← match calleeVal with
+      | .fnItem _ => pure []
+      | _ => argIds.mapM Sem.lookupValue
     match callDepth with
     | 0 => throw SemError.outOfFuel
     | callDepth + 1 => do
       let (calleeId, callArgs) ← match calleeVal with
+        | .fnItem target =>
+          match functionItemCall ctx target sig conv with
+          | .ok fn => do pure (fn, ← argIds.mapM Sem.lookupValue)
+          | .error e => throw e
         | .fnDef held target =>
-          match functionCall ctx held target sig with
+          match functionCallWithConvention ctx held target sig conv with
           | .ok fn => pure (fn, args)
           | .error e => throw e
         | .typedClosure cid fn captures =>
@@ -79,7 +87,10 @@ def evalBodyStep (recurse : Recurse) (ctx : EvalContext) (callDepth : Nat)
           pure (calleeId, args)
       let callee ← match ctx.functions calleeId with
         | some f => pure f
-        | none => Sem.throwTypeError "CallIndirect: undefined function"
+        | none =>
+          match calleeVal with
+          | .fnItem _ => Sem.fromMemoryExcept (resolveFunctionItemBody ctx calleeId)
+          | _ => Sem.throwTypeError "CallIndirect: undefined function"
       requireUntypedAbi callee.body.abi
       match checkCallArity callArgs callee.body.paramTys with
       | .ok () => pure ()
@@ -193,6 +204,7 @@ def evalLayer (recurse : Recurse) (ctx : EvalContext) (callDepth : Nat)
     -- drop runs the `Call` / `Invoke` rules below verbatim, and an
     -- unresolved one reaches the bare `stepInst`, which refuses it.
     let block := ctx.resolveBlock blk
+    let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (block.params.map (·.snd)) args)
     bindBlockParamsChecked block.params args
     evalBody recurse ctx callDepth strat (bodyInstsWithResultDests block.body block.bodyResultDests)
     -- Under `.unwind` a failing `AssertInvoke` enters its pad and `Resume`
@@ -203,7 +215,11 @@ def evalLayer (recurse : Recurse) (ctx : EvalContext) (callDepth : Nat)
       | .value _ => Sem.throwTypeError "basic block does not end with a terminator"
       | .values _ => Sem.throwTypeError "basic block does not end with a terminator"
     match result with
-    | .Ret values => pure values
+    | .Ret values =>
+      if let some expected := ctx.functionReturnTypes then
+        let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected values)
+        pure values
+      else pure values
     | .Stuck => Sem.throwUB "reached unreachable"
     | .Continue nextPc nextArgs =>
       recurse ctx callDepth cfg nextPc nextArgs strat

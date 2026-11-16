@@ -559,3 +559,10 @@ fn the_oracle_reports_a_forged_expectation() {
         "{reply}"
     );
 }
+
+// Additive constructor population; original tests/corpus/ratchets above stay intact.
+#[path = "template_subst_differential/constructor_coverage.rs"]
+mod constructor_coverage;
+
+#[path = "template_subst_differential/raw_boundary.rs"]
+mod raw_boundary;

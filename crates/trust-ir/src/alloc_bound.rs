@@ -465,6 +465,10 @@ impl<'m> Sizer<'m> {
                     .total_bits()
                     .map_or(Bytes::Beyond, |bits| Bytes::Exact(u128::from(bits) / 8))
             }
+            Ty::FnItem(id) => self
+                .layouts
+                .function_item(*id)
+                .map_or(Bytes::Unknown, |_| Bytes::Exact(0)),
             Ty::Unit | Ty::Never => Bytes::Exact(0),
             Ty::Struct(id) => self
                 .structs

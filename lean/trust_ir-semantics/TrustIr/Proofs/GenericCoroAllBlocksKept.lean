@@ -38,6 +38,8 @@ theorem evalLayer_effect (sourceRecurse targetRecurse : Recurse) (base : EvalCon
     (rowTypes : ∀ row ∈ bodyInstsWithResultDests (base.resolveBlock block).body
       (base.resolveBlock block).bodyResultDests,
       TypesAgreeOn (row.2 ++ operandIds row.1) sourceTypes targetTypes)
+    (termTypes : TypesAgreeOn (operandIds (base.resolveBlock block).terminator)
+      sourceTypes targetTypes)
     (transfers : ∀ result state, SSAFreshFrames.FreshState state →
       EffectRelation
         (Sem.run (evalTransfer sourceRecurse (scopedContext base source sourceTypes) depth
@@ -57,27 +59,31 @@ theorem evalLayer_effect (sourceRecurse targetRecurse : Recurse) (base : EvalCon
   have term := PadViews.stepTermWithContext_congr
     (scopedContext base source sourceTypes) (scopedContext base target targetTypes)
     depth sourceCFG targetCFG resolved.terminator strategy rfl
-    (functionCall_congr base source target headers sourceTypes targetTypes)
-    (closureCall_congr base source target headers sourceTypes targetTypes) views
+    (functionCallWithConvention_congr base source target headers sourceTypes targetTypes)
+    (closureCall_congr base source target headers sourceTypes targetTypes)
+    (by
+      intro operand member value
+      apply checkFunctionItemCalleeType_scoped_congr
+      cases termTypes with
+      | absent => rfl
+      | present sourceTable targetTable agree => exact agree operand member)
+    (fun _ _ _ => rfl)
+    (resolveFunctionItemBody_congr base source target headers sourceTypes targetTypes) views
+  have checks := itemValues_constantContext
+    (scopedContext base source sourceTypes) (scopedContext base target targetTypes)
+    rfl (resolved.params.map (·.snd)) args
   have paramsFresh : SSAFreshStep.KeepsFresh (bindBlockParamsChecked resolved.params args) := by
     intro current result currentFresh ran
     rcases result with ⟨unit, after⟩
     cases unit
     exact SSAFreshFrames.bindBlockParamsChecked_preserves_fresh resolved.params args
       current after currentFresh ran
-  have firstFresh : SSAFreshStep.KeepsFresh (do
-      (do
-        bindBlockParamsChecked resolved.params args
-        evalBody targetRecurse (scopedContext base target targetTypes) depth strategy rows)
-      stepTermWithContext (scopedContext base target targetTypes) depth targetCFG
-        resolved.terminator strategy) :=
-    SSAFreshStep.bind_fresh _ _
-      (SSAFreshStep.bind_fresh _ _ paramsFresh (fun _ => evalBody_fresh _ _ _ _ _))
-      (fun _ => PadViews.stepTermWithContext_fresh _ _ _ _ _)
   rw [evalLayer_eq_transfer, evalLayer_eq_transfer]
   simp only [sourceFound, targetFound, resolveBlock_scoped]
   change EffectRelation
     (Sem.run (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues
+        (scopedContext base source sourceTypes) (resolved.params.map (·.snd)) args)
       bindBlockParamsChecked resolved.params args
       evalBody sourceRecurse (scopedContext base source sourceTypes) depth strategy rows
       let termResult ← stepTermWithContext (scopedContext base source sourceTypes) depth
@@ -89,6 +95,8 @@ theorem evalLayer_effect (sourceRecurse targetRecurse : Recurse) (base : EvalCon
       evalTransfer sourceRecurse (scopedContext base source sourceTypes) depth sourceCFG
         resolved strategy result) state)
     (Sem.run (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues
+        (scopedContext base target targetTypes) (resolved.params.map (·.snd)) args)
       bindBlockParamsChecked resolved.params args
       evalBody targetRecurse (scopedContext base target targetTypes) depth strategy rows
       let termResult ← stepTermWithContext (scopedContext base target targetTypes) depth
@@ -99,13 +107,19 @@ theorem evalLayer_effect (sourceRecurse targetRecurse : Recurse) (base : EvalCon
         | .values _ => Sem.throwTypeError "basic block does not end with a terminator"
       evalTransfer targetRecurse (scopedContext base target targetTypes) depth targetCFG
         resolved strategy result) state)
-  rw [body, term, ← bind_assoc, ← bind_assoc, ← bind_assoc, ← bind_assoc]
-  apply AllBlocksEffect.bind_effect _ _ _ firstFresh _ state fresh
-  intro termResult after afterFresh
+  rw [checks, body, term]
+  apply AllBlocksEffect.bind_effect _ _ _ (SSAFreshMemory.fromMemoryExcept_fresh _) _ state fresh
+  intro _ afterCheck checkFresh
+  apply AllBlocksEffect.bind_effect _ _ _ paramsFresh _ afterCheck checkFresh
+  intro _ afterParams paramsFresh
+  apply AllBlocksEffect.bind_effect _ _ _ (evalBody_fresh _ _ _ _ _) _ afterParams paramsFresh
+  intro _ afterBody bodyFresh
+  apply AllBlocksEffect.bind_effect _ _ _ (PadViews.stepTermWithContext_fresh _ _ _ _ _) _ afterBody bodyFresh
+  intro termResult afterTerm termFresh
   trustIrCompilerProof {
     cases termResult with
     | terminator result =>
-      simpa only [pure_bind] using transfers result after afterFresh
+      simpa only [pure_bind] using transfers result afterTerm termFresh
     | value _ => exact .error (.typeError "basic block does not end with a terminator")
     | values _ => exact .error (.typeError "basic block does not end with a terminator")
   } {
@@ -116,16 +130,16 @@ theorem evalLayer_effect (sourceRecurse targetRecurse : Recurse) (base : EvalCon
             | .value _ => Sem.throwTypeError "basic block does not end with a terminator"
             | .values _ => Sem.throwTypeError "basic block does not end with a terminator"
           evalTransfer sourceRecurse (scopedContext base source sourceTypes) depth sourceCFG
-            resolved strategy result) after)
+            resolved strategy result) afterTerm)
         (Sem.run (do
           let result ← match termResult with
             | .terminator result => pure result
             | .value _ => Sem.throwTypeError "basic block does not end with a terminator"
             | .values _ => Sem.throwTypeError "basic block does not end with a terminator"
           evalTransfer targetRecurse (scopedContext base target targetTypes) depth targetCFG
-            resolved strategy result) after)) termResult ?_ ?_ ?_
+            resolved strategy result) afterTerm)) termResult ?_ ?_ ?_
     · intro result
-      simpa only [pure_bind] using transfers result after afterFresh
+      simpa only [pure_bind] using transfers result afterTerm termFresh
     · intro value
       exact .error (.typeError "basic block does not end with a terminator")
     · intro values

@@ -4,6 +4,10 @@
 
 //! Unit tests for the native verification request module.
 
+#[cfg(feature = "native-transport-json")]
+#[path = "tests/wide_json.rs"]
+mod wide_json;
+
 use super::*;
 use crate::{
     Block, BlockId, FuncTy, Function, ICmpOp, InstrNode, ObligationKind, ProofEvidence,
@@ -632,10 +636,49 @@ mod validated_view;
 mod module_obligation_identity;
 
 #[test]
+fn validated_native_bundle_borrows_the_exact_admitted_input() {
+    let bundle = source_generation_authority_bundle();
+    let before = bundle.clone();
+    let admitted = ValidatedNativeBundle::new(&bundle).expect("valid native bundle");
+    assert!(std::ptr::eq(admitted.bundle(), &bundle));
+    assert_eq!(admitted.bundle(), &before);
+}
+
+#[test]
+fn validated_native_bundle_preserves_full_admission_errors() {
+    let bundle = source_generation_authority_bundle();
+    bundle.validate().expect("valid native bundle control");
+    let mut schema = bundle.clone();
+    schema.schema_version = 0;
+    let mut module = bundle.clone();
+    module.module.name.push_str("-changed-after-admission");
+    let mut requests = bundle.clone();
+    requests.requests.clear();
+    let mut lineage = bundle.clone();
+    lineage.lineage.nodes.clear();
+    let mut combined = module.clone();
+    combined.schema_version = 0;
+    combined.requests.clear();
+    for (case, invalid) in [
+        ("schema", schema),
+        ("module identity", module),
+        ("requests", requests),
+        ("lineage", lineage),
+        ("combined diagnostics", combined),
+    ] {
+        let before = invalid.clone();
+        let expected = invalid.validate().expect_err(case);
+        let actual = ValidatedNativeBundle::new(&invalid).expect_err(case);
+        assert_eq!(actual, expected, "{case}");
+        assert_eq!(invalid, before, "{case}: admission must not change input");
+    }
+}
+
+#[test]
 fn native_bundle_rejects_ambiguous_v6_identity_without_authority_fallback() {
     let mut bundle = source_generation_authority_bundle();
     bundle.validate().expect("current bundle is valid");
-    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 8);
+    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 9);
     bundle.schema_version = 6;
     bundle.serialization.schema_version = 6;
     let errors = bundle
@@ -646,7 +689,9 @@ fn native_bundle_rejects_ambiguous_v6_identity_without_authority_fallback() {
     // never a best-effort upgrade of a bundle whose language set is absent.
     bundle.schema_version = 7;
     bundle.serialization.schema_version = 7;
-    let errors = bundle.validate().expect_err("v7 is not v8");
+    let errors = bundle
+        .validate()
+        .expect_err("v7 is not the current synchronized schema");
     assert!(errors.contains(&NativeVerificationBundleError::UnsupportedSchemaVersion(7)));
     assert!(
         errors.contains(&NativeVerificationBundleError::UnsupportedSerializationSchemaVersion(7))
@@ -13749,6 +13794,277 @@ fn chc_x86_icmp_ne_rows_build_the_all_ones_with_pcmpeqd() {
             ne.native_instructions,
             format!("{};pcmpeqd;pxor", eq.native_instructions),
             "{name}: icmp.ne is eq, the pcmpeqd all-ones, then pxor"
+        );
+    }
+}
+
+fn admission_single_bundle() -> NativeVerificationBundle {
+    let mut bundle = native_bundle();
+    remove_unreplayed_trust_vc_fixture(&mut bundle);
+    let id = EnumId::new(bundle.module.enums.len() as u32);
+    let mut definition = crate::EnumDef::new(
+        id,
+        "admission_single",
+        vec![
+            crate::EnumVariant {
+                name: "Dead".into(),
+                fields: vec![Ty::Never],
+                field_names: vec![],
+            },
+            crate::EnumVariant {
+                name: "Live".into(),
+                fields: vec![Ty::U32],
+                field_names: vec![],
+            },
+        ],
+    );
+    definition.layout = Some(crate::EnumLayoutDescriptor {
+        encoding: crate::EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0]],
+    });
+    bundle.module.add_enum(definition);
+    bundle.compiler_facts.adt_layouts.push(NativeAdtLayoutFact {
+        id: NativeCompilerFactId::new(222),
+        ty: Ty::Enum(id),
+        layout: TyLayoutShape {
+            size_bits: 32,
+            align_bits: Some(32),
+            kind: TyLayoutKind::Enum { id, variants: 2 },
+        },
+        enum_layout: Some(NativeEnumLayoutFact {
+            enum_id: id,
+            tag_encoding: NativeEnumTagEncoding::Untagged,
+            tag_bits: None,
+            discriminant_offset_bits: None,
+            niche: None,
+            variants: vec![
+                NativeEnumVariantLayoutFact {
+                    variant_index: 0,
+                    name: "Dead".into(),
+                    discriminant: None,
+                    fields: vec![],
+                    size_bits: 0,
+                    align_bits: None,
+                },
+                NativeEnumVariantLayoutFact {
+                    variant_index: 1,
+                    name: "Live".into(),
+                    discriminant: None,
+                    fields: vec![FieldOffsetShape {
+                        field: 0,
+                        name: "value".into(),
+                        ty_shape: Ty::U32.shape(),
+                        offset_bits: Some(0),
+                    }],
+                    size_bits: 32,
+                    align_bits: Some(32),
+                },
+            ],
+        }),
+    });
+    refresh_native_bundle_module_identity(&mut bundle);
+    bundle
+}
+fn assert_admission_single_bundle_field(bundle: NativeVerificationBundle, field: &'static str) {
+    let wanted = NativeVerificationBundleError::InvalidCompilerFact {
+        fact: NativeCompilerFactRef::AdtLayout(NativeCompilerFactId::new(222)),
+        field,
+    };
+    let errors = bundle
+        .validate()
+        .expect_err("the public full bundle must refuse this fact");
+    assert!(
+        errors.contains(&wanted),
+        "missing exact {wanted:?}, got {errors:?}"
+    );
+}
+#[test]
+fn admission_bundle_accepts_canonical_single_native_rows() {
+    admission_single_bundle()
+        .validate()
+        .expect("valid bound Single storage");
+}
+#[test]
+fn admission_bundle_binds_single_geometry() {
+    let mut bundle = admission_single_bundle();
+    bundle
+        .compiler_facts
+        .adt_layouts
+        .last_mut()
+        .unwrap()
+        .layout
+        .size_bits = 64;
+    assert_admission_single_bundle_field(bundle, "layout");
+}
+#[test]
+fn admission_bundle_refuses_native_single_inactive_bytes() {
+    let mut bundle = admission_single_bundle();
+    bundle
+        .compiler_facts
+        .adt_layouts
+        .last_mut()
+        .unwrap()
+        .enum_layout
+        .as_mut()
+        .unwrap()
+        .variants[0]
+        .size_bits = 8;
+    assert_admission_single_bundle_field(bundle, "layout.size_bits");
+}
+#[test]
+fn admission_bundle_refuses_native_single_inactive_fields() {
+    let mut bundle = admission_single_bundle();
+    bundle
+        .compiler_facts
+        .adt_layouts
+        .last_mut()
+        .unwrap()
+        .enum_layout
+        .as_mut()
+        .unwrap()
+        .variants[0]
+        .fields
+        .push(FieldOffsetShape {
+            field: 0,
+            name: "never".into(),
+            ty_shape: Ty::Never.shape(),
+            offset_bits: Some(0),
+        });
+    assert_admission_single_bundle_field(bundle, "enum_layout.variant.fields");
+}
+#[test]
+fn admission_bundle_refuses_tagged_single_protocol() {
+    let mut bundle = admission_single_bundle();
+    let layout = bundle
+        .compiler_facts
+        .adt_layouts
+        .last_mut()
+        .unwrap()
+        .enum_layout
+        .as_mut()
+        .unwrap();
+    layout.tag_encoding = NativeEnumTagEncoding::Direct;
+    layout.tag_bits = Some(8);
+    layout.discriminant_offset_bits = Some(0);
+    for (index, variant) in layout.variants.iter_mut().enumerate() {
+        variant.discriminant = Some(index as i128);
+    }
+    assert_admission_single_bundle_field(bundle, "enum_layout.tag_encoding");
+}
+#[test]
+fn admission_bundle_retains_empty_nominal_identity_but_refuses_storage_fact() {
+    let mut bundle = native_bundle();
+    remove_unreplayed_trust_vc_fixture(&mut bundle);
+    let id = EnumId::new(bundle.module.enums.len() as u32);
+    bundle
+        .module
+        .add_enum(crate::EnumDef::new(id, "nominal_empty", vec![]));
+    refresh_native_bundle_module_identity(&mut bundle);
+    bundle
+        .validate()
+        .expect("empty nominal identity makes no storage claim");
+    bundle.compiler_facts.adt_layouts.push(NativeAdtLayoutFact {
+        id: NativeCompilerFactId::new(222),
+        ty: Ty::Enum(id),
+        layout: TyLayoutShape {
+            size_bits: 0,
+            align_bits: Some(8),
+            kind: TyLayoutKind::Enum { id, variants: 0 },
+        },
+        enum_layout: Some(NativeEnumLayoutFact {
+            enum_id: id,
+            tag_encoding: NativeEnumTagEncoding::Untagged,
+            tag_bits: None,
+            discriminant_offset_bits: None,
+            niche: None,
+            variants: vec![],
+        }),
+    });
+    assert_admission_single_bundle_field(bundle, "layout");
+}
+
+#[cfg(feature = "native-transport-json")]
+#[path = "tests/transport_json.rs"]
+mod transport_json;
+
+#[test]
+fn concrete_thir_adapter_binds_source_lineage_and_refuses_historical_schema_eight() {
+    // This is untrusted bundle data, not a live THIR origin or proof witness.
+    let mut bundle = source_generation_authority_bundle();
+    let source = bundle.source_digest().unwrap();
+    let mir_digest = bundle.stable_digest();
+    bundle.input = NativeAdapterInput::RustThir {
+        source_digest: source,
+    };
+    bundle
+        .validate()
+        .expect("distinct input with the exact original lineage");
+    assert_eq!(bundle.source_digest(), Some(source));
+    assert_ne!(
+        bundle.stable_digest(),
+        mir_digest,
+        "THIR cannot alias the MIR adapter"
+    );
+    let mut historical = bundle.clone();
+    historical.schema_version = 8;
+    assert!(
+        historical
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(
+                error,
+                NativeVerificationBundleError::UnsupportedSchemaVersion(8)
+            ))
+    );
+    let mut changed = bundle.clone();
+    changed.input = NativeAdapterInput::RustThir {
+        source_digest: digest(0xEE),
+    };
+    assert!(changed.validate().unwrap_err().iter().any(|error| matches!(
+        error,
+        NativeVerificationBundleError::SourceDigestNotInLineage(_)
+    )));
+    let mut empty = bundle;
+    empty.input = NativeAdapterInput::RustThir {
+        source_digest: ProofDigest::sha256([0; 32]),
+    };
+    assert!(empty.validate().unwrap_err().iter().any(|error| matches!(
+        error,
+        NativeVerificationBundleError::EmptyDigest {
+            field: "input.rust_thir.source_digest"
+        }
+    )));
+}
+
+#[cfg(feature = "binary")]
+#[test]
+fn concrete_thir_adapter_binary_tag_roundtrips_without_relabelling_old_inputs() {
+    for input in [
+        NativeAdapterInput::RustMir {
+            body_digest: digest(1),
+        },
+        NativeAdapterInput::TrustIrModule,
+        NativeAdapterInput::RustThir {
+            source_digest: digest(2),
+        },
+    ] {
+        let module = Module::new("native_input_tag_control");
+        let bundle = NativeVerificationBundle::new(
+            NativeBundleProducer::TRust,
+            input,
+            module.stable_digest(),
+            module,
+            ProofLineageManifest::new(),
+        );
+        let bytes = crate::binary::serialize_native_verification_bundle(&bundle).unwrap();
+        let decoded = crate::binary::deserialize_native_verification_bundle(&bytes).unwrap();
+        assert_eq!(decoded.input, input);
+        assert_eq!(
+            decoded.schema_version,
+            NativeVerificationBundle::SCHEMA_VERSION
         );
     }
 }

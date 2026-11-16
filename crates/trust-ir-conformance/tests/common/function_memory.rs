@@ -762,28 +762,9 @@ fn expanded_function_memory(bits: u32, sparse: bool) -> (Module, Vec<FunctionMem
     (module, runs)
 }
 
-fn function_memory_cold_variants(module: Module, sparse: bool) -> Vec<(&'static str, Module)> {
+fn function_memory_cold_variants(module: Module, _sparse: bool) -> Vec<(&'static str, Module)> {
     let binary = trust_ir::binary::serialize_module(&module).expect("encode binary");
-    let text = if sparse {
-        let error = trust_ir::format::text_checked(&module)
-            .expect_err("checked text cannot preserve non-positional function ids");
-        let expected: Vec<_> = module
-            .functions
-            .iter()
-            .enumerate()
-            .filter_map(|(index, function)| {
-                let index = u32::try_from(index).unwrap();
-                (function.id.index() != index).then_some(trust_ir::format::TextLoss::FunctionId {
-                    index,
-                    id: function.id,
-                })
-            })
-            .collect();
-        assert_eq!(error.losses, expected);
-        None
-    } else {
-        Some(trust_ir::format::text_checked(&module).expect("encode canonical-id text"))
-    };
+    let text = trust_ir::format::text_checked(&module).expect("encode exact function IDs");
     let json = serde_json::to_vec(&module).expect("encode JSON");
     let msgpack = rmp_serde::to_vec(&module).expect("encode MessagePack");
     let mut variants = vec![
@@ -798,16 +779,14 @@ fn function_memory_cold_variants(module: Module, sparse: bool) -> Vec<(&'static 
             rmp_serde::from_slice(&msgpack).expect("decode MessagePack"),
         ),
     ];
-    if let Some(text) = text {
-        variants.insert(
-            2,
-            (
-                "text",
-                trust_ir::parser::parse_module(&text).expect("decode text"),
-            ),
-        );
-    }
-    assert_eq!(variants.len(), if sparse { 4 } else { 5 });
+    variants.insert(
+        2,
+        (
+            "text",
+            trust_ir::parser::parse_module(&text).expect("decode exact IDs"),
+        ),
+    );
+    assert_eq!(variants.len(), 5);
     variants
 }
 
@@ -853,7 +832,7 @@ fn function_memory_consumers_keep_source_order_and_dynamic_refusals_across_codec
         })
         .collect();
     let reports = differential(exe, &batches);
-    assert_eq!(reports.len(), 612);
+    assert_eq!(reports.len(), 680);
     let mut counts = [0; 5];
     for (report, run) in reports
         .iter()
@@ -948,7 +927,7 @@ fn function_memory_consumers_keep_source_order_and_dynamic_refusals_across_codec
             }
         }
     }
-    assert_eq!(counts, [396, 108, 72, 18, 18]);
+    assert_eq!(counts, [440, 120, 80, 20, 20]);
 }
 
 #[test]
@@ -1040,7 +1019,7 @@ fn malformed_function_memory_values_refuse_after_valid_codec_transport() {
         })
         .collect();
     let reports = differential(exe, &batches);
-    assert_eq!(reports.len(), 54);
+    assert_eq!(reports.len(), 60);
     for report in reports {
         assert!(matches!(report.rust, Verdict::TypeError(_)), "{report:?}");
         assert!(matches!(report.lean, Verdict::TypeError(_)), "{report:?}");

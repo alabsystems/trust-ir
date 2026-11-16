@@ -301,6 +301,7 @@ theorem stepNWithContext_callReq_eq_runCallReq
       { params := params, body := [], terminator := .Call calleeId argIds }) :
     stepNWithContext ctx (fuel + 1) (callDepth + 1) cfg pc args
       = (do
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
           bindBlockParamsChecked params args
           let callArgs ← argIds.mapM Sem.lookupValue
           runCallReq ctx fuel callDepth calleeId callArgs) := by
@@ -309,6 +310,7 @@ theorem stepNWithContext_callReq_eq_runCallReq
   simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
     stepTermWithContext, closureTermWithContext, stepInst, runCallReq, EvalContext.lookupDirectCallee, pure_bind, bind_assoc]
+  refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun _ => ?_
   cases _hfn : ctx.functions calleeId <;>
@@ -326,6 +328,7 @@ theorem stepNWithContext_callReq_zero_depth
       { params := params, body := [], terminator := .Call calleeId argIds }) :
     stepNWithContext ctx (fuel + 1) 0 cfg pc args
       = (do
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
           bindBlockParamsChecked params args
           let _ ← argIds.mapM Sem.lookupValue
           throw SemError.outOfFuel) := by
@@ -359,11 +362,16 @@ theorem stepNWithContext_bodyCall_eq_runCallReq_bind
         terminator := .Return retIds }) :
     stepNWithContext ctx (fuel + 1) (callDepth + 1) cfg pc args
       = (do
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
           bindBlockParamsChecked params args
           let callArgs ← argIds.mapM Sem.lookupValue
           let retVals ← runCallReq ctx fuel callDepth calleeId callArgs
           ctx.bindCallResults (.Call calleeId argIds) resultDests retVals
-          retIds.mapM Sem.lookupValue) := by
+          let values ← retIds.mapM Sem.lookupValue
+          if let some expected := ctx.functionReturnTypes then
+            let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected values)
+            pure values
+          else pure values) := by
   unfold stepNWithContext
   rw [hBlock]
   simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
@@ -374,6 +382,7 @@ theorem stepNWithContext_bodyCall_eq_runCallReq_bind
   -- lookup, arity checks).  Walk under the binders and split those matches;
   -- every leaf either collapses into the same throw or normalizes to the
   -- same program.
+  refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun callArgs => ?_
   cases _hfn : ctx.functions calleeId with
@@ -403,6 +412,7 @@ theorem stepNWithContext_bodyCall_eq_runCallReq_bind
       | ok u =>
         cases u
         simp only [bind_assoc, pure_bind, bind_pure]
+        rfl
 
 -- =================================================================
 -- B5: per-call ProofContext postcondition transfer (soundness)
@@ -652,6 +662,16 @@ theorem runCallReq_ok_of_inline
 -- B5: postcondition transfer over the REAL evaluator
 -- =================================================================
 
+/-- A successful validation-prefixed run preserves the original continuation's
+    state and result. Failed validation cannot satisfy the success premise. -/
+private theorem checked_prefix_ok_bare {α : Type} (checked : Except SemError Unit)
+    (next : Sem α) (s s' : MachineState) (result : α)
+    (success : Sem.run (do let _ ← Sem.fromMemoryExcept checked; next) s = .ok (result, s')) :
+    Sem.run next s = .ok (result, s') := by
+  cases checked with
+  | error error => cases success
+  | ok unit => cases unit; exact success
+
 /-- **B5 soundness over `stepNWithContext` itself.**  The postcondition
     transfer of `proof_context_assume_sound`, restated for the real evaluator
     via the bridge lemma: for a caller block whose terminator is a `Call`, if
@@ -686,6 +706,7 @@ theorem proof_context_assume_sound_evaluator
   intro retVals sEnd hrun
   rw [stepNWithContext_callReq_eq_runCallReq ctx fuel callDepth cfg pc params args
     calleeId argIds hBlock] at hrun
+  have hrun := checked_prefix_ok_bare _ _ s sEnd retVals hrun
   -- Peel the parameter-binding and argument-lookup prefix.
   rw [Sem.run_bind] at hrun
   cases h1 : Sem.run (bindBlockParamsChecked params args) s with
@@ -783,6 +804,7 @@ theorem stepNWithContext_invokeReq_eq_runInvokeCall_bind
         terminatorResultDests := termDests }) :
     stepNWithContext ctx (fuel + 1) (innerDepth + 1) cfg pc args
       = (do
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
           bindBlockParamsChecked params args
           let callArgs ← argIds.mapM Sem.lookupValue
           let retVals ← runInvokeCall ctx fuel innerDepth calleeId callArgs
@@ -802,6 +824,7 @@ theorem stepNWithContext_invokeReq_eq_runInvokeCall_bind
   -- Both sides are the same monadic spine; the residual difference is WHERE
   -- the continuation (result binding + edge args + normal-edge recursion)
   -- sits relative to the pure `match`es.  Walk under the binders and split.
+  refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun _ => ?_
   refine sem_bind_congr _ fun callArgs => ?_
   cases _hfn : ctx.functions calleeId with
@@ -848,6 +871,7 @@ theorem stepNWithContext_invokeReq_zero_depth
         terminatorResultDests := termDests }) :
     stepNWithContext ctx (fuel + 1) 0 cfg pc args
       = (do
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
           bindBlockParamsChecked params args
           let _ ← argIds.mapM Sem.lookupValue
           throw SemError.outOfFuel) := by
@@ -1093,6 +1117,7 @@ theorem proof_context_assume_sound_invoke_evaluator
   rw [stepNWithContext_invokeReq_eq_runInvokeCall_bind ctx fuel innerDepth cfg pc
     params args calleeId argIds normalArgIds normalDest unwindDest termDests
     hBlock] at hrun
+  have hrun := checked_prefix_ok_bare _ _ s sEnd out hrun
   -- Peel the prefix one effect at a time; each `.error` contradicts `.ok`.
   rw [Sem.run_bind] at hrun
   cases h1 : Sem.run (bindBlockParamsChecked params args) s with

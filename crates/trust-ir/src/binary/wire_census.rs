@@ -583,6 +583,8 @@ const TAG_SPACES: &[(&str, &str)] = &[
     ("AttrValue", "dialect/inst.rs"),
     ("BinOp", "inst.rs"),
     ("BodyGate", "lib.rs"),
+    ("BoxPointee", "box_validity.rs"),
+    ("BoxValidityNonClaim", "box_validity.rs"),
     ("CallingConv", "lib.rs"),
     ("CastOp", "inst.rs"),
     ("ClausePlace", "proof/obligations.rs"),
@@ -602,6 +604,7 @@ const TAG_SPACES: &[(&str, &str)] = &[
     ("ICmpOp", "inst.rs"),
     ("IdentityScheme", "imports.rs"),
     ("Inst", "inst.rs"),
+    ("JudgedBody", "box_validity.rs"),
     ("Linkage", "lib.rs"),
     ("NativeAdapterInput", "request/facts.rs"),
     ("NativeBundleProducer", "request/facts.rs"),
@@ -611,7 +614,9 @@ const TAG_SPACES: &[(&str, &str)] = &[
     ("PanicLocation", "inst.rs"),
     ("PassMode", "lib.rs"),
     ("Pred", "pred.rs"),
+    ("PremiseRoot", "box_validity.rs"),
     ("Producer", "lib.rs"),
+    ("ProducingSession", "box_validity.rs"),
     ("ProofAnnotation", "proof/annotations.rs"),
     ("ProofDigestAlgorithm", "proof/evidence.rs"),
     ("ProofEvidence", "proof/evidence.rs"),
@@ -624,6 +629,7 @@ const TAG_SPACES: &[(&str, &str)] = &[
     ("SpecEnforcementMode", "spec.rs"),
     ("SpecOrigin", "spec.rs"),
     ("SpecProjectionTarget", "spec.rs"),
+    ("StandingAssumption", "box_validity.rs"),
     ("StructPassingPolicy", "lib.rs"),
     ("StructRepr", "ty.rs"),
     ("TemplateArg", "template.rs"),
@@ -640,6 +646,8 @@ const TAG_SPACES: &[(&str, &str)] = &[
     ("TypeOrigin", "ty.rs"),
     ("UnOp", "inst.rs"),
     ("Universe", "pred.rs"),
+    ("ValidityConjunct", "box_validity.rs"),
+    ("ValidityEvidence", "box_validity.rs"),
     ("Visibility", "lib.rs"),
 ];
 
@@ -763,6 +771,7 @@ fn ty_samples() -> Vec<Ty> {
         Ty::Tuple(vec![Ty::I32]),
         Ty::Enum(EnumId::new(0)),
         Ty::Func(FuncTyId::new(0)),
+        Ty::FnItem(FuncId::new(7)),
         Ty::Ref(boxed()),
         Ty::RefMut(boxed()),
         Ty::PtrConst(boxed()),
@@ -808,6 +817,7 @@ fn constant_samples() -> Vec<Constant> {
             captures: vec![],
         },
         Constant::FnDef(FuncId::new(0)),
+        Constant::FnItem(FuncId::new(7)),
         Constant::SymbolAddr {
             symbol: "s".into(),
             addend: 0,
@@ -1042,6 +1052,20 @@ fn inst_samples() -> Vec<Inst> {
             ty: crate::value::ClosureTyId::new(0),
             func: FuncId::new(0),
             captures: vec![v(0)],
+        },
+        // v74: a Box deref carrying its validity fact.
+        Inst::BoxDeref {
+            ptr_ty: Ty::Ptr,
+            pointee: crate::box_validity::BoxPointee::Sized { ty: ty() },
+            operand: v(0),
+            fact: Box::new(crate::box_validity::BoxValidityFact::premise(
+                crate::box_validity::BoxDerefSite {
+                    item: [0; 16],
+                    ordinal: 0,
+                },
+                crate::box_validity::BoxFactSession::PROOF_SNAPSHOT,
+                crate::box_validity::PremiseRoot::ParamByValue,
+            )),
         },
         // v50: `n` copies of one operand.
         Inst::ArraySplat {
@@ -1406,6 +1430,10 @@ fn enum_tag_encoding_rows() -> Vec<TagRow> {
         },
         EnumTagEncoding::Untagged,
         EnumTagEncoding::SingleInhabited { variant: 1 },
+        EnumTagEncoding::DirectWithUninhabited {
+            tag_offset: 0,
+            variants: vec![],
+        },
     ];
     differential(
         "EnumTagEncoding",
@@ -2033,6 +2061,56 @@ fn codec_tag_census() -> Vec<TagRow> {
         crate::inst::AssertOverflowOp::ALL.to_vec(),
         &|buf, _, op| write_assert_overflow_op(buf, op),
     ));
+    // v74: the tag spaces of an `Inst::BoxDeref` validity fact.
+    rows.extend(direct(
+        "BoxPointee",
+        vec![crate::box_validity::BoxPointee::Sized { ty: Ty::I64 }],
+        &|buf, pool, pointee| write_box_pointee(buf, pool, pointee),
+    ));
+    rows.extend(direct(
+        "ValidityConjunct",
+        crate::box_validity::ValidityConjunct::ALL.to_vec(),
+        &|buf, _, conjunct| write_validity_conjunct(buf, conjunct),
+    ));
+    rows.extend(direct(
+        "PremiseRoot",
+        crate::box_validity::PremiseRoot::ALL.to_vec(),
+        &|buf, _, root| write_premise_root(buf, root),
+    ));
+    rows.extend(direct(
+        "StandingAssumption",
+        crate::box_validity::StandingAssumption::PINNED.to_vec(),
+        &|buf, _, assumption| write_standing_assumption(buf, assumption),
+    ));
+    rows.extend(direct(
+        "JudgedBody",
+        crate::box_validity::JudgedBody::ALL.to_vec(),
+        &|buf, _, judged| write_judged_body(buf, judged),
+    ));
+    rows.extend(direct(
+        "ProducingSession",
+        crate::box_validity::ProducingSession::ALL.to_vec(),
+        &|buf, _, producing| write_producing_session(buf, producing),
+    ));
+    rows.extend(direct(
+        "BoxValidityNonClaim",
+        crate::box_validity::BoxValidityNonClaim::PINNED.to_vec(),
+        &|buf, _, non_claim| write_box_validity_non_claim(buf, non_claim),
+    ));
+    rows.extend(direct(
+        "ValidityEvidence",
+        vec![
+            crate::box_validity::ValidityEvidence::Premise {
+                root: crate::box_validity::PremiseRoot::ParamByValue,
+                standing: crate::box_validity::StandingAssumption::PINNED.to_vec(),
+            },
+            crate::box_validity::ValidityEvidence::DominatingCheck { align: None },
+            crate::box_validity::ValidityEvidence::Obligation {
+                obligation: ProofId::new(0),
+            },
+        ],
+        &|buf, _, evidence| write_validity_evidence(buf, evidence),
+    ));
     // v54 (amendment P): a panic site's location.
     rows.extend(direct(
         "PanicLocation",
@@ -2490,6 +2568,9 @@ fn codec_tag_census() -> Vec<TagRow> {
                     body_digest: ProofDigest::zero(),
                 },
                 NativeAdapterInput::TrustIrModule,
+                NativeAdapterInput::RustThir {
+                    source_digest: ProofDigest::sha256([0x5a; 32]),
+                },
             ],
             &|buf, _, input| write_native_adapter_input(buf, input),
         ));
@@ -2962,8 +3043,12 @@ const NOT_ENUM_PATHS: [&str; 2] = ["BinaryError", "Self"];
 
 /// A level-generic carrier (amendment S) is spelled `TyG::` / `InstG::` /
 /// `ConstantG::` in the generic codec; its tag space is the level-R alias.
-const LEVEL_GENERIC: [(&str, &str); 3] =
-    [("TyG", "Ty"), ("InstG", "Inst"), ("ConstantG", "Constant")];
+const LEVEL_GENERIC: [(&str, &str); 4] = [
+    ("TyG", "Ty"),
+    ("InstG", "Inst"),
+    ("ConstantG", "Constant"),
+    ("BoxPointeeG", "BoxPointee"),
+];
 
 /// The `Left` of every `Left::Right` in `text` whose two segments both start
 /// uppercase: `crate::proof::DiagnosticSeverity::Note` -> `DiagnosticSeverity`.
@@ -4547,4 +4632,58 @@ fn the_parser_refuses_anything_outside_the_one_line_grammar() {
     let ok = parse_registry("# c\n\nwire_version = [\n  { number = 1, feature = \"a, b\" },\n]\n")
         .expect("minimal registry parses");
     assert_eq!(ok.rows("wire_version")[0].str("feature"), Ok("a, b"));
+}
+
+#[test]
+fn native_adapter_inputs_preserve_tags_digests_and_reader_refusals() {
+    use crate::request::NativeAdapterInput;
+    let mut thir = Vec::new();
+    for (input, tag) in [
+        (
+            NativeAdapterInput::RustMir {
+                body_digest: ProofDigest::sha256([0x31; 32]),
+            },
+            0u8,
+        ),
+        (NativeAdapterInput::TrustIrModule, 1),
+        (
+            NativeAdapterInput::RustThir {
+                source_digest: ProofDigest::sha256([0x5a; 32]),
+            },
+            2,
+        ),
+    ] {
+        let mut bytes = Vec::new();
+        write_native_adapter_input(&mut bytes, &input);
+        assert_eq!(bytes[0], tag);
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(read_native_adapter_input(&mut reader).unwrap(), input);
+        assert_eq!(reader.cursor.position() as usize, bytes.len());
+        if tag == 2 {
+            thir = bytes;
+        }
+    }
+    for length in 0..thir.len() {
+        // Fixed-width fields reject at the preallocation bound, before an
+        // underlying read could reach EOF: two tag bytes, then a 32-byte digest.
+        let expected_declared = if length < 2 { 1 } else { 32 };
+        let expected_remaining = length.saturating_sub(2);
+        assert!(matches!(
+            read_native_adapter_input(&mut Reader::new(&thir[..length])),
+            Err(BinaryError::TooLarge { declared, remaining })
+                if declared == expected_declared && remaining == expected_remaining
+        ));
+    }
+    let mut changed = thir.clone();
+    changed[0] = 3;
+    assert!(matches!(
+        read_native_adapter_input(&mut Reader::new(&changed)),
+        Err(BinaryError::InvalidTag(3))
+    ));
+    changed = thir;
+    changed[1] = 2;
+    assert!(matches!(
+        read_native_adapter_input(&mut Reader::new(&changed)),
+        Err(BinaryError::InvalidTag(2))
+    ));
 }

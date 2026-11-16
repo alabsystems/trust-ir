@@ -152,6 +152,7 @@ impl<X> TyG<X> {
             ),
             TyG::Enum(id) => TyG::Enum(*id),
             TyG::Func(id) => TyG::Func(*id),
+            TyG::FnItem(id) => TyG::FnItem(*id),
             TyG::Ref(inner) => TyG::Ref(Box::new(inner.try_map_ext(ext)?)),
             TyG::RefMut(inner) => TyG::RefMut(Box::new(inner.try_map_ext(ext)?)),
             TyG::PtrConst(inner) => TyG::PtrConst(Box::new(inner.try_map_ext(ext)?)),
@@ -209,6 +210,7 @@ impl<X> TyG<X> {
             | TyG::Array(_, _)
             | TyG::Enum(_)
             | TyG::Func(_)
+            | TyG::FnItem(_)
             | TyG::Set(_, _)
             | TyG::Sequence(_)
             | TyG::Record(_)
@@ -271,6 +273,7 @@ impl<X> TyG<X> {
             | TyG::Enum(_)
             | TyG::Record(_)
             | TyG::Closure(_)
+            | TyG::FnItem(_)
             | TyG::Dialect(_)
             | TyG::Handle(_)
             | TyG::Ext(_) => {}
@@ -328,6 +331,7 @@ impl<X> ConstantG<X> {
                 captures: captures.clone(),
             },
             ConstantG::FnDef(func) => ConstantG::FnDef(*func),
+            ConstantG::FnItem(func) => ConstantG::FnItem(*func),
             ConstantG::SymbolAddr { symbol, addend } => ConstantG::SymbolAddr {
                 symbol: symbol.clone(),
                 addend: *addend,
@@ -920,6 +924,21 @@ impl<X> InstG<X> {
                 func: *func,
                 captures: captures.clone(),
             },
+            InstG::BoxDeref {
+                ptr_ty,
+                pointee,
+                operand,
+                fact,
+            } => InstG::BoxDeref {
+                ptr_ty: map_ty(ptr_ty)?,
+                pointee: match pointee {
+                    crate::box_validity::BoxPointeeG::Sized { ty } => {
+                        crate::box_validity::BoxPointeeG::Sized { ty: map_ty(ty)? }
+                    }
+                },
+                operand: operand.clone(),
+                fact: fact.clone(),
+            },
             InstG::ArraySplat { ty, value } => InstG::ArraySplat {
                 ty: map_ty(ty)?,
                 value: value.clone(),
@@ -1184,6 +1203,12 @@ impl<X> InstG<X> {
                 f(ty);
             }
             InstG::MakeClosure { .. } => {}
+            InstG::BoxDeref {
+                ptr_ty, pointee, ..
+            } => {
+                f(ptr_ty);
+                f(pointee.ty());
+            }
             InstG::CallCannotUnwind { .. } => {}
             InstG::CallIndirectCannotUnwind { .. } => {}
             InstG::DropInvoke { ty, .. } => {

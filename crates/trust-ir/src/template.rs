@@ -1529,6 +1529,9 @@ fn inst_rule(
             opaque_op("a constant")
         }
         InstG::CoroSuspend { .. } => unsupported("a coroutine suspend"),
+        // A Box validity fact is judged on one monomorphic body: its
+        // pointee layout and alignment are not stable under instantiation.
+        InstG::BoxDeref { .. } => unsupported("a Box deref validity fact"),
         InstG::DialectOp(_) => unsupported("a dialect op"),
         InstG::OpenFrame { .. }
         | InstG::BindSlot { .. }

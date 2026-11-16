@@ -23,6 +23,10 @@ theorem SMTTerm.castWidth_wellFormed {a b : Nat} (same : a = b) (term : SMTTerm 
 theorem SMTTerm.castWidth_bindings {a b : Nat} (same : a = b) (term : SMTTerm (.bv a)) :
     (term.castWidth same).bindings = term.bindings := by cases same; rfl
 
+
+theorem SMTTerm.castWidth_boolBindings {a b : Nat} (same : a = b) (term : SMTTerm (.bv a)) :
+    (term.castWidth same).boolBindings = term.boolBindings := by cases same; rfl
+
 /-- One legal extract of the ORIGINAL source. The chunk is not extracted from
 a growing nest of prior extracts. -/
 def SMTTerm.chunk {source : Nat} (word : SMTTerm (.bv source)) (size : Nat)
@@ -145,6 +149,14 @@ theorem SMTTerm.chunk_bindings {source : Nat} (word : SMTTerm (.bv source)) (siz
   rw [SMTTerm.castWidth_bindings]
   rfl
 
+
+theorem SMTTerm.chunk_boolBindings {source : Nat} (word : SMTTerm (.bv source)) (size : Nat)
+    (positive : 0 < size) (index : Nat) (bound : (index+1)*size ≤ source) :
+    (word.chunk size positive index bound).boolBindings = word.boolBindings := by
+  unfold SMTTerm.chunk
+  rw [SMTTerm.castWidth_boolBindings]
+  rfl
+
 theorem SMTTerm.reverseChunks_wellFormed {source : Nat} (word : SMTTerm (.bv source))
     (size : Nat) (chunkPositive : 0 < size) (count : Nat) (positive : 0 < count)
     (bound : count*size ≤ source) (wellFormed : word.WellFormed) :
@@ -161,10 +173,10 @@ theorem SMTTerm.reverseChunks_wellFormed {source : Nat} (word : SMTTerm (.bv sou
 
 /-- Linear construction of the actual repeated inventory; do not repeatedly
 copy the growing prefix as the left-associated SMT syntax is constructed. -/
-def permutationBindings (count : Nat) (bindings : List (Nat × String)) : List (Nat × String) :=
+def permutationBindings {α : Type} (count : Nat) (bindings : List α) : List α :=
   trustIrPermutationFlatten (List.replicate count bindings)
 
-theorem permutationBindings_snoc (count : Nat) (bindings : List (Nat × String)) :
+theorem permutationBindings_snoc {α : Type} (count : Nat) (bindings : List α) :
     permutationBindings (count+1) bindings = permutationBindings count bindings ++ bindings := by
   induction count with
   | zero => simp [permutationBindings]
@@ -192,13 +204,35 @@ theorem SMTTerm.reverseChunks_bindings {source : Nat} (word : SMTTerm (.bv sourc
         (word.chunk size chunkPositive count bound).bindings = _
       rw [ih, SMTTerm.chunk_bindings, permutationBindings_snoc]
 
+
+theorem SMTTerm.reverseChunks_boolBindings {source : Nat} (word : SMTTerm (.bv source))
+    (size : Nat) (chunkPositive : 0 < size) (count : Nat) (positive : 0 < count)
+    (bound : count*size ≤ source) :
+    (word.reverseChunks size chunkPositive count positive bound).boolBindings =
+      permutationBindings count word.boolBindings := by
+  induction count with
+  | zero => exact False.elim (Nat.not_lt_zero _ positive)
+  | succ count ih =>
+    rw [SMTTerm.reverseChunks_step]
+    by_cases empty : count = 0
+    · subst count
+      rw [dif_pos rfl, SMTTerm.castWidth_boolBindings, SMTTerm.chunk_boolBindings]
+      simp [permutationBindings]
+    · rw [dif_neg empty, SMTTerm.castWidth_boolBindings]
+      change (word.reverseChunks size chunkPositive count (by omega)
+        (by rw [Nat.succ_mul] at bound; omega)).boolBindings ++
+        (word.chunk size chunkPositive count bound).boolBindings = _
+      rw [ih, SMTTerm.chunk_boolBindings, permutationBindings_snoc]
+
 def SMTCheckedTerm.reverseChunks {source : Nat} (word : SMTCheckedTerm (.bv source))
     (size : Nat) (chunkPositive : 0 < size) (count : Nat) (positive : 0 < count)
     (bound : count*size ≤ source) : SMTCheckedTerm (.bv (count*size)) :=
   ⟨word.term.reverseChunks size chunkPositive count positive bound,
     permutationBindings count word.bindings,
     word.term.reverseChunks_wellFormed size chunkPositive count positive bound word.wellFormed,
-    by rw [word.term.reverseChunks_bindings, word.inventory]⟩
+    by rw [word.term.reverseChunks_bindings, word.inventory],
+    permutationBindings count word.boolBindings,
+    by rw [word.term.reverseChunks_boolBindings, word.boolInventory]⟩
 
 def SMTCheckedTerm.castWidth {a b : Nat} (same : a = b) (term : SMTCheckedTerm (.bv a)) :
     SMTCheckedTerm (.bv b) := same ▸ term

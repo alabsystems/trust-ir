@@ -1775,6 +1775,12 @@ pub fn terminator_tensor_scatter() -> bool
     InstShape::TensorScatter.is_terminator()
 }
 
+pub fn terminator_box_deref() -> bool
+    ensures result == false
+{
+    InstShape::BoxDeref.is_terminator()
+}
+
 // --------------------------------------------------------------------------
 // fresh_id_has_successor (trust-ir, value.rs) — the fresh-id rule's
 // exhaustion row (r11 R1): an id has a successor exactly below u32::MAX, so
@@ -2306,6 +2312,12 @@ pub fn borrow_permission_tensor_scatter() -> bool
     ensures result == false
 {
     InstShape::TensorScatter.uses_borrow_permissions()
+}
+
+pub fn borrow_permission_box_deref() -> bool
+    ensures result == false
+{
+    InstShape::BoxDeref.uses_borrow_permissions()
 }
 
 // --------------------------------------------------------------------------

@@ -1,0 +1,17 @@
+{
+  "scope": "Exact former current-schema8 native-bundle fixtures preserved as tested historical admission controls; no proof/authority claim",
+  "source_commit": "45d8f57e21f7228c5981645b236770059b01c94e",
+  "source_tree": "a546495c1042ff70eceb98bf5e15c9c3ae1749f3",
+  "files": [
+    {
+      "path": "crates/trust-ir-conformance/tests/fixtures/compat/pre_thir_native_request_trust_bundle.json",
+      "bytes": 66153,
+      "sha256": "aacbfe6d13f3f3b27b0138462496aceb72b5baf70d67c8fec7b5f46015c76e06"
+    },
+    {
+      "path": "crates/trust-ir-conformance/tests/fixtures/compat/pre_thir_native_request_trust_bundle.msgpack",
+      "bytes": 17002,
+      "sha256": "54cd11cab1dbc824c84408aba31536b4edec9d94de1a9462f856f73663a0dc21"
+    }
+  ]
+}

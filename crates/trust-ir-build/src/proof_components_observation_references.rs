@@ -28,6 +28,7 @@ pub(crate) struct ConstructedObservation {
 }
 
 impl ProofComponents {
+    #[cfg(test)]
     pub(crate) fn observation_references(
         &mut self,
         scope: &LocalScope,

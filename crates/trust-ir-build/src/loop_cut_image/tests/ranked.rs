@@ -533,9 +533,9 @@ fn complete_graph_at_rank(
     );
     let exact_proof = refl(lm.pulse_ty, actual);
     (
-        close(&scope, &[host.clone()], claim, false),
-        close(&scope, &[host.clone()], proof, true),
-        close(&scope, &[host.clone()], exact, false),
+        close(&scope, std::slice::from_ref(&host), claim, false),
+        close(&scope, std::slice::from_ref(&host), proof, true),
+        close(&scope, std::slice::from_ref(&host), exact, false),
         close(&scope, &[host], exact_proof, true),
     )
 }

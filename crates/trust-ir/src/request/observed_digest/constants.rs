@@ -125,6 +125,10 @@ fn write_head<'a, O: ExecutionObserver>(
             write_u8(out, 9)?;
             write_u32(out, func.index())?;
         }
+        Constant::FnItem(func) => {
+            write_u8(out, 19)?;
+            write_u32(out, func.index())?;
+        }
         Constant::SymbolAddr { symbol, addend } => {
             write_u8(out, 12)?;
             write_str(out, symbol)?;

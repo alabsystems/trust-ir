@@ -91,14 +91,26 @@ private theorem enter_true (ctx : EvalContext) (fuel depth : Nat) (callee : Func
     StateT.run (stepNWithContext ctx (fuel + 1) depth (TrustIrEval.cfgOf (mutualGraph callee)) ⟨0⟩
       arguments .abort) {caller with locals := ValueMap.empty, nextValueId := 0} =
     StateT.run (stepNWithContext ctx fuel depth (TrustIrEval.cfgOf (mutualGraph callee)) ⟨1⟩ [] .abort)
-      (entered true) := rfl
+      (entered true) := by
+  trustIrCompilerProof {
+    rfl
+  } {
+    trustIrReduce
+    rw [stepNWithContext.eq_def]
+  }
 
 private theorem enter_false (ctx : EvalContext) (fuel depth : Nat) (callee : FuncId) :
     StateT.run (stepNWithContext ctx (fuel + 1) depth (TrustIrEval.cfgOf (mutualGraph callee)) ⟨0⟩
       [.ptr 1024 (some ⟨0⟩), .int 32 42, .bool false, .bool false] .abort)
       {caller with locals := ValueMap.empty, nextValueId := 0} =
     StateT.run (stepNWithContext ctx fuel depth (TrustIrEval.cfgOf (mutualGraph callee)) ⟨2⟩ [] .abort)
-      (entered false) := rfl
+      (entered false) := by
+  trustIrCompilerProof {
+    rfl
+  } {
+    trustIrReduce
+    rw [stepNWithContext.eq_def]
+  }
 
 private def baseStored : MachineState :=
   {entered false with memory := caller.memory.writeBytes 1024 [17, 0, 0, 0, 0, 0, 0, 0]}
@@ -127,7 +139,7 @@ private theorem intrinsic_base :
 private theorem suspend_base (ctx : EvalContext) (fuel depth : Nat) (callee : FuncId) :
     StateT.run (stepNWithContext {ctx with byteModel := .le64} (fuel + 1) depth
       (TrustIrEval.cfgOf (mutualGraph callee)) ⟨2⟩ [] .abort) (entered false) =
-      .ok ([.int 32 42], baseStored) := by
+      StateT.run (checkedReturn {ctx with byteModel := .le64} [.int 32 42]) baseStored := by
   trustIrCompilerProof {
     have found : TrustIrEval.cfgOf (mutualGraph callee) ⟨2⟩ = some
       {params := [], body := [], terminator := .CoroSuspend ⟨0⟩ 0 17 ⟨1⟩} := rfl
@@ -136,7 +148,9 @@ private theorem suspend_base (ctx : EvalContext) (fuel depth : Nat) (callee : Fu
     simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, bodyInstsWithResultDests,
       show bindBlockParamsChecked [] [] = bindBlockParams [] [] from rfl,
       forIn, List.forIn, List.forIn.loop, stepTermWithContext, closureTermWithContext, stepInst,
-      pure_bind, bind_assoc]
+      pure_bind, bind_assoc,
+      show checkFunctionItemValues {ctx with byteModel := .le64} [] [] = .ok () from rfl,
+      Sem.fromMemoryExcept]
     simp only [Sem.run, sr_bind, Except.bind]
     rw [sr_bindBlockParams_nil]
     dsimp only
@@ -150,7 +164,9 @@ private theorem suspend_base (ctx : EvalContext) (fuel depth : Nat) (callee : Fu
     simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, bodyInstsWithResultDests,
       show bindBlockParamsChecked [] [] = bindBlockParams [] [] from rfl,
       List.forIn_nil, List.forIn_cons, stepTermWithContext, closureTermWithContext, stepInst,
-      pure_bind, bind_assoc]
+      pure_bind, bind_assoc,
+      show checkFunctionItemValues {ctx with byteModel := .le64} [] [] = .ok () from rfl,
+      Sem.fromMemoryExcept]
     simp only [Sem.run, sr_bind, Except.bind]
     rw [sr_bindBlockParams_nil]
     dsimp only
@@ -179,7 +195,11 @@ private theorem callee_inline :
       [.ptr 1024 (some ⟨0⟩), .int 32 42, .bool false, .bool false] .abort)
       {caller with locals := ValueMap.empty, nextValueId := 0} = .ok ([.int 32 42], baseStored) := by
   rw [function_one_cfg, function_one_entry, enter_false]
-  exact suspend_base (sourceContext.forFunction (getFunction ⟨1⟩)) 0 1 ⟨0⟩
+  have checked : StateT.run
+      (checkedReturn {sourceContext.forFunction (getFunction ⟨1⟩) with byteModel := .le64}
+        [.int 32 42]) baseStored = .ok ([.int 32 42], baseStored) := by
+    trustIrReduce
+  exact (suspend_base (sourceContext.forFunction (getFunction ⟨1⟩)) 0 1 ⟨0⟩).trans checked
 
 private def suspendValues (slot : Nat) (next : Int) (value : ValueId) (model : ByteModel) : Sem (List Value) := do
   let frame ← Sem.lookupValue ⟨0⟩
@@ -196,7 +216,8 @@ private theorem call_suspend_block (ctx : EvalContext) (fuel depth : Nat) (calle
       let args ← [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩].mapM Sem.lookupValue
       let returns ← runCallReq ctx fuel depth callee args
       ctx.bindCallResults (.Call callee [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩]) [⟨4⟩] returns
-      suspendValues 1 19 ⟨4⟩ ctx.byteModel) := by
+      let values ← suspendValues 1 19 ⟨4⟩ ctx.byteModel
+      checkedReturn ctx values) := by
   trustIrCompilerProof {
     have found : TrustIrEval.cfgOf (mutualGraph callee) ⟨1⟩ = some
       {params := [], body := [.Call callee [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩]], bodyResultDests := [[⟨4⟩]],
@@ -206,7 +227,9 @@ private theorem call_suspend_block (ctx : EvalContext) (fuel depth : Nat) (calle
     simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
       bodyInstsWithResultDests, forIn, List.forIn, List.forIn.loop,
       stepTermWithContext, closureTermWithContext, stepInst, semCoroSuspend, semReturn, suspendValues,
-      runCallReq, EvalContext.lookupDirectCallee, pure_bind, bind_assoc, bind_pure]
+      runCallReq, EvalContext.lookupDirectCallee, checkedReturn,
+      show checkFunctionItemValues ctx [] [] = .ok () from rfl, Sem.fromMemoryExcept,
+      pure_bind, bind_assoc, bind_pure]
     refine Prefix.bind_same _ fun _ => ?_
     refine Prefix.bind_same _ fun args => ?_
     cases _found : ctx.functions callee with
@@ -230,6 +253,7 @@ private theorem call_suspend_block (ctx : EvalContext) (fuel depth : Nat) (calle
         | ok unit =>
           cases unit
           simp only [bind_assoc, pure_bind, bind_pure]
+          rfl
   } {
     have found : TrustIrEval.cfgOf (mutualGraph callee) ⟨1⟩ = some
       {params := [], body := [.Call callee [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩]], bodyResultDests := [[⟨4⟩]],
@@ -239,7 +263,9 @@ private theorem call_suspend_block (ctx : EvalContext) (fuel depth : Nat) (calle
     simp only [EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
       bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
       stepTermWithContext, closureTermWithContext, stepInst, semCoroSuspend, semReturn, suspendValues,
-      runCallReq, EvalContext.lookupDirectCallee, pure_bind, bind_assoc, bind_pure]
+      runCallReq, EvalContext.lookupDirectCallee, checkedReturn,
+      show checkFunctionItemValues ctx [] [] = .ok () from rfl, Sem.fromMemoryExcept,
+      pure_bind, bind_assoc, bind_pure]
     refine Prefix.bind_same _ fun _ => ?_
     refine Prefix.bind_same _ fun args => ?_
     cases _found : ctx.functions callee with
@@ -262,7 +288,7 @@ private theorem call_suspend_block (ctx : EvalContext) (fuel depth : Nat) (calle
         | error message => simp only [Sem.throwTypeError, Prefix.throw_bind_sem]
         | ok unit =>
           cases unit
-          simp only [bind_assoc, pure_bind, bind_pure]
+          simp only [bind_assoc, pure_bind, bind_pure] <;> rfl
   }
 
 private def active : EvalContext := sourceContext.forFunction (getFunction ⟨0⟩)
@@ -286,15 +312,13 @@ private def called : MachineState :=
   {returned with locals := returned.locals.set ⟨4⟩ (.int 32 42), nextValueId := max returned.nextValueId 5}
 
 private theorem call_result_types :
-    active.instructionResultTypes (.Call ⟨1⟩ [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩]) [⟨4⟩] 1 = .ok [.I32] := rfl
+    active.instructionResultTypes (.Call ⟨1⟩ [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩]) [⟨4⟩] 1 = .ok [.I32] := by
+  trustIrReduce
 
 private theorem call_result_published :
     StateT.run (active.bindCallResults (.Call ⟨1⟩ [⟨0⟩, ⟨1⟩, ⟨3⟩, ⟨3⟩]) [⟨4⟩] [.int 32 42]) returned =
       .ok ((), called) := by
-  unfold EvalContext.bindCallResults EvalContext.checkInstructionResults
-  simp only [List.length_cons, List.length_nil, bne_self_eq_false, Bool.false_eq_true, if_false,
-    call_result_types, pure_bind]
-  exact sr_bindResultDests_one ⟨4⟩ (.int 32 42) returned
+  trustIrReduce
 
 private theorem frame_second_ok : FrameOk called.memory 1032 ⟨0⟩ .le64 := by
   refine ⟨{id := ⟨0⟩, base := 1024, size := 16, alive := true, origin := .rustStack, requested := 16},
@@ -340,7 +364,8 @@ private theorem caller_inline :
   dsimp only
   rw [call_result_published]
   dsimp only
-  exact final_suspend
+  rw [show active.byteModel = .le64 from rfl, final_suspend]
+  trustIrReduce
 
 private def finalWorld : MachineState := restoreFrame finalInline (saveFrame caller none) []
 

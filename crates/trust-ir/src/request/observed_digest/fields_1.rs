@@ -12,6 +12,7 @@ pub(super) fn write_ty_layout_kind<O: ExecutionObserver>(
     out.poll()?;
     match kind {
         TyLayoutKind::Storage => write_u8(out, 11)?,
+        TyLayoutKind::FnItem => write_u8(out, 12)?,
         TyLayoutKind::Scalar(shape) => {
             write_u8(out, 0)?;
             write_ty_shape(out, *shape)?;
@@ -154,6 +155,10 @@ pub(super) fn write_adapter_input<O: ExecutionObserver>(
             write_digest(out, body_digest)?;
         }
         NativeAdapterInput::TrustIrModule => write_u8(out, 1)?,
+        NativeAdapterInput::RustThir { source_digest } => {
+            write_u8(out, 2)?;
+            write_digest(out, source_digest)?;
+        }
     }
 
     Ok(())

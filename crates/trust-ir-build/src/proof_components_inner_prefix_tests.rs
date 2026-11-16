@@ -38,7 +38,7 @@ fn inner_materialization_reuses_irrelevant_siblings_and_keeps_original_decoded_c
     let claim = scope.close(&goal).unwrap();
     let (mut parts, mut context) = fixture(&scope);
     parts
-        .charged_extend_external_context(&scope, &mut context, &[a.clone()])
+        .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&a))
         .unwrap();
     let needed = context.checkpoint();
     parts
@@ -47,7 +47,11 @@ fn inner_materialization_reuses_irrelevant_siblings_and_keeps_original_decoded_c
     let before = parts.counts().3;
     assert_eq!(
         parts
-            .charged_materialize_external_context_fully(&scope, &context, &[root.clone()])
+            .charged_materialize_external_context_fully(
+                &scope,
+                &context,
+                std::slice::from_ref(&root),
+            )
             .unwrap(),
         vec![root.clone()]
     );
@@ -59,7 +63,11 @@ fn inner_materialization_reuses_irrelevant_siblings_and_keeps_original_decoded_c
     let before = parts.counts().3;
     assert_eq!(
         parts
-            .charged_materialize_external_context_fully(&scope, &context, &[root.clone()])
+            .charged_materialize_external_context_fully(
+                &scope,
+                &context,
+                std::slice::from_ref(&root),
+            )
             .unwrap(),
         vec![root.clone()]
     );
@@ -97,14 +105,14 @@ fn inner_materialization_propagates_required_prefix_through_both_memo_routes() {
         let second = chain(shared, 24);
         let (mut parts, mut context) = fixture(&scope);
         parts
-            .charged_extend_external_context(&scope, &mut context, &[a.clone()])
+            .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&a))
             .unwrap();
         parts
             .charged_materialize_external_context_fully(&scope, &context, &[first, second.clone()])
             .unwrap();
         context.restore(0).unwrap();
         parts
-            .charged_extend_external_context(&scope, &mut context, &[b.clone()])
+            .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&b))
             .unwrap();
         let error = parts
             .charged_materialize_external_context_fully(&scope, &context, &[second])
@@ -129,7 +137,8 @@ fn position_index_enable_extend_and_prepaid_restore_keep_every_finite_bill() {
             },
         );
         parts.set_base(&scope, vec![]).unwrap();
-        let Ok(mut context) = parts.charged_external_context(&scope, &[a.clone()]) else {
+        let Ok(mut context) = parts.charged_external_context(&scope, std::slice::from_ref(&a))
+        else {
             assert!(parts.counts().3 <= cap);
             continue;
         };

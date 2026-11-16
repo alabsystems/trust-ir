@@ -14,7 +14,7 @@
 mod common;
 
 // The conformance corpus's fixture builders: b1_13 wraps the b1 module in the
-// SAME complete schema-8 bundle recipe the `mixed_producer` target uses.
+// SAME complete schema-9 bundle recipe the `mixed_producer` target uses.
 // The fixture generators (tests/generate.rs), compiled once as the library's
 // `fixtures` module rather than again inside every test binary.
 use trust_ir_conformance::fixtures as generate;
@@ -1652,7 +1652,7 @@ fn b1_12_gap_extern_weak_declaration_refused() {
 //   TY request lane is the open GAP `f080.ty_request_lane` in the field target)
 // ---------------------------------------------------------------------------
 
-/// A complete, validating schema-8 bundle over `module` with the three
+/// A complete, validating schema-9 bundle over `module` with the three
 /// request lanes the design names (TrustVc / TrustMc / TrustWp), each
 /// replay-identified — `generate::build_language_set_bundle`. The language
 /// set is `languages`, whose first entry is the primary.
@@ -1699,7 +1699,8 @@ fn b1_13_bundle_states_two_languages() {
     assert!(feature_check(
         "b1.bundle.g8_toolchain_language_identity",
         bundle.validate() == Ok(())
-            && bundle.schema_version == 8
+            && NativeVerificationBundle::SCHEMA_VERSION == 9
+            && bundle.schema_version == NativeVerificationBundle::SCHEMA_VERSION
             && tools == ["rustc-trust", "clean-kernel", "ay", "trust-bignum"]
             && json["provenance"]["source_languages"] == serde_json::json!(["Rust", "Lean"])
             && json["provenance"]["source_language"] == serde_json::json!("Rust"),

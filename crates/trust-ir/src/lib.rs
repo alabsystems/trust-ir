@@ -3,8 +3,6 @@
 // Licensed under the Apache License, Version 2.0
 #![forbid(unsafe_code)]
 
-pub mod semr_bool_body;
-
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "fmt")]
 use std::collections::{HashMap, HashSet};
@@ -17,6 +15,7 @@ mod variant_shape;
 pub mod alloc_bound;
 pub mod analysis;
 pub mod blob;
+pub mod box_validity;
 pub mod bridge;
 pub mod build_info;
 pub mod bv_meaning;
@@ -32,7 +31,11 @@ pub mod display;
 pub mod effects;
 mod func_ty_equality_observed;
 pub mod function_dependencies;
+mod function_item;
 pub mod imports;
+pub use function_item::FunctionItemError;
+#[cfg(test)]
+mod function_item_tests;
 mod inhabit;
 pub use inhabit::Inhabitedness;
 pub mod inst;
@@ -53,6 +56,8 @@ pub mod propagate;
 mod reach;
 pub use reach::ByValueStorageQuery;
 pub mod request;
+/// Structural Boolean-body data and untrusted original-SemR proof candidates.
+pub mod semr_bool_body;
 pub mod shape;
 pub mod signature_abi;
 pub mod storage;
@@ -419,9 +424,10 @@ pub use spec::{
 pub use spec_proof::{HarnessEntry, HarnessManifest, HarnessManifestError, link_proofs};
 pub use ty::{
     ClosureTy, DialectTy, DialectTyError, EnumDef, EnumDefG, EnumLayoutDescriptor, EnumTagEncoding,
-    EnumTagRepr, EnumVariant, EnumVariantG, FatPtrKind, FieldDef, FieldDefG, FuncTy, FuncTyG,
-    HandleTy, HandleTyError, RecordDef, SetRepr, StructDef, StructDefG, StructRepr, Ty, TyG,
-    stable_trait_object_id, stable_vtable_global_name,
+    EnumTagRepr, EnumVariant, EnumVariantG, FatPtrKind, FieldDef, FieldDefG, FieldStorageLayout,
+    FuncTy, FuncTyG, HandleTy, HandleTyError, RecordDef, SetRepr, StructDef, StructDefG,
+    StructRepr, Ty, TyG, UninhabitedVariantLayout, stable_trait_object_id,
+    stable_vtable_global_name,
 };
 pub use type_reachability::{
     CallableCarriers, DialectTypeReachability, NominalTypeReachability,
@@ -1223,6 +1229,8 @@ impl ParamAttrs {
 /// at one of the function's own `Alloca`s, no synchronizing atomic, fence,
 /// heap or reference-count operation, no indirect call, and every direct callee
 /// carrying the same claim (`readonly` admits a `readnone` callee). On a
+/// `BoxDeref`, the point-in-time validity check is conservatively outside both
+/// claims until a consumer contract explicitly licenses its movement. On a
 /// bodyless declaration they remain a claim — there is no body to check. The
 /// other attributes, and every `ParamAttrs` entry, are claims, not proofs.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2317,14 +2325,12 @@ impl<'module> ModuleFunctionCatalog<'module> {
     pub fn new(module: &'module Module) -> Self {
         let mut entries = BTreeMap::new();
         for function in &module.functions {
-            match entries.entry(function.id.index()) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(ModuleFunctionState::Unique(function));
-                }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    entry.insert(ModuleFunctionState::Ambiguous);
-                }
-            }
+            function_item::record_function_id(
+                &mut entries,
+                function.id,
+                ModuleFunctionState::Unique(function),
+                ModuleFunctionState::Ambiguous,
+            );
         }
         Self { module, entries }
     }

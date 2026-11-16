@@ -62,6 +62,7 @@ cd "$ROOT"
 PIN_REWRITE="$ROOT/scripts/pin_rewrite.py"
 TARGO_RUNNER="$ROOT/scripts/run-targo.sh"
 AUTHORITY="$ROOT/scripts/dependency_authority.py"
+AY_PACKAGE_DERIVER="$ROOT/scripts/derive_ay_package_contract.py"
 # Local status/object reads must not inherit namespace, replacement, graft,
 # template or global config routing. GitHub reads below use native Agh only.
 for key in $(compgen -v GIT_); do unset "$key"; done
@@ -426,6 +427,9 @@ else
         "$(pin legs --root "$ROOT" --dep "$DEP")" \
         "$(pin version-legs --root "$ROOT" --dep "$DEP")" | sort -u)"
 fi
+# Even a Clean-only move can change the set of resolved AY packages. Preserve
+# the derived contract in that transaction's rollback boundary as well.
+CONTROLLED_LEGS="$(printf '%s\ndata/ay_package_versions.json\n' "$CONTROLLED_LEGS" | sort -u)"
 DIRTY="$(git -C "$ROOT" status --porcelain -- $CONTROLLED_LEGS 2>/dev/null)"
 if [[ -n "$DIRTY" ]]; then
     warn "pin legs have uncommitted changes:
@@ -619,7 +623,7 @@ done <<<"$STAGED"
 # run-targo deliberately omits the compilation-only --unverified flag here.
 say "PHASE E — refreshing lockfiles"
 "$TARGO_RUNNER" metadata --format-version 1 --all-features \
-    --manifest-path "$ROOT/Cargo.toml" >/dev/null \
+    --manifest-path "$ROOT/Cargo.toml" >"$TMP/root-metadata.json" \
     || die "root lock refresh failed (Targo metadata)"
 printf 'refreshed Cargo.lock\n'
 
@@ -627,10 +631,34 @@ if [[ "$DEP" == "clean" || "$DEP" == "clean-ay" ]]; then
     # THE LEG THAT KEEPS GETTING MISSED. frontend/ is a separate, workspace-
     # excluded package with no [patch], so this lock records the git revision
     # literally — and no --workspace command will ever touch it.
-    "$TARGO_RUNNER" update --manifest-path "$ROOT/frontend/Cargo.toml" -p clean-kernel \
-        || die "frontend/Cargo.lock refresh failed (Targo update -p clean-kernel)"
+    # The frontend is a different workspace, so Targo must select that
+    # workspace's managed target rather than inherit the root's explicit
+    # build-cache owner. Keep the caller's selection for the compiled guard.
+    # Normal resolution moves the exact Git revision already in the manifest
+    # while preserving unrelated locked registry versions; update -p would
+    # unnecessarily unlock the transitive registry graph.
+    (
+        unset CARGO_TARGET_DIR
+        "$TARGO_RUNNER" metadata --format-version 1 \
+            --manifest-path "$ROOT/frontend/Cargo.toml" >/dev/null
+    ) \
+        || die "frontend/Cargo.lock refresh failed (Targo metadata)"
     printf 'refreshed frontend/Cargo.lock\n'
 fi
+
+# Cargo locates packages; immutable authenticated manifests authorize their
+# individual versions. Never infer vendored package versions from AY's root.
+case "$DEP" in
+    ay) CONTRACT_AY_REV="$REV" ;;
+    clean-ay) CONTRACT_AY_REV="$AY_REV" ;;
+    clean) CONTRACT_AY_REV="$FROZEN_AY_REV" ;;
+esac
+CONTRACT_AY_VERSION="$(pin version-current --root "$ROOT" --dep ay)" \
+    || die "cannot determine the installed AY workspace version"
+python3 "$AY_PACKAGE_DERIVER" --metadata "$TMP/root-metadata.json" \
+    --revision "$CONTRACT_AY_REV" --workspace-version "$CONTRACT_AY_VERSION" \
+    --output "$ROOT/data/ay_package_versions.json" \
+    || die "immutable AY package contract derivation failed"
 
 # --- PHASE F: verify ----------------------------------------------------------
 say "PHASE F — verification"

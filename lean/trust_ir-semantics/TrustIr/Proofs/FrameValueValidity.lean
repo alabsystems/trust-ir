@@ -11,6 +11,12 @@ inductive FrameOccurs (lineage : Nat) : Value → Prop where
   | root (slots : List Value) : FrameOccurs lineage (.frame lineage slots)
   | frame {outer : Nat} {slots : List Value} {value : Value} :
       value ∈ slots → FrameOccurs lineage value → FrameOccurs lineage (.frame outer slots)
+  | sourceRoot (function : FuncId) (declaration : BindingFrameDef) (slots : List Value) :
+      FrameOccurs lineage (.sourceFrame lineage function declaration slots)
+  | sourceFrame {outer : Nat} {function : FuncId} {declaration : BindingFrameDef}
+      {slots : List Value} {value : Value} :
+      value ∈ slots → FrameOccurs lineage value →
+        FrameOccurs lineage (.sourceFrame outer function declaration slots)
   | aggregate {values : List Value} {value : Value} :
       value ∈ values → FrameOccurs lineage value → FrameOccurs lineage (.aggregate values)
   | vector {values : List Value} {value : Value} :
@@ -44,6 +50,13 @@ theorem mintedValue_undef (bound : Nat) (ty : Ty) : MintedValue bound (.undef ty
   intro lineage occurrence
   cases occurrence
 
+/-- A nominal function identity contains no runtime frame identity. This
+does not establish that its source function declaration exists. -/
+theorem mintedValue_fnItem (bound : Nat) (target : FuncId) :
+    MintedValue bound (.fnItem target) := by
+  intro lineage occurrence
+  cases occurrence
+
 theorem mintedValue_frame_iff (bound lineage : Nat) (slots : List Value) :
     MintedValue bound (.frame lineage slots) ↔
       lineage < bound ∧ ∀ value ∈ slots, MintedValue bound value := by
@@ -56,18 +69,45 @@ theorem mintedValue_frame_iff (bound lineage : Nat) (slots : List Value) :
     | root => exact past
     | frame member child => exact children _ member _ child
 
+theorem mintedValue_sourceFrame_iff (bound lineage : Nat) (function : FuncId)
+    (declaration : BindingFrameDef) (slots : List Value) :
+    MintedValue bound (.sourceFrame lineage function declaration slots) ↔
+      lineage < bound ∧ ∀ value ∈ slots, MintedValue bound value := by
+  constructor
+  · intro valid
+    exact ⟨valid lineage (.sourceRoot function declaration slots),
+      fun _ member other occurrence => valid other (.sourceFrame member occurrence)⟩
+  · rintro ⟨past, children⟩ other occurrence
+    cases occurrence with
+    | sourceRoot => exact past
+    | sourceFrame member child => exact children _ member _ child
+
+/-- Both frame carriers expose exactly the same recursive identity shape;
+source metadata contributes no fabricated runtime lineage. -/
+theorem mintedValue_frameValue_iff (bound : Nat) (origin : Option (FuncId × BindingFrameDef))
+    (lineage : Nat) (slots : List Value) :
+    MintedValue bound (frameValue origin lineage slots) ↔
+      lineage < bound ∧ ∀ value ∈ slots, MintedValue bound value := by
+  cases origin with
+  | none => exact mintedValue_frame_iff bound lineage slots
+  | some origin =>
+    rcases origin with ⟨function, declaration⟩
+    exact mintedValue_sourceFrame_iff bound lineage function declaration slots
+
 /-- Exhaustive one-layer view of recursive validity. There is deliberately no
 wildcard case: a new runtime constructor must declare its identity contents. -/
 def ValueIdentityShape (bound : Nat) (value : Value) : Prop :=
   match value with
   | .frame lineage slots => lineage < bound ∧ ∀ child ∈ slots, MintedValue bound child
+  | .sourceFrame lineage _ _ slots =>
+      lineage < bound ∧ ∀ child ∈ slots, MintedValue bound child
   | .array values => ∀ index child, values.get? index = some child → MintedValue bound child
   | .aggregate values | .vector values | .set values | .sequence values =>
       ∀ child ∈ values, MintedValue bound child
   | .closure _ values | .typedClosure _ _ values => ∀ child ∈ values, MintedValue bound child
   | .record fields => ∀ name child, (name, child) ∈ fields → MintedValue bound child
   | .fatPtr _ _ metadata => MintedValue bound metadata
-  | .int _ _ | .float _ | .bool _ | .ptr _ _ | .fnDef _ _ | .partial _
+  | .int _ _ | .float _ | .bool _ | .ptr _ _ | .fnDef _ _ | .fnItem _ | .partial _
   | .undef _ | .nullPtr | .uninit => True
 
 /-- Every runtime carrier agrees with the exhaustive shape description. -/
@@ -75,6 +115,8 @@ theorem mintedValue_iff_shape (bound : Nat) (value : Value) :
     MintedValue bound value ↔ ValueIdentityShape bound value := by
   cases value with
   | frame lineage slots => exact mintedValue_frame_iff bound lineage slots
+  | sourceFrame lineage function declaration slots =>
+    exact mintedValue_sourceFrame_iff bound lineage function declaration slots
   | aggregate values =>
     constructor
     · intro valid child member lineage occurrence
@@ -158,6 +200,10 @@ theorem mintedValue_iff_shape (bound : Nat) (value : Value) :
     constructor
     · intro _; trivial
     · intro _ lineage occurrence; cases occurrence
+  | fnItem fn =>
+    constructor
+    · intro _; trivial
+    · intro _ lineage occurrence; cases occurrence
   | «partial» bytes =>
     constructor
     · intro _; trivial
@@ -233,6 +279,14 @@ private theorem set_valid (bound : Nat) (values : List Value) (index : Nat) (val
       | tail _ member =>
         exact ih index (fun child member => original child (.tail head member)) child member
 
+/-- Updating one actual runtime frame slot preserves every recursively
+minted child, including source-origin frames and nominal item leaves. -/
+theorem frame_slots_set_valid (bound : Nat) (values : List Value) (index : Nat) (value : Value)
+    (original : ∀ child ∈ values, MintedValue bound child)
+    (inserted : MintedValue bound value) :
+    ∀ child ∈ values.set index value, MintedValue bound child :=
+  set_valid bound values index value original inserted
+
 /-- Identity well-formedness of a runtime state. Other well-formedness
 components (typing, memory, SSA freshness, LIFO) are deliberately separate. -/
 structure WellMintedState (s : MachineState) : Prop where
@@ -265,13 +319,13 @@ theorem WellMintedState.bind_success (s final : MachineState) (id rhs result : V
     (slot : Nat) (valid : WellMintedState s)
     (run : Sem.run (semBindSlot id slot rhs) s = .ok (result, final)) :
     WellMintedState final := by
-  obtain ⟨lineage, slots, value, lookup, operand, _, _, _, rfl⟩ :=
+  obtain ⟨origin, lineage, slots, value, lookup, operand, _, _, _, rfl⟩ :=
     bind_success_state s final id rhs result slot run
-  have original := (mintedValue_frame_iff _ _ _).1 (valid.values id _ lookup)
+  have original := (mintedValue_frameValue_iff _ _ _ _).1 (valid.values id _ lookup)
   constructor
-  · exact minted_bind s lineage slots slot value valid.table
+  · exact valid.table
   · apply values_set valid.values
-    exact (mintedValue_frame_iff _ _ _).2
+    exact (mintedValue_frameValue_iff _ _ _ _).2
       ⟨original.1, set_valid _ slots slot value original.2 (valid.values rhs value operand)⟩
 
 /-- Recursive validity derives the selected-slot premise from the original
@@ -280,16 +334,16 @@ theorem WellMintedState.load_success (s final : MachineState) (id result : Value
     (slot : Nat) (ty : Ty) (valid : WellMintedState s)
     (run : Sem.run (semLoadSlot id slot ty) s = .ok (result, final)) :
     WellMintedState final := by
-  obtain ⟨lineage, slots, value, lookup, _, found, _, rfl⟩ :=
+  obtain ⟨origin, lineage, slots, value, lookup, _, found, _, rfl⟩ :=
     load_success_state s final id result slot ty run
-  have original := (mintedValue_frame_iff _ _ _).1 (valid.values id _ lookup)
+  have original := (mintedValue_frameValue_iff _ _ _ _).1 (valid.values id _ lookup)
   exact ⟨valid.table, values_set valid.values _ value (original.2 value (slot_member found))⟩
 
 theorem WellMintedState.close_success (s final : MachineState) (id : ValueId)
     (valid : WellMintedState s)
     (run : Sem.run (semCloseFrame id) s = .ok ((), final)) :
     WellMintedState final := by
-  obtain ⟨lineage, _, _, _, rfl⟩ := close_success_state s final id run
+  obtain ⟨_, lineage, _, _, _, rfl⟩ := close_success_state s final id run
   exact ⟨minted_close s lineage valid.table, valid.values⟩
 
 /-- Caller restoration needs recursive validity of saved locals and returns

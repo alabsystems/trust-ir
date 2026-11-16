@@ -1304,8 +1304,7 @@ mod tests {
                 &mut parts,
                 strategy,
             )
-            .err()
-            .expect("a demanded case cannot bypass preparation work by selecting a producer");
+            .expect_err("a demanded case cannot bypass preparation work by selecting a producer");
             assert!(error.contains("work limit"), "unexpected refusal: {error}");
         }
     }
@@ -1375,8 +1374,10 @@ mod tests {
                         .collect(),
                 )
                 .unwrap();
-            let mut limits = ImageReplayLimits::default();
-            limits.max_cases = 1;
+            let limits = ImageReplayLimits {
+                max_cases: 1,
+                ..Default::default()
+            };
             let candidate = replay_projected_equality(
                 &env,
                 &mut sc,

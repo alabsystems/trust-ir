@@ -69,3 +69,73 @@ fn source_call_family_does_not_enable_disabled_tv_anchor() {
     .expect_err("no disabled-feature producer authority");
     assert!(error.contains("requires the clean-tv-anchor feature"));
 }
+
+#[test]
+fn readonly_call_family_refuses_an_actual_load_and_call_when_tv_is_disabled() {
+    use trust_ir::proof::{IslandEnvironment, ProofDigest, SourceDefinitionRef};
+    use trust_ir::{CallingConv, Endianness, TargetInfo};
+    let mut builder = ModuleBuilder::new_with_target_info(
+        "readonly-source-calls-without-feature",
+        TargetInfo {
+            triple: "aarch64-apple-darwin".into(),
+            pointer_size: 8,
+            endianness: Endianness::Little,
+            abi: None,
+            struct_passing: Default::default(),
+        },
+    );
+    let signature = builder.add_func_type(vec![Ty::Ptr], vec![Ty::U64]);
+    let mut function = builder.function("read_word", signature);
+    function.set_calling_conv(CallingConv::C);
+    let block = function.create_block();
+    let pointer = function.add_block_param(block, Ty::Ptr);
+    function.switch_to_block(block);
+    let word = function.load_aligned(Ty::U64, pointer, 8);
+    function.ret(vec![word]);
+    let leaf = function.build();
+    let mut function = builder.function("forward_read", signature);
+    function.set_calling_conv(CallingConv::C);
+    let block = function.create_block();
+    let pointer = function.add_block_param(block, Ty::Ptr);
+    function.switch_to_block(block);
+    let word = function.call(leaf, vec![pointer]);
+    function.ret(vec![word]);
+    let caller = function.build();
+    let module = builder.build().expect("actual load and direct-call bodies");
+    assert!(trust_ir_build::validate_module(&module).is_empty());
+    let unchanged = module.clone();
+    let error = trust_ir_build::certify_source_bound_readonly_call_family(
+        &module,
+        ProofLineageId::new(0),
+        ProofId::new(0),
+        ProofTransform::new(
+            ProofTransformStage::Frontend,
+            "readonly-calls",
+            "feature-test",
+            "1",
+        ),
+        &IslandEnvironment::new(vec![]),
+        &[
+            (
+                leaf,
+                SourceDefinitionRef {
+                    decl: "Source.readWord".into(),
+                    closure_digest: ProofDigest::zero(),
+                },
+            ),
+            (
+                caller,
+                SourceDefinitionRef {
+                    decl: "Source.forwardRead".into(),
+                    closure_digest: ProofDigest::zero(),
+                },
+            ),
+        ],
+    )
+    .expect_err("a transport codec grants no readonly producer authority");
+    assert_eq!(
+        error,
+        "readonly source call composition requires the clean-tv-anchor feature"
+    );
+    assert_eq!(module, unchanged);
+}

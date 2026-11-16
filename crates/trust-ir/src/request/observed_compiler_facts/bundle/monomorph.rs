@@ -57,8 +57,34 @@ impl<'a> Scratch<'a> {
                 NativeGenericArg::Ty(ty) | NativeGenericArg::Const { ty, .. } => Some(ty),
                 _ => None,
             };
+            let mut invalid_item = false;
+            if let Some(ty) = ty {
+                let mut items = types::function_items(ty, session, site)?;
+                let checked: R = (|| {
+                    if !items.is_empty() && !self.item_headers_built {
+                        for function in &bundle.module.functions {
+                            let entry = match get(&self.item_headers, &function.id, session, site)?
+                            {
+                                None => Some(function.ty),
+                                Some(_) => None,
+                            };
+                            insert(&mut self.item_headers, function.id, entry, session, site)?;
+                        }
+                        self.item_headers_built = true;
+                    }
+                    for id in &items {
+                        let signature = get(&self.item_headers, id, session, site)?.flatten();
+                        admit(session, site, 1, 0)?;
+                        invalid_item |= !signature
+                            .is_some_and(|signature| bundle.module.func_type(signature).is_some());
+                    }
+                    Ok(())
+                })();
+                retire_vec(&mut items, session, site);
+                checked?;
+            }
             if let Some(ty) = ty
-                && types::contains_error(ty, session, site)?
+                && (types::contains_error(ty, session, site)? || invalid_item)
             {
                 work.invalid(reference, "generic_args[].ty", session, site)?;
             }

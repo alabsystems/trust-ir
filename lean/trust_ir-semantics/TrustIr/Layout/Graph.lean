@@ -618,3 +618,144 @@ theorem solve_done (graph : Graph) (available : NatIndexTree Unit) (node : Nat)
   rfl
 
 end TrustIr.SourceLayout
+
+namespace TrustIr.SourceLayout
+
+/-- An equation's initial refusal is returned before its actual steps. -/
+theorem solve_initial_error (graph : Graph) (available : NatIndexTree Unit) (node : Nat)
+    (memo : Memo) (error : Error) (equation : Equation)
+    (absent : memo.find node = none) (present : available.find node = some ())
+    (found : graph.nodes.find node = some equation) (initial : equation.initial = .error error) :
+    solve graph available node memo = .error error := by
+  simp only [solve, absent, present, found]
+  rw [machine_step, initial]
+
+
+/-- A continuation-parametric computation of the unchanged equation machine.
+The remaining exact domain and memo describe the actual successful traversal;
+this proposition introduces no alternate evaluator or execution fuel. -/
+def Equation.Computes (graph : Graph) (available : NatIndexTree Unit) (owner : Nat)
+    (equation : Equation) (memo : Memo) (value : Summary) (finalMemo : Memo)
+    (remaining : NatIndexTree Unit) : Prop :=
+  ∀ stack, machine graph available owner equation stack memo =
+    match stack with
+    | [] => .ok (value, finalMemo)
+    | frame :: rest =>
+      match frame.equation.initial with
+      | .error error => .error error
+      | .ok old =>
+        match frame.update value old with
+        | .error error => .error error
+        | .ok next => machine graph remaining frame.owner
+            { frame.equation with initial := .ok next } rest finalMemo
+
+theorem Equation.Computes.finish (graph : Graph) (available : NatIndexTree Unit) (owner : Nat)
+    (equation : Equation) (memo : Memo) (first : equation.State) (value : Summary)
+    (initial : equation.initial = .ok first) (steps : equation.steps = [])
+    (finished : equation.finish first = .ok value) :
+    equation.Computes graph available owner memo value (memo.insert owner value) available := by
+  intro stack
+  rw [machine_step]
+  simp only [initial, steps, finished]
+
+theorem Equation.Computes.check (graph : Graph) (available remaining : NatIndexTree Unit) (owner : Nat)
+    (equation : Equation) (memo finalMemo : Memo) (first next : equation.State)
+    (update : equation.State → Except Error equation.State) (rest : List (Step equation.State))
+    (value : Summary) (initial : equation.initial = .ok first)
+    (steps : equation.steps = .check update :: rest) (updated : update first = .ok next)
+    (later : ({ equation with initial := .ok next, steps := rest } : Equation).Computes
+      graph available owner memo value finalMemo remaining) :
+    equation.Computes graph available owner memo value finalMemo remaining := by
+  intro stack
+  rw [machine_step]
+  simp only [initial, steps, updated]
+  exact later stack
+
+theorem Equation.Computes.cached_child (graph : Graph) (available remaining : NatIndexTree Unit) (owner : Nat)
+    (equation : Equation) (memo finalMemo : Memo) (first next : equation.State)
+    (child : Nat) (update : Summary → equation.State → Except Error equation.State)
+    (rest : List (Step equation.State)) (childValue value : Summary)
+    (initial : equation.initial = .ok first) (steps : equation.steps = .child child update :: rest)
+    (cached : memo.find child = some childValue) (updated : update childValue first = .ok next)
+    (later : ({ equation with initial := .ok next, steps := rest } : Equation).Computes
+      graph available owner memo value finalMemo remaining) :
+    equation.Computes graph available owner memo value finalMemo remaining := by
+  intro stack
+  rw [machine_step]
+  simp only [initial, steps, cached, updated]
+  exact later stack
+
+theorem Equation.Computes.fresh_child (graph : Graph) (available middle remaining : NatIndexTree Unit) (owner : Nat)
+    (equation childEquation : Equation) (memo middleMemo finalMemo : Memo)
+    (first next : equation.State) (child : Nat)
+    (update : Summary → equation.State → Except Error equation.State)
+    (rest : List (Step equation.State)) (childValue value : Summary)
+    (initial : equation.initial = .ok first) (steps : equation.steps = .child child update :: rest)
+    (absent : memo.find child = none) (present : available.find child = some ())
+    (found : graph.nodes.find child = some childEquation)
+    (computed : childEquation.Computes graph (Available.erase available child) child memo
+      childValue middleMemo middle)
+    (updated : update childValue first = .ok next)
+    (later : ({ equation with initial := .ok next, steps := rest } : Equation).Computes
+      graph middle owner middleMemo value finalMemo remaining) :
+    equation.Computes graph available owner memo value finalMemo remaining := by
+  intro stack
+  rw [machine_step]
+  simp only [initial, steps, absent, present, found]
+  rw [computed ({ owner, equation := { equation with initial := .ok first, steps := rest }, update } :: stack)]
+  dsimp only
+  rw [updated]
+  exact later stack
+
+theorem solve_of_computes (graph : Graph) (available remaining : NatIndexTree Unit) (node : Nat)
+    (equation : Equation) (memo finalMemo : Memo) (value : Summary)
+    (absent : memo.find node = none) (present : available.find node = some ())
+    (found : graph.nodes.find node = some equation)
+    (computed : equation.Computes graph (Available.erase available node) node memo
+      value finalMemo remaining) :
+    solve graph available node memo = .ok (value, finalMemo) := by
+  simp only [solve, absent, present, found]
+  exact computed []
+
+
+
+end TrustIr.SourceLayout
+
+namespace TrustIr.SourceLayout
+
+/-- Observe the precise initial error in the actual stored equation without
+    reifying its dependent accumulator, step functions or finalizer at a caller.
+    This is a proof about the unchanged solver and exact graph lookup. -/
+theorem solve_initial_error_observed (graph : Graph) (node : Nat) (memo : Memo)
+    (error : Error) (absent : memo.find node = none)
+    (observed : (graph.nodes.find node).bind (fun equation =>
+      match equation.initial with
+      | .error failure => some failure
+      | .ok _ => none) = some error) :
+    solve graph (Available.domain graph.nodes) node memo = .error error := by
+  cases found : graph.nodes.find node with
+  | none =>
+    simp only [found] at observed
+    change none = some error at observed
+    cases observed
+  | some equation =>
+    simp only [found] at observed
+    change (match equation.initial with
+      | .error failure => some failure
+      | .ok _ => none) = some error at observed
+    cases initialized : equation.initial with
+    | ok first =>
+      simp only [initialized] at observed
+      all_goals cases observed
+    | error failure =>
+      simp only [initialized] at observed
+      change some failure = some error at observed
+      have same : failure = error := Option.some.inj observed
+      cases same
+      have present : (Available.domain graph.nodes).find node = some () := by
+        rw [Available.find_domain, found]
+        rfl
+      exact solve_initial_error graph (Available.domain graph.nodes) node memo
+        error equation absent present found initialized
+
+end TrustIr.SourceLayout

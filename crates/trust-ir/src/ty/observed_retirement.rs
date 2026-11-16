@@ -127,6 +127,7 @@ pub(crate) fn retire_type<O: ExecutionObserver>(
             | Ty::Array(_, _)
             | Ty::Enum(_)
             | Ty::Func(_)
+            | Ty::FnItem(_)
             | Ty::Set(_, _)
             | Ty::Sequence(_)
             | Ty::Record(_)

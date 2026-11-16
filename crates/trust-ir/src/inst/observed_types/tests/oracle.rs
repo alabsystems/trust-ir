@@ -61,6 +61,12 @@ fn visit_instruction_types<'a>(inst: &'a Inst, mut visit: impl FnMut(&'a Ty)) {
         }
         Inst::GEP { pointee_ty, .. } => visit(pointee_ty),
         Inst::PtrData { ptr_ty, .. } => visit(ptr_ty),
+        Inst::BoxDeref {
+            ptr_ty, pointee, ..
+        } => {
+            visit(ptr_ty);
+            visit(pointee.ty());
+        }
         Inst::PtrMetadata {
             ptr_ty,
             metadata_ty,

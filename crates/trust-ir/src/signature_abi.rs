@@ -614,6 +614,7 @@ fn validate_carrier_bounds(
             | Ty::PtrMut(_)
             | Ty::Isize
             | Ty::Usize => Some(u64::from(pointer_bytes)),
+            Ty::FnItem(_) => Some(0),
             Ty::Bool => Some(1),
             _ => ty.bit_width().map(|bits| u64::from(bits).div_ceil(8)),
         };

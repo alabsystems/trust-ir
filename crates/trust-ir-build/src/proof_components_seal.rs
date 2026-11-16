@@ -11,6 +11,122 @@ pub struct SealedScopedDefinition {
     pub arguments: Vec<ScopedLocal>,
 }
 
+impl ProofComponents {
+    /// Close the transitive support of a candidate without any forbidden free
+    /// local. Every selected type and defining value participates. This does
+    /// not discard, replace, check or authorize any original declaration.
+    pub fn seal_scoped_definition(
+        &mut self,
+        scope: &LocalScope,
+        dynamic: &[OwnedProofCapture],
+        forbidden: &[ScopedLocal],
+        type_: Expr,
+        value: Expr,
+    ) -> Result<SealedScopedDefinition, String> {
+        if self.analysis_visits >= self.limits.operations
+            || self.analysis_words >= self.limits.operations
+        {
+            return Err("aggregate scoped sealing work limit".into());
+        }
+        let mut entries = self.normalization_entries(scope)?;
+        let mut ids = entries
+            .iter()
+            .map(|(local, _)| local.id())
+            .collect::<HashSet<_>>();
+        for capture in dynamic {
+            if !scope.owns(capture.local()) || !ids.insert(capture.local().id()) {
+                return Err("foreign or duplicate sealing capture".into());
+            }
+            let definition = match capture {
+                OwnedProofCapture::Parameter(_) => None,
+                OwnedProofCapture::Definition { value, .. } => Some(value.as_ref().clone()),
+            };
+            entries.push((capture.local().clone(), definition));
+        }
+        if entries.len() > self.limits.contexts.saturating_add(self.limits.captures) {
+            return Err("sealing declaration inventory limit".into());
+        }
+        let mut denied = HashSet::new();
+        for local in forbidden {
+            if !scope.owns(local) || !denied.insert(local.id()) {
+                return Err("foreign or duplicate forbidden sealing local".into());
+            }
+        }
+        let ambient = HashSet::new();
+        let mut walker = CaptureDependencies {
+            scope,
+            ambient: &ambient,
+            work: &mut self.analysis_visits,
+            word_work: &mut self.analysis_words,
+            cache: &mut self.sealing_dependencies,
+            retained_words: &mut self.retained_words,
+            retained_sets: &mut self.retained_sets,
+            limit: self.limits.operations,
+            needed: Arc::new(Vec::new()),
+            empty: Arc::new(Vec::new()),
+            error: None,
+            depth: 0,
+            max_depth: 16_384,
+            materialized_reuse: false,
+            bound: HashSet::new(),
+            pruned: false,
+        };
+        walker.scan(&type_)?;
+        walker.scan(&value)?;
+        let mut selected = Vec::new();
+        for (local, definition) in entries.iter().rev() {
+            if walker.contains(local.id()) {
+                walker.scan(local.ty())?;
+                if let Some(definition) = definition {
+                    walker.scan(definition)?;
+                }
+                selected.push((local, definition));
+            }
+        }
+        if forbidden.iter().any(|local| walker.contains(local.id())) {
+            return Err("sealed definition depends on a forbidden local".into());
+        }
+        drop(walker);
+        let mut closed_type = type_;
+        let mut closed_value = value;
+        let mut arguments = Vec::new();
+        // Reverse declaration order wraps the preceding telescope faithfully.
+        for (local, definition) in &selected {
+            if let Some(definition) = definition {
+                closed_type = local.let_(definition.clone(), closed_type);
+                closed_value = local.let_(definition.clone(), closed_value);
+            } else {
+                closed_type = local.pi(closed_type);
+                closed_value = local.lam(closed_value);
+                arguments.push((*local).clone());
+            }
+        }
+        arguments.reverse();
+        let (closed, stats) = scope.close_external_forest_with_limits(
+            &[closed_type, closed_value],
+            &[],
+            &[0, 0],
+            crate::term_scope::TermScopeLimits {
+                max_visits: self.limits.operations.saturating_sub(self.analysis_visits),
+                max_depth: 16_384,
+            },
+        );
+        self.analysis_visits = self
+            .analysis_visits
+            .checked_add(stats.visits)
+            .ok_or("aggregate sealing closure work overflow")?;
+        if self.analysis_visits > self.limits.operations {
+            return Err("aggregate sealing closure work limit".into());
+        }
+        let mut closed = closed.map_err(|error| error.to_string())?.into_iter();
+        Ok(SealedScopedDefinition {
+            type_: closed.next().ok_or("sealing lost its type")?,
+            value: closed.next().ok_or("sealing lost its value")?,
+            arguments,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,7 +181,13 @@ mod tests {
             .unwrap();
         let before = parts.counts();
         let sealed = parts
-            .seal_scoped_definition(&scope, &[], &[answer.clone()], nat(), alias.clone())
+            .seal_scoped_definition(
+                &scope,
+                &[],
+                std::slice::from_ref(&answer),
+                nat(),
+                alias.clone(),
+            )
             .unwrap();
         assert_eq!(
             sealed
@@ -139,7 +261,7 @@ mod tests {
                 .seal_scoped_definition(
                     &scope,
                     &captures,
-                    &[alpha.clone()],
+                    std::slice::from_ref(&alpha),
                     alpha.term().clone(),
                     value.term().clone()
                 )
@@ -180,7 +302,13 @@ mod tests {
             .bind_scoped(&mut scope, &[], alpha.term().clone(), value.term().clone())
             .unwrap();
         let error = parts
-            .seal_scoped_definition(&scope, &[], &[alpha.clone()], alpha.term().clone(), alias)
+            .seal_scoped_definition(
+                &scope,
+                &[],
+                std::slice::from_ref(&alpha),
+                alpha.term().clone(),
+                alias,
+            )
             .err()
             .unwrap();
         assert!(error.contains("forbidden local"), "{error}");
@@ -295,121 +423,5 @@ mod tests {
                 .is_err()
         );
         assert_eq!(before, (parts.analysis_visits, parts.analysis_words));
-    }
-}
-
-impl ProofComponents {
-    /// Close the transitive support of a candidate without any forbidden free
-    /// local. Every selected type and defining value participates. This does
-    /// not discard, replace, check or authorize any original declaration.
-    pub fn seal_scoped_definition(
-        &mut self,
-        scope: &LocalScope,
-        dynamic: &[OwnedProofCapture],
-        forbidden: &[ScopedLocal],
-        type_: Expr,
-        value: Expr,
-    ) -> Result<SealedScopedDefinition, String> {
-        if self.analysis_visits >= self.limits.operations
-            || self.analysis_words >= self.limits.operations
-        {
-            return Err("aggregate scoped sealing work limit".into());
-        }
-        let mut entries = self.normalization_entries(scope)?;
-        let mut ids = entries
-            .iter()
-            .map(|(local, _)| local.id())
-            .collect::<HashSet<_>>();
-        for capture in dynamic {
-            if !scope.owns(capture.local()) || !ids.insert(capture.local().id()) {
-                return Err("foreign or duplicate sealing capture".into());
-            }
-            let definition = match capture {
-                OwnedProofCapture::Parameter(_) => None,
-                OwnedProofCapture::Definition { value, .. } => Some(value.as_ref().clone()),
-            };
-            entries.push((capture.local().clone(), definition));
-        }
-        if entries.len() > self.limits.contexts.saturating_add(self.limits.captures) {
-            return Err("sealing declaration inventory limit".into());
-        }
-        let mut denied = HashSet::new();
-        for local in forbidden {
-            if !scope.owns(local) || !denied.insert(local.id()) {
-                return Err("foreign or duplicate forbidden sealing local".into());
-            }
-        }
-        let ambient = HashSet::new();
-        let mut walker = CaptureDependencies {
-            scope,
-            ambient: &ambient,
-            work: &mut self.analysis_visits,
-            word_work: &mut self.analysis_words,
-            cache: &mut self.sealing_dependencies,
-            retained_words: &mut self.retained_words,
-            retained_sets: &mut self.retained_sets,
-            limit: self.limits.operations,
-            needed: Arc::new(Vec::new()),
-            empty: Arc::new(Vec::new()),
-            error: None,
-            depth: 0,
-            max_depth: 16_384,
-            materialized_reuse: false,
-            bound: HashSet::new(),
-            pruned: false,
-        };
-        walker.scan(&type_)?;
-        walker.scan(&value)?;
-        let mut selected = Vec::new();
-        for (local, definition) in entries.iter().rev() {
-            if walker.contains(local.id()) {
-                walker.scan(local.ty())?;
-                if let Some(definition) = definition {
-                    walker.scan(definition)?;
-                }
-                selected.push((local, definition));
-            }
-        }
-        if forbidden.iter().any(|local| walker.contains(local.id())) {
-            return Err("sealed definition depends on a forbidden local".into());
-        }
-        drop(walker);
-        let mut closed_type = type_;
-        let mut closed_value = value;
-        let mut arguments = Vec::new();
-        // Reverse declaration order wraps the preceding telescope faithfully.
-        for (local, definition) in &selected {
-            if let Some(definition) = definition {
-                closed_type = local.let_(definition.clone(), closed_type);
-                closed_value = local.let_(definition.clone(), closed_value);
-            } else {
-                closed_type = local.pi(closed_type);
-                closed_value = local.lam(closed_value);
-                arguments.push((*local).clone());
-            }
-        }
-        arguments.reverse();
-        let (closed, stats) = scope.close_external_forest_with_limits(
-            &[closed_type, closed_value],
-            &[],
-            &[0, 0],
-            crate::term_scope::TermScopeLimits {
-                max_visits: self.limits.operations.saturating_sub(self.analysis_visits),
-                max_depth: 16_384,
-            },
-        );
-        self.analysis_visits = self
-            .analysis_visits
-            .checked_add(stats.visits)
-            .ok_or("aggregate sealing closure work overflow")?;
-        if self.analysis_visits > self.limits.operations {
-            return Err("aggregate sealing closure work limit".into());
-        }
-        let mut closed = closed.map_err(|error| error.to_string())?.into_iter();
-        Ok(SealedScopedDefinition {
-            type_: closed.next().ok_or("sealing lost its type")?,
-            value: closed.next().ok_or("sealing lost its value")?,
-            arguments,
-        })
     }
 }

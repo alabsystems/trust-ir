@@ -137,6 +137,12 @@ theorem SMTTerm.zeroBitSet_bindings {width : Nat} (word : SMTTerm (.bv width)) (
   change (word.chunk 1 (by decide) index (by omega)).bindings ++ [] = _
   rw [SMTTerm.chunk_bindings, List.append_nil]
 
+
+theorem SMTTerm.zeroBitSet_boolBindings {width : Nat} (word : SMTTerm (.bv width)) (index : Nat)
+    (bound : index < width) : (word.zeroBitSet index bound).boolBindings = word.boolBindings := by
+  change (word.chunk 1 (by decide) index (by omega)).boolBindings ++ [] = _
+  rw [SMTTerm.chunk_boolBindings, List.append_nil]
+
 theorem SMTTerm.zeroCountScan_wellFormed {width : Nat} (word : SMTTerm (.bv width))
     (direction : ZeroCountDirection) (positive : 0 < width) (count : Nat) (bound : count ≤ width)
     (wellFormed : word.WellFormed) : (word.zeroCountScan direction count bound).WellFormed := by
@@ -145,7 +151,7 @@ theorem SMTTerm.zeroCountScan_wellFormed {width : Nat} (word : SMTTerm (.bv widt
   | succ i ih =>
     exact ⟨word.zeroBitSet_wellFormed _ (direction.index_lt width i (by omega)) wellFormed, positive, ih (by omega)⟩
 
-theorem zeroBindings_cons (count : Nat) (bindings : List (Nat × String)) :
+theorem zeroBindings_cons {α : Type} (count : Nat) (bindings : List α) :
     permutationBindings (count+1) bindings = bindings ++ permutationBindings count bindings := by
   induction count with
   | zero => simp [permutationBindings]
@@ -164,6 +170,17 @@ theorem SMTTerm.zeroCountScan_bindings {width : Nat} (word : SMTTerm (.bv width)
       (word.zeroCountScan direction i (by omega)).bindings = _
     rw [SMTTerm.zeroBitSet_bindings, List.append_nil, ih, zeroBindings_cons]
 
+
+theorem SMTTerm.zeroCountScan_boolBindings {width : Nat} (word : SMTTerm (.bv width))
+    (direction : ZeroCountDirection) (count : Nat) (bound : count ≤ width) :
+    (word.zeroCountScan direction count bound).boolBindings = permutationBindings count word.boolBindings := by
+  induction count with
+  | zero => rfl
+  | succ i ih =>
+    change (word.zeroBitSet (direction.index width i) (direction.index_lt width i (by omega))).boolBindings ++ [] ++
+      (word.zeroCountScan direction i (by omega)).boolBindings = _
+    rw [SMTTerm.zeroBitSet_boolBindings, List.append_nil, ih, zeroBindings_cons]
+
 /-- Checked construction retains the exact chain, with its inventory built in
 one replication pass rather than repeatedly appended during the scan. -/
 def SMTCheckedTerm.zeroCount {width : Nat} (word : SMTCheckedTerm (.bv width)) (direction : ZeroCountDirection) :
@@ -171,7 +188,9 @@ def SMTCheckedTerm.zeroCount {width : Nat} (word : SMTCheckedTerm (.bv width)) (
   if positive : 0 < width then
     .ok ⟨word.term.zeroCountScan direction width (Nat.le_refl _), permutationBindings width word.bindings,
       word.term.zeroCountScan_wellFormed direction positive width (Nat.le_refl _) word.wellFormed,
-      by rw [SMTTerm.zeroCountScan_bindings, word.inventory]⟩
+      by rw [SMTTerm.zeroCountScan_bindings, word.inventory],
+      permutationBindings width word.boolBindings,
+      by rw [SMTTerm.zeroCountScan_boolBindings, word.boolInventory]⟩
   else .error "zero count of a zero-width bit-vector"
 
 theorem SMTCheckedTerm.zeroCount_toNat {width : Nat} (word result : SMTCheckedTerm (.bv width))

@@ -44,7 +44,9 @@ impl<'a> State<'a> {
         w.admit(16, 4 * size_of::<usize>())?;
         let index = match rule {
             Rule::Untagged { variant } => (counted == 0).then_some(variant),
-            Rule::Direct { .. } => (counted < def.variants.len()).then_some(counted),
+            Rule::Direct { .. } | Rule::DirectWithUninhabited { .. } => {
+                (counted < def.variants.len()).then_some(counted)
+            }
             Rule::Niche { dataful } => {
                 let others = def
                     .variants
@@ -68,6 +70,27 @@ impl<'a> State<'a> {
         };
         if let Some(index) = index {
             if let Some(variant) = w.at(&def.variants, index)? {
+                if matches!(rule, Rule::DirectWithUninhabited { .. }) {
+                    w.admit(2, 0)?;
+                    let Some(layout) = &def.layout else {
+                        return Err(ObservedValueError::InvalidRange);
+                    };
+                    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &layout.encoding
+                    else {
+                        return Err(ObservedValueError::InvalidRange);
+                    };
+                    let mut profile = 0;
+                    while let Some(row) = w.at(variants, profile)? {
+                        w.admit(2, 0)?;
+                        if row.variant as usize == index {
+                            return Ok(Action::Summed(Owner::Variant, Some(0)));
+                        }
+                        if row.variant as usize > index {
+                            break;
+                        }
+                        w.next(&mut profile)?;
+                    }
+                }
                 return Ok(Action::Sum(Fields::Types(&variant.fields), Owner::Variant));
             }
             w.admit(1, size_of::<Option<Frame<'_>>>())?;
@@ -79,7 +102,7 @@ impl<'a> State<'a> {
         self.frames.pop();
         let count = match rule {
             Rule::Untagged { .. } | Rule::Niche { .. } => None,
-            Rule::Direct { widest } => Some(
+            Rule::Direct { widest } | Rule::DirectWithUninhabited { widest } => Some(
                 widest
                     .checked_add(1)
                     .ok_or(ObservedValueError::CapacityOverflow)?,
@@ -165,7 +188,7 @@ impl<'a> State<'a> {
             .ok_or(ObservedValueError::CapacityOverflow)?;
         let length = match rule {
             Rule::Untagged { .. } => 1,
-            Rule::Direct { .. } => def.variants.len(),
+            Rule::Direct { .. } | Rule::DirectWithUninhabited { .. } => def.variants.len(),
             Rule::Niche { dataful } => def
                 .variants
                 .len()
@@ -179,8 +202,12 @@ impl<'a> State<'a> {
             (Rule::Niche { .. }, lanes) if last => Some(lanes),
             (Rule::Niche { .. }, Some(0)) => None,
             (Rule::Niche { .. }, Some(_)) => Some(None),
-            (Rule::Direct { .. }, Some(lanes)) if lanes > 1 => Some(None),
-            (Rule::Direct { widest }, Some(lanes)) => {
+            (Rule::Direct { .. } | Rule::DirectWithUninhabited { .. }, Some(lanes))
+                if lanes > 1 =>
+            {
+                Some(None)
+            }
+            (Rule::Direct { widest } | Rule::DirectWithUninhabited { widest }, Some(lanes)) => {
                 *widest = (*widest).max(lanes);
                 None
             }

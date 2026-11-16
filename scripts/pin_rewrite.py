@@ -49,6 +49,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ay_exec_policy_owner as exec_policy
+
 Reader = Callable[[str], str]
 
 
@@ -99,6 +102,7 @@ class VersionLeg:
 
 
 GUARD_TEST = "crates/trust-ir/tests/dependency_pin_coherence.rs"
+AY_PACKAGE_CONTRACT = "data/ay_package_versions.json"
 
 CLEAN_LEGS: Tuple[Leg, ...] = (
     Leg(
@@ -187,6 +191,13 @@ AY_LEGS: Tuple[Leg, ...] = (
         rewritable=False,
         minimum=1,
         line_contains="github.com/alabsystems/ay.git",
+    ),
+    Leg(
+        relpath=AY_PACKAGE_CONTRACT,
+        pattern=rf'(?m)^  "revision": "{SHA}",$',
+        note="derived immutable AY member-manifest version contract",
+        rewritable=False,
+        minimum=1,
     ),
 )
 
@@ -505,6 +516,14 @@ GUARD_TEST_MIRRORS: Dict[str, Optional[str]] = {
         "the trust-ir-ay manifest, AY_REV, BVBLAST_PROVER and the root "
         "Cargo.lock's AY selectors, sources and versions"
     ),
+    "independent_ay_package_version_owner_is_exact": (
+        "only trust-exec-policy 0.13.0 at the exact selected AY source is "
+        "independently versioned; ordinary AY rows retain the selected version"
+    ),
+    "ay_independent_policy_source_owner_controls": (
+        "actual ay-sys -> independent policy -> canonical registry libc edges "
+        "and supported/hostile lock owner controls"
+    ),
     "x86_icmp_certificate_rule_names_the_pinned_ay": (
         "CHC_X86_ICMP_CERTIFICATE_RULE.ay (rev, version) equal to "
         "(AY_REVISION, AY_VERSION)"
@@ -515,6 +534,28 @@ GUARD_TEST_ATTRIBUTE = re.compile(r"(?m)^#\[test\]$")
 GUARD_TEST_FUNCTION = re.compile(
     r"(?m)^#\[test\]\n(?:#\[[^\n]*\]\n)*fn (?P<name>[A-Za-z_][A-Za-z0-9_]*)\(\)"
 )
+
+
+def ay_lock_package_version_allowed(package: str, revision: str, version: str) -> bool:
+    """The selected AY graph has one independently versioned source owner.
+
+    This classifies a Cargo-resolved lock row, not policy or proof authority.
+    Normal AY packages keep their exact selected version; a name alone never
+    exempts a foreign source or another independently versioned package.
+    """
+    def field(key: str) -> Optional[str]:
+        values = [match.group(1) for line in _rust_lines(package)
+                  if (match := re.fullmatch(re.escape(key) + r' = "([^"\\]*)"', _rust_trim(line)))]
+        return values[0] if len(values) == 1 else None
+
+    if field("source") != f"git+{AY_REMOTE}?rev={revision}#{revision}":
+        return False
+    name, selected = field("name"), field("version")
+    if name == "trust-exec-policy":
+        return version == exec_policy.OWNER_AY_VERSION and selected == "0.13.0"
+    return name is not None and selected == version
+
+
 
 
 def guard_test_parity(guard: str) -> List[str]:
@@ -646,6 +687,177 @@ class StaticGuardReport:
         ]
         rows.extend(f"  - {violation}" for violation in self.violations)
         return "\n".join(rows)
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PinError("AY package contract has a duplicate JSON key: " + key)
+        result[key] = value
+    return result
+
+
+def ay_package_versions(read: Reader, revision: str, workspace_version: str) -> Dict[str, str]:
+    """Read the owner's exact, immutable-manifest-derived package inventory.
+
+    This is operational dependency metadata, not a mathematical validator.
+    There is no package-name exception or implicit workspace-version fallback.
+    """
+    try:
+        raw = read(AY_PACKAGE_CONTRACT)
+        data = json.loads(raw, object_pairs_hook=_unique_json_object)
+    except (ValueError, OSError) as error:
+        raise PinError("invalid AY package contract: " + str(error)) from error
+
+    def need(condition, message):
+        if not condition:
+            raise PinError("AY package contract " + message)
+
+    def identity(value):
+        need(isinstance(value, dict) and set(value) == {"path", "git_blob", "sha256"},
+             "manifest identity shape")
+        path = value["path"]
+        need(isinstance(path, str) and len(path) <= 4096, "manifest path")
+        parts = path.split("/")
+        need(1 <= len(parts) <= 32 and parts[-1] == "Cargo.toml"
+             and all(p not in ("", ".", "..") and "\\" not in p
+                     and not any(ord(c) < 32 or ord(c) == 127 for c in p) for p in parts),
+             "canonical manifest path")
+        need(isinstance(value["git_blob"], str) and SHA_RE.fullmatch(value["git_blob"]),
+             "manifest Git identity")
+        need(isinstance(value["sha256"], str)
+             and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]), "manifest content digest")
+
+    need(isinstance(data, dict) and set(data) == {
+        "schema", "repository", "revision", "workspace_version", "workspace_manifest", "packages"},
+        "root shape")
+    need(type(data["schema"]) is int and data["schema"] == 1, "schema")
+    need(data["repository"] == AY_REMOTE and data["revision"] == revision
+         and data["workspace_version"] == workspace_version, "source authority or workspace version")
+    identity(data["workspace_manifest"])
+    need(data["workspace_manifest"]["path"] == "Cargo.toml", "root workspace identity")
+    packages = data["packages"]
+    need(isinstance(packages, list) and 0 < len(packages) <= 256, "empty or excessive inventory")
+    versions: Dict[str, str] = {}
+    previous = ""
+    for package in packages:
+        need(isinstance(package, dict)
+             and set(package) == {"name", "version", "manifest", "version_source"}, "package shape")
+        name, version = package["name"], package["version"]
+        need(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name)
+             and name > previous, "duplicate, unsorted or invalid package identity")
+        need(isinstance(version, str) and SEMVER_RE.fullmatch(version), "exact package version")
+        for key in ("manifest", "version_source"):
+            identity(package[key])
+            if package[key]["path"] == "Cargo.toml":
+                need(package[key] == data["workspace_manifest"], "inconsistent root manifest identity")
+        versions[name] = version
+        previous = name
+    need(raw == json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+         "must use the owner's canonical JSON representation")
+    return versions
+
+
+def canonical_lock_packages(lock: str) -> List[dict]:
+    """Read Cargo's generated scalar rows/line arrays without a new dependency.
+
+    This is deliberately bounded to the canonical lock syntax used by the
+    independent compiled guard. Unsupported syntax refuses; Cargo's actual
+    locked metadata/compiled consumers still validate resolver semantics.
+    """
+    rows = []
+    for block in lock.split("[[package]]")[1:]:
+        row, dependencies = {}, None
+        # Rust lines() separates LF/CRLF, not the additional separators
+        # recognized by Python splitlines(). rust_trim consumes the CRLF edge.
+        for raw in block.split("\n"):
+            line = exec_policy.rust_trim(raw)
+            if not line or line.startswith("#"):
+                continue
+            if dependencies is not None:
+                if line == "]":
+                    row["dependencies"] = dependencies
+                    dependencies = None
+                    continue
+                if not line.endswith(",") or "\\" in line:
+                    raise ValueError("unsupported canonical dependency line")
+                value = json.loads(line[:-1])
+                if not isinstance(value, str):
+                    raise ValueError("non-string dependency")
+                dependencies.append(value)
+                continue
+            if line == "dependencies = [":
+                if "dependencies" in row:
+                    raise ValueError("duplicate dependency array")
+                dependencies = []
+                continue
+            field = re.fullmatch(r'([a-z][a-z_-]*) = (".*")', line)
+            if field is None or field[1] in row or "\\" in field[2]:
+                raise ValueError("unsupported or duplicate canonical lock field")
+            value = json.loads(field[2])
+            if not isinstance(value, str):
+                raise ValueError("non-string lock identity")
+            row[field[1]] = value
+        if dependencies is not None or not {"name", "version"} <= row.keys():
+            raise ValueError("incomplete canonical package")
+        rows.append(row)
+    return rows
+
+
+def validate_ay_lock_source_owner(lock: str, revision: str, version: str) -> None:
+    rows = canonical_lock_packages(lock)
+    source = f"git+{AY_REMOTE}?rev={revision}#{revision}"
+    selected = [row for row in rows if row.get("source", "").startswith("git+" + AY_REMOTE)]
+    vendor = exec_policy.locked_identity(rows, revision, version)
+    systems = [row for row in selected if row["name"] == "ay-sys"]
+    if not selected or (version == exec_policy.OWNER_AY_VERSION and systems and vendor is None):
+        raise ValueError("missing selected source or actual required system policy owner")
+    for row in selected:
+        family = row["name"] == "ay" or row["name"].startswith("ay-")
+        if row.get("source") != source or not (
+            (family and row["version"] == version) or exec_policy.identity(row) == vendor
+        ):
+            raise ValueError("foreign/stale package or unsupported independent version")
+
+
+def ay_policy_profile_control_violations() -> List[str]:
+    revision = "1" * 40
+    source = f"git+{AY_REMOTE}?rev={revision}#{revision}"
+    system = (f'[[package]]\nname = "ay-sys"\nversion = "{exec_policy.OWNER_AY_VERSION}"\n'
+              f'source = "{source}"\ndependencies = [\n "trust-exec-policy",\n]\n')
+    policy = ('[[package]]\nname = "trust-exec-policy"\nversion = "0.13.0"\n'
+              f'source = "{source}"\ndependencies = [\n "libc",\n]\n')
+    libc = ('[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+            f'source = "{exec_policy.REGISTRY}"\nchecksum = "{"a" * 64}"\n')
+    fixture = system + policy + libc
+    violations = []
+    try:
+        validate_ay_lock_source_owner(fixture, revision, exec_policy.OWNER_AY_VERSION)
+        legacy = system.replace(f'version = "{exec_policy.OWNER_AY_VERSION}"', 'version = "0.27.0"').replace(
+            'dependencies = [\n "trust-exec-policy",\n]\n', '') + libc
+        validate_ay_lock_source_owner(legacy, revision, "0.27.0")
+    except ValueError as error:
+        violations.append(f"independent-owner supported source fixture refused: {error}")
+    candidates = (
+        fixture.replace('version = "0.13.0"', f'version = "{exec_policy.OWNER_AY_VERSION}"'),
+        fixture.replace('version = "0.2.177"', 'version = "0.3.0"'),
+        fixture.replace(' "trust-exec-policy",\n', ''),
+        fixture + policy,
+        fixture + system.replace('name = "ay-sys"', 'name = "other"'),
+        fixture + policy.replace('name = "trust-exec-policy"', 'name = "foreign"')
+                        .replace('version = "0.13.0"', f'version = "{exec_policy.OWNER_AY_VERSION}"'),
+        system + libc,
+        fixture.replace('name = "ay-sys"', 'name = "ay-other"'),
+        system + policy.replace('version = "0.13.0"', 'checksum = "a"\nversion = "0.13.0"') + libc,
+    )
+    for index, candidate in enumerate(candidates):
+        try:
+            validate_ay_lock_source_owner(candidate, revision, exec_policy.OWNER_AY_VERSION)
+        except ValueError:
+            continue
+        violations.append(f"independent-owner hostile source fixture {index} accepted")
+    return violations
 
 
 def static_guard(read: Reader) -> StaticGuardReport:
@@ -932,18 +1144,46 @@ def static_guard(read: Reader) -> StaticGuardReport:
             f"{len(root_ay_packages)} package(s), "
             f"{len(root_ay_source_rows)} source row(s)"
         )
-    exact_ay_package_version = f'version = "{ay_version}"'
+    try:
+        expected_versions = ay_package_versions(read, ay_revision, ay_version)
+        observed_versions = {}
+        for package in root_ay_packages:
+            values = {}
+            for key in ("name", "version"):
+                prefix = key + ' = "'
+                rows = [_rust_trim(line) for line in _rust_lines(package)]
+                matches = [line[len(prefix):-1] for line in rows
+                           if line.startswith(prefix) and line.endswith('"')]
+                if len(matches) != 1:
+                    raise PinError("Cargo.lock AY package identity/version cardinality mismatch")
+                values[key] = matches[0]
+            name, version = values["name"], values["version"]
+            if name in observed_versions:
+                raise PinError("Cargo.lock duplicate AY package identity: " + name)
+            observed_versions[name] = version
+            if expected_versions.get(name) != version:
+                violations.append(
+                    "Cargo.lock resolves an AY package outside the exact version "
+                    "of its immutable manifest: " + name)
+        if set(observed_versions) != set(expected_versions):
+            violations.append("Cargo.lock AY package inventory differs from immutable manifest contract")
+    except PinError as error:
+        violations.append(str(error))
     if any(
-        not any(
-            _rust_trim(line) == exact_ay_package_version
-            for line in _rust_lines(package)
-        )
+        not ay_lock_package_version_allowed(package, ay_revision, ay_version)
         for package in root_ay_packages
     ):
         violations.append(
             "Cargo.lock resolves an AY package outside the exact version "
             f"{ay_version}"
         )
+
+    violations.extend(ay_policy_profile_control_violations())
+    try:
+        validate_ay_lock_source_owner(root_lock, ay_revision, ay_version)
+    except ValueError as error:
+        violations.append(
+            "Cargo.lock AY policy dependency ownership mismatch: " + str(error))
 
     # x86_icmp_certificate_rule_names_the_pinned_ay: the certificate rule's AY
     # is the AY pin, revision AND version, as publish/transforms.sh T1 holds it.

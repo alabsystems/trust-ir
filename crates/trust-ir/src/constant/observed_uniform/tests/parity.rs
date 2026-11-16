@@ -175,3 +175,79 @@ fn membership_uses_only_actual_borrowed_source_node_addresses() {
     assert!(!table.contains_observed(&external, &mut s, site()).unwrap());
     table.retire_observed(&mut s, site()).unwrap();
 }
+
+#[test]
+fn tensor_blob_leaf_identity_keeps_digest_and_extents_in_both_exact_class_walks() {
+    let a = Constant::TensorBlob {
+        digest: crate::blob::BlobDigest([7; 32]),
+        dims: vec![2, 3],
+    };
+    let same = array(vec![a.clone(), a.clone()]);
+    assert!(same.uniform_element_lists().contains(&same));
+    assert_eq!(run(&same).0, 1);
+    assert_eq!(
+        Constant::array(vec![a.clone(), a.clone()]),
+        Constant::Splat {
+            elem: Box::new(a.clone()),
+            len: 2,
+        }
+    );
+
+    let mut digest = [7; 32];
+    digest[31] = 8;
+    let different = [
+        Constant::TensorBlob {
+            digest: crate::blob::BlobDigest(digest),
+            dims: vec![2, 3],
+        },
+        Constant::TensorBlob {
+            digest: crate::blob::BlobDigest([7; 32]),
+            dims: vec![2, 4],
+        },
+        Constant::TensorBlob {
+            digest: crate::blob::BlobDigest([7; 32]),
+            dims: vec![2, 3, 1],
+        },
+    ];
+    for b in &different {
+        let unequal = array(vec![a.clone(), b.clone()]);
+        // These independent false controls prevent two wrong walks from
+        // agreeing after a distinct digest or extent was discarded.
+        assert!(!unequal.uniform_element_lists().contains(&unequal));
+        assert_eq!(run(&unequal).0, 0);
+        assert_eq!(Constant::array(vec![a.clone(), b.clone()]), unequal);
+    }
+
+    // The digest bucket is an accelerator only. Force every leaf through
+    // one bucket: a repeated leaf must reuse its class before each distinct
+    // digest/extent gets an independent class, even on a hash collision.
+    let mut o = Observer::default();
+    let mut s = ObservedSession::new(InterpretOptions::default(), &mut o);
+    let mut state = State::default();
+    let mut work = Work {
+        session: &mut s,
+        site: site(),
+    };
+    for (node, expected) in [
+        (&a, 0),
+        (&a, 0),
+        (&different[0], 1),
+        (&different[1], 2),
+        (&different[2], 3),
+    ] {
+        work.admit(1, size_of::<Option<Key<'_>>>()).unwrap();
+        state.pending_key = Some(Key::Leaf(node));
+        assert_eq!(
+            state.intern_fingerprint([0; 32], &mut work).unwrap(),
+            expected
+        );
+    }
+    assert_eq!(state.classes.len(), 4);
+    drain(&mut state, &mut work);
+    empty(&state);
+    assert!(work.session.first_refusal().is_none());
+    assert_eq!(
+        work.session.remaining_fuel(),
+        InterpretOptions::default().fuel
+    );
+}

@@ -61,6 +61,7 @@ fn route(instruction: &Inst) -> (Route, Option<&Ty>) {
         | Inst::DropInvoke { .. }
         | Inst::MakeAggregate { .. }
         | Inst::MakeClosure { .. }
+        | Inst::BoxDeref { .. }
         | Inst::ArraySplat { .. }
         | Inst::ExtractField { .. }
         | Inst::InsertField { .. }

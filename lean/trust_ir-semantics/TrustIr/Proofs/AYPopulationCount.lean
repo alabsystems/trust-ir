@@ -138,6 +138,12 @@ theorem SMTTerm.populationExtend_bindings {bits : Nat} (target : Nat) (word : SM
   unfold SMTTerm.populationExtend
   split <;> rw [SMTTerm.castWidth_bindings] <;> rfl
 
+
+theorem SMTTerm.populationExtend_boolBindings {bits : Nat} (target : Nat) (word : SMTTerm (.bv bits))
+    (wide : bits ≤ target) : (word.populationExtend target wide).boolBindings = word.boolBindings := by
+  unfold SMTTerm.populationExtend
+  split <;> rw [SMTTerm.castWidth_boolBindings] <;> rfl
+
 /-- Interpret the intrinsic plan through original-source extracts and narrow
 native additions. Recursion is on the plan itself, with no independent fuel. -/
 def PopulationPlan.target {length : Nat} (plan : PopulationPlan length) {source : Nat}
@@ -202,7 +208,7 @@ theorem PopulationPlan.target_wellFormed {length : Nat} (plan : PopulationPlan l
     exact ⟨SMTTerm.populationExtend_wellFormed _ _ _ (leftIH _ _),
       SMTTerm.populationExtend_wellFormed _ _ _ (rightIH _ _)⟩
 
-theorem populationBindings_add (left right : Nat) (bindings : List (Nat × String)) :
+theorem populationBindings_add {α : Type} (left right : Nat) (bindings : List α) :
     permutationBindings (left+right) bindings =
       permutationBindings left bindings ++ permutationBindings right bindings := by
   induction right with
@@ -212,6 +218,10 @@ theorem populationBindings_add (left right : Nat) (bindings : List (Nat × Strin
 
 private theorem population_binary_inventory {input output : SMTSort} (op : SMTBinary input output)
     (left right : SMTTerm input) : (SMTTerm.binary op left right).bindings = left.bindings ++ right.bindings := rfl
+
+
+theorem population_binary_bool_inventory {input output : SMTSort} (op : SMTBinary input output)
+    (left right : SMTTerm input) : (SMTTerm.binary op left right).boolBindings = left.boolBindings ++ right.boolBindings := rfl
 
 theorem PopulationPlan.target_bindings {length : Nat} (plan : PopulationPlan length) {source : Nat}
     (word : SMTTerm (.bv source)) (start : Nat) (bound : start+length ≤ source) :
@@ -228,6 +238,22 @@ theorem PopulationPlan.target_bindings {length : Nat} (plan : PopulationPlan len
     have bound := Nat.div_le_self length 2
     omega
 
+
+theorem PopulationPlan.target_boolBindings {length : Nat} (plan : PopulationPlan length) {source : Nat}
+    (word : SMTTerm (.bv source)) (start : Nat) (bound : start+length ≤ source) :
+    (plan.target word start bound).boolBindings = permutationBindings length word.boolBindings := by
+  induction plan generalizing start with
+  | bit =>
+    rw [PopulationPlan.target_bit, SMTTerm.castWidth_boolBindings, SMTTerm.chunk_boolBindings]
+    simp [permutationBindings]
+  | @split length large left right leftIH rightIH =>
+    rw [PopulationPlan.target_split, population_binary_bool_inventory,
+      SMTTerm.populationExtend_boolBindings, SMTTerm.populationExtend_boolBindings, leftIH, rightIH,
+      ← populationBindings_add]
+    congr 1
+    have bound := Nat.div_le_self length 2
+    omega
+
 /-- The counter's inventory is computed in one replication pass, not by
 copying inventories at every internal node of the balanced expression. -/
 def PopulationPlan.checkedTarget {length : Nat} (plan : PopulationPlan length) {source : Nat}
@@ -235,13 +261,16 @@ def PopulationPlan.checkedTarget {length : Nat} (plan : PopulationPlan length) {
     SMTCheckedTerm (.bv (populationBits length)) :=
   ⟨plan.target word.term start bound, permutationBindings length word.bindings,
     plan.target_wellFormed word.term start bound word.wellFormed,
-    by rw [plan.target_bindings, word.inventory]⟩
+    by rw [plan.target_bindings, word.inventory],
+    permutationBindings length word.boolBindings,
+    by rw [plan.target_boolBindings, word.boolInventory]⟩
 
 def SMTCheckedTerm.populationExtend {bits : Nat} (target : Nat) (word : SMTCheckedTerm (.bv bits))
     (wide : bits ≤ target) : SMTCheckedTerm (.bv target) :=
   ⟨word.term.populationExtend target wide, word.bindings,
     word.term.populationExtend_wellFormed target wide word.wellFormed,
-    by rw [word.term.populationExtend_bindings, word.inventory]⟩
+    by rw [word.term.populationExtend_bindings, word.inventory],
+    word.boolBindings, by rw [word.term.populationExtend_boolBindings, word.boolInventory]⟩
 
 def SMTCheckedTerm.popCount {width : Nat} (word : SMTCheckedTerm (.bv width)) :
     Except String (SMTCheckedTerm (.bv width)) :=

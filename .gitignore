@@ -6,6 +6,7 @@ target/
 # local info/exclude rules in a submodule, so the rule has to be committed.
 /target
 /target.noindex
+/target-tippy/
 **/*.rs.bk
 
 # Lean / Lake build cache (never track; symlinking it across worktrees corrupts the repo)

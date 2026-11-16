@@ -50,12 +50,13 @@ theorem lowerRows_framedCallsEquivalent (base : EvalContext) (selected : FuncId)
   let sourceCtx := withFunction base selected sourceFunction
   let targetCtx := withFunction base selected targetFunction
   intro requested fuel depth args strategy
-  have simulated := AllBlocksInduction.evaluator_simulation base selected sourceFunction targetFunction
-    rfl rfl rfl ?_ fuel
-  · have selectedEffects := AllBlocksInduction.selected_of_paired (evaluatorAt fuel) (evaluatorAt fuel)
-      base _ _ sourceFunction targetFunction rfl simulated.2
+  have simulated := AllBlocksInduction.evaluator_simulation_uniform base selected sourceFunction targetFunction
+    rfl rfl rfl rfl ?_ fuel
+  · have selectedEffects := fun metadata => AllBlocksInduction.selected_of_paired
+      (evaluatorAt fuel) (evaluatorAt fuel) (callerContext base metadata)
+      _ _ sourceFunction targetFunction rfl (simulated.2 metadata)
     have effects := calleeEffects_of_update (evaluatorAt fuel) (evaluatorAt fuel) base selected
-      sourceFunction targetFunction simulated.1 selectedEffects
+      sourceFunction targetFunction rfl rfl simulated.1 selectedEffects
     have headers := headerAgreement_withFunction base selected sourceFunction targetFunction rfl rfl
     have related := headers requested
     change runCallReq sourceCtx fuel depth requested args strategy =
@@ -82,8 +83,8 @@ theorem lowerRows_framedCallsEquivalent (base : EvalContext) (selected : FuncId)
             sourceCallee targetCallee sourceFound targetFound body
           intro world
           exact effects requested sourceCallee targetCallee sourceFound targetFound depth args strategy world
-  · intro sourceRecurse targetRecurse effects paired callDepth pc values panic state fresh
-    exact AllBlocksSimulation.lowerRows_layer_effect sourceRecurse targetRecurse base
+  · intro metadata sourceRecurse targetRecurse effects paired callDepth pc values panic state fresh
+    exact AllBlocksSimulation.lowerRows_layer_effect sourceRecurse targetRecurse (callerContext base metadata)
       (withFunction base selected sourceFunction).functions
       (withFunction base selected targetFunction).functions
       (headerAgreement_withFunction base selected sourceFunction targetFunction rfl rfl) effects

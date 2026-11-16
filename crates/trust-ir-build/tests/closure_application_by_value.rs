@@ -24,19 +24,19 @@
 //!   environment pointer — which validates, lowers, and persists
 //!   (`explicit_env_pointer_spelling_persists_and_is_lowerable`).
 //!
-//! The codegen refusal for closure application is unchanged and is asserted
-//! here by its NAMED reason. Lifting it needs the declared closure-layout
-//! table (`Module.closure_layouts`), which is the wire half of WS3.13 and is
-//! not in this commit; until it lands, `ty_layout_shape` on a `Ty::Closure`
-//! stays `UnsupportedTyShape` and every application stays refused (the
-//! standing GAP row `b6.closure.no_layout_not_lowerable`).
+//! An undeclared closure frame keeps its named codegen refusal and has no
+//! byte layout. A coherent `Module.closure_layouts` declaration supplies the
+//! capture image; the memory cases below check both that negative and actual
+//! capture-only transport through a declared frame. Application remains by
+//! value in either case. Layout and lowerability checks grant no proof or
+//! codegen license.
 
-use trust_ir::Module;
 use trust_ir::constant::Constant;
-use trust_ir::interpret::Interpreter;
+use trust_ir::interpret::{InterpretErrorCode, Interpreter};
 use trust_ir::shape::LayoutError;
 use trust_ir::ty::{ClosureTy, Ty};
 use trust_ir::value::ClosureTyId;
+use trust_ir::{ClosureLayoutDescriptor, Module};
 use trust_ir_build::builder::ModuleBuilder;
 use trust_ir_build::validate::{ValidationError, codegen_lowerability_errors, validate_module};
 
@@ -461,6 +461,31 @@ fn report(
     fb.ret(vec![r]);
 }
 
+/// This fixture's sole capture is one u64, with no function-pointer word.
+fn declare_value_capture_frame(module: &mut Module, clos: &Ty) {
+    let Ty::Closure(closure) = clos else {
+        panic!("the value-capture fixture has a closure type");
+    };
+    module.closure_layouts.push(ClosureLayoutDescriptor {
+        closure: *closure,
+        size: 8,
+        align: 8,
+        capture_offsets: vec![0],
+        origin: None,
+    });
+    assert!(matches!(
+        module.ty_layout_shape(clos),
+        Err(LayoutError::ClosureLayoutTargetMissing)
+    ));
+    module.target_info = Some(trust_ir::TargetInfo {
+        triple: "aarch64-apple-darwin".into(),
+        pointer_size: 8,
+        endianness: trust_ir::Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+}
+
 /// The closure is INTRODUCED in `@program` and APPLIED in `@apply_twice`,
 /// which receives it as a FUNCTION PARAMETER — the "trusted as declared"
 /// flow the G18-2 enforcement note names, where no defining constant is
@@ -746,13 +771,9 @@ fn a_selected_ty_func_callee_is_not_refused() {
 }
 
 /// A closure value that round-trips through MEMORY (`Alloca` at the closure
-/// type, `Store`, `Load`) and is then applied. The ruling says a `Ty::Closure`
-/// value "is an SSA register with no address": this pins what the format does
-/// when a producer tries to give it one anyway. Whatever the structural
-/// validator says about the memory ops, the APPLICATION of the loaded value
-/// must still be refused for codegen — the `Load` types its result
-/// `Ty::Closure`, so the map the refusal reads sees it — and the layout is
-/// still absent (`UnsupportedTyShape`), so no backend can lay the slot out.
+/// type, `Store`, `Load`) and is then applied. Without a declared frame the
+/// layout and execution refuse. The same module with its genuine capture
+/// frame round-trips the capture and applies it by value twice.
 #[test]
 fn a_closure_round_tripped_through_memory_is_still_refused_for_application() {
     let ValueCaptureSkeleton {
@@ -781,7 +802,7 @@ fn a_closure_round_tripped_through_memory_is_still_refused_for_application() {
         report(&mut fb, a, b);
         fb.build();
     }
-    let m = mb.build().expect("ModuleBuilder::build: test fixture");
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
     let refusals = closure_callee_refusals(&m);
     assert_eq!(
         refusals.len(),
@@ -792,25 +813,58 @@ fn a_closure_round_tripped_through_memory_is_still_refused_for_application() {
         m.ty_layout_shape(&clos),
         Err(LayoutError::UnsupportedTyShape(_))
     ));
-    // The structural validator ADMITS the memory ops at the closure type (a
-    // closure is a first-class value and `Alloca`/`Store`/`Load` are typed by
-    // the value's type alone), and the reference interpreter then FAILS CLOSED
-    // at run time because the type has no byte layout — never a by-reference
-    // application, and never a plausible-and-wrong answer. This is the layout
-    // gap the wire half of WS3.13 (`Module.closure_layouts`) closes; until it
-    // lands, this pins that the gap is a refusal, not a miscompile.
+    // Structural validity does not manufacture an absent byte layout.
     assert_eq!(
         validate_module(&m),
         vec![],
         "the memory ops are structurally valid"
     );
+    let mut declared = m.clone();
+    declared.target_info = Some(trust_ir::TargetInfo {
+        triple: "aarch64-apple-darwin".into(),
+        pointer_size: 8,
+        endianness: trust_ir::Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    declared
+        .closure_layouts
+        .push(trust_ir::ClosureLayoutDescriptor {
+            origin: None,
+            closure: ClosureTyId::new(0),
+            size: 8,
+            align: 8,
+            capture_offsets: vec![0],
+        });
+    assert_eq!(validate_module(&declared), vec![]);
+    assert_eq!(
+        run_program(&declared),
+        11,
+        "memory preserves by-value capture semantics"
+    );
     let func = m.function_by_name("program").unwrap();
     let Err(err) = Interpreter::with_module(&m).execute_func(func.id, []) else {
-        panic!("a closure has no byte layout, so the Store must fail closed");
+        panic!("an undeclared closure frame must fail closed");
     };
-    assert!(
-        err.message.contains("has no byte layout"),
-        "the run-time refusal names the missing layout: {err:?}"
+    assert_eq!(err.code, InterpretErrorCode::TypeError);
+    assert_eq!(err.message, "missing closure layout");
+    assert_eq!(err.block, Some(trust_ir::BlockId::new(0)));
+
+    declare_value_capture_frame(&mut m, &clos);
+    assert!(validate_module(&m).is_empty(), "{:?}", validate_module(&m));
+    let shape = m.ty_layout_shape(&clos).expect("the declared u64 frame");
+    assert_eq!(shape.size_bits, 64);
+    assert_eq!(shape.align_bits, Some(64));
+    let Ty::Closure(id) = clos else {
+        unreachable!()
+    };
+    assert_eq!(m.closure_storage_binding(id).unwrap().target, bump);
+    assert!(closure_callee_refusals(&m).is_empty());
+    assert!(codegen_lowerability_errors(&m).is_empty());
+    assert_eq!(
+        run_program(&m),
+        11,
+        "both loads retain the original capture"
     );
 }
 
@@ -937,11 +991,8 @@ fn a_closure_projected_out_of_an_aggregate_is_by_value_and_refused() {
 }
 
 /// A closure that lives in a GLOBAL's initializer and is `Load`ed through
-/// `GlobalAddr`: the same absent-layout gap as the `Alloca` round trip, and
-/// the same answer — structurally admitted, refused for application, and
-/// failing CLOSED in the interpreter at the `Load` (never a by-reference
-/// application against the global's storage, which is what a producer
-/// reaching for a `static` closure might hope for).
+/// `GlobalAddr`: an absent frame fails closed, and the genuine declared frame
+/// transports the capture without making application mutate global storage.
 #[test]
 fn a_closure_in_a_global_initializer_is_refused_and_fails_closed() {
     let ValueCaptureSkeleton {
@@ -971,22 +1022,58 @@ fn a_closure_in_a_global_initializer_is_refused_and_fails_closed() {
         let e = fb.create_block();
         fb.switch_to_block(e);
         let g = fb.global_addr(trust_ir::value::GlobalId::new(0));
-        let c = fb.load(clos, g);
+        let c = fb.load(clos.clone(), g);
         let a = fb.call_indirect(c, apparent, vec![]);
         let b = fb.call_indirect(c, apparent, vec![]);
         report(&mut fb, a, b);
         fb.build();
     }
-    let m = mb.build().expect("ModuleBuilder::build: test fixture");
+    let mut m = mb.build().expect("ModuleBuilder::build: test fixture");
     assert_eq!(validate_module(&m), vec![]);
     assert_eq!(closure_callee_refusals(&m).len(), 2);
+    let mut declared = m.clone();
+    declared.target_info = Some(trust_ir::TargetInfo {
+        triple: "aarch64-apple-darwin".into(),
+        pointer_size: 8,
+        endianness: trust_ir::Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    declared
+        .closure_layouts
+        .push(trust_ir::ClosureLayoutDescriptor {
+            origin: None,
+            closure: ClosureTyId::new(0),
+            size: 8,
+            align: 8,
+            capture_offsets: vec![0],
+        });
+    assert_eq!(validate_module(&declared), vec![]);
+    assert_eq!(
+        run_program(&declared),
+        11,
+        "memory preserves by-value capture semantics"
+    );
     let func = m.function_by_name("program").unwrap();
     let Err(err) = Interpreter::with_module(&m).execute_func(func.id, []) else {
-        panic!("a closure has no byte layout, so the Load must fail closed");
+        panic!("an undeclared global closure frame must fail closed");
     };
-    assert!(
-        err.message.contains("has no byte layout"),
-        "the run-time refusal names the missing layout: {err:?}"
+    assert_eq!(err.code, InterpretErrorCode::TypeError);
+    assert_eq!(err.message, "missing closure layout");
+    assert_eq!(err.block, Some(trust_ir::BlockId::new(0)));
+
+    declare_value_capture_frame(&mut m, &clos);
+    assert!(validate_module(&m).is_empty(), "{:?}", validate_module(&m));
+    let Ty::Closure(id) = clos else {
+        unreachable!()
+    };
+    assert_eq!(m.closure_storage_binding(id).unwrap().target, bump);
+    assert!(closure_callee_refusals(&m).is_empty());
+    assert!(codegen_lowerability_errors(&m).is_empty());
+    assert_eq!(
+        run_program(&m),
+        11,
+        "the global's capture is passed by value"
     );
 }
 
@@ -1107,4 +1194,140 @@ fn a_non_callable_callee_type_is_a_recorded_gap() {
         err.message.contains("non-function type"),
         "the only refusal is the interpreter's: {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Validated dynamic closure convention controls. These use G18-2's existing
+// capture-spread contract; the apparent signature has no explicit parameters,
+// and the physical target receives the one U64 capture by value.
+// ---------------------------------------------------------------------------
+
+fn build_validated_dynamic_closure_convention_parameter(
+    edge: trust_ir::CallingConv,
+) -> (Module, trust_ir::FuncId) {
+    use trust_ir::CallingConv;
+
+    let mut mb = ModuleBuilder::new_with_target_info(
+        "dynamic_closure_convention_parameter",
+        trust_ir::TargetInfo {
+            triple: "aarch64-apple-darwin".into(),
+            pointer_size: 8,
+            endianness: trust_ir::Endianness::Little,
+            abi: None,
+            struct_passing: trust_ir::StructPassingPolicy::Unclassified,
+        },
+    );
+    let apparent = mb.add_func_type(vec![], vec![Ty::U64]);
+    let physical = mb.add_func_type(vec![Ty::U64], vec![Ty::U64]);
+    let closure_id = mb.add_closure_type(ClosureTy {
+        func: apparent,
+        captures: vec![Ty::U64],
+    });
+    let closure_ty = Ty::Closure(closure_id);
+    let maker_sig = mb.add_func_type(vec![], vec![closure_ty.clone()]);
+    let consumer_sig = mb.add_func_type(vec![closure_ty.clone()], vec![Ty::U64]);
+
+    let target = {
+        let mut fb = mb.function("captured_c_target", physical);
+        fb.set_calling_conv(CallingConv::C);
+        let entry = fb.create_block();
+        let capture = fb.add_block_param(entry, Ty::U64);
+        fb.switch_to_block(entry);
+        let two = fb.uconst(Ty::U64, 2);
+        let answer = fb.add(Ty::U64, capture, two);
+        fb.ret(vec![answer]);
+        fb.build()
+    };
+    let maker = {
+        let mut fb = mb.function("make_captured_closure", maker_sig);
+        fb.set_calling_conv(CallingConv::C);
+        let entry = fb.create_block();
+        fb.switch_to_block(entry);
+        let seed = fb.const_value(
+            closure_ty.clone(),
+            Constant::Closure {
+                func: target,
+                captures: vec![Constant::Int(0)],
+            },
+        );
+        let forty = fb.uconst(Ty::U64, 40);
+        let written = fb.insert_field(closure_ty.clone(), seed, 0, forty);
+        // Returning the seed instead would produce 2, not the required 42.
+        fb.ret(vec![written]);
+        fb.build()
+    };
+    let consumer = {
+        let mut fb = mb.function("apply_closure_parameter", consumer_sig);
+        fb.set_calling_conv(CallingConv::C);
+        let entry = fb.create_block();
+        let closure = fb.add_block_param(entry, closure_ty.clone());
+        fb.switch_to_block(entry);
+        // This callee is a typed closure SSA parameter, not a statically
+        // visible closure constant or an ordinary Ty::Func pointer.
+        let answer = fb.call_indirect_cc(closure, apparent, vec![], edge);
+        fb.ret(vec![answer]);
+        fb.build()
+    };
+    let program = {
+        let mut fb = mb.function("program", apparent);
+        fb.set_calling_conv(CallingConv::C);
+        let entry = fb.create_block();
+        fb.switch_to_block(entry);
+        let made = fb.call(maker, vec![]);
+        let answer = fb.call(consumer, vec![made]);
+        fb.ret(vec![answer]);
+        fb.build()
+    };
+    let module = mb.build().expect("dynamic closure convention fixture");
+    let errors = validate_module(&module);
+    eprintln!(
+        "[DYNAMIC_CLOSURE_CONVENTION_VALIDATION] edge={edge:?} target={target} \
+         program={program} errors={errors:#?} module={module:#?}"
+    );
+    assert!(
+        errors.is_empty(),
+        "this control has not established module admission: {errors:#?}"
+    );
+    assert_eq!(module.closure_type(closure_id).unwrap().func, apparent);
+    assert_eq!(
+        module.closure_type(closure_id).unwrap().captures,
+        vec![Ty::U64]
+    );
+    assert_eq!(module.function_by_id(target).unwrap().ty, physical);
+    assert_eq!(module.func_type(physical).unwrap().params, vec![Ty::U64]);
+    assert_eq!(module.func_type(physical).unwrap().returns, vec![Ty::U64]);
+    assert!(
+        module
+            .func_types
+            .iter()
+            .all(|sig| sig.abi.is_none() && !sig.is_vararg)
+    );
+    assert!(module.functions.iter().all(|function| {
+        function.calling_conv == CallingConv::C && function.body_gate.is_none()
+    }));
+    (module, program)
+}
+
+#[test]
+fn dynamic_closure_parameter_matching_c_convention_preserves_capture_return() {
+    let (module, program) =
+        build_validated_dynamic_closure_convention_parameter(trust_ir::CallingConv::C);
+    let result = Interpreter::with_module(&module).execute_func(program, []);
+    eprintln!("[DYNAMIC_CLOSURE_CONVENTION_RESULT] edge=C result={result:#?}");
+    let outcome = result.expect("matching C edge and C closure target must execute");
+    assert_eq!(outcome.returns.len(), 1);
+    assert_eq!(outcome.returns[0].ty, Ty::U64);
+    assert_eq!(outcome.returns[0].as_int().unwrap().as_unsigned(), 42);
+}
+
+#[test]
+fn dynamic_closure_parameter_rejects_rust_edge_to_c_target() {
+    let (module, program) =
+        build_validated_dynamic_closure_convention_parameter(trust_ir::CallingConv::Rust);
+    let result = Interpreter::with_module(&module).execute_func(program, []);
+    eprintln!("[DYNAMIC_CLOSURE_CONVENTION_RESULT] edge=Rust result={result:#?}");
+    let error = result.expect_err(
+        "a validated dynamic closure call must reject a Rust edge to its C physical target",
+    );
+    assert_eq!(error.code, InterpretErrorCode::SignatureMismatch);
 }

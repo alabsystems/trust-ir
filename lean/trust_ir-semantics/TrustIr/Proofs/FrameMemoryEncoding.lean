@@ -106,4 +106,16 @@ theorem encode_functions_no_unwind (model : ByteModel) (order : FunctionAddressO
     | split
     | (dsimp only; split)
 
+/-- Actual aggregate encoding preserves its original static errors and never
+supplies an embedded runtime throw state, for arbitrary plans and values. -/
+theorem aggregate_encode_no_unwind (model : ByteModel) (order : FunctionAddressOrder)
+    (plan : AggregateMemory.Plan) (value : Value) (allowUnwritten : Bool) :
+    ExceptNoUnwind (AggregateMemory.encode model order plan value allowUnwritten) := by
+  apply DecodeFrameExit.no_unwind (fun _ => True)
+  apply (block_result_frame_iff _ _).1
+  exact AggregateMemory.encode_errors BlockDecodeError (fun _ => True.intro) (fun _ => True.intro)
+    (fun model order ty value => (block_result_frame_iff _ _).2
+      (DecodeFrameExit.of_no_unwind (fun _ => True) _ (encode_functions_no_unwind model order ty value) (fun _ _ => True.intro)))
+    model order plan value allowUnwritten
+
 end TrustIr.FrameLifetime

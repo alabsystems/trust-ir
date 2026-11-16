@@ -97,7 +97,7 @@ theorem ordinary_transfer_frame_exit (recurse : Recurse) (ctx : EvalContext) (de
     FrameCalleeExit state (Sem.run (evalTransfer recurse ctx depth cfg block strategy result) state) := by
   cases result with
   | Continue next args => exact continuation next args state valid transported
-  | Ret args => exact ⟨valid,transported,.refl _⟩
+  | Ret args => exact checked_return_frame_exit ctx args state valid transported
   | Stuck => exact True.intro
   | CallReq _ _ => cases transported
   | CallIndirectReq _ _ _ => cases transported

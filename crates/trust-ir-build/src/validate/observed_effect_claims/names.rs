@@ -5,6 +5,7 @@ use super::*;
 pub(super) fn mnemonic(inst: &Inst) -> &'static str {
     match inst {
         Inst::MakeClosure { .. } => "make_closure",
+        Inst::BoxDeref { .. } => "box_deref",
         Inst::Drop { .. } => "drop",
         Inst::DropInvoke { .. } => "drop_invoke",
         Inst::BinOp { .. } => "binop",

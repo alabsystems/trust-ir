@@ -1563,6 +1563,99 @@ fn hundred_thousand_deep_chains_lay_out_on_a_small_stack() {
 // The niche rule over a wide or deep uninhabited payload
 // ---------------------------------------------------------------------------
 
+#[test]
+fn uninhabited_direct_profiles_match_independent_oracle_and_keep_physical_padding() {
+    use trust_ir::{FieldStorageLayout, UninhabitedVariantLayout};
+    let mut module = x86_64("uninhabited_direct_oracle");
+    module.add_enum(EnumDef::new(EnumId::new(0), "Infallible", vec![]));
+    let wide = module.add_type(Ty::U128).unwrap();
+    let dead = Ty::Tuple(vec![Ty::Enum(EnumId::new(0)), Ty::Array(wide, 4096)]);
+    let row = |name: &str, fields| EnumVariant {
+        name: name.into(),
+        fields,
+        field_names: vec![],
+    };
+    let mut definition = EnumDef::new(
+        EnumId::new(1),
+        "Nested",
+        vec![row("Dead", vec![dead.clone()]), row("Live", vec![Ty::U32])],
+    )
+    .with_repr(EnumTagRepr::U32);
+    definition.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::DirectWithUninhabited {
+            tag_offset: 0,
+            variants: vec![UninhabitedVariantLayout {
+                variant: 0,
+                size: 65_552,
+                align: 16,
+                fields: vec![FieldStorageLayout {
+                    size: 65_536,
+                    align: 16,
+                }],
+            }],
+        },
+        size: 65_552,
+        align: 16,
+        variant_field_offsets: vec![vec![16], vec![4]],
+    });
+    module.add_enum(definition);
+    let queries = [
+        Query::Enum(EnumId::new(1)),
+        Query::Ty(Ty::Enum(EnumId::new(1))),
+        Query::Uninhabited(dead),
+        Query::Enum(EnumId::new(0)),
+    ];
+    let orders = vec![vec![0, 1, 2, 3], vec![3, 2, 1, 0]];
+    let mut census = Census::default();
+    compare(
+        "physical dead-row image",
+        &module,
+        &queries,
+        &orders,
+        &mut census,
+    );
+    let shape = module.enum_layout_shape(EnumId::new(1)).unwrap();
+    assert_eq!((shape.size_bits, shape.align_bits), (65_552 * 8, 16 * 8));
+    assert_eq!(
+        (shape.payload_size_bits, shape.payload_offset_bits),
+        (65_536 * 8, 16 * 8)
+    );
+    for mutation in 0..10 {
+        let mut changed = module.clone();
+        let descriptor = changed.enums[1].layout.as_mut().unwrap();
+        let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut descriptor.encoding
+        else {
+            unreachable!()
+        };
+        match mutation {
+            0 => variants.clear(),
+            1 => variants[0].variant = 1,
+            2 => variants.push(variants[0].clone()),
+            3 => variants[0].fields[0].align = 0,
+            4 => variants[0].fields[0].size = 65_535,
+            5 => descriptor.variant_field_offsets[0][0] = 0,
+            6 => variants[0].fields[0].size = 65_552,
+            7 => variants[0].size = 65_536,
+            8 => changed.enums[1].variants[0]
+                .fields
+                .push(Ty::Struct(StructId::new(404))),
+            9 => changed.enums[1].variants[0].fields = vec![Ty::Unit],
+            _ => unreachable!(),
+        }
+        compare(
+            &format!("uninhabited Direct refusal {mutation}"),
+            &changed,
+            &queries,
+            &orders,
+            &mut census,
+        );
+        assert!(
+            changed.enum_layout_shape(EnumId::new(1)).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
 /// `Z = enum { V(!) }`, declared untagged and zero-sized: it lays out, and it
 /// is uninhabited.
 fn void_enum(id: u32) -> EnumDef {
@@ -2166,4 +2259,299 @@ fn effective_discriminants_answer_as_the_quadratic_scan_did() {
             "{def:?}"
         );
     }
+}
+
+/// Item storage is authenticated by original declaration identity, not the
+/// pointer-size scalar table or by substituting Unit in the oracle.
+#[test]
+fn fn_item_layout_matches_independent_sparse_header_oracle() {
+    use trust_ir::{BlockId, FuncId, FuncTy, Function, TyLayoutKind, TyShape};
+    for selected_target in [
+        None,
+        Some(TargetInfo {
+            triple: "wasm32-unknown-unknown".into(),
+            pointer_size: 4,
+            endianness: Endianness::Little,
+            abi: None,
+            struct_passing: Default::default(),
+        }),
+        x86_64("explicit64").target_info,
+    ] {
+        let mut module = Module::new("independent nominal item layout");
+        module.target_info = selected_target;
+        let signature = module
+            .add_func_type(FuncTy::unrecorded(vec![], vec![], false))
+            .unwrap();
+        for id in [11, 53] {
+            // A genuine bodyless declaration suffices for storage identity;
+            // this query does not grant a license to execute that body.
+            module.functions.push(Function::new(
+                FuncId::new(id),
+                format!("item_{id}"),
+                signature,
+                BlockId::new(0),
+            ));
+        }
+        let queries = [
+            Query::Ty(Ty::FnItem(FuncId::new(11))),
+            Query::Ty(Ty::FnItem(FuncId::new(53))),
+        ];
+        let orders = [vec![0, 1], vec![1, 0]];
+        let expected = TyLayoutShape {
+            size_bits: 0,
+            align_bits: Some(8),
+            kind: TyLayoutKind::FnItem,
+        };
+        for ty in [Ty::FnItem(FuncId::new(11)), Ty::FnItem(FuncId::new(53))] {
+            assert_eq!(oracle::ty_layout_shape(&module, &ty), Ok(expected.clone()));
+            assert_eq!(module.ty_layout_shape(&ty), Ok(expected.clone()));
+        }
+        compare("items", &module, &queries, &orders, &mut Census::default());
+        module.functions.swap(0, 1);
+        compare(
+            "reordered items",
+            &module,
+            &queries,
+            &orders,
+            &mut Census::default(),
+        );
+
+        let bad = Err(LayoutError::UnsupportedTyShape(TyShape::FnItem));
+        for (label, invalid) in [
+            ("missing", {
+                let mut missing = module.clone();
+                missing
+                    .functions
+                    .retain(|function| function.id != FuncId::new(11));
+                missing
+            }),
+            ("ambiguous", {
+                let mut ambiguous = module.clone();
+                ambiguous.functions.push(ambiguous.functions[1].clone());
+                ambiguous
+            }),
+            ("missing signature", {
+                let mut missing_signature = module.clone();
+                missing_signature.func_types.clear();
+                missing_signature
+            }),
+        ] {
+            let ty = Ty::FnItem(FuncId::new(11));
+            assert_eq!(oracle::ty_layout_shape(&invalid, &ty), bad, "{label}");
+            assert_eq!(invalid.ty_layout_shape(&ty), bad, "{label}");
+            compare(
+                label,
+                &invalid,
+                &[Query::Ty(ty)],
+                &[vec![0]],
+                &mut Census::default(),
+            );
+        }
+    }
+}
+
+#[test]
+fn single_inhabited_descriptors_match_independent_oracle() {
+    let mut module = x86_64("single_inhabited_oracle");
+    let huge = module.add_type(Ty::U128).unwrap();
+    let variant = |name: &str, fields| EnumVariant {
+        name: name.into(),
+        fields,
+        field_names: vec![],
+    };
+    let mut def = EnumDef::new(
+        EnumId::new(0),
+        "Selected",
+        vec![
+            variant("Before", vec![Ty::Never, Ty::Array(huge, u64::MAX)]),
+            variant("Live", vec![Ty::U32]),
+            variant("After", vec![Ty::Never]),
+        ],
+    )
+    .with_discriminants(vec![Some(-5), Some(42), Some(100)]);
+    def.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0], vec![]],
+    });
+    module.add_enum(def);
+    let queries = [
+        Query::Enum(EnumId::new(0)),
+        Query::Ty(Ty::Enum(EnumId::new(0))),
+    ];
+    let orders = vec![vec![0, 1], vec![1, 0]];
+    let mut census = Census::default();
+    compare(
+        "selected index with omitted overflowing dead storage",
+        &module,
+        &queries,
+        &orders,
+        &mut census,
+    );
+    assert_eq!(
+        module.enum_layout_shape(EnumId::new(0)).unwrap().size_bits,
+        32
+    );
+
+    for mutation in 0..6 {
+        let mut changed = module.clone();
+        match mutation {
+            0 => changed.enums[0].variants[0].fields = vec![Ty::Unit],
+            1 => {
+                changed.enums[0].layout.as_mut().unwrap().encoding =
+                    EnumTagEncoding::SingleInhabited { variant: 3 }
+            }
+            2 => {
+                changed.enums[0]
+                    .layout
+                    .as_mut()
+                    .unwrap()
+                    .variant_field_offsets[0] = vec![0, 0]
+            }
+            3 => changed.enums[0].variants[0]
+                .fields
+                .push(Ty::Struct(StructId::new(404))),
+            4 => changed.enums[0].variants[0].fields = vec![Ty::Enum(EnumId::new(0))],
+            5 => changed.enums[0].variants[1].fields = vec![Ty::Never],
+            _ => unreachable!(),
+        }
+        compare(
+            &format!("single inhabited refusal {mutation}"),
+            &changed,
+            &queries,
+            &orders,
+            &mut census,
+        );
+        assert!(
+            changed.enum_layout_shape(EnumId::new(0)).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
+fn single_item_reference_module() -> Module {
+    use trust_ir::{BlockId, FuncId, FuncTy, Function};
+
+    let mut module = x86_64("single_nominal_reference_oracle");
+    let signature = module
+        .add_func_type(FuncTy::unrecorded(vec![], vec![], false))
+        .unwrap();
+    module.functions.push(Function::new(
+        FuncId::new(7),
+        "actual_item",
+        signature,
+        BlockId::new(0),
+    ));
+    let mut def = EnumDef::new(
+        EnumId::new(0),
+        "Selected",
+        vec![
+            EnumVariant {
+                name: "Dead".into(),
+                fields: vec![Ty::Never, Ty::FnItem(FuncId::new(7))],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Live".into(),
+                fields: vec![Ty::U32],
+                field_names: vec![],
+            },
+        ],
+    );
+    def.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0]],
+    });
+    module.enums.push(def);
+    module
+}
+
+#[test]
+fn single_inhabited_oracle_checks_nominal_items_even_without_storage() {
+    use trust_ir::FuncId;
+
+    let module = single_item_reference_module();
+    let queries = [
+        Query::Enum(EnumId::new(0)),
+        Query::Ty(Ty::Enum(EnumId::new(0))),
+    ];
+    let orders = vec![vec![0, 1], vec![1, 0]];
+    let mut census = Census::default();
+    compare(
+        "dead nominal item reference",
+        &module,
+        &queries,
+        &orders,
+        &mut census,
+    );
+    assert_eq!(
+        module.enum_layout_shape(EnumId::new(0)).unwrap().size_bits,
+        32
+    );
+    for mutation in 0..4 {
+        let mut changed = module.clone();
+        match mutation {
+            0 => changed.functions.clear(),
+            1 => changed.functions.push(changed.functions[0].clone()),
+            2 => changed.functions[0].ty = FuncTyId::new(99),
+            3 => {
+                let missing = changed.add_type(Ty::FnItem(FuncId::new(99))).unwrap();
+                changed.enums[0].variants[0].fields[1] = Ty::Array(missing, 0);
+            }
+            _ => unreachable!(),
+        }
+        compare(
+            &format!("dead nominal item refusal {mutation}"),
+            &changed,
+            &queries,
+            &orders,
+            &mut census,
+        );
+        assert!(changed.enum_layout_shape(EnumId::new(0)).is_err());
+    }
+}
+
+#[test]
+fn single_inhabited_oracle_keeps_one_declaration_and_live_zero_storage() {
+    let mut module = single_item_reference_module();
+    module.enums[0].variants.remove(0);
+    let descriptor = module.enums[0].layout.as_mut().unwrap();
+    descriptor.encoding = EnumTagEncoding::SingleInhabited { variant: 0 };
+    descriptor.variant_field_offsets.remove(0);
+    let queries = [
+        Query::Enum(EnumId::new(0)),
+        Query::Ty(Ty::Enum(EnumId::new(0))),
+    ];
+    let orders = vec![vec![0, 1], vec![1, 0]];
+    let mut census = Census::default();
+    compare(
+        "one declared live variant",
+        &module,
+        &queries,
+        &orders,
+        &mut census,
+    );
+    assert_eq!(
+        module.enum_layout_shape(EnumId::new(0)).unwrap().size_bits,
+        32
+    );
+    module.enums[0].variants[0].fields.clear();
+    let descriptor = module.enums[0].layout.as_mut().unwrap();
+    descriptor.size = 0;
+    descriptor.align = 1;
+    descriptor.variant_field_offsets[0].clear();
+    compare(
+        "one declared zero-storage variant",
+        &module,
+        &queries,
+        &orders,
+        &mut census,
+    );
+    assert_eq!(
+        module.enum_layout_shape(EnumId::new(0)).unwrap().size_bits,
+        0
+    );
 }

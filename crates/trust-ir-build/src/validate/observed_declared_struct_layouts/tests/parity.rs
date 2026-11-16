@@ -2,6 +2,35 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 use super::*;
 #[test]
+fn trailing_function_items_authenticate_real_headers_before_granting_zero_size() {
+    let m = fixtures::trailing_function_items();
+    assert!(run(&m, &[]).0.is_empty());
+    for mutation in 0..5 {
+        let mut m = fixtures::trailing_function_items();
+        match mutation {
+            0 => {
+                m.functions.pop();
+            }
+            1 => m.functions.push(m.functions[1].clone()),
+            2 => m.functions[1].ty = trust_ir::FuncTyId::new(99),
+            3 => m.structs[0].fields[2].offset = Some(9),
+            4 => m.structs[0].fields[2].ty = Ty::U8,
+            _ => unreachable!(),
+        }
+        let out = run(&m, &[]).0;
+        assert!(
+            out.iter().any(|error| matches!(
+                error,
+                ValidationError::StructLayoutInconsistent {
+                    reason: "field offset is outside the declared struct size",
+                    ..
+                }
+            )),
+            "mutation {mutation}: {out:?}"
+        );
+    }
+}
+#[test]
 fn valid_reordered_fields_and_trailing_scalar_and_struct_zsts_match_original() {
     let mut m = fixtures::valid();
     assert!(run(&m, &[]).0.is_empty());

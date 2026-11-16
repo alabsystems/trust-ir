@@ -85,3 +85,59 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod retained_identity_edge_tests {
+    use super::*;
+
+    #[test]
+    fn request_selection_uses_the_exact_u32_decimal_suffix() {
+        for request in [0, 7, 70, u32::MAX] {
+            let id = native_body_wp_bundle_id("namespace:module", request, &[0; 32]);
+            assert!(native_body_wp_id_selects_request(&id, request));
+            assert!(!native_body_wp_id_selects_request(
+                &id,
+                request.wrapping_add(1)
+            ));
+            let noncanonical = id.replace(
+                &format!(":trust-wp:{request}:input:"),
+                &format!(":trust-wp:0{request}:input:"),
+            );
+            assert!(!native_body_wp_id_selects_request(&noncanonical, request));
+        }
+    }
+
+    #[test]
+    fn shape_recognizer_rejects_wrong_domains_and_non_hex_digest_text() {
+        let id = native_body_wp_bundle_id("m", 7, &[0; 32]);
+        for changed in [
+            id.replacen("trust-wp.", "other-wp.", 1),
+            id.replace(":trust-ir-native:", ":other-native:"),
+            id.replace(":input:sha256:", ":input:sha512:"),
+            id.replace(":trust-wp:7:", ":trust-wp:+7:"),
+            id.replace(":trust-wp:7:", ":trust-wp: 7:"),
+            id.replace(":trust-wp:7:", ":trust-wp:4294967303:"),
+            format!("{}{}", &id[..id.len() - 1], "g"),
+            format!("{}{}", &id[..id.len() - 1], "é"),
+            format!("{id}\n"),
+            format!("prefix:{id}"),
+        ] {
+            assert!(
+                !native_body_wp_id_selects_request(&changed, 7),
+                "{changed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shape_recognition_does_not_authenticate_the_module_or_input_digest() {
+        let expected = native_body_wp_bundle_id("m", 7, &[1; 32]);
+        for other in [
+            native_body_wp_bundle_id("other", 7, &[1; 32]),
+            native_body_wp_bundle_id("m", 7, &[2; 32]),
+        ] {
+            assert_ne!(other, expected);
+            assert!(native_body_wp_id_selects_request(&other, 7));
+        }
+    }
+}

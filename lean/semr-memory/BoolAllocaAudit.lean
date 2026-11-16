@@ -54,7 +54,9 @@ run_cmd do
       `SemR.BoolMemory.semAlloca_bool_then_strict_load_refuses,
       `SemR.BoolMemory.semAlloca_bool_empty_plain_poison,
       `SemR.BoolMemory.semAlloca_bool_zero_alignment_refuses,
-      `SemR.BoolMemory.boolAlloca_reused_ssa_control] do
+      `SemR.BoolMemory.boolAlloca_reused_ssa_control,
+      `SemR.BoolMemory.semAlloca_bool_exhausted_identity_refuses,
+      `SemR.BoolMemory.semAlloca_bool_exhausted_address_refuses] do
     unless targets.contains required do
       throwError "Bool Alloca audit: required theorem missing: {required}"
   let imports := env.header.moduleData[index]!.imports

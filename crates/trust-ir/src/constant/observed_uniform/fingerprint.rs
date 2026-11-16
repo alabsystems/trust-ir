@@ -44,6 +44,7 @@ fn variant(node: &Constant) -> u8 {
         Constant::Record(_) => 11,
         Constant::Closure { .. } => 12,
         Constant::FnDef(_) => 13,
+        Constant::FnItem(_) => 17,
         Constant::SymbolAddr { .. } => 14,
         Constant::PhantomData => 15,
         Constant::Uninit => 16,
@@ -78,7 +79,9 @@ pub(super) fn of<O: ExecutionObserver>(
                     }
                     Constant::Float(n) => number(u128::from(n.to_bits()), h, work)?,
                     Constant::Bool(n) => number(u128::from(*n), h, work)?,
-                    Constant::FnDef(id) => number(u128::from(id.index()), h, work)?,
+                    Constant::FnDef(id) | Constant::FnItem(id) => {
+                        number(u128::from(id.index()), h, work)?
+                    }
                     Constant::SymbolAddr { symbol, addend } => {
                         text(symbol, h, work)?;
                         number(i128::from(*addend) as u128, h, work)?;

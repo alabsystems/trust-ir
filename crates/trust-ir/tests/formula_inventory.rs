@@ -1,6 +1,9 @@
 //! Borrowed formula inventory: independent order, duplicate sites, early
 //! consumer refusal and scoped allocation evidence, not proof authority.
 
+#[path = "formula_inventory/tensor_map.rs"]
+mod tensor_map;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::hint::black_box;

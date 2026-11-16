@@ -111,6 +111,21 @@ impl State {
                     actual: take(&mut self.actual),
                 });
         }
+        work.admit(1, size_of::<bool>())?;
+        if function.calling_conv != edge.conv {
+            self.ready(work)?;
+            work.text(&function.name, &mut self.name)?;
+            render::convention(edge.conv, &mut self.expected, work)?;
+            render::convention(function.calling_conv, &mut self.actual, work)?;
+            work.reserve(&mut self.errors)?;
+            work.admit(1, size_of::<ValidationError>())?;
+            self.errors.push(ValidationError::CallEdgeConvMismatch {
+                block: block.index(),
+                callee: take(&mut self.name),
+                declared: take(&mut self.expected),
+                actual: take(&mut self.actual),
+            });
+        }
         Ok(())
     }
 }

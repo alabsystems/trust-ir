@@ -230,11 +230,12 @@ fn cps_image_replay_owned_call_equations_refuse_foreign_partial_and_parameter_au
 fn cps_image_replay_owned_call_equations_never_unroll_a_circular_witness() {
     let env = environment();
     let (mut scope, mut parts, equation, _, _) = fixture(false, false, true);
-    let mut limits = ImageReplayLimits::default();
-    limits.max_depth = 8;
+    let limits = ImageReplayLimits {
+        max_depth: 8,
+        ..Default::default()
+    };
     let error = produce(&env, &mut scope, &mut parts, equation, limits)
-        .err()
-        .expect("reflexive circular equations do not establish an image");
+        .expect_err("reflexive circular equations do not establish an image");
     assert!(error.contains("depth limit"), "{error}");
 }
 

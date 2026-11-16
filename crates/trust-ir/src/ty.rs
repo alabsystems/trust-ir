@@ -13,7 +13,7 @@ mod observed_retirement;
 mod observed_trivial_drop;
 pub(crate) use observed_retirement::retire_type as retire_ty_observed;
 
-use crate::value::{ClosureTyId, EnumId, FuncTyId, PredId, RecordId, StructId, TyId};
+use crate::value::{ClosureTyId, EnumId, FuncId, FuncTyId, PredId, RecordId, StructId, TyId};
 
 /// Representation hint for `Ty::Set`.
 ///
@@ -646,6 +646,11 @@ pub enum TyG<X> {
     /// read-gated on v67 (`TENSOR_FORMAT_VERSION`). Appended after `Storage`
     /// to preserve existing serde discriminants.
     Tensor(Box<TyG<X>>, u32),
+    /// A nominal Rust function-item singleton. Its exact module-owned
+    /// function identity is part of the type; its byte image is empty.
+    /// Unlike `Func`, this is not a code pointer or a signature-only type.
+    /// Appended after every earlier constructor for positional serde stability.
+    FnItem(FuncId),
 }
 
 /// The level-R type: [`TyG`] with no extension (`NoExt` is uninhabited).
@@ -730,6 +735,7 @@ impl Ty {
                 | Ty::RefMut(_)
                 | Ty::FatPtr(_)
                 | Ty::Func(_)
+                | Ty::FnItem(_)
                 | Ty::Vector(_, _) => {}
                 Ty::Tuple(elements) => stack.extend(elements.iter().map(Frame::Visit)),
                 Ty::Array(element, len) => {
@@ -1162,6 +1168,7 @@ impl<X: crate::level::Extension> core::fmt::Display for TyG<X> {
             }
             TyG::Enum(id) => write!(f, "enum.{}", id.0),
             TyG::Func(id) => write!(f, "functy.{}", id.0),
+            TyG::FnItem(id) => write!(f, "fnitem.{}", id.0),
             TyG::Ref(inner) => write!(f, "&{}", inner),
             TyG::RefMut(inner) => write!(f, "&mut {}", inner),
             TyG::PtrConst(inner) => write!(f, "*const {}", inner),
@@ -1742,10 +1749,10 @@ pub enum EnumTagEncoding {
     /// layer out — it additionally forbids a discriminant, because it describes
     /// rustc's enum rather than trust-ir's byte image.)
     Untagged,
-    /// No stored tag, with one explicitly selected inhabited variant among
-    /// several declared variants (wire v65). Canonical values still carry that
-    /// variant's effective discriminant; the memory image contains only its
-    /// payload. Every other variant must be structurally uninhabited.
+    /// No stored tag, with one explicitly selected inhabited variant (wire v65).
+    /// One or more variants may be declared. Any other declared variant must be
+    /// structurally uninhabited. Canonical values retain the selected variant's
+    /// effective discriminant; its memory image contains only the payload.
     ///
     /// The descriptor retains one offset row per declared variant. Only the
     /// selected row describes physical fields; all inactive rows are empty.
@@ -1753,6 +1760,38 @@ pub enum EnumTagEncoding {
     /// inventing a physical view for values that cannot exist. It does not
     /// broaden the legacy v37 `Untagged` encoding.
     SingleInhabited { variant: u32 },
+    /// A physical Direct tag with explicit storage for every proved-uninhabited
+    /// source variant. Live fields keep their ordinary typed layouts. Profiles
+    /// preserve the storage reserved by repr rules without giving a dead source
+    /// field a value layout or changing its nominal identity.
+    ///
+    /// Profiles are sorted by source variant index and cover exactly the dead
+    /// variants. `EnumLayoutDescriptor::variant_field_offsets` remains the only
+    /// offset table, including for the fields described by these profiles.
+    DirectWithUninhabited {
+        tag_offset: u64,
+        variants: Vec<UninhabitedVariantLayout>,
+    },
+}
+
+/// Physical extent of a field in a proved-uninhabited variant, in bytes.
+/// This is storage metadata, not a value-layout or proof-authority capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FieldStorageLayout {
+    pub size: u64,
+    pub align: u64,
+}
+
+/// Physical extent reserved for one proved-uninhabited source variant.
+/// Fields correspond exactly to the unchanged source declaration, in order.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UninhabitedVariantLayout {
+    pub variant: u32,
+    pub size: u64,
+    pub align: u64,
+    pub fields: Vec<FieldStorageLayout>,
 }
 
 /// Concrete enum memory layout supplied by the producer.

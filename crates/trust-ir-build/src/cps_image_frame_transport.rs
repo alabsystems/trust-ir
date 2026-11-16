@@ -62,16 +62,15 @@ where
     }
     pub(super) fn projected_predecessor(&mut self, state: &Expr) -> Result<Option<Expr>, String> {
         self.parts.spend_context_work(1)?;
-        if let ExprKind::Proj(name, 0, raw) = state.kind() {
-            if *name == Name::from_string("Prod") {
-                if let Some(pair) = self.product_arguments(raw, "Prod.mk", 4)? {
-                    // A kernel product projection of its actual constructor
-                    // reduces to that field. This remains only a candidate:
-                    // the actual type/field/value must pass strict replay.
-                    self.parts.spend_context_work(1)?;
-                    return Ok(Some(pair[2].clone()));
-                }
-            }
+        if let ExprKind::Proj(name, 0, raw) = state.kind()
+            && *name == Name::from_string("Prod")
+            && let Some(pair) = self.product_arguments(raw, "Prod.mk", 4)?
+        {
+            // A kernel product projection of its actual constructor
+            // reduces to that field. This remains only a candidate:
+            // the actual type/field/value must pass strict replay.
+            self.parts.spend_context_work(1)?;
+            return Ok(Some(pair[2].clone()));
         }
         let Some(pair) = self.product_arguments(state, "Prod.mk", 4)? else {
             return Ok(None);

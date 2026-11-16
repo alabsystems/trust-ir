@@ -256,7 +256,7 @@ fn effect_of(inst: &Inst, drop_glue: Option<&trust_ir::DropGlueIndex>) -> Effect
         | Inst::ExtractField { .. }
         | Inst::InsertField { .. }
         | Inst::MakeAggregate { .. }
-            | Inst::MakeClosure { .. }
+        | Inst::MakeClosure { .. }
         // v50: a fresh array value from one register value — no memory.
         | Inst::ArraySplat { .. }
         // The tensor region: a fresh tensor VALUE from two register values
@@ -300,6 +300,12 @@ fn effect_of(inst: &Inst, drop_glue: Option<&trust_ir::DropGlueIndex>) -> Effect
         | Inst::CloseFrame { .. }
         | Inst::LandingPad { .. }
         | Inst::Resume { .. } => Effect::None,
+        // Box validity is point-in-time and §28 forbids moving or deleting
+        // its check. Until an explicit consumer contract exists, neither a
+        // readnone nor a readonly claim may summarize it away.
+        Inst::BoxDeref { .. } => Effect::Refused {
+            reason: "point-in-time Box validity is not covered by an effect claim",
+        },
         Inst::Load { ptr, .. } => Effect::Read { address: *ptr },
         Inst::AtomicLoad { ptr, ordering, .. } => {
             if is_relaxed(*ordering) {
@@ -387,12 +393,14 @@ fn effect_of(inst: &Inst, drop_glue: Option<&trust_ir::DropGlueIndex>) -> Effect
 /// The body must be consistent with the claim (LLVM `memory(none)` /
 /// `memory(read)` respectively):
 ///
-/// * `readnone` admits no `Load` / `AtomicLoad` / `Store` / `AtomicStore` /
+/// * `readnone` admits no `BoxDeref` / `Load` / `AtomicLoad` / `Store` / `AtomicStore` /
 ///   `AtomicRMW` / `CmpXchg` / `Fence` / `HeapAlloc` / `Dealloc` / `Retain` /
 ///   `Release` / `IsUnique` (nor `CoroSuspend`, which is defined as a store
 ///   into the frame), and a `Call` / `Invoke` only to a callee that is itself
 ///   `readnone`.
-/// * `readonly` additionally admits `Load` and a `Relaxed` `AtomicLoad`; an
+/// * `readonly` additionally admits `Load` and a `Relaxed` `AtomicLoad`, but
+///   not `BoxDeref`: its point-in-time validity check cannot be summarized or
+///   moved by an attribute. An
 ///   `AtomicLoad` with `Acquire` or stronger synchronizes, which LLVM also
 ///   does not admit under `memory(read)`. A callee must be `readonly` or
 ///   `readnone`.

@@ -987,18 +987,19 @@ fn vector_operations_indices_use_all_function_local_ssa_producers() {
         module.functions.reverse();
         assert_eq!(runs.len(), 52);
         let text_loss = trust_ir::format::text_checked(&module).unwrap_err();
-        assert!(text_loss.losses.iter().all(|loss| matches!(
-            loss,
-            trust_ir::format::TextLoss::FunctionId { .. }
-                | trust_ir::format::TextLoss::EntryBlock { .. }
-        )));
         assert!(
             text_loss
                 .losses
                 .iter()
-                .any(|loss| matches!(loss, trust_ir::format::TextLoss::FunctionId { .. }))
+                .all(|loss| matches!(loss, trust_ir::format::TextLoss::EntryBlock { .. }))
         );
-        // Text intentionally refuses reordered function/entry identities.
+        assert!(
+            text_loss
+                .losses
+                .iter()
+                .any(|loss| matches!(loss, trust_ir::format::TextLoss::EntryBlock { .. }))
+        );
+        // Sparse function IDs are carried; the reordered entry block remains a loss.
         // Check its canonical source independently; the other four transports
         // exercise the original non-dominance serialization order unchanged.
         let mut canonical = module.clone();

@@ -985,13 +985,13 @@ fn constant_tracks_the_lean_model() {
         &lean,
         CONSTANT_ALLOWLIST,
     );
-    // 18 since v70 added `Constant::TensorBlob` (SemR `Const.tensorBlob`)
-    // after v50's `Splat` (Lean `Constant.splat`) and v49's `Uninit`.
+    // 19 with v70 `TensorBlob` (SemR `Const.tensorBlob`) and v73 nominal
+    // `FnItem` after v50 `Splat` (Lean `Constant.splat`) and v49 `Uninit`.
     assert_eq!(
         all.len(),
-        18,
-        "Constant: the Rust enum no longer has 18 variants (15 + the crystal lane's `Uninit` \
-         + v50's `Splat` + v70's `TensorBlob`) — re-check this axis parses it"
+        19,
+        "Constant: the Rust enum no longer has 19 variants (15 + the crystal lane's `Uninit` \
+         + v50's `Splat` + v70's `TensorBlob` + v73's `FnItem`) — re-check this axis parses it"
     );
     assert_eq!(rust.len() + fragment.len(), all.len());
 
@@ -1016,6 +1016,27 @@ fn constant_tracks_the_lean_model() {
              would reach `Value.ofConstant`'s placeholder arm"
         );
     }
+}
+
+/// The append-only nominal item must participate in the same complete axis.
+#[test]
+fn mutation_removing_nominal_item_fails_the_constant_axis() {
+    let constant_rs = read_required(manifest().join("src/constant.rs"));
+    let lean_constant = read_required(lean_dir().join("Constant.lean"));
+    let constructor = "  | fnItem    : FuncId → Constant\n";
+    assert_eq!(lean_constant.matches(constructor).count(), 1);
+    let rust: BTreeSet<String> = rust_enum_variants(&constant_rs, "Constant")
+        .iter()
+        .map(|name| lower_first(name))
+        .collect();
+    let reason = parity_drift(
+        "Constant",
+        &rust,
+        &lean_constructors_any_case(&lean_constant.replacen(constructor, "", 1), "Constant"),
+        &[],
+    )
+    .expect_err("removing the actual nominal item constructor must fail parity");
+    assert!(reason.contains("fnItem"), "{reason}");
 }
 
 /// The FIELD-level `Inst` axis (WS2.18): every Rust `Inst` variant's fields,

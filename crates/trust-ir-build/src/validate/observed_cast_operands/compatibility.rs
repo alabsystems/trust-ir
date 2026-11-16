@@ -66,6 +66,15 @@ fn compatible<O: ExecutionObserver>(
     work: &mut Work<'_, '_, O>,
 ) -> R<bool> {
     work.admit(17, 0)?;
+    if matches!(op, CastOp::Bitcast | CastOp::Transmute)
+        && matches!(src, Ty::FnItem(_) | Ty::Unit)
+        && matches!(dst, Ty::FnItem(_) | Ty::Unit)
+        && (matches!(src, Ty::FnItem(_)) || matches!(dst, Ty::FnItem(_)))
+    {
+        // The module-level layout check authenticates the destination item.
+        // Explicit zero-byte casts select that destination singleton.
+        return Ok(true);
+    }
     Ok(match op {
         CastOp::Trunc | CastOp::ZExt | CastOp::SExt => resize(src, work)? && resize(dst, work)?,
         CastOp::FPTrunc | CastOp::FPExt => floating(src, work)? && floating(dst, work)?,
@@ -90,7 +99,9 @@ fn compatible<O: ExecutionObserver>(
         CastOp::Bitcast => pointer::bitcast(src, dst, work)?,
         CastOp::ReifyFnPointer => {
             work.admit(1, 0)?;
-            if matches!(src, Ty::Func(_)) {
+            if matches!((src, dst), (Ty::FnItem(_), Ty::Func(_))) {
+                true
+            } else if matches!(src, Ty::Func(_)) {
                 match pointer::layout(dst, work)? {
                     Some(layout) => {
                         work.admit(1, 0)?;

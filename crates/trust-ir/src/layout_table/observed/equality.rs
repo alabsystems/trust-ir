@@ -34,6 +34,7 @@ pub(super) fn types<O: ExecutionObserver>(
                         (Ty::Struct(a), Ty::Struct(b)) => a == b,
                         (Ty::Enum(a), Ty::Enum(b)) => a == b,
                         (Ty::Func(a), Ty::Func(b)) => a == b,
+                        (Ty::FnItem(a), Ty::FnItem(b)) => a == b,
                         (Ty::Record(a), Ty::Record(b)) => a == b,
                         (Ty::Closure(a), Ty::Closure(b)) => a == b,
                         (Ty::Sequence(a), Ty::Sequence(b)) => a == b,
@@ -126,6 +127,7 @@ fn payload_free(ty: &Ty) -> bool {
         Ty::Struct(_)
         | Ty::Enum(_)
         | Ty::Func(_)
+        | Ty::FnItem(_)
         | Ty::Record(_)
         | Ty::Closure(_)
         | Ty::Sequence(_)

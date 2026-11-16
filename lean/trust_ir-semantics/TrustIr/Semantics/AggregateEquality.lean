@@ -54,6 +54,7 @@ private def equalAt (fuel : Nat) (model : ByteModel) (plan : Plan)
     | .ptr a provenance, .nullPtr => pure (a == 0 && provenance.isNone)
     | .ptr a p, .ptr b q => pure (a == b && p == q)
     | .fnDef a f, .fnDef b g => pure (a == b && f == g)
+    | .fnItem f, .fnItem g => pure (f == g && closureTyEq plan.ty (.FnItem f))
     | .fatPtr a p metadata, .fatPtr b q expected =>
       if a != b || p != q then pure false
       else

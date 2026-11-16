@@ -1,0 +1,35 @@
+; TrustIr text format v1
+module "box_deref"
+
+functy.0 = () -> (i64)
+
+functy.1 = (ptr) -> (i64)
+
+fn @fresh(functy.0) {
+    ; #body-gate: ungated
+bb0:
+    %0 = heap_alloc rust_heap i64
+    %1 = const i64 24
+    store i64 %1, ptr %0
+    %2 = box_deref ptr sized i64 %0, site 0f1e2d3c4b5a69788796a5b4c3d2e1f0:0, session snapshot proof_session, evidence [nonnull premise(alloc_postcondition; safe_body, sound_callees, box_unique), aligned premise(alloc_postcondition; safe_body, sound_callees, box_unique), dereferenceable premise(alloc_postcondition; safe_body, sound_callees, box_unique)], not_claimed [uniqueness, pointee_validity, allocator]
+    %3 = load i64, ptr %2
+    ret %3
+}
+
+fn @checked(functy.1) {
+    ; #body-gate: ungated
+bb0(%0: ptr):
+    %1 = box_deref ptr sized i64 %0, site 0f1e2d3c4b5a69788796a5b4c3d2e1f0:1, session snapshot proof_session, evidence [nonnull premise(param_by_value; safe_body, sound_callees, box_unique), aligned premise(param_by_value; safe_body, sound_callees, box_unique), dereferenceable premise(param_by_value; safe_body, sound_callees, box_unique)], not_claimed [uniqueness, pointee_validity, allocator]
+    %2 = load i64, ptr %1
+    ret %2
+}
+
+fn @run(functy.0) {
+    ; #body-gate: ungated
+bb0:
+    %0 = heap_alloc rust_heap i64
+    %1 = const i64 42
+    store i64 %1, ptr %0
+    %2 = call @func.1(%0)
+    ret %2
+}

@@ -348,3 +348,37 @@ theorem uninhabitedFacts_source_witness (index : Index) (node : Nat)
       exact ⟨facts, formula, equations_source index node formula present, enabled, premises⟩
 
 end TrustIr.SourceLayout
+
+namespace TrustIr.SourceLayout
+
+/-- Exact original builder equation for compositional checked reductions. -/
+theorem inhabitEquations_eq (index : Index) :
+    equations index = Id.run do
+  let mut out := NatIndexTree.empty
+  for (ty, position) in numbered index.source.types do
+    out := out.insert position (match ty with | some ty => inhabitFormula index ty | none => .no)
+  for (definition, position) in numbered index.source.structs do
+    let definitions := (index.structDefinitions.find definition.id.index).getD []
+    let rule := Formula.all (definitions.map (fun row =>
+      Formula.any (inhabitFormulas index (row.fields.map (·.ty)))))
+    let canonical := (index.structPositions.find definition.id.index).getD position
+    out := out.insert (index.structBase + position)
+      (if canonical == position then rule else .ref (index.structBase + canonical))
+  for (definition, position) in numbered index.source.enums do
+    let definitions := (index.enumDefinitions.find definition.id.index).getD []
+    let rule := Formula.all (definitions.map (fun row => Formula.all (row.variants.map (fun variant =>
+      Formula.any (inhabitFormulas index variant.fields)))))
+    let canonical := (index.enumPositions.find definition.id.index).getD position
+    out := out.insert (index.enumBase + position)
+      (if canonical == position then rule else .ref (index.enumBase + canonical))
+  for (definition, position) in numbered index.source.records do
+    let definitions := (index.recordDefinitions.find definition.id.index).getD []
+    let rule := Formula.all (definitions.map (fun row =>
+      Formula.any (inhabitFormulas index (row.fields.map (·.ty)))))
+    let canonical := (index.recordPositions.find definition.id.index).getD position
+    out := out.insert (recordBase index + position)
+      (if canonical == position then rule else .ref (recordBase index + canonical))
+  return out := rfl
+
+
+end TrustIr.SourceLayout

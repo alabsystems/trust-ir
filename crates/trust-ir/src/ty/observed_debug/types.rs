@@ -36,6 +36,7 @@ impl<'a> State<'a> {
             Ty::Struct(..)
             | Ty::Enum(..)
             | Ty::Func(..)
+            | Ty::FnItem(..)
             | Ty::Sequence(..)
             | Ty::Record(..)
             | Ty::Closure(..) => self.ids(ty, work),
@@ -69,6 +70,9 @@ impl<'a> State<'a> {
                 Task::Text("Func(FuncTyId("),
                 Task::Num(u128::from(id.index())),
                 Task::Text("))"),
+            ]),
+            Ty::FnItem(id) => scheduled!(self, work; [
+                Task::Text("FnItem(FuncId("), Task::Num(u128::from(id.index())), Task::Text("))"),
             ]),
             Ty::Sequence(id) => scheduled!(self, work; [
                 Task::Text("Sequence(TyId("),

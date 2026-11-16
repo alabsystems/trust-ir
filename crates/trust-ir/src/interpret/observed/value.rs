@@ -35,7 +35,19 @@ pub(super) fn scalar_type(ty: &Ty) -> bool {
 }
 
 pub(super) fn flat_type(ty: &Ty) -> bool {
-    scalar_type(ty) || matches!(ty, Ty::Array(_, _))
+    scalar_type(ty) || matches!(ty, Ty::Array(_, _) | Ty::Func(_) | Ty::FnItem(_))
+}
+
+/// Cloning callable values preserves their spelling; execution still resolves
+/// the actual module declaration, signature and calling convention.
+fn callable_carrier_matches(value: &InterpretValue) -> bool {
+    match (&value.ty, &value.kind) {
+        (Ty::FnItem(expected), K::FnItem(actual)) => expected == actual,
+        (Ty::FnItem(_), _) | (_, K::FnItem(_)) => false,
+        (Ty::Func(_), K::FnDef(_) | K::NullPtr) => true,
+        (Ty::Func(_), _) | (_, K::FnDef(_)) => false,
+        _ => true,
+    }
 }
 
 pub(super) fn clone_value(
@@ -47,10 +59,33 @@ pub(super) fn clone_value(
         1,
         size_of::<InterpretValue>(),
     )?;
-    if !flat_type(&value.ty) {
+    clone_value_core(value, progress, false)
+}
+
+/// Private owned call construction. Existing public/structural clone callers
+/// keep their original retirement policy; a real callee pays for its prefix.
+pub(super) fn clone_value_owned(
+    value: &InterpretValue,
+    progress: &mut impl StructuralProgress,
+) -> Result<InterpretValue, ObservedValueError> {
+    progress.admit(
+        ExecutionPhase::LiteralElement,
+        1,
+        size_of::<InterpretValue>(),
+    )?;
+    clone_value_core(value, progress, true)
+}
+
+fn clone_value_core(
+    value: &InterpretValue,
+    progress: &mut impl StructuralProgress,
+    owned: bool,
+) -> Result<InterpretValue, ObservedValueError> {
+    if !flat_type(&value.ty) || !callable_carrier_matches(value) {
         return Err(ObservedValueError::UnsupportedValue);
     }
     let kind = match &value.kind {
+        K::FnDef(function) => K::FnDef(*function),
         K::Int(v) => K::Int(*v),
         K::FloatBits(v) => K::FloatBits(*v),
         K::Bool(v) => K::Bool(*v),
@@ -58,15 +93,30 @@ pub(super) fn clone_value(
         K::DanglingPtr(v) => K::DanglingPtr(*v),
         K::NullPtr => K::NullPtr,
         K::Unit => K::Unit,
+        K::FnItem(id) if value.ty == Ty::FnItem(*id) => K::FnItem(*id),
         K::PartialBytes(bytes) if scalar_type(&value.ty) && bytes.len() <= 16 => {
             let mut cloned = Vec::new();
             progress.admit(ExecutionPhase::HostAllocation, 1, bytes.len())?;
             cloned
                 .try_reserve(bytes.len())
                 .map_err(|_| ObservedValueError::AllocationFailed)?;
-            for byte in bytes {
-                progress.admit(ExecutionPhase::LiteralElement, 1, 1)?;
-                cloned.push(*byte);
+            let result = (|| {
+                for byte in bytes {
+                    progress.admit(ExecutionPhase::LiteralElement, 1, 1)?;
+                    cloned.push(*byte);
+                }
+                Ok::<(), ObservationStopped>(())
+            })();
+            if let Err(error) = result {
+                if owned {
+                    for _ in &cloned {
+                        progress.retirement_poll();
+                    }
+                    if cloned.capacity() != 0 {
+                        progress.retirement_poll();
+                    }
+                }
+                return Err(error.into());
             }
             K::PartialBytes(cloned)
         }
@@ -96,19 +146,25 @@ impl ObservedRopeElem for InterpretValue {
         progress: &mut impl StructuralProgress,
     ) -> Result<bool, ObservedValueError> {
         progress.admit(ExecutionPhase::LiteralElement, 1, 0)?;
-        if !flat_type(&self.ty) || !flat_type(&other.ty) {
+        if !flat_type(&self.ty)
+            || !flat_type(&other.ty)
+            || !callable_carrier_matches(self)
+            || !callable_carrier_matches(other)
+        {
             return Err(ObservedValueError::UnsupportedValue);
         }
         if self.ty != other.ty {
             return Ok(false);
         }
         Ok(match (&self.kind, &other.kind) {
+            (K::FnDef(a), K::FnDef(b)) => a == b,
             (K::Int(a), K::Int(b)) => a == b,
             (K::FloatBits(a), K::FloatBits(b)) => a == b,
             (K::Bool(a), K::Bool(b)) => a == b,
             (K::Ptr(a), K::Ptr(b)) => a == b,
             (K::DanglingPtr(a), K::DanglingPtr(b)) => a == b,
             (K::NullPtr, K::NullPtr) | (K::Unit, K::Unit) => true,
+            (K::FnItem(a), K::FnItem(b)) => a == b,
             (K::Array(a), K::Array(b)) => a.ptr_eq(b),
             _ => false,
         })
@@ -246,7 +302,9 @@ fn retire_value(value: InterpretValue, progress: &mut impl StructuralProgress) {
                     };
                     current = Some(child);
                 }
-                K::Frame { mut slots, .. } => {
+                K::Frame {
+                    origin, mut slots, ..
+                } => {
                     // Frames are outside the admitted observed input closure.
                     // A unique frame can still be drained without recursion.
                     // Shared unsized Arc slices cannot be atomically detached
@@ -267,6 +325,7 @@ fn retire_value(value: InterpretValue, progress: &mut impl StructuralProgress) {
                             ty: Ty::Unit,
                             kind: K::Frame {
                                 lineage: index,
+                                origin,
                                 slots,
                             },
                         };
@@ -325,7 +384,11 @@ fn retire_value(value: InterpretValue, progress: &mut impl StructuralProgress) {
                 pending = *data;
                 current = Some(*metadata);
             }
-            K::Frame { lineage, mut slots } => {
+            K::Frame {
+                lineage,
+                origin,
+                mut slots,
+            } => {
                 let mut parent = empty_value();
                 let mut child = None;
                 if let Some(values) = std::sync::Arc::get_mut(&mut slots) {
@@ -346,6 +409,7 @@ fn retire_value(value: InterpretValue, progress: &mut impl StructuralProgress) {
                         ty: Ty::Unit,
                         kind: K::Frame {
                             lineage: index,
+                            origin,
                             slots,
                         },
                     };
@@ -434,4 +498,41 @@ impl ObservedReport {
             Ok(())
         }
     }
+}
+
+impl ObservedReport {
+    /// Actual direct-call returned payloads keep their owned graph cleanup
+    /// charges even if the original final publication callback cancels.
+    pub(crate) fn retire_owned<O: ExecutionObserver>(
+        self,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) -> Result<(), ObservationStopped> {
+        match self.exit {
+            ObservedExit::Returned(outcome) => {
+                retire_values(outcome.returns, &mut session.structural_owned(site))
+            }
+            ObservedExit::EntryRejected(error)
+            | ObservedExit::ExecutedError { error, .. }
+            | ObservedExit::InterpreterLimit { error, .. } => {
+                retire_error_owned(error, session, site);
+            }
+            _ => {}
+        }
+        session.retirement_step(site, 1);
+        if session.first_refusal.is_some() {
+            Err(ObservationStopped)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub(super) fn retire_error_owned<O: ExecutionObserver>(
+    error: super::super::InterpretError,
+    session: &mut ObservedSession<'_, O>,
+    site: ExecutionSite,
+) {
+    session.retirement_step(site, 1 + usize::from(error.panic.is_some()));
+    drop(error);
 }

@@ -707,6 +707,24 @@ pub(super) fn observed_write_inst<O: ExecutionObserver>(
             observed_write_projected_value_id(buf, canonical, *src)?;
             observed_write_vec_value_id(buf, canonical, coords)?;
         }
+        // v72: byte for byte the canonical writer's tag-77 spelling.
+        InstG::BoxDeref {
+            ptr_ty,
+            pointee,
+            operand,
+            fact,
+        } => {
+            observed_write_u8(buf, 77)?;
+            observed_write_ty(buf, pool, ptr_ty)?;
+            match pointee {
+                BoxPointeeG::Sized { ty } => {
+                    observed_write_u8(buf, 0)?;
+                    observed_write_ty(buf, pool, ty)?;
+                }
+            }
+            observed_write_projected_value_id(buf, canonical, *operand)?;
+            observed_write_box_validity_fact(buf, fact)?;
+        }
         InstG::DialectOp(op) => {
             observed_write_u8(buf, 44)?;
             observed_write_dialect_inst(buf, pool, canonical, op)?;
@@ -852,5 +870,89 @@ fn observed_write_tensor_map_node<O: ExecutionObserver>(
         }
     }
 
+    Ok(())
+}
+
+/// The v72 validity fact of a tag-77 instruction, byte for byte the spelling
+/// of `write_box_validity_fact`.
+pub(super) fn observed_write_box_validity_fact<O: ExecutionObserver>(
+    buf: &mut Output<'_, '_, O>,
+    fact: &BoxValidityFact,
+) -> R {
+    buf.poll()?;
+    buf.extend_from_slice(&fact.site.item)?;
+    observed_write_v32(buf, fact.site.ordinal)?;
+    observed_write_u8(
+        buf,
+        match fact.session.judged {
+            JudgedBody::VerificationSnapshot => 0,
+            JudgedBody::OptimizedFallback => 1,
+        },
+    )?;
+    observed_write_u8(
+        buf,
+        match fact.session.producing {
+            ProducingSession::ProofSession => 0,
+            ProducingSession::NonProofSession => 1,
+        },
+    )?;
+    observed_write_count(buf, "validity-evidence list", fact.evidence.len())?;
+    for entry in &fact.evidence {
+        buf.poll()?;
+        observed_write_u8(
+            buf,
+            match entry.conjunct {
+                ValidityConjunct::NonNull => 0,
+                ValidityConjunct::Aligned => 1,
+                ValidityConjunct::Dereferenceable => 2,
+                ValidityConjunct::MetadataValid => 3,
+            },
+        )?;
+        match &entry.evidence {
+            ValidityEvidence::Premise { root, standing } => {
+                observed_write_u8(buf, 0)?;
+                observed_write_u8(
+                    buf,
+                    match root {
+                        PremiseRoot::ParamByValue => 0,
+                        PremiseRoot::AllocPostcondition => 1,
+                        PremiseRoot::ReturnedBoxDischarged => 2,
+                        PremiseRoot::ReturnedBoxAssumed => 3,
+                        PremiseRoot::ReferenceArgBoxValid => 4,
+                    },
+                )?;
+                observed_write_count(buf, "standing-assumption list", standing.len())?;
+                for assumption in standing {
+                    observed_write_u8(
+                        buf,
+                        match assumption {
+                            StandingAssumption::SafeBody => 0,
+                            StandingAssumption::SoundCallees => 1,
+                            StandingAssumption::BoxUnique => 2,
+                        },
+                    )?;
+                }
+            }
+            ValidityEvidence::DominatingCheck { align } => {
+                observed_write_u8(buf, 1)?;
+                observed_write_opt_u64(buf, *align)?;
+            }
+            ValidityEvidence::Obligation { obligation } => {
+                observed_write_u8(buf, 2)?;
+                observed_write_proof_id(buf, *obligation)?;
+            }
+        }
+    }
+    observed_write_count(buf, "validity non-claim list", fact.not_claimed.len())?;
+    for non_claim in &fact.not_claimed {
+        observed_write_u8(
+            buf,
+            match non_claim {
+                BoxValidityNonClaim::Uniqueness => 0,
+                BoxValidityNonClaim::PointeeValidity => 1,
+                BoxValidityNonClaim::Allocator => 2,
+            },
+        )?;
+    }
     Ok(())
 }

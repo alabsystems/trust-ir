@@ -653,6 +653,7 @@ struct Merger<'a> {
     struct_base: u32,
     enum_base: u32,
     record_base: u32,
+    function_base: u32,
 
     src_struct_pos: HashMap<StructId, usize>,
     src_enum_pos: HashMap<EnumId, usize>,
@@ -784,6 +785,8 @@ impl<'a> Merger<'a> {
             struct_base: next_after(dst.structs.iter().map(|d| d.id.index()), "structs")?,
             enum_base: next_after(dst.enums.iter().map(|d| d.id.index()), "enums")?,
             record_base: next_after(dst.records.iter().map(|d| d.id.index()), "records")?,
+            function_base: next_after(dst.functions.iter().map(|f| f.id.index()), "functions")?
+                .max(len_u32(dst.functions.len(), "functions")?),
             src_struct_pos: position_index(src.structs.iter().map(|d| d.id), "structs")?,
             src_enum_pos: position_index(src.enums.iter().map(|d| d.id), "enums")?,
             src_record_pos: position_index(src.records.iter().map(|d| d.id), "records")?,
@@ -1191,8 +1194,7 @@ impl<'a> Merger<'a> {
         for f in &self.dst.functions {
             by_name.entry(f.name.as_str()).or_insert(f.id);
         }
-        let mut next = next_after(self.dst.functions.iter().map(|f| f.id.index()), "functions")?
-            .max(len_u32(self.dst.functions.len(), "functions")?);
+        let mut next = self.function_base;
         let mut seen = HashSet::new();
         // New ids are dense, handed out in `src` ID order, so a module whose
         // ids are a permutation of `0..n` keeps them under the identity merge.
@@ -1339,6 +1341,7 @@ impl<'a> Merger<'a> {
             Ty::Record(id) => id.index() >= self.record_base,
             Ty::Closure(id) => id.index() >= self.closure_base,
             Ty::Func(id) => id.index() >= self.functy_base,
+            Ty::FnItem(id) => id.index() >= self.function_base,
             Ty::Array(elem, _) | Ty::Set(elem, _) | Ty::Sequence(elem) => {
                 elem.index() >= self.ty_base
             }
@@ -1797,6 +1800,7 @@ impl<'a> Merger<'a> {
             Ty::Tuple(elems) => Ty::Tuple(self.tys(elems)?),
             Ty::Enum(id) => Ty::Enum(self.enum_id(*id)?),
             Ty::Func(id) => Ty::Func(self.functy_id(*id)?),
+            Ty::FnItem(id) => Ty::FnItem(self.func(*id)?),
             Ty::Ref(inner) => Ty::Ref(Box::new(self.ty(inner)?)),
             Ty::RefMut(inner) => Ty::RefMut(Box::new(self.ty(inner)?)),
             Ty::PtrConst(inner) => Ty::PtrConst(Box::new(self.ty(inner)?)),
@@ -1870,6 +1874,7 @@ impl<'a> Merger<'a> {
                 captures: self.constants(captures)?,
             },
             Constant::FnDef(func) => Constant::FnDef(self.func(*func)?),
+            Constant::FnItem(func) => Constant::FnItem(self.func(*func)?),
             // A digest names bytes, not an id: verbatim (the tables union).
             Constant::TensorBlob { digest, dims } => Constant::TensorBlob {
                 digest: *digest,
@@ -2150,6 +2155,30 @@ impl<'a> Merger<'a> {
                     .collect::<Result<_, MergeError>>()?,
                 exhaustive_enum_unreachable: *exhaustive_enum_unreachable,
             },
+            // The fact cites an obligation by module-local id; a merge
+            // renumbers obligations, so the citation is rewritten with them.
+            Inst::BoxDeref {
+                ptr_ty,
+                pointee,
+                operand,
+                fact,
+            } => {
+                let trust_ir::box_validity::BoxPointee::Sized { ty } = pointee;
+                let mut fact = fact.clone();
+                for entry in &mut fact.evidence {
+                    if let trust_ir::box_validity::ValidityEvidence::Obligation { obligation } =
+                        &mut entry.evidence
+                    {
+                        *obligation = self.proof(*obligation)?;
+                    }
+                }
+                Inst::BoxDeref {
+                    ptr_ty: self.ty(ptr_ty)?,
+                    pointee: trust_ir::box_validity::BoxPointee::Sized { ty: self.ty(ty)? },
+                    operand: *operand,
+                    fact,
+                }
+            }
             Inst::MakeClosure { ty, func, captures } => Inst::MakeClosure {
                 ty: self.closure_id(*ty)?,
                 func: self.func(*func)?,

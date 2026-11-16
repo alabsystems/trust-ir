@@ -64,6 +64,7 @@ impl State<'_> {
     }
 }
 pub(super) fn zero<O: ExecutionObserver>(
+    state: &mut State<'_>,
     module: &Module,
     ty: &Ty,
     work: &mut Work<'_, '_, O>,
@@ -73,6 +74,13 @@ pub(super) fn zero<O: ExecutionObserver>(
         Ty::Unit => Ok(true),
         Ty::Tuple(elems) => Ok(elems.is_empty()),
         Ty::Array(_, 0) => Ok(true),
+        Ty::FnItem(_) => {
+            // Use the actual charged header/signature lookup. A spelling alone
+            // cannot authenticate the zero-sized nominal type.
+            let summary = state.query(ty, work)?;
+            state.retire_error(work);
+            Ok(summary.is_some_and(|layout| layout.size == Some(0)))
+        }
         Ty::Struct(id) => {
             let mut n = 0;
             while let Some(row) = work.at(&module.structs, n)? {

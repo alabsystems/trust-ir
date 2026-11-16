@@ -21,7 +21,7 @@ def SMTSourceInput.build (sort : SMTSort) (value : Value) : Except String (SMTSo
     if sameWidth : width = bits then
       if positive : 0 < bits then
         if canonical : Int.ofNat (BitVec.ofInt bits value).toNat = value then
-          .ok ⟨⟨.bvConst bits value,[],positive,rfl⟩,by
+          .ok ⟨⟨.bvConst bits value,[],positive,rfl,[],rfl⟩,by
             simp only [SMTTerm.eval,SMTSort.irValue]
             rw [canonical,sameWidth]⟩
         else .error "SMT source requires a canonical integer carrier"

@@ -168,6 +168,11 @@ impl Graph {
                         u32::try_from(number(&n[1])?).map_err(|_| "function id exceeds u32")?;
                         edge(&measures, &n[2], Kind::List)?;
                     }
+                    "fnitem" => {
+                        arity(n, 2)?;
+                        u32::try_from(number(&n[1])?)
+                            .map_err(|_| "function item id exceeds u32")?;
+                    }
                     "function" => {
                         arity(n, 3)?;
                         for id in &n[1..] {

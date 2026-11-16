@@ -237,3 +237,68 @@ fn splat_logical_length_and_unused_childless_root_bytes_do_not_fake_text_work() 
     }
     assert_eq!(traces[0], traces[1]);
 }
+
+#[test]
+fn tensor_blob_equality_callbacks_keep_original_stops_caps_fuel_and_cleanup() {
+    let blob = Constant::TensorBlob {
+        digest: crate::blob::BlobDigest([7; 32]),
+        dims: vec![2, 3],
+    };
+    let root = array(vec![blob.clone(), blob]);
+    let (count, baseline, end, _) = run(&root);
+    assert_eq!(count, 1);
+    for cut in 1..=end {
+        let mut o = Observer {
+            stop: Some(cut),
+            ..Observer::default()
+        };
+        let mut s = ObservedSession::new(InterpretOptions::default(), &mut o);
+        assert!(matches!(
+            root.uniform_element_lists_observed(&mut s, site()),
+            Err(ObservedValueError::AdmissionRefused)
+        ));
+        assert_eq!(
+            s.first_refusal().unwrap().cause,
+            "original uniform-class stop"
+        );
+        assert_eq!(s.remaining_fuel(), InterpretOptions::default().fuel);
+        drop(s);
+        assert_eq!(&o.events[..cut], &baseline.events[..cut]);
+        assert!(
+            o.events[cut..]
+                .iter()
+                .all(|event| event.phase == ExecutionPhase::ScratchRetirement)
+        );
+    }
+    for copy in [false, true] {
+        let cap = baseline.events[..end]
+            .iter()
+            .map(|event| if copy { event.copy_bytes } else { event.work })
+            .sum();
+        let mut o = Observer::default();
+        if copy {
+            o.byte_cap = Some(cap);
+        } else {
+            o.work_cap = Some(cap);
+        }
+        let mut options = InterpretOptions::default();
+        options.fuel = 0;
+        let mut s = ObservedSession::new(options, &mut o);
+        let held = root.uniform_element_lists_observed(&mut s, site()).unwrap();
+        assert!(matches!(
+            root.uniform_element_lists_observed(&mut s, site()),
+            Err(ObservedValueError::AdmissionRefused)
+        ));
+        assert_eq!(
+            s.first_refusal().unwrap().cause,
+            if copy { "copy" } else { "work" }
+        );
+        assert_eq!(s.remaining_fuel(), 0);
+        let _ = held.retire_observed(&mut s, site());
+        assert_eq!(
+            s.first_refusal().unwrap().cause,
+            if copy { "copy" } else { "work" }
+        );
+        assert_eq!(s.remaining_fuel(), 0);
+    }
+}

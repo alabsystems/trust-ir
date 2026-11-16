@@ -262,7 +262,7 @@ private theorem checkSeqMapElement_congr (base : EvalContext)
       | absent => rfl
       | present sourceTable targetTable same =>
         have read := same sequence (trustIrListMemAppendRight _ ((trustIrListMemConsSelf _ _)))
-        simp only [EvalContext.checkSeqMapElement, scopedContext, service, pure_bind,
+        simp only [EvalContext.checkSeqMapElement, scopedContext, EvalContext.types, service, pure_bind,
           Except.bind, Except.pure, Bind.bind, Pure.pure, read]
 
 private theorem seqMapInvoke_congr (base : EvalContext)

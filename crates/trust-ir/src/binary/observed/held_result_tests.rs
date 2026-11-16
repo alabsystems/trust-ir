@@ -74,7 +74,11 @@ fn route<O: ExecutionObserver>(
         Route::Type => observed_write_ty(
             out,
             pool,
-            &Ty::Tuple(vec![Ty::I8, Ty::Ref(Box::new(Ty::I64))]),
+            &Ty::Tuple(vec![
+                Ty::I8,
+                Ty::Ref(Box::new(Ty::I64)),
+                Ty::FnItem(FuncId::new(7)),
+            ]),
         )
         .map(|()| 71),
         Route::Constant => observed_write_constant(
@@ -83,6 +87,7 @@ fn route<O: ExecutionObserver>(
             &crate::Constant::Aggregate(vec![
                 crate::Constant::Int(17),
                 crate::Constant::Bool(true),
+                crate::Constant::FnItem(FuncId::new(7)),
             ]),
         )
         .map(|()| 71),

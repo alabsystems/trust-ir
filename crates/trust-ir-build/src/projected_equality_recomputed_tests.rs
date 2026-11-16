@@ -77,7 +77,7 @@ fn run(corrupt: bool) {
     let (candidate, work) = replay_projected_equality_with_diagnostics(
         &env,
         &mut sc,
-        &[guard.clone()],
+        std::slice::from_ref(&guard),
         &[],
         pair_type(),
         bool_(),

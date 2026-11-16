@@ -10,7 +10,7 @@ def EnumPayloadAvoidsTag (info : Enumeration) (variants : List (Option (List (Na
     (position : Nat) : Prop :=
   match info.encoding with
   | .untagged | .singleInhabited _ => True
-  | .direct offset => ∀ fields, (trustIrListGet? variants position) = some (some fields) →
+  | .direct offset | .directWithUninhabited offset _ => ∀ fields, (trustIrListGet? variants position) = some (some fields) →
       FieldsAvoidLane fields offset (tagBits info.tag / 8)
   | .niche untagged _ _ _ offset repr => position ≠ untagged →
       ∀ fields, (trustIrListGet? variants position) = some (some fields) →
@@ -65,6 +65,22 @@ theorem enum_encoded_selection (model : ByteModel) (order : FunctionAddressOrder
     have count : tagBytes.length = tagBits info.tag / 8 := encodeIntBytes_length _ _
     rw [count] at initialRead finalRead
     exact EnumDecodingSelects.transfer_direct encoding initialRead finalRead prefixSelected
+  | directWithUninhabited offset profiles =>
+    rw [encoding] at prefixSelected
+    obtain ⟨width,raw,shape⟩ := built.profiled_direct_tag encoding
+    subst tag
+    let tagBytes := encodeIntBytes raw (tagBits info.tag / 8)
+    have lane := built.profiled_direct_lane layout.size info position width raw bytes offset encoding
+    have finalLane := payload.preserves_lane lane (by
+      intro fields found
+      have avoids := separated
+      rw [EnumPayloadAvoidsTag,encoding] at avoids
+      simpa only [ByteImage.size_ofList,List.length_map,encodeIntBytes_length] using avoids fields found)
+    have initialRead := lane.initialized tagBytes
+    have finalRead := finalLane.initialized tagBytes
+    have count : tagBytes.length = tagBits info.tag / 8 := encodeIntBytes_length _ _
+    rw [count] at initialRead finalRead
+    exact EnumDecodingSelects.transfer_profiled_direct encoding initialRead finalRead prefixSelected
   | niche untagged start stop first offset repr =>
     rw [encoding] at prefixSelected
     dsimp only at prefixSelected

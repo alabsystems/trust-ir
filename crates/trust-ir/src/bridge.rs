@@ -347,6 +347,79 @@ pub const CLOSURE_APPLICATION_VIOLATION: &str = "CallIndirect over a Ty::Closure
 const MODULE_TARGET_VIOLATION: &str = "module target is outside the executable model's pinned byte models (subset v5 condition 5: \
      `target_info` absent, or little-endian with pointer_size == 8, or wasm32 with pointer_size == 4)";
 
+/// Reject unsupported subset epochs and enforce the new nominal-item family's
+/// first epoch. Existing old-type verdicts for versions 1–5 are unchanged.
+/// This checks actual unique headers/signature presence, not full typing or a
+/// producer's concrete-callee/source binding; those remain separate obligations.
+pub fn module_subset_epoch_violation(module: &Module, requested: u32) -> Option<&'static str> {
+    if requested > ConformanceSubset::CURRENT.version {
+        return Some("requested lowering-target subset version is newer than this implementation");
+    }
+    let mut items = std::collections::BTreeSet::new();
+    module.visit_types(|ty| {
+        if let Ty::FnItem(id) = ty {
+            items.insert(*id);
+        }
+    });
+    let mut note = |constant: &crate::Constant| {
+        constant.visit_constants(|node| {
+            if let crate::Constant::FnItem(id) = node {
+                items.insert(*id);
+            }
+        });
+    };
+    for global in &module.globals {
+        if let Some(value) = &global.initializer {
+            note(value);
+        }
+    }
+    for function in &module.functions {
+        for block in &function.blocks {
+            for node in &block.body {
+                match &node.inst {
+                    Inst::Const { value, .. } => note(value),
+                    Inst::Switch { cases, .. } => {
+                        for case in cases {
+                            note(&case.value);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    for universe in &module.universes {
+        if let crate::Universe::Members(values) = universe {
+            for value in values {
+                note(value);
+            }
+        }
+    }
+    for predicate in &module.predicates {
+        if let crate::Pred::FiniteSet(values) = predicate {
+            for value in values {
+                note(value);
+            }
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    if requested < 6 {
+        return Some("FnItem requires lowering-target subset v6; an older receipt cannot admit it");
+    }
+    let functions = crate::ModuleFunctionCatalog::new(module);
+    if items
+        .into_iter()
+        .any(|id| functions.function_item(id).is_err())
+    {
+        return Some(
+            "FnItem requires an actual unique module function header and resolvable signature",
+        );
+    }
+    None
+}
+
 impl Default for ConformanceSubset {
     fn default() -> Self {
         Self::CURRENT
@@ -418,7 +491,9 @@ impl ConformanceSubset {
     /// exist yet.
     /// v5 adds the target-indexed wasm32 model. No construct allowlist or
     /// unrelated structural exclusion changes; the default64 path is retained.
-    pub const CURRENT: Self = Self { version: 5 };
+    /// v6 adds nominal function-item values. Header validity is checked by
+    /// module validation; this structural classifier grants no source authority.
+    pub const CURRENT: Self = Self { version: 6 };
 
     /// Reason an instruction violates subset v4 structural **condition 6** —
     /// a `Char` value may originate only from a range-validated `Const` or
@@ -571,6 +646,7 @@ impl ConformanceSubset {
             | Ty::Array(_, _)
             | Ty::Enum(_)
             | Ty::Func(_)
+            | Ty::FnItem(_)
             | Ty::Set(_, _)
             | Ty::Sequence(_)
             | Ty::Record(_)
@@ -796,6 +872,12 @@ impl ConformanceSubset {
             Inst::MakeAggregate { .. } => Some(
                 "Inst::MakeAggregate: no backend lowering, and enum/record construction is an honest Lean partial (B3 depth ledger); admission is a subset-contract bump (the v51 INST wire batch landed its wire tag)",
             ),
+            // v72: the validity fact is judged by the validator; no backend
+            // reads it and the consumer contract for acting on it is not
+            // ratified, so the subset excludes the instruction by name.
+            Inst::BoxDeref { .. } => Some(
+                "Inst::BoxDeref: the carried Box validity fact has no consumer lowering contract; admission is a subset-contract bump with the consumer",
+            ),
             Inst::MakeClosure { .. } => Some(
                 "Inst::MakeClosure: runtime closure construction awaits native lowering and operational Lean closure semantics before subset admission",
             ),
@@ -961,6 +1043,15 @@ impl ConformanceSubset {
     /// `bridge_subset_agreement` gate.
     pub fn check(&self, module: &Module) -> Result<(), Vec<SubsetViolation>> {
         let mut violations = Vec::new();
+        if let Some(reason) = module_subset_epoch_violation(module, self.version) {
+            violations.push(SubsetViolation {
+                function: None,
+                block: None,
+                instruction_index: None,
+                site: SubsetSite::ModuleEpoch,
+                reason,
+            });
+        }
         // Condition 6's `Char`-by-value verdicts, decided once per type node
         // for the whole module.
         let mut char_memo = ReachMemo::default();
@@ -1080,11 +1171,15 @@ pub enum SubsetSite {
     /// structural condition5 (the selected64-bit or wasm32 little-endian byte model).
     /// `function` and `block` are `None` — the violation has no site.
     ModuleTarget,
+    /// The requested subset epoch does not admit the new nominal-item family,
+    /// or that family's actual function-header context is unavailable.
+    ModuleEpoch,
 }
 
 /// A single out-of-subset construct, located precisely for diagnostics.
 ///
-/// `function` / `block` are `None` exactly for [`SubsetSite::ModuleTarget`],
+/// `function` / `block` are `None` for [`SubsetSite::ModuleTarget`] and
+/// [`SubsetSite::ModuleEpoch`],
 /// which is a property of the whole module and names no construct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1110,7 +1205,7 @@ impl core::fmt::Display for SubsetViolation {
             .block
             .map_or_else(|| "?".to_string(), |id| format!("{id:?}"));
         match self.site {
-            SubsetSite::ModuleTarget => {
+            SubsetSite::ModuleTarget | SubsetSite::ModuleEpoch => {
                 write!(f, "conformance-subset violation in module: {}", self.reason)
             }
             SubsetSite::BlockParamType { param_index } => write!(
@@ -1538,6 +1633,7 @@ pub fn constant_splat_excluded(constant: &Constant) -> Option<&'static str> {
 fn inst_result_tys(inst: &Inst, module: &Module) -> Vec<Ty> {
     match inst {
         Inst::MakeClosure { ty, .. } => vec![Ty::Closure(*ty)],
+        Inst::BoxDeref { ptr_ty, .. } => vec![ptr_ty.clone()],
         // Trust (wave-DS): a drop RUNS a destructor and yields nothing; so
         // does its unwinding twin (amendment D).
         Inst::Drop { .. } | Inst::DropInvoke { .. } => Vec::new(),
@@ -1991,7 +2087,7 @@ mod tests {
         module
             .check_conformance_subset()
             .expect("worked-example module is in-subset");
-        assert_eq!(ConformanceSubset::CURRENT.version, 5);
+        assert_eq!(ConformanceSubset::CURRENT.version, 6);
 
         // Step 1c: per-instruction provenance is recoverable. Every produced
         // value carries the threaded span (no node was emitted span-less).

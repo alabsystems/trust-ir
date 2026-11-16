@@ -74,6 +74,7 @@ theorem substTy_embed (σ η : Nat → Option Ty) : ∀ t : Ty, substTy σ η (e
   | .Dialect a0 a1 a2 => by simp [embed, substTy]
   | .Storage a0 a1 => by simp [embed, substTy]
   | .Handle a0 a1 => by simp [embed, substTy]
+  | .FnItem id => by simp [embed, substTy]
 theorem substTys_embeds (σ η : Nat → Option Ty) : ∀ ts : List Ty, substTys σ η (embeds ts) = some ts
   | [] => by simp [embeds, substTys]
   | t :: ts => by simp [embeds, substTys, substTy_embed σ η t, substTys_embeds σ η ts]
@@ -144,6 +145,7 @@ theorem substTy_total (σ η : Nat → Option Ty) :
   | .Dialect _ _ _, _ => by simp [substTy]
   | .Storage _ _, _ => by simp [substTy]
   | .Handle _ _, _ => by simp [substTy]
+  | .FnItem _, _ => by simp [substTy]
   | .param _, h => by simpa [substTy, refsOk] using h
   | .hole _, h => by simpa [substTy, refsOk] using h
 theorem substTys_total (σ η : Nat → Option Ty) :

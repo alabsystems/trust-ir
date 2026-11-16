@@ -113,6 +113,10 @@ mod enum_id_admission_cases;
 mod exact_field_type_cases;
 #[path = "common/float_minmax.rs"]
 mod float_minmax_cases;
+#[path = "common/function_items.rs"]
+mod function_item_cases;
+#[path = "common/function_item_frames.rs"]
+mod function_item_frame_cases;
 #[path = "common/function_memory.rs"]
 mod function_memory_cases;
 #[path = "common/function_namespace.rs"]
@@ -240,6 +244,7 @@ enum Val {
         signature: u32,
         func: u32,
     },
+    FnItem(u32),
     Unit,
     /// An UNWRITTEN aggregate lane (crystal lane, E3b): the interpreter's
     /// `InterpretValueKind::Uninit`, the Lean model's `Value.uninit`.
@@ -440,6 +445,10 @@ fn rust_val(v: &InterpretValue) -> Val {
         InterpretValueKind::Closure { func, captures } => Val::Closure {
             func: func.0,
             captures: captures.iter().map(rust_val).collect(),
+        },
+        InterpretValueKind::FnItem(func) => match &v.ty {
+            Ty::FnItem(id) if id == func => Val::FnItem(func.0),
+            other => Val::Other(format!("FnItem at mismatched type {other:?}")),
         },
         InterpretValueKind::FnDef(func) => match &v.ty {
             Ty::Func(signature) => Val::Function {
@@ -648,6 +657,11 @@ fn lean_val(j: &Json) -> Val {
             func: p["func"].as_u64().unwrap_or(u64::MAX) as u32,
             captures: list(&p["captures"]),
         },
+        "fnitem" => p
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Val::FnItem)
+            .unwrap_or_else(|| Val::Other(j.to_string())),
         "function" => Val::Function {
             signature: p["signature"].as_u64().unwrap_or(u64::MAX) as u32,
             func: p["func"].as_u64().unwrap_or(u64::MAX) as u32,
@@ -2110,6 +2124,215 @@ fn typed_array_splat_instruction_agrees() {
     for report in reports {
         assert!(matches!(report.rust, Verdict::Graph(_)), "{report:?}");
         assert_eq!(report.comparison, Comparison::Agree, "{report:?}");
+    }
+}
+
+/// Rust's `[u8; 16]` site identity and Lean's JSON decoder have the same byte
+/// domain. A 16-element list is not enough: each element must be below 256.
+#[test]
+fn box_deref_site_bytes_over_u8_are_refused_by_rust_and_lean() {
+    let module =
+        trust_ir_conformance::fixtures::build_box_deref().expect("canonical Box deref fixture");
+    let mut mutated = serde_json::to_value(&module).expect("Box deref fixture JSON");
+    let byte = &mut mutated["functions"][0]["blocks"][0]["body"][3]["inst"]["BoxDeref"]["fact"]["site"]
+        ["item"][0];
+    assert_eq!(*byte, json!(0x0f));
+    *byte = json!(256);
+    assert!(
+        serde_json::from_value::<Module>(mutated.clone()).is_err(),
+        "Rust must refuse a BoxDerefSite byte outside u8"
+    );
+
+    let Oracle::Ready(exe) = oracle() else { return };
+    let request = json!({
+        "fuel": FUEL,
+        "call_depth": CALL_DEPTH,
+        "batches": [{
+            "module": mutated,
+            "runs": [{"function": 0, "args": []}],
+        }],
+    });
+    let path = std::env::temp_dir().join(format!(
+        "trustir-box-site-byte-{}-{}.json",
+        std::process::id(),
+        std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .replace("::", "_")
+    ));
+    fs::write(&path, serde_json::to_vec(&request).unwrap()).expect("write Box site byte mutation");
+    let output = Command::new(exe)
+        .arg(&path)
+        .output()
+        .expect("run Box site byte mutation");
+    fs::remove_file(path).expect("remove Box site byte mutation");
+    assert!(output.status.success(), "{output:?}");
+    let reply: Json = serde_json::from_slice(&output.stdout).expect("Box site byte reply");
+    let batches = reply.as_array().expect("one Box site byte batch");
+    assert_eq!(batches.len(), 1, "{reply}");
+    let runs = batches[0].as_array().expect("one Box site byte run");
+    assert_eq!(runs.len(), 1, "{reply}");
+    assert_eq!(
+        runs[0]["error"].as_str(),
+        Some("BoxDerefSite.item: byte > 255"),
+        "Lean accepted or misclassified an out-of-range Box site byte: {reply}",
+    );
+}
+
+/// `Inst::BoxDeref` (wire v74): both engines bind the operand pointer
+/// unchanged when it is valid as a `Box` of the pointee, and both report
+/// undefined behaviour for each conjunct they decide (`NonNull`, `Aligned`,
+/// `Dereferenceable`), at 32-bit and 64-bit pointer widths. The carried fact
+/// is a named premise in every case: neither engine reads it.
+#[test]
+fn box_deref_validity_agrees_across_engines_at_both_pointer_widths() {
+    use trust_ir::box_validity::{BoxDerefSite, BoxFactSession, BoxValidityFact, PremiseRoot};
+    use trust_ir::constant::Constant;
+    use trust_ir::inst::{BinOp, CastOp};
+    use trust_ir_build::FunctionBuilder;
+
+    type Shape = fn(&mut FunctionBuilder<'_>, trust_ir::ValueId) -> trust_ir::ValueId;
+    // (name, allocated type, the operand built from the allocation, defined?)
+    let cases: [(&str, Ty, Shape, bool); 6] = [
+        ("valid", Ty::Usize, |_, raw| raw, true),
+        ("null", Ty::Usize, |fb, _| fb.null_ptr(), false),
+        (
+            "misaligned",
+            Ty::U64,
+            |fb, raw| {
+                let address = fb.cast(CastOp::PtrToInt, Ty::Ptr, Ty::Usize, raw);
+                let one = fb.const_value(Ty::Usize, Constant::Int(1));
+                let moved = fb.binop(BinOp::Add, Ty::Usize, address, one);
+                fb.cast(CastOp::IntToPtr, Ty::Usize, Ty::Ptr, moved)
+            },
+            false,
+        ),
+        (
+            "dangling",
+            Ty::Usize,
+            |fb, _| {
+                let address = fb.const_value(Ty::Usize, Constant::Int(4096));
+                fb.cast(CastOp::IntToPtr, Ty::Usize, Ty::Ptr, address)
+            },
+            false,
+        ),
+        // A stack allocation: exact bounds in both memory models (a heap
+        // allocation carries readable usable-size slack).
+        (
+            "short",
+            Ty::Usize,
+            |fb, _| fb.alloca_aligned(Ty::U8, 8),
+            false,
+        ),
+        (
+            "freed",
+            Ty::Usize,
+            |fb, raw| {
+                fb.dealloc(raw);
+                raw
+            },
+            false,
+        ),
+    ];
+    let Oracle::Ready(exe) = oracle() else { return };
+    for bits in [32u32, 64] {
+        let target = trust_ir::TargetInfo {
+            triple: if bits == 32 {
+                "wasm32-unknown-unknown".into()
+            } else {
+                "aarch64-apple-darwin".into()
+            },
+            pointer_size: bits / 8,
+            endianness: trust_ir::Endianness::Little,
+            abi: None,
+            struct_passing: Default::default(),
+        };
+        let mut mb = ModuleBuilder::new_with_target_info(format!("box_deref_{bits}"), target);
+        let mut runs = Vec::new();
+        for (ordinal, (name, allocated, shape, _)) in cases.iter().enumerate() {
+            let sig = mb.add_func_type(vec![], vec![Ty::Usize]);
+            let mut fb = mb.function(format!("box_deref_{name}"), sig);
+            let entry = fb.create_block();
+            fb.switch_to_block(entry);
+            let raw = fb.heap_alloc(allocated.clone(), None, None, AllocOrigin::RustHeap);
+            if *name == "valid" {
+                let nine = fb.const_value(Ty::Usize, Constant::Int(9));
+                fb.store(Ty::Usize, raw, nine);
+            }
+            let operand = shape(&mut fb, raw);
+            let boxed = fb.box_deref(
+                Ty::Usize,
+                operand,
+                BoxValidityFact::premise(
+                    BoxDerefSite {
+                        item: [0x5a; 16],
+                        ordinal: ordinal as u32,
+                    },
+                    BoxFactSession::PROOF_SNAPSHOT,
+                    PremiseRoot::AllocPostcondition,
+                ),
+            );
+            // The load reads through the RESULT, so a defined run also shows
+            // the result kept the operand's address and provenance.
+            let read = fb.load(Ty::Usize, boxed);
+            fb.ret(vec![read]);
+            fb.set_body_gate(trust_ir::BodyGate::Ungated);
+            runs.push((fb.build(), vec![]));
+        }
+        let module = mb.build().expect("Box deref differential module");
+        // The validator's sanity rule refuses the four cases whose operand
+        // the function itself shows to be no box (null, the two `inttoptr`
+        // addresses, the freed allocation) and nothing else. The engines
+        // are run on the module regardless: the reference semantics does
+        // not depend on admission.
+        let mut contradicted = Vec::new();
+        for error in trust_ir_build::validate_module(&module) {
+            match error {
+                trust_ir_build::ValidationError::BoxDerefPremiseContradicted {
+                    function, ..
+                } => contradicted.push(function),
+                other => panic!("{bits}-bit: {other:?}"),
+            }
+        }
+        assert_eq!(
+            contradicted,
+            [
+                "box_deref_null",
+                "box_deref_misaligned",
+                "box_deref_dangling",
+                "box_deref_freed"
+            ],
+            "{bits}-bit"
+        );
+        let reports = differential(
+            exe,
+            &[Batch {
+                label: module.name.clone(),
+                module: &module,
+                runs,
+            }],
+        );
+        assert_eq!(reports.len(), cases.len());
+        for (report, (name, _, _, defined)) in reports.iter().zip(&cases) {
+            assert_eq!(
+                report.comparison,
+                Comparison::Agree,
+                "{bits}-bit {name}: {report:?}"
+            );
+            if *defined {
+                assert_eq!(report.rust.class(), "ok", "{bits}-bit {name}: {report:?}");
+            } else {
+                assert_eq!(report.rust.class(), "ub", "{bits}-bit {name}: {report:?}");
+                assert_eq!(report.lean.class(), "ub", "{bits}-bit {name}: {report:?}");
+                // The undefined step is the Box deref itself, in both engines.
+                for verdict in [&report.rust, &report.lean] {
+                    assert!(
+                        format!("{verdict:?}").contains("BoxDeref"),
+                        "{bits}-bit {name}: {report:?}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -8466,7 +8689,7 @@ const SEMR_FIXTURE_UNSUPPORTED_LEDGER: &[(&str, usize)] = &[
 /// Clean's reference-entry fixture has its own historical revision and digest;
 /// this local source check does not establish identity with that fixture or
 /// transfer an independent kernel-replay receipt to a changed source.
-const SEMR_SOURCE_SHA256: &str = "0ea0e29f2b0d70a158f0ac54725d5175b9be81f4fc5b0a4d0839e9b968ee180d";
+const SEMR_SOURCE_SHA256: &str = "91eba0576bb0fb6d8d8120b5227155bf660e6a336b0d3b68c2666195557329e0";
 
 fn semr_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lean/semr")
@@ -20810,4 +21033,410 @@ fn icmp_bool_and_general_vector_counts_agree_across_engines() {
     assert!(result.unsupported.is_empty(), "{:?}", result.unsupported);
     assert_eq!(result.vacuous, 0);
     assert_eq!(result.agreed.get("ok"), Some(&1300));
+}
+
+/// One validated, internally transported ordinary function-pointer module is
+/// executed by both engines. Deliberate negative outcomes are checked precisely
+/// in each engine rather than graded through the comparison rule.
+#[test]
+fn dynamic_indirect_conventions_use_the_same_module_in_rust_and_lean() {
+    use trust_ir::{CallingConv, Constant, Endianness, StructPassingPolicy, TargetInfo};
+
+    fn fixture(edge: CallingConv) -> (Module, FuncId, FuncId) {
+        let mut builder = ModuleBuilder::new_with_target_info(
+            "shared_dynamic_indirect_convention",
+            TargetInfo {
+                triple: "aarch64-apple-darwin".into(),
+                pointer_size: 8,
+                endianness: Endianness::Little,
+                abi: None,
+                struct_passing: StructPassingPolicy::Unclassified,
+            },
+        );
+        let signature = builder.add_func_type(vec![], vec![Ty::U64]);
+        let tuple = Ty::Tuple(vec![Ty::Func(signature)]);
+        let maker_signature = builder.add_func_type(vec![], vec![tuple.clone()]);
+        let consumer_signature = builder.add_func_type(vec![tuple.clone()], vec![Ty::U64]);
+        let leaf7 = builder.declare_function("leaf7", signature);
+        let leaf9 = builder.declare_function("leaf9", signature);
+        let maker = builder.declare_function("maker", maker_signature);
+        let consumer = builder.declare_function("consumer", consumer_signature);
+        let root = builder.declare_function("zero_argument_wrapper", signature);
+        assert_ne!(leaf7, leaf9);
+        for (target, answer) in [(leaf7, 7u128), (leaf9, 9u128)] {
+            let mut function = builder.define_function(target).unwrap();
+            function.set_calling_conv(CallingConv::Rust);
+            let entry = function.create_block();
+            function.switch_to_block(entry);
+            let answer = function.uconst(Ty::U64, answer);
+            function.ret(vec![answer]);
+            function.build();
+        }
+        {
+            let mut function = builder.define_function(maker).unwrap();
+            function.set_calling_conv(CallingConv::Rust);
+            let entry = function.create_block();
+            function.switch_to_block(entry);
+            let seed = function.const_value(
+                tuple.clone(),
+                Constant::Aggregate(vec![Constant::FnDef(leaf7)]),
+            );
+            let replacement = function.fn_addr(signature, leaf9);
+            let written = function.insert_field(tuple.clone(), seed, 0, replacement);
+            function.ret(vec![written]);
+            function.build();
+        }
+        {
+            let mut function = builder.define_function(consumer).unwrap();
+            function.set_calling_conv(CallingConv::Rust);
+            let entry = function.create_block();
+            let argument = function.add_block_param(entry, tuple);
+            function.switch_to_block(entry);
+            let pointer = function.extract_field(Ty::Func(signature), argument, 0);
+            let answer = function.call_indirect_cc(pointer, signature, vec![], edge);
+            function.ret(vec![answer]);
+            function.build();
+        }
+        {
+            let mut function = builder.define_function(root).unwrap();
+            function.set_calling_conv(CallingConv::Rust);
+            let entry = function.create_block();
+            function.switch_to_block(entry);
+            // The consumer gets the maker's actual return inside this module.
+            // The canonical oracle therefore needs only its supported args[].
+            let produced = function.call(maker, vec![]);
+            let answer = function.call(consumer, vec![produced]);
+            function.ret(vec![answer]);
+            function.build();
+        }
+        (
+            builder.build().expect("shared convention module"),
+            root,
+            leaf9,
+        )
+    }
+
+    let mut modules = Vec::new();
+    for edge in [CallingConv::Rust, CallingConv::C] {
+        let (module, root, target) = fixture(edge);
+        let errors = trust_ir_build::validate_module(&module);
+        assert!(errors.is_empty(), "original/{edge:?}: {errors:?}");
+        let binary = trust_ir::binary::serialize_module(&module).expect("convention binary");
+        let decoded =
+            trust_ir::binary::deserialize_module(&binary).expect("convention binary decode");
+        let errors = trust_ir_build::validate_module(&decoded);
+        assert!(errors.is_empty(), "binary/{edge:?}: {errors:?}");
+        assert_eq!(decoded, module, "the cold binary retains the exact module");
+        modules.push((
+            format!("convention-original-{edge:?}"),
+            module,
+            root,
+            target,
+            edge,
+        ));
+        modules.push((
+            format!("convention-binary-{edge:?}"),
+            decoded,
+            root,
+            target,
+            edge,
+        ));
+    }
+    assert_eq!(modules.len(), 4);
+    let expected = Verdict::Ok(vec![Val::Int { width: 64, raw: 9 }]);
+    let mut rust_verdicts = Vec::new();
+    for (label, module, root, target, edge) in &modules {
+        assert!(
+            module
+                .func_types
+                .iter()
+                .all(|sig| sig.abi.is_none() && !sig.is_vararg)
+        );
+        assert!(module.functions.iter().all(|function| {
+            function.calling_conv == CallingConv::Rust && function.body_gate.is_none()
+        }));
+        let result = Interpreter::with_module(module)
+            .with_options(InterpretOptions {
+                fuel: FUEL,
+                max_call_depth: CALL_DEPTH,
+                panic_strategy: PanicStrategy::Abort,
+            })
+            .execute_func(*root, []);
+        if *edge == CallingConv::Rust {
+            let outcome = result.as_ref().expect("matching Rust edge must execute");
+            assert_eq!(outcome.returns.len(), 1, "{label}");
+            assert_eq!(outcome.returns[0].ty, Ty::U64, "{label}");
+            assert_eq!(
+                outcome.returns[0].as_int().unwrap().as_unsigned(),
+                9,
+                "{label}"
+            );
+        } else {
+            let error = result
+                .as_ref()
+                .expect_err("wrong C edge must refuse before target entry");
+            assert_eq!(error.code, InterpretErrorCode::SignatureMismatch, "{label}");
+            assert_eq!(
+                error.message,
+                format!("CallIndirect: calling convention mismatch for function {target}"),
+                "{label} must have reached the actual replacement target",
+            );
+        }
+        let verdict = rust_verdict(&result);
+        if *edge == CallingConv::Rust {
+            assert_eq!(verdict, expected, "{label}");
+        }
+        rust_verdicts.push(verdict);
+    }
+
+    let Oracle::Ready(exe) = oracle() else {
+        // Preserve the harness's optional local-oracle policy. Required runs
+        // set TRUST_IR_REQUIRE_LEAN=1, so absence fails inside oracle().
+        return;
+    };
+    let batches: Vec<_> = modules
+        .iter()
+        .map(|(label, module, root, _, _)| Batch {
+            label: label.clone(),
+            module,
+            runs: vec![(*root, vec![])],
+        })
+        .collect();
+    // run_lean serializes these exact same Module references, not a separately
+    // authored Lean fixture or a synthetic aggregate-valued external argument.
+    let lean_verdicts = run_lean(exe, &batches);
+    assert_eq!(lean_verdicts.len(), modules.len());
+    for (((label, _, _, _, edge), rust), lean_rows) in
+        modules.iter().zip(&rust_verdicts).zip(&lean_verdicts)
+    {
+        assert_eq!(lean_rows.len(), 1, "{label}");
+        let lean = &lean_rows[0];
+        if *edge == CallingConv::Rust {
+            assert_eq!(lean, &expected, "{label}");
+            assert_eq!(compare(rust, lean), Comparison::Agree, "{label}");
+        } else {
+            assert_eq!(
+                lean,
+                &Verdict::TypeError("CallIndirect: calling convention mismatch".into()),
+                "{label}: unsupported or an unrelated error is not this control",
+            );
+        }
+    }
+}
+
+/// The same validated maker/closure-parameter module runs in both engines.
+/// Negative outcomes are asserted in each model without changing compare().
+#[test]
+fn dynamic_closure_conventions_use_the_same_module_in_rust_and_lean() {
+    use trust_ir::{CallingConv, ClosureTy, Constant};
+
+    fn fixture(edge: trust_ir::CallingConv) -> (Module, trust_ir::FuncId) {
+        use trust_ir::CallingConv;
+
+        let mut mb = ModuleBuilder::new_with_target_info(
+            "dynamic_closure_convention_parameter",
+            trust_ir::TargetInfo {
+                triple: "aarch64-apple-darwin".into(),
+                pointer_size: 8,
+                endianness: trust_ir::Endianness::Little,
+                abi: None,
+                struct_passing: trust_ir::StructPassingPolicy::Unclassified,
+            },
+        );
+        let apparent = mb.add_func_type(vec![], vec![Ty::U64]);
+        let physical = mb.add_func_type(vec![Ty::U64], vec![Ty::U64]);
+        let closure_id = mb.add_closure_type(ClosureTy {
+            func: apparent,
+            captures: vec![Ty::U64],
+        });
+        let closure_ty = Ty::Closure(closure_id);
+        let maker_sig = mb.add_func_type(vec![], vec![closure_ty.clone()]);
+        let consumer_sig = mb.add_func_type(vec![closure_ty.clone()], vec![Ty::U64]);
+
+        let target = {
+            let mut fb = mb.function("captured_c_target", physical);
+            fb.set_calling_conv(CallingConv::C);
+            let entry = fb.create_block();
+            let capture = fb.add_block_param(entry, Ty::U64);
+            fb.switch_to_block(entry);
+            let two = fb.uconst(Ty::U64, 2);
+            let answer = fb.add(Ty::U64, capture, two);
+            fb.ret(vec![answer]);
+            fb.build()
+        };
+        let maker = {
+            let mut fb = mb.function("make_captured_closure", maker_sig);
+            fb.set_calling_conv(CallingConv::C);
+            let entry = fb.create_block();
+            fb.switch_to_block(entry);
+            let seed = fb.const_value(
+                closure_ty.clone(),
+                Constant::Closure {
+                    func: target,
+                    captures: vec![Constant::Int(0)],
+                },
+            );
+            let forty = fb.uconst(Ty::U64, 40);
+            let written = fb.insert_field(closure_ty.clone(), seed, 0, forty);
+            // Returning the seed instead would produce 2, not the required 42.
+            fb.ret(vec![written]);
+            fb.build()
+        };
+        let consumer = {
+            let mut fb = mb.function("apply_closure_parameter", consumer_sig);
+            fb.set_calling_conv(CallingConv::C);
+            let entry = fb.create_block();
+            let closure = fb.add_block_param(entry, closure_ty.clone());
+            fb.switch_to_block(entry);
+            // This callee is a typed closure SSA parameter, not a statically
+            // visible closure constant or an ordinary Ty::Func pointer.
+            let answer = fb.call_indirect_cc(closure, apparent, vec![], edge);
+            fb.ret(vec![answer]);
+            fb.build()
+        };
+        let program = {
+            let mut fb = mb.function("program", apparent);
+            fb.set_calling_conv(CallingConv::C);
+            let entry = fb.create_block();
+            fb.switch_to_block(entry);
+            let made = fb.call(maker, vec![]);
+            let answer = fb.call(consumer, vec![made]);
+            fb.ret(vec![answer]);
+            fb.build()
+        };
+        let module = mb.build().expect("dynamic closure convention fixture");
+        let errors = trust_ir_build::validate_module(&module);
+        eprintln!(
+            "[DYNAMIC_CLOSURE_CONVENTION_VALIDATION] edge={edge:?} target={target} \
+             program={program} errors={errors:#?} module={module:#?}"
+        );
+        assert!(
+            errors.is_empty(),
+            "this control has not established module admission: {errors:#?}"
+        );
+        assert_eq!(module.closure_type(closure_id).unwrap().func, apparent);
+        assert_eq!(
+            module.closure_type(closure_id).unwrap().captures,
+            vec![Ty::U64]
+        );
+        assert_eq!(module.function_by_id(target).unwrap().ty, physical);
+        assert_eq!(module.func_type(physical).unwrap().params, vec![Ty::U64]);
+        assert_eq!(module.func_type(physical).unwrap().returns, vec![Ty::U64]);
+        assert!(
+            module
+                .func_types
+                .iter()
+                .all(|sig| sig.abi.is_none() && !sig.is_vararg)
+        );
+        assert!(module.functions.iter().all(|function| {
+            function.calling_conv == CallingConv::C && function.body_gate.is_none()
+        }));
+        (module, program)
+    }
+
+    let mut modules = Vec::new();
+    for edge in [CallingConv::C, CallingConv::Rust] {
+        let (module, root) = fixture(edge);
+        let binary =
+            trust_ir::binary::serialize_module(&module).expect("closure convention binary");
+        let decoded = trust_ir::binary::deserialize_module(&binary)
+            .expect("closure convention binary decode");
+        let errors = trust_ir_build::validate_module(&decoded);
+        eprintln!("[SHARED_CLOSURE_CONVENTION_BINARY_VALIDATION] edge={edge:?} errors={errors:#?}");
+        assert!(errors.is_empty(), "binary/{edge:?}: {errors:?}");
+        assert_eq!(decoded, module, "the cold binary retains the exact module");
+        modules.push((
+            format!("closure-convention-original-{edge:?}"),
+            module,
+            root,
+            edge,
+        ));
+        modules.push((
+            format!("closure-convention-binary-{edge:?}"),
+            decoded,
+            root,
+            edge,
+        ));
+    }
+    assert_eq!(modules.len(), 4);
+    let expected = Verdict::Ok(vec![Val::Int { width: 64, raw: 42 }]);
+    let mut rust_results = Vec::new();
+    for (label, module, root, _) in &modules {
+        let result = Interpreter::with_module(module)
+            .with_options(InterpretOptions {
+                fuel: FUEL,
+                max_call_depth: CALL_DEPTH,
+                panic_strategy: PanicStrategy::Abort,
+            })
+            .execute_func(*root, []);
+        eprintln!("[SHARED_CLOSURE_CONVENTION_RUST] {label} result={result:#?}");
+        rust_results.push(result);
+    }
+    let rust_verdicts = rust_results.iter().map(rust_verdict).collect::<Vec<_>>();
+    eprintln!("[SHARED_CLOSURE_CONVENTION_RUST_VERDICTS] {rust_verdicts:#?}");
+
+    // Collect every model result before convention expectations can fail.
+    // Optional local absence still checks every Rust expectation below.
+    let lean_verdicts = match oracle() {
+        Oracle::Ready(exe) => {
+            let batches: Vec<_> = modules
+                .iter()
+                .map(|(label, module, root, _)| Batch {
+                    label: label.clone(),
+                    module,
+                    runs: vec![(*root, vec![])],
+                })
+                .collect();
+            // These exact Module references were validated and executed by
+            // Rust, including the closure type, physical target and write.
+            let results = run_lean(exe, &batches);
+            eprintln!("[SHARED_CLOSURE_CONVENTION_LEAN_VERDICTS] {results:#?}");
+            Some(results)
+        }
+        // TRUST_IR_REQUIRE_LEAN=1 makes absence fail inside oracle().
+        Oracle::Absent => None,
+    };
+
+    for (((label, _, _, edge), result), verdict) in
+        modules.iter().zip(&rust_results).zip(&rust_verdicts)
+    {
+        if *edge == CallingConv::C {
+            let outcome = result
+                .as_ref()
+                .expect("matching C/C closure application must execute");
+            assert_eq!(outcome.returns.len(), 1, "{label}");
+            assert_eq!(outcome.returns[0].ty, Ty::U64, "{label}");
+            assert_eq!(
+                outcome.returns[0].as_int().unwrap().as_unsigned(),
+                42,
+                "{label}"
+            );
+            assert_eq!(verdict, &expected, "{label}");
+        } else {
+            let error = result
+                .as_ref()
+                .expect_err("wrong Rust edge must reject the actual returned closure's C target");
+            assert_eq!(error.code, InterpretErrorCode::SignatureMismatch, "{label}");
+        }
+    }
+    let Some(lean_verdicts) = lean_verdicts else {
+        return;
+    };
+    assert_eq!(lean_verdicts.len(), modules.len());
+    for (((label, _, _, edge), rust), lean_rows) in
+        modules.iter().zip(&rust_verdicts).zip(&lean_verdicts)
+    {
+        assert_eq!(lean_rows.len(), 1, "{label}");
+        let lean = &lean_rows[0];
+        if *edge == CallingConv::C {
+            assert_eq!(lean, &expected, "{label}");
+            assert_eq!(compare(rust, lean), Comparison::Agree, "{label}");
+        } else {
+            assert_eq!(
+                lean,
+                &Verdict::TypeError("CallIndirect: closure calling convention mismatch".into()),
+                "{label}: unsupported or an unrelated error is not this control",
+            );
+        }
+    }
 }

@@ -100,7 +100,7 @@ theorem checked_boolean_vector_reloads (ctx : EvalContext) :
 
 private def source (model : ByteModel) : Environment := { model, types := [some (.Vector 2 .U16)] }
 private def context (model : ByteModel) : EvalContext :=
-  { EvalContext.empty with byteModel := model, types := fun id => if id.index == 0 then some (.Vector 2 .U16) else none }
+  { EvalContext.empty with byteModel := model, valueSource := FunctionItemPresence.prepare { EvalContext.empty.valueSource.source with types := [some (.Vector 2 .U16)] } }
 private def booleanPlan : Plan := .leaf (.Vector 3 .Bool) ⟨3,1⟩
 private def integerPlan : Plan := .leaf (.Vector 2 .U16) ⟨4,2⟩
 private def arrayPlan : Plan := .array (.Array ⟨0⟩ 2) ⟨8,2⟩ 2 integerPlan
@@ -135,7 +135,7 @@ private theorem checkedAt (model : ByteModel) : checkClosureValueAt (context mod
   cases model <;> rfl
 
 theorem nested_policy_computed (model : ByteModel) : sourceReadbackPolicy (source model) (context model) root = true := by
-  cases model <;> rfl
+  cases model <;> trustIrReduce
 
 theorem prepared_nested_vectors_readback (model : ByteModel) :
     ∃ output, decode model none Memory.empty root (stored model).bytes = .ok output ∧

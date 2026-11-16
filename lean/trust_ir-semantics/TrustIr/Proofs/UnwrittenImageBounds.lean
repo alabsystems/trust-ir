@@ -95,6 +95,11 @@ theorem encode_unwritten_bounded (model : ByteModel) (order : FunctionAddressOrd
         rw [encode] at run ⊢
         simpa only [initialized,Bool.false_eq_true,ite_false] using run
       exact image.unwritten_bounded_of_empty (encode_ordinary_unwritten_empty model order _ value image ordinary)
+    | fnItem target layout =>
+      have ordinary : encode model order (.fnItem target layout) value false = .ok image := by
+        rw [encode_fnItem] at run ⊢
+        simpa only [initialized,Bool.false_eq_true,ite_false] using run
+      exact image.unwritten_bounded_of_empty (encode_ordinary_unwritten_empty model order _ value image ordinary)
     | fields ty layout fields =>
       rw [encode] at run
       simp only [initialized,Bool.false_eq_true,ite_false,Bind.bind,Except.bind,Pure.pure,Except.pure] at run

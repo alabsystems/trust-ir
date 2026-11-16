@@ -138,6 +138,99 @@ pub(super) fn cases() -> Vec<(ValidationError, usize)> {
             1,
         ),
         (
+            ValidationError::BoxDerefTypeMismatch {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                detail: String::from("owned λ\0"),
+            },
+            2,
+        ),
+        (
+            ValidationError::BoxDerefPointeeOutOfScope {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                reason: "borrowed static",
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxDerefConjunctCover {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                detail: String::from("owned λ\0"),
+            },
+            2,
+        ),
+        (
+            ValidationError::BoxDerefPremiseNotPinned {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                conjunct: "borrowed static",
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxDerefSessionRefused {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                reason: "borrowed static",
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxDerefDominatingCheckInvalid {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                conjunct: "borrowed static",
+                reason: "borrowed static",
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxDerefObligationUnbound {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                obligation: 17u32,
+                reason: "borrowed static",
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxDerefNonClaimsNotPinned {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxDerefPremiseContradicted {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                reason: "borrowed static",
+            },
+            1,
+        ),
+        (
+            ValidationError::BoxValidityEvidenceBelowFloor {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                conjunct: "borrowed static",
+                tier: "borrowed static",
+                floor: "borrowed static",
+            },
+            1,
+        ),
+        (
             ValidationError::AssertPanicKindUnspecified {
                 function: String::from("owned λ\0"),
                 block: 17u32,

@@ -131,7 +131,7 @@ fn prefix_evidence(
     );
     let goal = eq(lm.pulse_ty, actual, expected);
     (
-        close(&scope, &[host.clone()], goal, false),
+        close(&scope, std::slice::from_ref(&host), goal, false),
         close(&scope, &[host], proof, true),
     )
 }

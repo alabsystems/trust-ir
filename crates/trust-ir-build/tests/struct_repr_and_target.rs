@@ -521,6 +521,111 @@ fn target_pinned_trailing_zst_field_at_size_accepted() {
     );
 }
 
+fn trailing_function_item_module() -> Module {
+    // Actual Rust repr(C) layout of C<F, G> { first: F, word: u64, last: G }
+    // for two distinct function items: size 8, alignment 8, offsets [0, 0, 8].
+    let mut module = module_with_layout(
+        vec![
+            field_at("first", Ty::FnItem(FuncId::new(7)), 0),
+            field_at("word", Ty::U64, 0),
+            field_at("last", Ty::FnItem(FuncId::new(11)), 8),
+        ],
+        Some(8),
+        Some(8),
+        true,
+    );
+    let signature = module
+        .add_func_type(FuncTy::unrecorded(vec![], vec![Ty::U64], false))
+        .unwrap();
+    for (id, answer) in [(7, 1), (11, 2)] {
+        let mut function = Function::new(
+            FuncId::new(id),
+            format!("pick_{answer}"),
+            signature,
+            BlockId::new(0),
+        );
+        let mut block = trust_ir::Block::new(BlockId::new(0));
+        block.body.push(
+            trust_ir::InstrNode::new(trust_ir::Inst::Const {
+                ty: Ty::U64,
+                value: trust_ir::Constant::Int(answer),
+            })
+            .with_result(trust_ir::ValueId::new(0)),
+        );
+        block
+            .body
+            .push(trust_ir::InstrNode::new(trust_ir::Inst::Return {
+                values: vec![trust_ir::ValueId::new(0)],
+            }));
+        function.blocks.push(block);
+        module.functions.push(function);
+    }
+    module
+}
+
+#[test]
+fn target_pinned_distinct_function_items_preserve_rust_trailing_zst_layout() {
+    let mut module = trailing_function_item_module();
+    let element = module.add_type(Ty::Struct(StructId::new(0))).unwrap();
+    assert!(
+        validate_module(&module).is_empty(),
+        "{:?}",
+        validate_module(&module)
+    );
+    let layouts = module.layout_table();
+    let shape = layouts.ty_layout(&Ty::Struct(StructId::new(0))).unwrap();
+    assert_eq!(shape.size_bytes(), Some(8));
+    assert_eq!(shape.align_bits, Some(64));
+    let array = layouts.ty_layout(&Ty::Array(element, 2)).unwrap();
+    assert_eq!(array.size_bytes(), Some(16));
+    assert_ne!(
+        module.structs[0].fields[0].ty,
+        module.structs[0].fields[2].ty
+    );
+}
+
+#[test]
+fn trailing_function_item_layout_requires_a_unique_valid_header_and_exact_bounds() {
+    let mut missing = trailing_function_item_module();
+    missing.functions.pop();
+    let mut duplicate = trailing_function_item_module();
+    duplicate.functions.push(duplicate.functions[1].clone());
+    let mut bad_signature = trailing_function_item_module();
+    bad_signature.functions[1].ty = FuncTyId::new(99);
+    let mut beyond = trailing_function_item_module();
+    beyond.structs[0].fields[2].offset = Some(9);
+    let mut nonzero = trailing_function_item_module();
+    nonzero.structs[0].fields[2].ty = Ty::U8;
+    for (name, module) in [
+        ("missing header", missing),
+        ("duplicate header", duplicate),
+        ("invalid signature", bad_signature),
+        ("beyond allocation", beyond),
+        ("nonzero field", nonzero),
+    ] {
+        assert!(
+            has(&module, |error| matches!(
+                error,
+                ValidationError::StructLayoutInconsistent {
+                    reason: "field offset is outside the declared struct size",
+                    ..
+                }
+            )),
+            "{name} must not grant a trailing zero-sized layout: {:?}",
+            validate_module(&module)
+        );
+    }
+    let mut misaligned = trailing_function_item_module();
+    misaligned.structs[0].fields[1].offset = Some(1);
+    assert!(has(&misaligned, |error| matches!(
+        error,
+        ValidationError::StructLayoutInconsistent {
+            reason: "field offset is not a multiple of the field's effective alignment",
+            ..
+        }
+    )));
+}
+
 #[test]
 fn target_pinned_non_zst_field_at_size_rejected() {
     // Equality is only legal for a field known to occupy no storage.

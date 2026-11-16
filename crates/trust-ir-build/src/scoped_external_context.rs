@@ -324,11 +324,11 @@ impl LocalScope {
                 let capacity = closed
                     .len()
                     .checked_add(1)
-                    .ok_or_else(|| LocalScopeError::Closure(TermScopeError::VisitLimit))?;
+                    .ok_or(LocalScopeError::Closure(TermScopeError::VisitLimit))?;
                 let rebuild = capacity
                     .checked_mul(2)
                     .and_then(|n| n.checked_add(1))
-                    .ok_or_else(|| LocalScopeError::Closure(TermScopeError::VisitLimit))?;
+                    .ok_or(LocalScopeError::Closure(TermScopeError::VisitLimit))?;
                 if rebuild > remaining(stats.visits).max_visits {
                     return Err(LocalScopeError::Closure(TermScopeError::VisitLimit));
                 }
@@ -386,7 +386,9 @@ mod position_tests {
         let d = scope.try_local(Expr::const_str("Nat")).unwrap();
         let mut foreign = LocalScope::new();
         let outsider = foreign.try_local(Expr::const_str("Nat")).unwrap();
-        let mut context = scope.prepare_external_context(&[a.clone()]).unwrap();
+        let mut context = scope
+            .prepare_external_context(std::slice::from_ref(&a))
+            .unwrap();
         assert!(
             context.reuse.is_none(),
             "ordinary inventories allocate no index"

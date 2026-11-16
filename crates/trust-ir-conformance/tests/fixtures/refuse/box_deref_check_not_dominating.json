@@ -1,0 +1,348 @@
+{
+  "name": "refuse_box_deref_check_not_dominating",
+  "functions": [
+    {
+      "id": 0,
+      "name": "checked",
+      "ty": 0,
+      "entry": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "params": [
+            [
+              0,
+              "Ptr"
+            ]
+          ],
+          "body": [
+            {
+              "inst": {
+                "BoxDeref": {
+                  "ptr_ty": "Ptr",
+                  "pointee": {
+                    "Sized": {
+                      "ty": "I64"
+                    }
+                  },
+                  "operand": 0,
+                  "fact": {
+                    "site": {
+                      "item": [
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196,
+                        196
+                      ],
+                      "ordinal": 0
+                    },
+                    "session": {
+                      "judged": "VerificationSnapshot",
+                      "producing": "ProofSession"
+                    },
+                    "evidence": [
+                      {
+                        "conjunct": "NonNull",
+                        "evidence": {
+                          "DominatingCheck": {
+                            "align": null
+                          }
+                        }
+                      },
+                      {
+                        "conjunct": "Aligned",
+                        "evidence": {
+                          "DominatingCheck": {
+                            "align": 8
+                          }
+                        }
+                      },
+                      {
+                        "conjunct": "Dereferenceable",
+                        "evidence": {
+                          "Premise": {
+                            "root": "ParamByValue",
+                            "standing": [
+                              "SafeBody",
+                              "SoundCallees",
+                              "BoxUnique"
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "not_claimed": [
+                      "Uniqueness",
+                      "PointeeValidity",
+                      "Allocator"
+                    ]
+                  }
+                }
+              },
+              "results": [
+                1
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Load": {
+                  "ty": "I64",
+                  "ptr": 1,
+                  "volatile": false,
+                  "align": null
+                }
+              },
+              "results": [
+                10
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Cast": {
+                  "op": "PtrToInt",
+                  "src_ty": "Ptr",
+                  "dst_ty": "Usize",
+                  "operand": 1
+                }
+              },
+              "results": [
+                2
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Const": {
+                  "ty": "Usize",
+                  "value": {
+                    "Int": 0
+                  }
+                }
+              },
+              "results": [
+                3
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "ICmp": {
+                  "op": "Ne",
+                  "ty": "Usize",
+                  "lhs": 2,
+                  "rhs": 3
+                }
+              },
+              "results": [
+                4
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Assert": {
+                  "cond": 4,
+                  "kind": "NullPtr"
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Const": {
+                  "ty": "Usize",
+                  "value": {
+                    "Int": 8
+                  }
+                }
+              },
+              "results": [
+                5
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Const": {
+                  "ty": "Usize",
+                  "value": {
+                    "Int": 7
+                  }
+                }
+              },
+              "results": [
+                6
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "BinOp": {
+                  "op": "And",
+                  "ty": "Usize",
+                  "lhs": 2,
+                  "rhs": 6
+                }
+              },
+              "results": [
+                7
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Const": {
+                  "ty": "Usize",
+                  "value": {
+                    "Int": 0
+                  }
+                }
+              },
+              "results": [
+                8
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "ICmp": {
+                  "op": "Eq",
+                  "ty": "Usize",
+                  "lhs": 7,
+                  "rhs": 8
+                }
+              },
+              "results": [
+                9
+              ],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Assert": {
+                  "cond": 9,
+                  "kind": {
+                    "MisalignedPtr": {
+                      "required": 5,
+                      "found": 2
+                    }
+                  }
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            },
+            {
+              "inst": {
+                "Return": {
+                  "values": [
+                    10
+                  ]
+                }
+              },
+              "results": [],
+              "proofs": [],
+              "span": null,
+              "proof_context": null
+            }
+          ]
+        }
+      ],
+      "proofs": [],
+      "calling_conv": "C",
+      "linkage": "External",
+      "attrs": {
+        "readonly": false,
+        "readnone": false,
+        "inlinehint": false,
+        "cold": false,
+        "params": [],
+        "naked": false,
+        "target_features": []
+      },
+      "summary": null,
+      "producer": null,
+      "value_names": null,
+      "scopes": null,
+      "source_provenance": null,
+      "body_gate": {
+        "Gated": {
+          "authority": "trust-direct-lane-structural"
+        }
+      },
+      "display_path": null,
+      "section": null,
+      "visibility": "Default"
+    }
+  ],
+  "structs": [],
+  "enums": [],
+  "records": [],
+  "closure_types": [],
+  "globals": [],
+  "func_types": [
+    {
+      "params": [
+        "Ptr"
+      ],
+      "returns": [
+        "I64"
+      ],
+      "is_vararg": false
+    }
+  ],
+  "types": [],
+  "proof_obligations": [],
+  "proof_certificates": [],
+  "target_info": null,
+  "files": [],
+  "obligation_diagnostics": [],
+  "spec_modules": [],
+  "universes": [],
+  "predicates": [],
+  "global_asm": [],
+  "imports": [],
+  "tuple_layouts": [],
+  "completeness": null,
+  "drop_glue": [],
+  "closure_layouts": []
+}

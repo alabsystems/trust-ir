@@ -79,10 +79,12 @@ effect_summary_validation  # WS1.14: v59 typed effect summaries — a defined bo
 abi_lane_count  # WS3.11: the pair rule's ABI lane count = its rules without the 16-level cut-off (kept as the oracle) on random type graphs; a pair under 10^5 newtypes is a pair (one pass, 256 KiB stack); a by-value cycle has no count from any entry point; chains 17-300 deep of newtype / ((), x) / Untagged / Niche wrappers over eight bottoms = a second (cycle-reachability + memoized) oracle
 codegen_lowerability_layout_work  # the codegen-lowerability pass asks one LayoutTable (codegen_lowerability_errors_in): N closure applications over an N-deep capture chain lay it out once, O(N) table work, 10^5 on a 256 KiB stack
 make_closure  # Runtime closure construction: live capture identity, signature/table/type refusals and versioned transports
+box_deref  # Box deref validity fact: each rule reached by one mutation of an accepted module, the two refused evidence kinds, premise contradictions, evidence floor by root, interpreter UB, text/binary transport
 
 # Opt-in source-value-operational: bytev1_clean_uint32_runtime (qualified explicitly; not a zero-test default gate claim)
 single_inhabited_enum  # Wire65 selected payload, nominal empty type retention, no inactive storage/value authority, observed parity/refusals
 source_bound_calls  # closed genuine same-island defined-callee source composition; old parametric TV unchanged
+fn_item_relocation  # Nominal item identity survives ordinary merge/template relocation; valid equal-row array aliases retain exact raw identity and call-boundary refusal priority.
 tensor_contract  # the tensor region (PKG-U13a): InvalidTensorType at every type occurrence (a float element by name), TensorContract static rules 1-4 (InvalidTensorContract), codegen refusal (UnlowerableForCodegen)
 tensor_map_reduce_view  # PKG-U13c: TensorMap/TensorReduce/TensorView against hand loops, their UB by message, rules M1-M5/R1-R3/V1-V6 refused by name (InvalidTensorMap/Reduce/View) on both validation paths, codegen refusal (UnlowerableForCodegen)
 tensor_gather_scatter  # PKG-U13d: TensorGather/TensorScatter against hand loops (row-major-last write at a repeated coordinate), out-of-range coordinates and extents mismatches UB by message in the interpreter and SemR's semr_eval, rules G1-G3/S1-S3 refused by name (InvalidTensorGather/Scatter) on both validation paths, the BoundsCheck site row, codegen refusal (UnlowerableForCodegen)

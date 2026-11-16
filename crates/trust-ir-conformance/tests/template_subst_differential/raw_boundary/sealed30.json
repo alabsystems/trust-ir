@@ -1,0 +1,371 @@
+[
+  {
+    "label": "canonical",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":8}}",
+    "raw_sha256": "eaf4a4e8243104d17efd5160f610ecc0d49acde395f64d9ebf4c70e45263aa65",
+    "rust_accepts": true,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "maximum",
+    "raw": "{\"Storage\":{\"size_bytes\":18446744073709551615,\"align_bytes\":1}}",
+    "raw_sha256": "f258065cfab13789d25bddf3968813caff42f5fa0626fbf6804288cc59065f25",
+    "rust_accepts": true,
+    "expected": {
+      "Storage": {
+        "size_bytes": 18446744073709551615,
+        "align_bytes": 1
+      }
+    }
+  },
+  {
+    "label": "sequence",
+    "raw": "{\"Storage\":[8,8]}",
+    "raw_sha256": "341808ba22142bc4847ee4e0c69f45d7b3d37fd9af31f37ab4c8b27f8979d1e9",
+    "rust_accepts": true,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "sequence-max",
+    "raw": "{\"Storage\":[18446744073709551615,1]}",
+    "raw_sha256": "eed6e4775276619279e247257eb21433ad4e566df7a4721e7c3dc90f7eddccc7",
+    "rust_accepts": true,
+    "expected": {
+      "Storage": {
+        "size_bytes": 18446744073709551615,
+        "align_bytes": 1
+      }
+    }
+  },
+  {
+    "label": "unknown-field-numeric",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":8,\"unused\":8e0}}",
+    "raw_sha256": "6b7c6f8d44242225aeab2005d59117dd009fb75ec751d91232169063854723cc",
+    "rust_accepts": true,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "nested-ref",
+    "raw": "{\"Ref\":{\"Storage\":[8,8]}}",
+    "raw_sha256": "ccf36bae5f55f1ef4beeb14f0f2aac95e1e41536881a4141a4aff3e648f97b04",
+    "rust_accepts": true,
+    "expected": {
+      "Ref": {
+        "Storage": {
+          "size_bytes": 8,
+          "align_bytes": 8
+        }
+      }
+    }
+  },
+  {
+    "label": "nested-tuple",
+    "raw": "{\"Tuple\":[{\"FnItem\":11},{\"Storage\":{\"size_bytes\":8,\"align_bytes\":8}}]}",
+    "raw_sha256": "826176bea540cfe4751388468f1cb918a865a7f6aa52d4937d59201f576c5fb9",
+    "rust_accepts": true,
+    "expected": {
+      "Tuple": [
+        {
+          "FnItem": 11
+        },
+        {
+          "Storage": {
+            "size_bytes": 8,
+            "align_bytes": 8
+          }
+        }
+      ]
+    }
+  },
+  {
+    "label": "float-integral",
+    "raw": "{\"Storage\":{\"size_bytes\":8.0,\"align_bytes\":8}}",
+    "raw_sha256": "8eca39b04f31cb6c10a5951c5cbd82b4520764bbad9022f4022a45cbed6c2f97",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "exponent-zero",
+    "raw": "{\"Storage\":{\"size_bytes\":8e0,\"align_bytes\":8}}",
+    "raw_sha256": "c88eb87b581b6526748b7c9a37f79f42af1516e38c7bc4f79b6e3b203aac6b58",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "exponent-plus-zero",
+    "raw": "{\"Storage\":{\"size_bytes\":8E+0,\"align_bytes\":8}}",
+    "raw_sha256": "038f17f971a4384e4e4a199d5fe79cc89e4c50b436e7643e44ab2c45eb4d8442",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "decimal-exponent",
+    "raw": "{\"Storage\":{\"size_bytes\":0.8e1,\"align_bytes\":8}}",
+    "raw_sha256": "c6406cefe40a341614764990fa57dec3e184c67ac43a595dbfaa0f0a3c0e5c48",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "positive-exponent",
+    "raw": "{\"Storage\":{\"size_bytes\":8e1,\"align_bytes\":8}}",
+    "raw_sha256": "1dd33ec6db81e0b0e2ce7f16e917639df04112134777732afc07276ad225ada8",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 80,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "negative-exponent-integral",
+    "raw": "{\"Storage\":{\"size_bytes\":80e-1,\"align_bytes\":8}}",
+    "raw_sha256": "bba7f678e55501217bff3274b830a0ef846ac063cdf3193d19626a27c687c720",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "fraction",
+    "raw": "{\"Storage\":{\"size_bytes\":8.5,\"align_bytes\":8}}",
+    "raw_sha256": "ad60b974adede8d77c5f70817ee5c944ea54edb81b7a05b6e271a3cd3052cbea",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "zero-exponent",
+    "raw": "{\"Storage\":{\"size_bytes\":0e0,\"align_bytes\":1}}",
+    "raw_sha256": "0077cdf8099f611e5b49442a961bfe913f76e57cbb164a61227dbd2d08a377eb",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 0,
+        "align_bytes": 1
+      }
+    }
+  },
+  {
+    "label": "negative-zero",
+    "raw": "{\"Storage\":{\"size_bytes\":-0,\"align_bytes\":1}}",
+    "raw_sha256": "2d3002ff286bb4261da0ddb9abedbf054b5042ed87573f6f82af6ff3f18afa46",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 0,
+        "align_bytes": 1
+      }
+    }
+  },
+  {
+    "label": "alignment-exponent",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":1e0}}",
+    "raw_sha256": "7a9df2332ee65ce45811fff82f0572475376f50e18d24d922126f510cdb2884b",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 1
+      }
+    }
+  },
+  {
+    "label": "alignment-fraction",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":1.5}}",
+    "raw_sha256": "32d3021fab87a10c0b7e665f29827a46024ebe8a538e7c6e34334a5e6919a24d",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 1
+      }
+    }
+  },
+  {
+    "label": "duplicate-size-same",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"size_bytes\":8,\"align_bytes\":8}}",
+    "raw_sha256": "0df2e929a2ffc16eb3030dc828a433ba9ef3892018d29021570db7294bda1fed",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "duplicate-size-conflict",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"size_bytes\":16,\"align_bytes\":8}}",
+    "raw_sha256": "caef683a2a60f8d8b141c9d23158f86391982e02654b2b9575fb8f2aa1c34928",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "duplicate-align-conflict",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":8,\"align_bytes\":4}}",
+    "raw_sha256": "9a0c40066b6b71addf09a7473a18d3b8af9763f0d0c5d8f01bdba95820e18f32",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "escaped-duplicate-size",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"size_\\u0062ytes\":16,\"align_bytes\":8}}",
+    "raw_sha256": "57cce6c1d6704420dfea3ef1a2df9d3886c1106ab483ffac0217eccfa4638b8d",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "unknown-duplicate-field",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":8,\"unused\":1,\"unused\":2}}",
+    "raw_sha256": "c1ee071e1b84871cf53d9571426240e090a625653a33f26897626270af426115",
+    "rust_accepts": true,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "duplicate-outer-variant",
+    "raw": "{\"Storage\":{\"size_bytes\":8,\"align_bytes\":8},\"Storage\":{\"size_bytes\":16,\"align_bytes\":8}}",
+    "raw_sha256": "9c31984b1f76ddd3160f7c62d25ab2d65e28b54bb6db48dbf076606f0d83f814",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "nested-duplicate",
+    "raw": "{\"Ref\":{\"Storage\":{\"size_bytes\":8,\"size_bytes\":16,\"align_bytes\":8}}}",
+    "raw_sha256": "f95df06008ad5f5f1f10a9f90df980f2e11848d5843d2e4f98a309604e1bf028",
+    "rust_accepts": false,
+    "expected": {
+      "Ref": {
+        "Storage": {
+          "size_bytes": 8,
+          "align_bytes": 8
+        }
+      }
+    }
+  },
+  {
+    "label": "nested-exponent",
+    "raw": "{\"Tuple\":[{\"Storage\":{\"size_bytes\":8e0,\"align_bytes\":8}},{\"FnItem\":11}]}",
+    "raw_sha256": "46964c07d516bf03e6fa6a3fe2041af9d74f578c1d1c136dfa30d06f32ac381d",
+    "rust_accepts": false,
+    "expected": {
+      "Tuple": [
+        {
+          "Storage": {
+            "size_bytes": 8,
+            "align_bytes": 8
+          }
+        },
+        {
+          "FnItem": 11
+        }
+      ]
+    }
+  },
+  {
+    "label": "sequence-float",
+    "raw": "{\"Storage\":[8e0,8]}",
+    "raw_sha256": "6875c2b14652e6276a3504a4177204476cd90049d775f50812e08b6d01983f29",
+    "rust_accepts": false,
+    "expected": {
+      "Storage": {
+        "size_bytes": 8,
+        "align_bytes": 8
+      }
+    }
+  },
+  {
+    "label": "item-canonical",
+    "raw": "{\"FnItem\":11}",
+    "raw_sha256": "6d6945235801966d5685aa4b452e2b3c03815e65a92a797cc8f1c582710cd286",
+    "rust_accepts": true,
+    "expected": {
+      "FnItem": 11
+    }
+  },
+  {
+    "label": "item-exponent",
+    "raw": "{\"FnItem\":11e0}",
+    "raw_sha256": "a229fdff89accadb344a311d09f7d3c5d51200ae22eb651f09a6922d68c20976",
+    "rust_accepts": false,
+    "expected": {
+      "FnItem": 11
+    }
+  },
+  {
+    "label": "item-float",
+    "raw": "{\"FnItem\":11.0}",
+    "raw_sha256": "71ffe8c6ad545b20a45f0232da8d8b8902d5b44e5ff62eed491615bf6af835ec",
+    "rust_accepts": false,
+    "expected": {
+      "FnItem": 11
+    }
+  }
+]

@@ -84,6 +84,156 @@ fn with_subject(run: impl FnOnce(&CheckedSourceValueOperational<'_>)) {
     .unwrap();
     assert!(core::ptr::eq(checked.source_value().module(), &module));
     run(&checked);
+
+    // The complete old producer input stays a refusal after the full fresh
+    // contextual positive and its wrong-owner/PC/next controls have run.
+    let stale = trust_ir::binary::deserialize_module(data!("module.stale-environment.bin"))
+        .expect("preserved complete stale producer module");
+    assert_eq!((stale.functions.len(), stale.func_types.len()), (72, 73));
+    assert_eq!(
+        (
+            stale.proof_obligations.len(),
+            stale.proof_certificates.len()
+        ),
+        (1, 1)
+    );
+    // Exhaustive borrowed comparisons keep every source/callee/effect/ABI,
+    // gate and obligation field intact; neither module is normalized or cleared.
+    macro_rules! same_subject {
+        ($($field:ident),+ $(,)?) => {{
+            let trust_ir::Module { proof_certificates: _, $($field: _,)+ } = &module;
+            $(assert_eq!(&module.$field, &stale.$field, stringify!($field));)+
+        }};
+    }
+    same_subject!(
+        name,
+        functions,
+        structs,
+        enums,
+        records,
+        closure_types,
+        globals,
+        func_types,
+        types,
+        proof_obligations,
+        target_info,
+        files,
+        obligation_diagnostics,
+        spec_modules,
+        universes,
+        predicates,
+        global_asm,
+        imports,
+        tuple_layouts,
+        completeness,
+        drop_glue,
+        closure_layouts,
+        blobs,
+    );
+    let [fresh_certificate] = module.proof_certificates.as_slice() else {
+        panic!("one complete fresh certificate");
+    };
+    let [stale_certificate] = stale.proof_certificates.as_slice() else {
+        panic!("one complete preserved certificate");
+    };
+    let trust_ir::proof::ProofCertificate {
+        obligation: _,
+        prover: _,
+        evidence: _,
+        assurance: _,
+    } = fresh_certificate;
+    assert_eq!(fresh_certificate.obligation, stale_certificate.obligation);
+    assert_eq!(fresh_certificate.prover, stale_certificate.prover);
+    assert_eq!(fresh_certificate.assurance, stale_certificate.assurance);
+    let (
+        trust_ir::proof::ProofEvidence::CleanCic {
+            term: fresh_term,
+            context: fresh_context,
+            lineage: fresh_lineage,
+            kernel_recheck: Some(fresh_recheck),
+        },
+        trust_ir::proof::ProofEvidence::CleanCic {
+            term: stale_term,
+            context: stale_context,
+            lineage: stale_lineage,
+            kernel_recheck: Some(stale_recheck),
+        },
+    ) = (&fresh_certificate.evidence, &stale_certificate.evidence)
+    else {
+        panic!("complete checked CleanCic evidence on both inputs");
+    };
+    let trust_ir::proof::CleanCicKernelRecheck {
+        module: _,
+        theorems: _,
+        anchor: _,
+        allowed_axioms: _,
+        binding: _,
+    } = fresh_recheck;
+    assert_eq!(fresh_term, stale_term);
+    assert_eq!(fresh_context, stale_context);
+    assert_eq!(fresh_recheck.module, stale_recheck.module);
+    assert_eq!(fresh_recheck.theorems, stale_recheck.theorems);
+    assert_eq!(fresh_recheck.anchor, stale_recheck.anchor);
+    assert_eq!(fresh_recheck.allowed_axioms, stale_recheck.allowed_axioms);
+    let fresh_binding = fresh_recheck.binding.as_deref().expect("bound fresh proof");
+    let stale_binding = stale_recheck.binding.as_deref().expect("bound stale proof");
+    let trust_ir::proof::CertificateBinding {
+        environment_digest: _,
+        statement_digest: _,
+        origin_module: _,
+        source: _,
+        callees: _,
+        environment: _,
+    } = fresh_binding;
+    assert_eq!(
+        fresh_binding.statement_digest,
+        stale_binding.statement_digest
+    );
+    assert_eq!(fresh_binding.origin_module, stale_binding.origin_module);
+    assert_eq!(fresh_binding.source, stale_binding.source);
+    assert_eq!(fresh_binding.callees, stale_binding.callees);
+    assert_eq!(fresh_binding.environment, stale_binding.environment);
+    assert_ne!(
+        fresh_binding.environment_digest,
+        stale_binding.environment_digest
+    );
+    assert_ne!(fresh_lineage, stale_lineage);
+    for (subject, certificate) in [(&module, fresh_certificate), (&stale, stale_certificate)] {
+        let obligation = subject
+            .proof_obligations
+            .iter()
+            .find(|o| o.id == certificate.obligation)
+            .expect("actual owning obligation");
+        assert!(trust_ir::proof::clean_cic_lineage_is_v8(
+            obligation,
+            &certificate.evidence,
+            &trust_ir::proof::module_symbol_resolver(subject),
+        ));
+    }
+    let unchanged = stale.clone();
+    let Err(crate::SourceValueEquationError::InvalidModule(errors)) =
+        crate::check_uint_source_value_equation(
+            &stale,
+            FuncId(70),
+            &environment,
+            &original,
+            &equation,
+        )
+    else {
+        panic!("the complete stale producer module must fail whole-module admission");
+    };
+    assert!(
+        matches!(
+            errors.as_slice(),
+            [crate::ValidationError::CertificateBindingMismatch {
+                obligation: 0,
+                field,
+                ..
+            }] if field == "environment_digest"
+        ),
+        "{errors:?}"
+    );
+    assert_eq!(stale, unchanged);
 }
 
 fn binding(id: u64, value: Expr) -> Expr {

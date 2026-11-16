@@ -8,9 +8,11 @@
 use super::super::*;
 use super::*;
 
+mod direct_calls;
 mod memory;
 mod review_corrections;
 mod startup;
+mod typed_abi;
 
 #[derive(Default)]
 struct Observer {

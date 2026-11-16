@@ -324,6 +324,16 @@ fn check_node<'a>(
         // `Inst::Const` struct/tuple aggregate, nowhere else) is `validate_uninit_lanes`'s rule,
         // not this typed walk's.
         (Constant::Uninit, _) => return None,
+        (Constant::FnItem(actual), Ty::FnItem(expected)) if actual == expected => {
+            if let Err(error) = functions.function_item(*expected) {
+                errors.push(ValidationError::ConstTypeMismatch {
+                    location: here(),
+                    expected: "a unique function item with an actual signature".into(),
+                    actual: error.to_string(),
+                });
+            }
+            return None;
+        }
         (Constant::FnDef(target), Ty::Func(signature)) => {
             let Some(function) = functions.unique(*target) else {
                 errors.push(ValidationError::ConstTypeMismatch {

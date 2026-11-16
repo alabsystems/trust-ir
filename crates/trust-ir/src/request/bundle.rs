@@ -266,7 +266,10 @@ impl NativeVerificationBundle {
             && source_digest.is_zero()
         {
             errors.push(NativeVerificationBundleError::EmptyDigest {
-                field: "input.rust_mir.body_digest",
+                field: match self.input {
+                    NativeAdapterInput::RustThir { .. } => "input.rust_thir.source_digest",
+                    _ => "input.rust_mir.body_digest",
+                },
             });
         }
         if self
@@ -346,7 +349,7 @@ impl NativeVerificationBundle {
             write_digest_stable(&mut bytes, &evidence.stable_digest());
         }
 
-        ProofDigest::sha256_domain("trust_ir.native.verification.bundle.v8", &bytes)
+        ProofDigest::sha256_domain("trust_ir.native.verification.bundle.v9", &bytes)
     }
 
     /// This bundle with EXACTLY the coverage write-back allowlist erased — the
@@ -1623,6 +1626,7 @@ impl NativeVerificationBundle {
     pub fn source_digest(&self) -> Option<ProofDigest> {
         match self.input {
             NativeAdapterInput::RustMir { body_digest } => Some(body_digest),
+            NativeAdapterInput::RustThir { source_digest } => Some(source_digest),
             NativeAdapterInput::TrustIrModule => None,
         }
     }
@@ -1793,6 +1797,7 @@ impl NativeVerificationBundle {
     }
 
     fn validate_compiler_facts(&self, errors: &mut Vec<NativeVerificationBundleError>) {
+        let item_functions = crate::ModuleFunctionCatalog::new(&self.module);
         let mut known_obligations = BTreeSet::new();
         for obligation in &self.module.proof_obligations {
             if !known_obligations.insert(obligation.id) {
@@ -1947,7 +1952,15 @@ impl NativeVerificationBundle {
                     NativeGenericArg::Ty(ty) | NativeGenericArg::Const { ty, .. } => Some(ty),
                     NativeGenericArg::LifetimeErased | NativeGenericArg::Placeholder { .. } => None,
                 };
-                if ty.is_some_and(Ty::contains_error) {
+                let mut invalid_item = false;
+                if let Some(ty) = ty {
+                    ty.visit_types(|ty| {
+                        if let Ty::FnItem(id) = ty {
+                            invalid_item |= item_functions.function_item(*id).is_err();
+                        }
+                    });
+                }
+                if ty.is_some_and(Ty::contains_error) || invalid_item {
                     errors.push(NativeVerificationBundleError::InvalidCompilerFact {
                         fact: NativeCompilerFactRef::Monomorphization(fact.id),
                         field: "generic_args[].ty",

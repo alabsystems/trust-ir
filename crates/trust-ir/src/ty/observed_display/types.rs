@@ -65,6 +65,7 @@ impl<'a> State<'a> {
             Ty::Struct(id) => self.id("struct.", id.index(), work),
             Ty::Enum(id) => self.id("enum.", id.index(), work),
             Ty::Func(id) => self.id("functy.", id.index(), work),
+            Ty::FnItem(id) => self.id("fnitem.", id.index(), work),
             Ty::Record(id) => self.id("record.", id.index(), work),
             Ty::Closure(id) => self.id("closure.", id.index(), work),
             Ty::Sequence(id) => {

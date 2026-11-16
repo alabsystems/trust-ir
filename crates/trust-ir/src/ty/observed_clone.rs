@@ -172,6 +172,7 @@ fn leaf(ty: &Ty) -> R<Ty> {
         Ty::Array(id, len) => Ty::Array(*id, *len),
         Ty::Enum(id) => Ty::Enum(*id),
         Ty::Func(id) => Ty::Func(*id),
+        Ty::FnItem(id) => Ty::FnItem(*id),
         Ty::Set(id, repr) => Ty::Set(*id, *repr),
         Ty::Sequence(id) => Ty::Sequence(*id),
         Ty::Record(id) => Ty::Record(*id),

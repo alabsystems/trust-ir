@@ -372,6 +372,101 @@ fn exact_indirect_target(
             .is_some_and(|target| target.ty == sig && target.calling_conv == calling_conv)
 }
 
+/// Nominal item dispatch is determined by the exact SSA value type, not a
+/// function-pointer address/provenance certificate. Duplicate value definitions
+/// are ambiguous even if their apparent item IDs agree. The runtime separately
+/// checks the nominal carrier at every typed boundary before dispatch.
+#[derive(Clone, Copy)]
+enum NominalItemDefinition {
+    Other,
+    Item(FuncId, crate::analysis::SsaDefinitionSite),
+    AmbiguousItem,
+}
+struct NominalItemCallees<'f> {
+    function: &'f Function,
+    values: BTreeMap<ValueId, NominalItemDefinition>,
+    dominators: std::cell::OnceCell<crate::analysis::DominatorTree>,
+}
+impl NominalItemCallees<'_> {
+    fn resolve(&self, value: ValueId, block: BlockId, index: usize) -> Result<Option<FuncId>, ()> {
+        match self.values.get(&value) {
+            Some(NominalItemDefinition::Item(id, definition)) => {
+                let tree = self
+                    .dominators
+                    .get_or_init(|| crate::analysis::DominatorTree::new(self.function));
+                if tree.definition_available_at(
+                    *definition,
+                    crate::analysis::SsaUseSite::BeforeInstruction {
+                        block,
+                        instruction: index,
+                    },
+                ) {
+                    Ok(Some(*id))
+                } else {
+                    Err(())
+                }
+            }
+            Some(NominalItemDefinition::AmbiguousItem) => Err(()),
+            _ => Ok(None),
+        }
+    }
+}
+fn nominal_item_callees<'f>(module: &Module, function: &'f Function) -> NominalItemCallees<'f> {
+    use NominalItemDefinition::*;
+    let mut values = BTreeMap::new();
+    let mut record = |value, item| match values.entry(value) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(item);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let nominal = !matches!(entry.get(), Other) || !matches!(item, Other);
+            entry.insert(if nominal { AmbiguousItem } else { Other });
+        }
+    };
+    for block in &function.blocks {
+        for (value, ty) in &block.params {
+            let definition = crate::analysis::SsaDefinitionSite {
+                block: block.id,
+                instruction: None,
+            };
+            record(
+                *value,
+                match ty {
+                    Ty::FnItem(id) => Item(*id, definition),
+                    _ => Other,
+                },
+            );
+        }
+        for (index, node) in block.body.iter().enumerate() {
+            let types = node.result_tys(module);
+            let definition = crate::analysis::SsaDefinitionSite {
+                block: block.id,
+                instruction: Some(index),
+            };
+            for (index, value) in node.results.iter().enumerate() {
+                record(
+                    *value,
+                    if types.len() == node.results.len() {
+                        match types.get(index) {
+                            Some(Ty::FnItem(id)) => Item(*id, definition),
+                            _ => Other,
+                        }
+                    } else if types.iter().any(|ty| matches!(ty, Ty::FnItem(_))) {
+                        AmbiguousItem
+                    } else {
+                        Other
+                    },
+                );
+            }
+        }
+    }
+    NominalItemCallees {
+        function,
+        values,
+        dominators: std::cell::OnceCell::new(),
+    }
+}
+
 /// Link-time symbols of a module's functions and globals. A name two
 /// definitions share is ambiguous; it never selects either.
 struct SymbolTable<'module> {
@@ -500,7 +595,7 @@ enum ConstantReach<'module> {
 
 fn constant_reach(constant: &Constant) -> ConstantReach<'_> {
     match constant {
-        Constant::FnDef(function) => ConstantReach::Function(*function),
+        Constant::FnDef(function) | Constant::FnItem(function) => ConstantReach::Function(*function),
         Constant::Closure { func, .. } => ConstantReach::Closure(*func),
         Constant::SymbolAddr { symbol, addend: _ } => ConstantReach::Symbol(symbol),
         Constant::Int(_)
@@ -648,6 +743,7 @@ fn instruction_reach<'module>(
         // constant child, and no implicit runtime service. Keep this
         // exhaustive: a new instruction needs review.
         Inst::BinOp { .. }
+        | Inst::BoxDeref { .. }
         | Inst::UnOp { .. }
         | Inst::Overflow { .. }
         | Inst::ICmp { .. }
@@ -899,6 +995,7 @@ impl<'module> Walker<'module> {
             self.refuse(site, refusal);
         }
         let pointers = StaticFunctionPointerAnalysis::new(function);
+        let items = std::cell::OnceCell::new();
         for block in &function.blocks {
             for (_, ty) in &block.params {
                 self.ty(site, ty);
@@ -941,7 +1038,23 @@ impl<'module> Walker<'module> {
                         calling_conv,
                     } => {
                         self.edge(site, DependencyNode::FunctionType(sig));
-                        if let Some(resolution) = pointers.resolve_typed_at(callee, block.id, index)
+                        let item = items
+                            .get_or_init(|| nominal_item_callees(self.census.module, function))
+                            .resolve(callee, block.id, index);
+                        if let Ok(Some(target)) = item {
+                            self.edge(site, DependencyNode::Function(target));
+                            if !self
+                                .index
+                                .functions
+                                .function_item(target)
+                                .is_ok_and(|(f, _)| f.ty == sig && f.calling_conv == calling_conv)
+                            {
+                                self.refuse(site, DependencyRefusalKind::IndirectSignatureMismatch);
+                            }
+                        } else if item.is_err() {
+                            self.refuse(site, DependencyRefusalKind::IndirectCall);
+                        } else if let Some(resolution) =
+                            pointers.resolve_typed_at(callee, block.id, index)
                         {
                             let target = resolution.function();
                             self.edge(site, DependencyNode::Function(target));
@@ -1000,6 +1113,7 @@ impl<'module> Walker<'module> {
             Ty::Enum(id) => self.edge(site, DependencyNode::Enum(*id)),
             Ty::Record(id) => self.edge(site, DependencyNode::Record(*id)),
             Ty::Func(id) => self.edge(site, DependencyNode::FunctionType(*id)),
+            Ty::FnItem(id) => self.edge(site, DependencyNode::Function(*id)),
             Ty::Closure(id) => self.edge(site, DependencyNode::ClosureType(*id)),
             Ty::Array(id, _)
             | Ty::Set(id, _)
@@ -3323,6 +3437,24 @@ impl<'module, 'classifier> ReachWalker<'module, 'classifier> {
             // Every id the module holds gets a node, an ambiguous one included.
             let _ = walker.function_node(function.id);
         }
+        // A typed singleton can arrive through an entry argument without a
+        // local constant. Register only actual source-spelled, authenticated
+        // item IDs; membership alone creates no reachability edge.
+        let mut item_ids = BTreeSet::new();
+        module.visit_types(|ty| {
+            if let Ty::FnItem(id) = ty {
+                item_ids.insert(*id);
+            }
+        });
+        for id in item_ids {
+            if walker.index.functions.function_item(id).is_ok()
+                && let Ok(node) = walker.function_node(id)
+            {
+                walker
+                    .graph
+                    .add_pool_member(node, PoolKey::FnItem(id), false);
+            }
+        }
         for position in 0..module.globals.len() {
             // A global past `u32` is refused module-wide (GlobalTableTooLarge).
             if let Ok(id) = u32::try_from(position) {
@@ -3595,13 +3727,13 @@ impl<'module> ReachWalker<'module, '_> {
         if let Some(keys) = self.carries.keys.get(&id) {
             return keys.clone();
         }
-        let module = self.module;
+        let functions = &self.index.functions;
         let SignatureCarries { defs, keys, walks } = &mut self.carries;
         *walks += 1;
         let mut carried: Vec<CarriedKey> = signature
             .params
             .iter()
-            .flat_map(|ty| carried_keys(module, defs, ty))
+            .flat_map(|ty| carried_keys(functions, defs, ty))
             .collect();
         carried.sort();
         carried.dedup();
@@ -3624,7 +3756,7 @@ impl<'module> ReachWalker<'module, '_> {
 
     fn function_shape(&self, function: FuncId) -> FnShape {
         match self.index.function(function) {
-            Ok(function) => fn_pool_shape(self.module, function.ty),
+            Ok(function) => fn_pool_shape(&self.index.functions, function.ty),
             Err(_) => FnShape::unclassified(),
         }
     }
@@ -3643,13 +3775,28 @@ impl<'module> ReachWalker<'module, '_> {
                 .module
                 .closure_types
                 .get(closure.as_usize())
-                .map(|closure| fn_pool_shape(self.module, closure.func)),
+                .map(|closure| fn_pool_shape(&self.index.functions, closure.func)),
             _ => None,
         };
         value.visit_constants(|constant| match constant_reach(constant) {
             ConstantReach::Function(function) => {
-                let shape = self.function_shape(function);
-                self.create(from, function, shape, site);
+                if matches!(constant, Constant::FnItem(_)) {
+                    match self.function_node(function) {
+                        Ok(node) if self.index.functions.function_item(function).is_ok() => self
+                            .graph
+                            .add_create(from, node, PoolKey::FnItem(function), false, site),
+                        Ok(_) => self.unknown(
+                            from,
+                            DependencyRefusalKind::IndirectSignatureMismatch,
+                            EdgeClass::Create,
+                            site,
+                        ),
+                        Err(reason) => self.unknown(from, reason, EdgeClass::Create, site),
+                    }
+                } else {
+                    let shape = self.function_shape(function);
+                    self.create(from, function, shape, site);
+                }
             }
             ConstantReach::Closure(function) => {
                 let shape = match (&top_closure_shape, std::ptr::eq(constant, value)) {
@@ -3741,6 +3888,7 @@ impl<'module> ReachWalker<'module, '_> {
             self.unknown(node, refusal, EdgeClass::Run, site);
         }
         let pointers = StaticFunctionPointerAnalysis::new(function);
+        let items = std::cell::OnceCell::new();
         for block in &function.blocks {
             for (index, instruction) in block.body.iter().enumerate() {
                 let site = ReachSite::TrustIr(DependencySite::Instruction {
@@ -3760,7 +3908,33 @@ impl<'module> ReachWalker<'module, '_> {
                         sig,
                         calling_conv,
                     } => {
-                        if let Some(resolution) = pointers.resolve_typed_at(callee, block.id, index)
+                        let item = items
+                            .get_or_init(|| nominal_item_callees(self.module, function))
+                            .resolve(callee, block.id, index);
+                        if let Ok(Some(target)) = item {
+                            self.call(node, target, site);
+                            if !self
+                                .index
+                                .functions
+                                .function_item(target)
+                                .is_ok_and(|(f, _)| f.ty == sig && f.calling_conv == calling_conv)
+                            {
+                                self.unknown(
+                                    node,
+                                    DependencyRefusalKind::IndirectSignatureMismatch,
+                                    EdgeClass::Run,
+                                    site,
+                                );
+                            }
+                        } else if item.is_err() {
+                            self.unknown(
+                                node,
+                                DependencyRefusalKind::IndirectCall,
+                                EdgeClass::Run,
+                                site,
+                            );
+                        } else if let Some(resolution) =
+                            pointers.resolve_typed_at(callee, block.id, index)
                         {
                             self.call(node, resolution.function(), site);
                             if !exact_indirect_target(
@@ -3784,7 +3958,7 @@ impl<'module> ReachWalker<'module, '_> {
                                 site,
                             );
                         } else {
-                            let key = PoolKey::Fn(fn_pool_shape(self.module, sig));
+                            let key = PoolKey::Fn(fn_pool_shape(&self.index.functions, sig));
                             let carried = self.signature_carries(Some(sig));
                             self.graph.add_invoke(node, key, carried, site, false);
                         }
@@ -3818,7 +3992,7 @@ impl<'module> ReachWalker<'module, '_> {
                             .module
                             .closure_types
                             .get(ty.as_usize())
-                            .map(|closure| fn_pool_shape(self.module, closure.func))
+                            .map(|closure| fn_pool_shape(&self.index.functions, closure.func))
                             .unwrap_or_else(FnShape::unclassified);
                         self.create(node, func, shape, site);
                     }
@@ -3843,6 +4017,30 @@ impl<'module> ReachWalker<'module, '_> {
                         site,
                     ),
                     InstructionReach::Cast { op, src, dst } => {
+                        if let (CastOp::ReifyFnPointer, Ty::FnItem(id), Ty::Func(sig)) =
+                            (op, src, dst)
+                        {
+                            if self
+                                .index
+                                .functions
+                                .function_item(*id)
+                                .is_ok_and(|(f, _)| f.ty == *sig)
+                            {
+                                self.create(
+                                    node,
+                                    *id,
+                                    fn_pool_shape(&self.index.functions, *sig),
+                                    site,
+                                );
+                            } else {
+                                self.unknown(
+                                    node,
+                                    DependencyRefusalKind::IndirectSignatureMismatch,
+                                    EdgeClass::Create,
+                                    site,
+                                );
+                            }
+                        }
                         if cast_launders(&self.nominal, op, src, dst) {
                             self.graph.add_launder(site);
                         }
@@ -4303,7 +4501,7 @@ mod signature_carries_tests {
             // The keys are the walk's: S{depth-1} carries `fn()` by value.
             let keys = &carries.keys[&FuncTyId::new(1)];
             let fresh = carried_keys(
-                &module,
+                &crate::ModuleFunctionCatalog::new(&module),
                 &mut crate::reach::DefIndex::default(),
                 &module.func_types[1].params[0],
             );

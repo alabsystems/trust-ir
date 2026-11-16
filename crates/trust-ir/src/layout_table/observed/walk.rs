@@ -358,6 +358,16 @@ impl<O: ExecutionObserver> Work<'_, '_, O> {
         ty: &Ty,
     ) -> R<Option<Arc<TyLayoutShape>>> {
         self.poll()?;
+        if let Ty::FnItem(id) = ty {
+            if !self.function_item_valid(table.module, *id)? {
+                return Err(LayoutError::UnsupportedTyShape(ty.shape()).into());
+            }
+            return Ok(Some(self.arc(TyLayoutShape {
+                size_bits: 0,
+                align_bits: Some(8),
+                kind: TyLayoutKind::FnItem,
+            })?));
+        }
         if ty_uses_scalar_layout_table(ty) && !table.canonical_scalars {
             let triple = self.copy_text(
                 table

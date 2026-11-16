@@ -65,6 +65,16 @@ fn full_scalar_layout_child_is_held_before_parent_size_read_and_retirement() {
     assert!(saw);
 }
 #[test]
+fn uninhabited_direct_shape_and_sorted_ranges_are_held_until_same_session_cleanup() {
+    let m = direct_storage_fixture(Ty::U32, 4, 4);
+    let (mut shape, mut ranges) = (false, false);
+    inspect(&m, &Ty::Enum(EnumId::new(0)), |state, _| {
+        shape |= matches!(&state.enum_layout, Some(Ok(_)));
+        ranges |= !state.ranges.is_empty();
+    });
+    assert!(shape && ranges);
+}
+#[test]
 fn complete_owned_layout_error_is_held_until_actual_same_session_cleanup() {
     let mut m = module();
     m.target_info.as_mut().unwrap().triple = "unknown-target-尾".repeat(40);

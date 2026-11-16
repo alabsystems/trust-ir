@@ -78,6 +78,7 @@ impl<'a> State<'a> {
                 | Constant::Float(_)
                 | Constant::Bool(_)
                 | Constant::FnDef(_)
+                | Constant::FnItem(_)
                 | Constant::SymbolAddr { .. }
                 | Constant::PhantomData
                 // v70: a leaf keyed by its digest and extents (no constant children).

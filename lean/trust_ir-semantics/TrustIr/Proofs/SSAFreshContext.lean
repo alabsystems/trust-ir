@@ -31,6 +31,9 @@ local macro "context_leaves" : tactic =>
     | apply semInsertElementUsing_fresh
     | apply context_elementIndex_fresh
     | apply lookupLanes_fresh
+    | exact semOpenFrame_fresh _
+    | exact frameHandle_fresh _ _
+    | exact setFrameState_fresh _ _
     | exact pure_fresh _
     | apply throwUB_fresh
     | apply throwTypeError_fresh
@@ -41,6 +44,7 @@ local macro "context_leaves" : tactic =>
     | exact get_fresh
     | exact lookup_fresh _
     | exact rejectPartial_fresh _ _
+    | exact fromMemoryExcept_fresh _
     | exact mapM_fresh Sem.lookupValue _ lookup_fresh
     | (refine bind_fresh _ _ ?_ (fun value => ?_) <;> dsimp only)
     | intro value
@@ -75,11 +79,96 @@ private theorem context_FCmp_fresh (ctx : EvalContext) (op : FCmpOp) (ty : Ty) (
   context_leaves
   all_goals context_leaves
 
+/-- The new reification leaf only reads a value and original headers before
+    publishing a fresh pointer value. Pure refusals never alter the SSA state. -/
+private theorem context_reify_item_fresh (ctx : EvalContext) (source : FuncId)
+    (signature : FuncTyId) (operand : ValueId) :
+    KeepsFresh (α := InstrResult) (do
+      let value ← Sem.lookupValue operand
+      Sem.rejectPartial value "ReifyFnPointer"
+      match value with
+      | .fnItem held =>
+        if held != source then Sem.throwTypeError "ReifyFnPointer: item identity differs from source type"
+        let declaration ← Sem.fromMemoryExcept (functionItemDeclaration ctx source)
+        if declaration.signatureId != signature then
+          Sem.throwTypeError "ReifyFnPointer: destination signature differs from item declaration"
+        pure (.value (some (← Sem.bindFresh (.fnDef signature source))))
+      | _ => Sem.throwTypeError "ReifyFnPointer: source is not a nominal function item") := by
+  refine bind_fresh _ _ (lookup_fresh operand) (fun value => ?_)
+  refine bind_fresh _ _ (rejectPartial_fresh value _) (fun _ => ?_)
+  split
+  · split
+    · exact throwTypeError_fresh "ReifyFnPointer: item identity differs from source type"
+    · try simp only [pure_bind]
+      refine bind_fresh _ _ (fromMemoryExcept_fresh _) (fun declaration => ?_)
+      split
+      · exact throwTypeError_fresh "ReifyFnPointer: destination signature differs from item declaration"
+      · try simp only [pure_bind]
+        exact bind_fresh _ _ (bindFresh_fresh _) (fun _ => pure_fresh _)
+  · exact throwTypeError_fresh "ReifyFnPointer: source is not a nominal function item"
+
+/-- Source layout queries and byte encoding/decoding are pure computations.
+    This leaf preserves the complete image and every refusal without reducing
+    any source plan or recursive codec inside the freshness proof. -/
+private theorem context_item_byte_cast_fresh (ctx : EvalContext) (source destination : Ty)
+    (operand : ValueId) :
+    KeepsFresh (α := InstrResult) (do
+      let service ← match ctx.memoryService with
+        | some service => pure service
+        | none => Sem.throwTypeError "FnItem cast: original source layouts are absent"
+      if service.model != ctx.byteModel then
+        Sem.throwTypeError "FnItem cast: source layout target differs from evaluator target"
+      let sourcePlan ← Sem.fromMemoryExcept (service.query source)
+      let destinationPlan ← Sem.fromMemoryExcept (service.query destination)
+      if sourcePlan.layout.size != destinationPlan.layout.size then
+        Sem.throwTypeError "FnItem cast: byte extents differ"
+      let value ← Sem.lookupValue operand
+      Sem.rejectPartial value "FnItem cast"
+      let image ← Sem.fromMemoryExcept
+        (AggregateMemory.encode ctx.byteModel ctx.functionOrder sourcePlan value false)
+      let state ← Sem.getState
+      let result ← Sem.fromMemoryExcept
+        (AggregateMemory.decode ctx.byteModel ctx.functionOrder state.memory destinationPlan image.bytes)
+      pure (.value (some (← Sem.bindFresh result)))) := by
+  cases servicePresent : ctx.memoryService with
+  | none => exact throwTypeError_fresh "FnItem cast: original source layouts are absent"
+  | some service =>
+    simp only [servicePresent, pure_bind]
+    split
+    · exact throwTypeError_fresh "FnItem cast: source layout target differs from evaluator target"
+    · try simp only [pure_bind]
+      refine bind_fresh _ _ (fromMemoryExcept_fresh _) (fun sourcePlan => ?_)
+      refine bind_fresh _ _ (fromMemoryExcept_fresh _) (fun destinationPlan => ?_)
+      split
+      · exact throwTypeError_fresh "FnItem cast: byte extents differ"
+      · try simp only [pure_bind]
+        refine bind_fresh _ _ (lookup_fresh operand) (fun value => ?_)
+        refine bind_fresh _ _ (rejectPartial_fresh value _) (fun _ => ?_)
+        refine bind_fresh _ _ (fromMemoryExcept_fresh _) (fun image => ?_)
+        refine bind_fresh _ _ get_fresh (fun state => ?_)
+        refine bind_fresh _ _ (fromMemoryExcept_fresh _) (fun result => ?_)
+        exact bind_fresh _ _ (bindFresh_fresh result) (fun _ => pure_fresh _)
+
 private theorem context_Cast_fresh (ctx : EvalContext) (op : CastOp) (srcTy dstTy : Ty) (operand : ValueId) :
     KeepsFresh (stepInstWithContext ctx (.Cast op srcTy dstTy operand)) := by
-  simp only [stepInstWithContext]
-  context_leaves
-  all_goals context_leaves
+  cases op
+  case ReifyFnPointer =>
+    cases srcTy
+    case FnItem source =>
+      cases dstTy
+      case Func signature => exact context_reify_item_fresh ctx source signature operand
+      all_goals
+        simp only [stepInstWithContext]
+        exact ite_fresh _ _ _ (context_item_byte_cast_fresh ctx _ _ operand)
+          (stepInst_fresh _ _)
+    all_goals
+      simp only [stepInstWithContext]
+      exact ite_fresh _ _ _ (context_item_byte_cast_fresh ctx _ _ operand)
+        (stepInst_fresh _ _)
+  all_goals
+    simp only [stepInstWithContext]
+    exact ite_fresh _ _ _ (context_item_byte_cast_fresh ctx _ _ operand)
+      (stepInst_fresh _ _)
 
 private theorem context_Load_fresh (ctx : EvalContext) (ty : Ty) (ptr : ValueId) (volatile : Bool) (align : Option Nat) :
     KeepsFresh (stepInstWithContext ctx (.Load ty ptr volatile align)) := by
@@ -289,6 +378,13 @@ private theorem context_Unreachable_fresh (ctx : EvalContext)  :
   context_leaves
   all_goals context_leaves
 
+private theorem context_BoxDeref_fresh (ctx : EvalContext) (ptrTy : Ty) (pointee : BoxPointee)
+    (operand : ValueId) (fact : BoxValidityFact) :
+    KeepsFresh (stepInstWithContext ctx (.BoxDeref ptrTy pointee operand fact)) := by
+  simp only [stepInstWithContext]
+  context_leaves
+  all_goals context_leaves
+
 private theorem context_Copy_fresh (ctx : EvalContext) (ty : Ty) (operand : ValueId) :
     KeepsFresh (stepInstWithContext ctx (.Copy ty operand)) := by
   simp only [stepInstWithContext]
@@ -399,7 +495,7 @@ private theorem context_LoadSlot_fresh (ctx : EvalContext) (frame : ValueId) (sl
 
 private theorem context_CloseFrame_fresh (ctx : EvalContext) (frame : ValueId) :
     KeepsFresh (stepInstWithContext ctx (.CloseFrame frame)) := by
-  simp only [stepInstWithContext]
+  simp only [stepInstWithContext, semCloseFrame]
   context_leaves
   all_goals context_leaves
 
@@ -498,6 +594,7 @@ theorem stepInstWithContext_fresh (ctx : EvalContext) (inst : Inst) :
   | Assert cond kind site => exact context_Assert_fresh ctx cond kind site
   | Unreachable => exact context_Unreachable_fresh ctx
   | Copy ty operand => exact context_Copy_fresh ctx ty operand
+  | BoxDeref ptrTy pointee operand fact => exact context_BoxDeref_fresh ctx ptrTy pointee operand fact
   | Select ty cond thenVal elseVal => exact context_Select_fresh ctx ty cond thenVal elseVal
   | SeqMapAddK ty seq k => exact context_SeqMapAddK_fresh ctx ty seq k
   | SeqMapNot ty seq => exact context_SeqMapNot_fresh ctx ty seq

@@ -186,6 +186,10 @@ theorem shaped_function_frame_exit (ctx : EvalContext) (program : FrameProgramSh
           · simp only [poison,↓reduceIte]; exact True.intro
           · simp only [poison,↓reduceIte,pure_bind]
             apply (FrameActionExit.callee state _).1
+            apply FrameActionExit.bind (fun bound _ => MintedArgs bound args) MintedArgs _ _ state
+              (function_item_checks_frame_exit ctx function.body.paramTys args state valid incoming)
+            intro unit state valid incoming
+            cases unit
             apply FrameActionExit.bind MintedArgs MintedArgs _ _ state
               ((FrameActionExit.callee state _).2
                 (shaped_frame_entry_exit (ctx.forFunction function) function.cfg (program entry function selected)
@@ -198,7 +202,11 @@ theorem shaped_function_frame_exit (ctx : EvalContext) (program : FrameProgramSh
             by_cases rejected : returned.any Value.isPoison = true
             · simp only [rejected,↓reduceIte]; exact True.intro
             · simp only [rejected,↓reduceIte,pure_bind]
-              exact ⟨afterValid,minted,.refl _⟩
+              apply FrameActionExit.bind (fun bound _ => MintedArgs bound returned) MintedArgs _ _ after
+                (function_item_checks_frame_exit ctx function.body.returnTys returned after afterValid minted)
+              intro unit final finalValid finalMinted
+              cases unit
+              exact ⟨finalValid,finalMinted,.refl _⟩
   } {
     unfold evalFunctionInContext
     cases selected : ctx.functions entry with
@@ -221,6 +229,10 @@ theorem shaped_function_frame_exit (ctx : EvalContext) (program : FrameProgramSh
           · simp only [poison,Bool.false_eq_true,↓reduceIte]; exact True.intro
           · simp only [poison,Bool.false_eq_true,↓reduceIte,pure_bind]
             apply (FrameActionExit.callee state _).1
+            apply FrameActionExit.bind (fun bound _ => MintedArgs bound args) MintedArgs _ _ state
+              (function_item_checks_frame_exit ctx function.body.paramTys args state valid incoming)
+            intro unit state valid incoming
+            cases unit
             apply FrameActionExit.bind MintedArgs MintedArgs _ _ state
               ((FrameActionExit.callee state _).2
                 (shaped_frame_entry_exit (ctx.forFunction function) function.cfg (program entry function selected)
@@ -233,7 +245,11 @@ theorem shaped_function_frame_exit (ctx : EvalContext) (program : FrameProgramSh
             by_cases rejected : returned.any Value.isPoison = true
             · simp only [rejected,Bool.false_eq_true,↓reduceIte]; exact True.intro
             · simp only [rejected,Bool.false_eq_true,↓reduceIte,pure_bind]
-              exact ⟨afterValid,minted,.refl _⟩
+              apply FrameActionExit.bind (fun bound _ => MintedArgs bound returned) MintedArgs _ _ after
+                (function_item_checks_frame_exit ctx function.body.returnTys returned after afterValid minted)
+              intro unit final finalValid finalMinted
+              cases unit
+              exact ⟨finalValid,finalMinted,.refl _⟩
   }
 
 /-- Full original public entry execution from actual decoded source assembly.

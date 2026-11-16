@@ -386,3 +386,157 @@ fn preexisting_stop_refuses_both_stages_without_reading_new_inputs_or_replacing_
     }
     assert_eq!(o.events, vec![first]);
 }
+
+#[test]
+fn every_single_public_encoding_callback_keeps_the_first_refusal_and_cleanup_tail() {
+    for invalid in [false, true] {
+        let mut m = strict_single_fixture();
+        if invalid {
+            m.enums[0].layout.as_mut().unwrap().encoding =
+                EnumTagEncoding::SingleInhabited { variant: 2 };
+        }
+        let (_, baseline) = run(&m, Stage::Encoding);
+        let (_, align) = original::prelude(&m, &m.enums[0], m.enums[0].layout.as_ref().unwrap());
+        assert_eq!(align, None);
+        for stop in 1..=baseline.events.len() {
+            let mut observer = Observer {
+                stop: Some(stop),
+                ..Default::default()
+            };
+            let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+            assert_eq!(
+                call(&m, Stage::Encoding, align, &mut session),
+                Err(ObservedValueError::AdmissionRefused)
+            );
+            let first = session.first_refusal().unwrap().progress;
+            assert_eq!(first, baseline.events[stop - 1]);
+            assert_eq!(
+                session.first_refusal().unwrap().cause,
+                "original enum encoding stop"
+            );
+            assert_eq!(
+                call(&m, Stage::Encoding, align, &mut session),
+                Err(ObservedValueError::AdmissionRefused)
+            );
+            assert_eq!(session.first_refusal().unwrap().progress, first);
+            assert_eq!(session.remaining_fuel(), InterpretOptions::default().fuel);
+            assert!(
+                observer
+                    .events
+                    .iter()
+                    .skip(stop)
+                    .all(|event| event.phase == ExecutionPhase::ScratchRetirement)
+            );
+        }
+    }
+}
+
+#[test]
+fn single_private_trace_replays_actual_inhabitedness_admissions_and_drains_state() {
+    let m = strict_single_fixture();
+    let table_events = {
+        let mut observer = Observer::default();
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        let table = LayoutTable::new_observed(&m, &mut session, site()).unwrap();
+        drop(table);
+        observer.events.len()
+    };
+    let baseline = private_trace(&m);
+    assert!(
+        baseline
+            .events
+            .iter()
+            .skip(table_events)
+            .any(|event| event.phase == ExecutionPhase::Layout)
+    );
+    let stops: Vec<_> = baseline
+        .events
+        .iter()
+        .enumerate()
+        .skip(table_events)
+        .filter(|(_, event)| event.phase != ExecutionPhase::ScratchRetirement)
+        .map(|(index, _)| index + 1)
+        .collect();
+    assert!(!stops.is_empty());
+    let (_, align) = original::prelude(&m, &m.enums[0], m.enums[0].layout.as_ref().unwrap());
+    for stop in stops {
+        let mut observer = Observer {
+            stop: Some(stop),
+            ..Default::default()
+        };
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        {
+            let mut work = Work {
+                session: &mut session,
+                site: site(),
+            };
+            let mut state = State::default();
+            state.table = Some(LayoutTable::new_observed(&m, work.session, work.site).unwrap());
+            let result = raw(
+                &mut state,
+                &m.enums[0],
+                m.enums[0].layout.as_ref().unwrap(),
+                align,
+                &mut work,
+            );
+            let baseline_event = baseline.events[stop - 1];
+            match result {
+                Err(error) => {
+                    assert_eq!(
+                        error,
+                        ObservedValueError::AdmissionRefused,
+                        "private34 stop={stop}; table_events={table_events}; baseline_progress={:?}; first_refusal_progress={:?}",
+                        baseline_event,
+                        work.session.first_refusal().map(|refusal| refusal.progress)
+                    );
+                    let refusal = work.session.first_refusal().expect("raw refusal is sticky");
+                    assert_eq!(refusal.progress, baseline_event);
+                    assert_eq!(refusal.cause, "original enum encoding stop");
+                }
+                Ok(()) => {
+                    // The same complete baseline also contains diagnostic-cleanup
+                    // publication after raw returns. It must not be charged early.
+                    assert!(
+                        work.session.first_refusal().is_none(),
+                        "private34 stop={stop}; table_events={table_events}; baseline_progress={:?}; first_refusal_progress={:?}",
+                        baseline_event,
+                        work.session.first_refusal().map(|refusal| refusal.progress)
+                    );
+                    assert_eq!(
+                        baseline_event.phase,
+                        ExecutionPhase::Publication,
+                        "private34 stop={stop}; table_events={table_events}; baseline_progress={:?}",
+                        baseline_event
+                    );
+                    assert_eq!(
+                        (baseline_event.work, baseline_event.copy_bytes),
+                        (0, 0),
+                        "private34 stop={stop}; table_events={table_events}; baseline_progress={:?}",
+                        baseline_event
+                    );
+                }
+            }
+            assert!(state.errors.is_empty());
+            drain(&mut state, &mut work);
+            assert!(empty(&state));
+        }
+        let first = session.first_refusal().unwrap().progress;
+        assert_eq!(first, baseline.events[stop - 1]);
+        assert_eq!(
+            session.first_refusal().unwrap().cause,
+            "original enum encoding stop"
+        );
+        assert_eq!(
+            call(&m, Stage::Encoding, align, &mut session),
+            Err(ObservedValueError::AdmissionRefused)
+        );
+        assert_eq!(session.first_refusal().unwrap().progress, first);
+        assert!(
+            observer
+                .events
+                .iter()
+                .skip(stop)
+                .all(|event| event.phase == ExecutionPhase::ScratchRetirement)
+        );
+    }
+}

@@ -54,7 +54,9 @@ pub(super) fn collect<'a, O: ExecutionObserver>(
                 let Some(node) = body.get(index) else {
                     return Ok(());
                 };
-                for node_ty in node.types() {
+                // The preceding admission covers the borrowed field projection;
+                // there is no owned node-type vector to retire on a child stop.
+                for node_ty in node.iter_types() {
                     work.push(types, node_ty)?;
                 }
                 work.admit(1, size_of::<usize>())?;

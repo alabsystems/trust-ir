@@ -8,6 +8,11 @@ limited to the checker and semantic fragment that establishes it.
   supported Rust version is promised yet.
 - `ModuleBuilder` and `FunctionBuilder` construct data; they do not make it
   valid. Callers must run validation explicitly.
+- `instantiate_retained` preserves original template declarations and callee
+  holes through actual symbol coalescing and canonical merge receipts. This is
+  data correspondence, not source authentication, recursive source admission,
+  a termination/safety theorem or a body/proof license. Copied modules and
+  remap numbers cannot recover the retained input's allocation identity.
 - Structural `trust-ir validate` checks IR well-formedness and evidence
   invariants. It does not prove every carried claim. `Trusted` remains a
   faith-based status, and rejection of `Trusted`/`Failed` states plus lineage
@@ -71,6 +76,105 @@ limited to the checker and semantic fragment that establishes it.
   point) is refused as unsupported unless the embedder installs a host model
   of that symbol; a run a host model served is host-assisted, reports it
   (`host_calls`), and rests on that model, not on the module.
+- Typed `SignatureAbi` reference transport is implemented in source at real
+  entry, direct, indirect and host-call boundaries. It separates source storage
+  from lowered carriers, models scalar extension and truncation, pair/cast
+  registers and uninitialized padding, creates fresh indirect by-value copies,
+  checks their lifetime retirement on every exit, and uses the actual
+  hidden-result buffer.
+  Every module descriptor, unused/FnPtr-only signature and explicitly supplied
+  function is checked before effects. The combined transport has been compiled
+  and exercised through public interpreter entries with Trust's explicit
+  unverified Rust lane. This runtime evidence supplies no target-ABI, Lean,
+  compiler or machine-code proof. Unmodeled
+  address-dependent control requiring noninterference proofs, borrowed
+  indirect noalias source objects, incomplete indirect stack-value mappings,
+  pointer contracts on cast storage, pair/cast fresh results, typed no-unwind
+  crossings under Unwind and indirect/fresh host results remain unsupported.
+  Scalar pointer contracts have a private per-run based-on model: actual
+  argument retags, scalar SSA/call/branch transport, sparse store/load/copy
+  lineage, full-width pointer/integer round trips, independent globals and
+  modified-location noalias histories. Readonly and nofree follow the actual
+  based-on copy, including RC/host-RC and hidden-result accesses.
+  `Address` capture removes access permissions after return or unwind;
+  `ReadOnly` capture retains reads. Stored/returned pointer copies preserve
+  these permissions; matching numeric coordinates cannot restore them.
+  Straight-line non-escaping `None` capture is modeled, while uncertain address
+  exposure/control refuses. A scalar noalias result requires an actual new
+  live heap-allocation producer, preserved pointer lineage and no possible
+  retained caller/global exposure. Caller-argument/global results contradict
+  that contract; ambiguous stored representations remain unavailable. A hidden
+  noalias result pointer is an actual parameter contract, not a fresh returned
+  allocation. These source changes are not full capture/fresh-result coverage.
+  Structural pointer aggregates, mixed/truncated integer lineage, opaque-host
+  address transport, direct result access attributes and readonly-only
+  allocation invalidation remain unavailable. Scalar shadow bytes follow
+  actual ordinary overwrites even after scopes exit. Unmapped shadow-bearing
+  operations refuse before they can discard retained facts. Raw address
+  reconstitution of an active fresh noalias byval copy also refuses when its
+  basis is unknown. Writes, frees and RC mutations through allocation domains
+  whose based-on provenance is unavailable produce an explicit
+  unsupported result rather than an invented program fault. Cast transport is
+  bounded to 4096 rest registers. The separately metered observed executor now
+  has scalar and flat-U8-array typed entry/call/result transport in source for
+  Direct, Pair, Cast and Ignore, including source stores, recorded register
+  defined bits, extension, poison padding and carrier reconstruction. It uses
+  the original observer for canonical whole-module ABI/target/legacy checks,
+  complete actual type-bearing input scans, images, copies and all-exit scratch
+  retirement. Real iterative direct calls and module-local function-pointer
+  calls share the original session, fuel, memory and saved caller stack.
+  Function values support FnDef constants, Copy/Select and canonical 64-bit little-endian
+  entry/result/register/memory transport using the actual module roster's
+  index-plus-one code words; these are reference-model values, never host
+  executable addresses. Indirect dispatch checks exact value signature IDs,
+  complete actual raw signature/ABI equality and the declared convention.
+  Call/function-value modules receive the same conservative whole-module
+  type-bearing preflight, including unused records. Newly owned callee values,
+  partial images and clones retain cleanup after cancellation.
+  The combined core runtime population executes all eleven function-pointer
+  controls, nine plain indirect-copy controls and eighteen original direct-call
+  and cleanup controls through public entries. This qualifies those exercised
+  reference-model cases; broader qualification and physical ABI authority remain
+  separate obligations. Host boundaries,
+  function-pointer equality/casts, outgoing-stack/hidden storage,
+  nominal/storage/dialect types, multiblock control, unwind and provenance
+  promises remain unavailable in observed execution. It never falls back to
+  ordinary execution or unmetered transport. Source records and all original
+  ABI metadata remain intact; this is not full observed ABI coverage.
+  A later source component adds plain indirect argument copies with one whole
+  `Ptr` carrier, `caller_copy=true`, no stack/metadata role and exact default
+  attributes. Actual direct and function-pointer callees receive fresh owned
+  byte storage; images preserve initializedness, including poison, and actual
+  live identities stay distinct. Zero-sized non-Ignore ABI records retain the
+  canonical validator's refusal. A private frame scope retires only its own copies before
+  the caller resumes and drains pending copies after bind, fault, fuel or
+  observer refusal. All allocations, image work and retirement use the original
+  session. Nonempty lineage/shadow state and every attributed/borrowed/stack/
+  hidden/host/unwind family still refuse; no ordinary provenance copy is used.
+  Public entry does not import memory by accepting a caller-supplied allocation
+  ID. Its original and added runtime controls have executed in the combined
+  core population. These executions cover the modeled plain-copy family, not
+  attributed or borrowed copies or a physical calling-convention certificate.
+  Canonical Ignore contributes no lowered IR carrier. Attaching it to a
+  retained Unit slot violates the current inline ABI contract and refuses;
+  unrecorded legacy Unit execution remains supported. Completing the actual
+  source-bound logical Unit/tuple projection through physical Ignore remains
+  a separate source/ABI/transport obligation, with caller effects preserved.
+  A complete explicitly bound value stack carrier uses a fresh outgoing byte
+  area with the recorded size/alignment and uninitialized tail padding; it is
+  decoded back to its existing IR type. It does not acquire an invented source
+  pointee type or an IR pointer parameter.
+  Readonly applies to the complete based-on access domain, including derived
+  accesses before a nonzero input offset and supported RC effects;
+  dereferenceable sizes are minima. Hidden nofree parameters receive their
+  actual based-on access contract. Failed
+  copy retirement preserves the borrow floor and original failure diagnostics,
+  returns unavailable and clears the in-flight exception so a caller cannot
+  catch the original panic and continue with an unretired copy. Successful
+  retirement preserves ordinary unwind. Unknown partial-byte padding refuses
+  when an integer carrier could inspect it; exact logical Bool projection and
+  explicit sign/zero extension remain modeled. These changes also remain
+  source-only and unexecuted.
 - Variadic functions are half-carried, by design. A call to a variadic
   DECLARATION (a `printf`-shaped C symbol) is a host call carrying the full
   argument list — the fixed prefix is checked against the signature, the
@@ -102,6 +206,33 @@ limited to the checker and semantic fragment that establishes it.
   consumer/native lowering remain open. Observable NaN payloads still refuse
   in Lean at every width. See the qualification, `reports/2026-11-06-binary16-execution.md` in the
   development tree.
+- Wire v74's `Inst::BoxDeref` STATES a Box validity fact; it proves none. The
+  one admitted evidence kind is a `Premise`, a named assumption nothing here
+  establishes. `Obligation` and `DominatingCheck` evidence have a wire
+  spelling and are refused wherever they appear: nothing compares an
+  obligation's formula with the conjunct, and no check shape is measured
+  against a producer's output or lowered by every target. The premise sanity
+  rule refuses only what the function itself shows (a null, undef or
+  `inttoptr` operand, a root with no anchor in the function, a dominating
+  `Dealloc`, two roots in one fact); it does not relate the root to the
+  operand and does not make a premise true. The pinned roots are the list
+  drawn before any producer was measured: stage 0 of the Box program found
+  they cover 4 of the producing compiler's casts and no whole program (a
+  `vec!` expansion's store, a reborrow-only deref, a box reached through a
+  reference a safe call returned and a box slot lent as `&mut` have no
+  root), so v72 is not sufficient for any measured program and a later wire
+  version must extend the list. The session field is the producer's own
+  statement; the format refuses every statement other than "proof session,
+  verification snapshot" and cannot check a true one. No evidence reaches the
+  `ConsumerRederived` tier, so a consumer that sets that floor refuses every
+  `BoxDeref`. Only sized, inhabited, non-zero-sized pointees are in scope.
+  The rule that the instruction's undefined behaviour licenses no
+  transformation (§28) is prose: no engine or validator here can observe
+  what a consumer's passes do. The instruction is outside the
+  lowering-target subset and SemR, and no backend lowers it. The Lean rule
+  executes it only for pointees with a canonical byte layout and refuses a
+  declared-aggregate pointee as unsupported; no Lean theorem states the rule,
+  which is held to the interpreter by a differential test only.
 - Wire v65's `SingleInhabited { variant }` describes a tag-free enum image
   with multiple declared variants, retaining nominal inactive types such as
   `Infallible`. It requires the selected variant to be inhabited and every

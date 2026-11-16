@@ -161,6 +161,11 @@ impl<'a> State<'a> {
                     self.items(">{ ", " }", captures, work)
                 }
             }
+            Constant::FnItem(func) => {
+                work.text("fnitem<func.", &mut self.output)?;
+                work.unsigned(u128::from(func.index()), &mut self.output)?;
+                work.text(">", &mut self.output)
+            }
             Constant::FnDef(func) => {
                 work.text("fndef<func.", &mut self.output)?;
                 work.unsigned(u128::from(func.index()), &mut self.output)?;

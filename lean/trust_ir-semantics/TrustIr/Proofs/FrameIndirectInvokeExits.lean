@@ -153,16 +153,34 @@ theorem indirect_invoke_request_success (ctx : EvalContext) (depth : Nat) (cfg :
   obtain ⟨held,middle,looked,tail⟩ := split_bind_success _ _ s final result run
   obtain ⟨found,same⟩ := lookup_success s middle calleeId held looked
   subst middle
+  obtain ⟨unit, middle, checked, tail⟩ := split_bind_success _ _ s final result tail
+  have same := memory_check_success_state _ s middle unit checked
+  subst middle
+  cases unit
   cases held
   case nullPtr => cases tail
-  case fnDef held fn =>
+  case fnItem target _ =>
+    cases depth with
+    | zero => cases tail
+    | succ depth =>
+      obtain ⟨id, middle, header, tail⟩ := split_bind_success _ _ s final result tail
+      have same := memory_check_success_state _ s middle id header
+      subst middle
+      obtain ⟨values, middle, looked, tail⟩ := split_bind_success _ _ s final result tail
+      obtain ⟨same, incoming⟩ := lookup_args_success args s middle values valid looked
+      subst middle
+      obtain ⟨callee, middle, resolved, tail⟩ := split_bind_success _ _ s final result tail
+      have same := memory_check_success_state _ s middle callee resolved
+      subst middle
+      exact finish_request s.nextFrameLineage (.InvokeReq id values normal ids unwind) s final result incoming tail
+  case fnDef held fn _ =>
     obtain ⟨values,middle,looked,tail⟩ := split_bind_success _ _ s final result tail
     obtain ⟨same,incoming⟩ := lookup_args_success args s middle values valid looked
     subst middle
     cases depth with
     | zero => cases tail
     | succ depth =>
-      cases checked : functionCall ctx held fn sig with
+      cases checked : functionCallWithConvention ctx held fn sig conv with
       | error error => simp only [checked] at tail; cases tail
       | ok id =>
         simp only [checked,pure_bind] at tail
@@ -190,8 +208,8 @@ private theorem raw_request_no_unwind (model : ByteModel) (calleeId : ValueId) (
     exact CallCheckNoUnwind.bind _ _ (lookup_arguments_no_unwind args) (fun _ => pure_no_unwind _)
   all_goals intro state exception after run; cases run
 
-/-- Only FnDef preparation reads functionErrors. Its static-error premise
-prevents injected arbitrary unwind states; raw pointer fallbacks cannot unwind. -/
+/-- Original body resolution retains its static-error premise for nominal
+items and FnDef values; raw pointer fallbacks cannot create unwind states. -/
 theorem indirect_invoke_request_no_unwind (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
     (depth : Nat) (cfg : CFG) (strategy : PanicStrategy) (calleeId : ValueId) (sig : FuncTyId)
     (args : List ValueId) (conv : CallingConv) (normal : BlockId) (ids : List ValueId) (unwind : BlockId) :
@@ -203,20 +221,37 @@ theorem indirect_invoke_request_no_unwind (ctx : EvalContext) (safe : StaticFunc
   rw [anchored]
   apply CallCheckNoUnwind.bind _ _ (lookup_no_unwind calleeId)
   intro value
+  apply CallCheckNoUnwind.bind _ _
+    (lift_validation_no_unwind _ (function_item_callee_type_no_unwind ctx calleeId value))
+  intro unit
+  cases unit
   cases value
   case nullPtr => intro state exception after run; cases run
+  case fnItem target =>
+    cases depth with
+    | zero => intro state exception after run; cases run
+    | succ depth =>
+      apply CallCheckNoUnwind.bind _ _
+        (lift_validation_no_unwind _ (function_item_call_no_unwind ctx target sig conv))
+      intro function
+      apply CallCheckNoUnwind.bind _ _ (lookup_arguments_no_unwind args)
+      intro values
+      apply CallCheckNoUnwind.bind _ _
+        (lift_validation_no_unwind _ (function_item_body_no_unwind ctx safe function))
+      intro callee
+      exact pure_no_unwind _
   case fnDef held fn =>
     apply CallCheckNoUnwind.bind _ _ (lookup_arguments_no_unwind args)
     intro values
     cases depth with
     | zero => intro state exception after run; cases run
     | succ depth =>
-      cases checked : functionCall ctx held fn sig with
+      cases checked : functionCallWithConvention ctx held fn sig conv with
       | error error =>
         intro state exception after run
         simp only [checked] at run
         cases run
-        exact function_call_no_unwind ctx safe held fn sig exception after checked
+        exact function_call_with_convention_no_unwind ctx safe held fn sig conv exception after checked
       | ok id =>
         simp only [checked,pure_bind]
         exact pure_no_unwind _

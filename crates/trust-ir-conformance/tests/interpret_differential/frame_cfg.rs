@@ -87,10 +87,12 @@ fn every_join_signature_is_checked_without_last_writer_selection() {
     )));
     let mismatch = execute(&mixed, InterpretValue::bool(true)).unwrap_err();
     assert_eq!(mismatch.code, InterpretErrorCode::TypeError);
+    // The carried frame retains its original source slot declaration.
     assert!(
         mismatch
             .message
-            .contains("expected value of type i64, got i32")
+            .contains("LoadSlot: requested type differs from source slot"),
+        "{mismatch:?}"
     );
     assert_eq!(execute(&mixed, InterpretValue::bool(false)).unwrap(), 8);
     let (same, errors) = checked(include_str!(

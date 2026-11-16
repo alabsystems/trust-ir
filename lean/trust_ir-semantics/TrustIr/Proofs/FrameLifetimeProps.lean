@@ -66,27 +66,31 @@ theorem bind_run (s : MachineState) (id rhs : ValueId) (lineage slot : Nat)
     Sem.run (semBindSlot id slot rhs) s =
       .ok (⟨s.nextValueId⟩, afterBind s lineage slots slot value) := by
   trustIrCompilerProof {
-      simp [semBindSlot, Sem.frameHandle, afterBind, Sem.run,
-        Sem.lookupValue, Sem.rejectPartial, Sem.getState, Sem.setState, Sem.bindFresh,
-        MachineState.bindValue, lookup, operand, live, bound,
-        StateT.run, StateT.bind, StateT.get, StateT.set, StateT.pure,
-        StateT.lift, bind, pure, Except.bind, Except.pure]
+    simp [semBindSlot, Sem.frameHandle, bindSlot, afterBind, Sem.run,
+      Sem.lookupValue, Sem.rejectPartial, Sem.getState, Sem.setState, Sem.bindFresh,
+      MachineState.bindValue, lookup, operand, live, bound,
+      StateT.run, StateT.bind, StateT.get, StateT.set, StateT.pure,
+      StateT.lift, bind, pure, Except.bind, Except.pure]
   } {
-      dsimp only [semBindSlot, Sem.frameHandle, afterBind, Sem.run,
-        Sem.lookupValue, Sem.rejectPartial, Sem.getState, Sem.setState, Sem.bindFresh,
-        MachineState.bindValue, StateT.run, StateT.bind, StateT.get, StateT.set,
-        StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure]
-      rw [lookup]
-      dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, bind, pure,
-        Except.bind, Except.pure]
-      rw [if_pos live]
-      dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, bind, pure,
-        Except.bind, Except.pure]
-      rw [operand]
-      dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, bind, pure,
-        Except.bind, Except.pure]
-      rw [if_pos bound]
-      rfl
+    dsimp only [semBindSlot, Sem.frameHandle, bindSlot, afterBind, Sem.run,
+      Sem.lookupValue, Sem.rejectPartial, Sem.getState, Sem.setState, Sem.bindFresh,
+      MachineState.bindValue, StateT.run, StateT.bind, StateT.get, StateT.set,
+      StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure]
+    rw [lookup]
+    dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, bind, pure,
+      Except.bind, Except.pure]
+    rw [if_pos live]
+    dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, bind, pure,
+      Except.bind, Except.pure]
+    rw [operand]
+    dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, bind, pure,
+      Except.bind, Except.pure]
+    rw [if_pos bound]
+    dsimp only [StateT.bind, StateT.get, StateT.set, StateT.pure, StateT.lift,
+      bind, pure, Except.bind, Except.pure]
+    rw [lookup]
+    dsimp only [StateT.pure, Pure.pure, Except.pure, bindSlot]
+    rw [if_pos bound] <;> rfl
   }
 
 theorem removed_lineage_closed (lineages : List Nat) (lineage : Nat) :
@@ -498,12 +502,20 @@ theorem restore_forged_return_handle :
   intro valid
   exact Nat.not_lt_zero 0 (valid ⟨0⟩ 0 [] rfl)
 
-/-- Successful inspection exposes the actual frame operand and leaves state
-unchanged. Missing, poisoned and non-frame operands cannot supply a receipt. -/
+/-- A snapshot's immutable declaration origin. `none` is the original
+unqualified carrier; a source carrier retains the complete original row. -/
+def frameValue (origin : Option (FuncId × BindingFrameDef)) (lineage : Nat)
+    (slots : List Value) : Value :=
+  match origin with
+  | none => .frame lineage slots
+  | some (function, declaration) => .sourceFrame lineage function declaration slots
+
+/-- Successful inspection exposes the exact operand, including any immutable
+source origin, and leaves state unchanged. No origin is synthesized from slots. -/
 theorem frameHandle_success (s final : MachineState) (id : ValueId) (op : String)
     (lineage : Nat) (slots : List Value)
     (run : Sem.run (Sem.frameHandle id op) s = .ok ((lineage, slots), final)) :
-    s.lookupValue id = some (.frame lineage slots) ∧ final = s := by
+    ∃ origin, s.lookupValue id = some (frameValue origin lineage slots) ∧ final = s := by
   cases lookup : s.lookupValue id with
   | none =>
     simp [Sem.frameHandle, Sem.lookupValue, Sem.run, Sem.getState,
@@ -515,8 +527,12 @@ theorem frameHandle_success (s final : MachineState) (id : ValueId) (op : String
         Sem.getState, Sem.throwTypeError, Sem.throwUB, lookup,
         StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
         bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-    rcases run with ⟨⟨rfl, rfl⟩, rfl⟩
-    exact ⟨rfl, rfl⟩
+    case frame heldLineage heldSlots =>
+      rcases run with ⟨⟨rfl, rfl⟩, rfl⟩
+      exact ⟨none, rfl, rfl⟩
+    case sourceFrame heldLineage function declaration heldSlots =>
+      rcases run with ⟨⟨rfl, rfl⟩, rfl⟩
+      exact ⟨some (function, declaration), rfl, rfl⟩
 
 /-- Both allocation invariants follow from an actual successful OpenFrame. -/
 theorem open_success_well_minted (s final : MachineState) (definition : BindingFrameDef)
@@ -531,112 +547,173 @@ theorem open_success_well_minted (s final : MachineState) (definition : BindingF
   · rw [open_overflow_run s definition room] at run
     contradiction
 
-/-- Any successful continuation after inspection receives an actual frame
-operand from the original state. -/
+/-- Any successful continuation after inspection receives the exact frame
+operand and source origin from the original state. -/
 theorem frameHandle_bind_success {α : Type} (s final : MachineState)
     (id : ValueId) (op : String) (k : Nat × List Value → Sem α) (result : α)
     (run : Sem.run (Sem.frameHandle id op >>= k) s = .ok (result, final)) :
-    ∃ lineage slots, s.lookupValue id = some (.frame lineage slots) ∧
+    ∃ origin lineage slots, s.lookupValue id = some (frameValue origin lineage slots) ∧
       Sem.run (k (lineage, slots)) s = .ok (result, final) := by
   rw [run_bind] at run
   cases step : Sem.run (Sem.frameHandle id op) s with
   | error error => simp [step, bind, Except.bind] at run
   | ok pair =>
     rcases pair with ⟨⟨lineage, slots⟩, after⟩
-    have receipt := frameHandle_success s after id op lineage slots step
-    rcases receipt with ⟨lookup, rfl⟩
-    exact ⟨lineage, slots, lookup, by simpa [step] using run⟩
+    obtain ⟨origin, lookup, rfl⟩ := frameHandle_success s after id op lineage slots step
+    exact ⟨origin, lineage, slots, lookup, by simpa [step] using run⟩
 
-/-- Successful close identifies the closed lineage and the exact resulting
-state; no operand classification or liveness premise is supplied by clients. -/
+private theorem close_origin_run (s : MachineState) (id : ValueId)
+    (origin : Option (FuncId × BindingFrameDef)) (lineage : Nat) (slots : List Value)
+    (lookup : s.lookupValue id = some (frameValue origin lineage slots))
+    (live : s.openFrameLineages.contains lineage = true) :
+    Sem.run (semCloseFrame id) s = .ok ((), afterClose s lineage) := by
+  trustIrCompilerProof {
+    have isOpen := live
+  } {
+    have isOpen := List.mem_of_elem_eq_true live
+  }
+  cases origin with
+  | none => exact close_run s id lineage slots lookup live
+  | some origin =>
+    rcases origin with ⟨function, declaration⟩
+    simp [frameValue] at lookup
+    simp [semCloseFrame, Sem.frameHandle, Sem.setFrameState, afterClose,
+      Sem.run, Sem.lookupValue, Sem.rejectPartial, Sem.getState, Sem.setState,
+      lookup, live, isOpen, StateT.run, StateT.bind, StateT.get, StateT.set,
+      StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure]
+
+/-- Successful close identifies the actual origin, closed lineage and exact
+resulting state. Both carriers share one runtime lifetime table. -/
 theorem close_success_state (s final : MachineState) (id : ValueId)
     (run : Sem.run (semCloseFrame id) s = .ok ((), final)) :
-    ∃ lineage slots, s.lookupValue id = some (.frame lineage slots) ∧
+    ∃ origin lineage slots, s.lookupValue id = some (frameValue origin lineage slots) ∧
       s.openFrameLineages.contains lineage = true ∧ final = afterClose s lineage := by
-  obtain ⟨lineage, slots, lookup, _⟩ :=
+  obtain ⟨origin, lineage, slots, lookup, tail⟩ :=
     frameHandle_bind_success s final id "CloseFrame" _ () run
   cases live : s.openFrameLineages.contains lineage with
   | false =>
-    rw [closed_frame_close s id lineage slots lookup live] at run
-    contradiction
+    trustIrCompilerProof {
+      simp [Sem.run, Sem.getState, live, Sem.throwUB, StateT.run,
+        StateT.bind, StateT.get, StateT.lift, bind, pure, Except.bind,
+        Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    } {
+      have closed : lineage ∉ s.openFrameLineages := by
+        intro present
+        have on : s.openFrameLineages.contains lineage = true :=
+          List.elem_eq_true_of_mem present
+        rw [live] at on
+        cases on
+      simp [Sem.run, Sem.getState, live, closed, Sem.throwUB, StateT.run,
+        StateT.bind, StateT.get, StateT.lift, bind, pure, Except.bind,
+        Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    }
   | true =>
-    rw [close_run s id lineage slots lookup live] at run
+    rw [close_origin_run s id origin lineage slots lookup live] at run
     cases run
-    exact ⟨lineage, slots, lookup, live, rfl⟩
+    exact ⟨origin, lineage, slots, lookup, live, rfl⟩
 
 theorem close_success_well_minted (s final : MachineState) (id : ValueId)
     (table : MintedLineages s) (handles : MintedHandles s.nextFrameLineage s.locals)
     (run : Sem.run (semCloseFrame id) s = .ok ((), final)) :
     MintedLineages final ∧ MintedHandles final.nextFrameLineage final.locals := by
-  obtain ⟨lineage, _, _, _, rfl⟩ := close_success_state s final id run
+  obtain ⟨_, lineage, _, _, _, rfl⟩ := close_success_state s final id run
   exact ⟨minted_close s lineage table, handles_close s lineage handles⟩
 
-/-- A successful bind yields the original lineage, actual RHS and exact
-functional snapshot state. All dynamic checks are recovered from execution. -/
+def afterBindOrigin (s : MachineState) (origin : Option (FuncId × BindingFrameDef))
+    (lineage : Nat) (slots : List Value) (slot : Nat) (value : Value) : MachineState :=
+  { s with
+    locals := s.locals.set ⟨s.nextValueId⟩ (frameValue origin lineage (slots.set slot value))
+    nextValueId := s.nextValueId + 1 }
+
+private theorem bind_origin_run (s : MachineState) (id rhs : ValueId)
+    (origin : Option (FuncId × BindingFrameDef)) (lineage slot : Nat)
+    (slots : List Value) (value : Value)
+    (lookup : s.lookupValue id = some (frameValue origin lineage slots))
+    (operand : s.lookupValue rhs = some value)
+    (live : s.openFrameLineages.contains lineage = true) (bound : slot < slots.length) :
+    Sem.run (semBindSlot id slot rhs) s =
+      .ok (⟨s.nextValueId⟩, afterBindOrigin s origin lineage slots slot value) := by
+  trustIrCompilerProof {
+    have isOpen := live
+  } {
+    have isOpen := List.mem_of_elem_eq_true live
+  }
+  cases origin with
+  | none => exact bind_run s id rhs lineage slot slots value lookup operand live bound
+  | some origin =>
+    rcases origin with ⟨function, declaration⟩
+    simp [frameValue] at lookup
+    simp [semBindSlot, Sem.frameHandle, bindSlot, afterBindOrigin, frameValue, Sem.run,
+      Sem.lookupValue, Sem.rejectPartial, Sem.getState, Sem.setState, Sem.bindFresh,
+      MachineState.bindValue, lookup, operand, live, isOpen, bound,
+      StateT.run, StateT.bind, StateT.get, StateT.set, StateT.pure,
+      StateT.lift, bind, pure, Except.bind, Except.pure]
+
+/-- A successful bind preserves the actual immutable origin and lineage,
+recovers the real RHS and yields the exact functional snapshot state. -/
 theorem bind_success_state (s final : MachineState) (id rhs result : ValueId) (slot : Nat)
     (run : Sem.run (semBindSlot id slot rhs) s = .ok (result, final)) :
-    ∃ lineage slots value, s.lookupValue id = some (.frame lineage slots) ∧
+    ∃ origin lineage slots value, s.lookupValue id = some (frameValue origin lineage slots) ∧
       s.lookupValue rhs = some value ∧ s.openFrameLineages.contains lineage = true ∧
       slot < slots.length ∧ result = ⟨s.nextValueId⟩ ∧
-      final = afterBind s lineage slots slot value := by
-  trustIrCompilerProof {
-      obtain ⟨lineage, slots, lookup, _⟩ :=
-        frameHandle_bind_success s final id "BindSlot" _ result run
-      cases live : s.openFrameLineages.contains lineage with
-      | false =>
-        rw [closed_frame_bind s id rhs lineage slot slots lookup live] at run
-        contradiction
-      | true =>
-        cases operand : s.lookupValue rhs with
-        | none =>
-          simp [semBindSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
-            Sem.run, Sem.getState, Sem.throwTypeError, lookup, live, operand,
-            StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
-            bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-        | some value =>
-          by_cases bound : slot < slots.length
-          · rw [bind_run s id rhs lineage slot slots value lookup operand live bound] at run
-            cases run
-            exact ⟨lineage, slots, value, lookup, rfl, live, bound, rfl, rfl⟩
-          · simp [semBindSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
-              Sem.run, Sem.getState, Sem.throwUB, lookup, live, operand, bound,
-              StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
-              bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-  } {
-      obtain ⟨lineage, slots, lookup, _⟩ :=
-        frameHandle_bind_success s final id "BindSlot" _ result run
-      cases live : s.openFrameLineages.contains lineage with
-      | false =>
-        rw [closed_frame_bind s id rhs lineage slot slots lookup live] at run
-        contradiction
-      | true =>
-        have isOpen : lineage ∈ s.openFrameLineages := List.mem_of_elem_eq_true live
-        cases operand : s.lookupValue rhs with
-        | none =>
-          simp [semBindSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
-            Sem.run, Sem.getState, Sem.throwTypeError, lookup, live, isOpen, operand,
-            StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
-            bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-        | some value =>
-          by_cases bound : slot < slots.length
-          · rw [bind_run s id rhs lineage slot slots value lookup operand live bound] at run
-            cases run
-            exact ⟨lineage, slots, value, lookup, rfl, live, bound, rfl, rfl⟩
-          · simp [semBindSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
-              Sem.run, Sem.getState, Sem.throwUB, lookup, live, isOpen, operand, bound,
-              StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
-              bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-  }
+      final = afterBindOrigin s origin lineage slots slot value := by
+  obtain ⟨origin, lineage, slots, lookup, tail⟩ :=
+    frameHandle_bind_success s final id "BindSlot" _ result run
+  cases live : s.openFrameLineages.contains lineage with
+  | false =>
+    trustIrCompilerProof {
+      simp [Sem.run, Sem.getState, live, Sem.throwUB, StateT.run,
+        StateT.bind, StateT.get, StateT.lift, bind, pure, Except.bind,
+        Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    } {
+      have closed : lineage ∉ s.openFrameLineages := by
+        intro present
+        have on : s.openFrameLineages.contains lineage = true :=
+          List.elem_eq_true_of_mem present
+        rw [live] at on
+        cases on
+      simp [Sem.run, Sem.getState, live, closed, Sem.throwUB, StateT.run,
+        StateT.bind, StateT.get, StateT.lift, bind, pure, Except.bind,
+        Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    }
+  | true =>
+    trustIrCompilerProof {
+      have isOpen := live
+    } {
+      have isOpen := List.mem_of_elem_eq_true live
+    }
+    cases operand : s.lookupValue rhs with
+    | none =>
+      simp [Sem.run, Sem.lookupValue, Sem.getState, Sem.throwTypeError,
+        live, isOpen, operand, StateT.run, StateT.bind, StateT.get,
+        StateT.lift, bind, pure, Except.bind, Except.pure,
+        throw, throwThe, MonadExceptOf.throw] at tail
+    | some value =>
+      by_cases bound : slot < slots.length
+      · rw [bind_origin_run s id rhs origin lineage slot slots value lookup operand live bound] at run
+        cases run
+        exact ⟨origin, lineage, slots, value, lookup, rfl, live, bound, rfl, rfl⟩
+      · simp [Sem.run, Sem.lookupValue, Sem.getState, Sem.throwUB,
+          live, isOpen, operand, bound, StateT.run, StateT.bind, StateT.get,
+          StateT.lift, StateT.pure, bind, pure, Except.bind, Except.pure,
+          throw, throwThe, MonadExceptOf.throw] at tail
 
 theorem bind_success_well_minted (s final : MachineState) (id rhs result : ValueId)
     (slot : Nat) (table : MintedLineages s)
     (handles : MintedHandles s.nextFrameLineage s.locals)
     (run : Sem.run (semBindSlot id slot rhs) s = .ok (result, final)) :
     MintedLineages final ∧ MintedHandles final.nextFrameLineage final.locals := by
-  obtain ⟨lineage, slots, value, lookup, _, _, _, _, rfl⟩ :=
+  obtain ⟨origin, lineage, slots, value, lookup, _, _, _, _, rfl⟩ :=
     bind_success_state s final id rhs result slot run
-  exact ⟨minted_bind s lineage slots slot value table,
-    handles_bind s id lineage slot slots value handles lookup⟩
+  constructor
+  · exact table
+  · cases origin with
+    | none => exact handles_bind s id lineage slot slots value handles lookup
+    | some origin =>
+      rcases origin with ⟨function, declaration⟩
+      apply handles_set handles
+      intro other otherSlots equal
+      cases equal
 
 def afterLoad (s : MachineState) (value : Value) : MachineState :=
   { s with locals := s.locals.set ⟨s.nextValueId⟩ value, nextValueId := s.nextValueId + 1 }
@@ -659,64 +736,84 @@ theorem load_run (s : MachineState) (id : ValueId) (lineage slot : Nat)
         StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure]
   }
 
+private theorem load_origin_run (s : MachineState) (id : ValueId)
+    (origin : Option (FuncId × BindingFrameDef)) (lineage slot : Nat)
+    (slots : List Value) (value : Value) (ty : Ty)
+    (lookup : s.lookupValue id = some (frameValue origin lineage slots))
+    (live : s.openFrameLineages.contains lineage = true)
+    (found : trustIrListGet? slots slot = some value) :
+    Sem.run (semLoadSlot id slot ty) s = .ok (⟨s.nextValueId⟩, afterLoad s value) := by
+  trustIrCompilerProof {
+    have isOpen := live
+  } {
+    have isOpen := List.mem_of_elem_eq_true live
+  }
+  cases origin with
+  | none => exact load_run s id lineage slot slots value ty lookup live found
+  | some origin =>
+    rcases origin with ⟨function, declaration⟩
+    simp [frameValue] at lookup
+    simp [semLoadSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
+      Sem.run, Sem.getState, Sem.setState, Sem.bindFresh, MachineState.bindValue, afterLoad,
+      lookup, live, isOpen, found, StateT.run, StateT.bind, StateT.get, StateT.set,
+      StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure]
+
 theorem load_success_state (s final : MachineState) (id result : ValueId)
     (slot : Nat) (ty : Ty)
     (run : Sem.run (semLoadSlot id slot ty) s = .ok (result, final)) :
-    ∃ lineage slots value, s.lookupValue id = some (.frame lineage slots) ∧
+    ∃ origin lineage slots value, s.lookupValue id = some (frameValue origin lineage slots) ∧
       s.openFrameLineages.contains lineage = true ∧ trustIrListGet? slots slot = some value ∧
       result = ⟨s.nextValueId⟩ ∧ final = afterLoad s value := by
-  trustIrCompilerProof {
-      obtain ⟨lineage, slots, lookup, _⟩ :=
-        frameHandle_bind_success s final id "LoadSlot" _ result run
-      cases live : s.openFrameLineages.contains lineage with
-      | false =>
-        rw [closed_frame_load s id lineage slot slots ty lookup live] at run
-        contradiction
-      | true =>
-        cases found : slots.get? slot with
-        | none =>
-          simp [semLoadSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
-            Sem.run, Sem.getState, Sem.throwUB, lookup, live, found,
-            StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
-            bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-        | some value =>
-          rw [load_run s id lineage slot slots value ty lookup live found] at run
-          cases run
-          exact ⟨lineage, slots, value, lookup, live, found, rfl, rfl⟩
-  } {
-      obtain ⟨lineage, slots, lookup, _⟩ :=
-        frameHandle_bind_success s final id "LoadSlot" _ result run
-      cases live : s.openFrameLineages.contains lineage with
-      | false =>
-        rw [closed_frame_load s id lineage slot slots ty lookup live] at run
-        contradiction
-      | true =>
-        have isOpen : lineage ∈ s.openFrameLineages := List.mem_of_elem_eq_true live
-        cases found : trustIrListGet? slots slot with
-        | none =>
-          simp [semLoadSlot, Sem.frameHandle, Sem.lookupValue, Sem.rejectPartial,
-            Sem.run, Sem.getState, Sem.throwUB, lookup, live, isOpen, found,
-            StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
-            bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
-        | some value =>
-          rw [load_run s id lineage slot slots value ty lookup live found] at run
-          cases run
-          exact ⟨lineage, slots, value, lookup, live, found, rfl, rfl⟩
-  }
+  obtain ⟨origin, lineage, slots, lookup, tail⟩ :=
+    frameHandle_bind_success s final id "LoadSlot" _ result run
+  cases live : s.openFrameLineages.contains lineage with
+  | false =>
+    trustIrCompilerProof {
+      simp [Sem.run, Sem.getState, live, Sem.throwUB, StateT.run,
+        StateT.bind, StateT.get, StateT.lift, bind, pure, Except.bind,
+        Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    } {
+      have closed : lineage ∉ s.openFrameLineages := by
+        intro present
+        have on : s.openFrameLineages.contains lineage = true :=
+          List.elem_eq_true_of_mem present
+        rw [live] at on
+        cases on
+      simp [Sem.run, Sem.getState, live, closed, Sem.throwUB, StateT.run,
+        StateT.bind, StateT.get, StateT.lift, bind, pure, Except.bind,
+        Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    }
+  | true =>
+    trustIrCompilerProof {
+      have isOpen := live
+    } {
+      have isOpen := List.mem_of_elem_eq_true live
+    }
+    cases found : trustIrListGet? slots slot with
+    | none =>
+      simp [Sem.run, Sem.getState, Sem.throwUB, live, isOpen, found,
+        StateT.run, StateT.bind, StateT.get, StateT.lift, bind, pure,
+        Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at tail
+    | some value =>
+      rw [load_origin_run s id origin lineage slot slots value ty lookup live found] at run
+      cases run
+      exact ⟨origin, lineage, slots, value, lookup, live, found, rfl, rfl⟩
 
-/-- Load requires a bound for the selected slot's direct frame handle, if any.
-This premise cannot be recovered from the outer handle's identity. -/
+/-- Load requires a bound for the selected slot's direct generic-frame handle,
+if any, from either actual outer carrier. It cannot follow from the outer
+identity alone; recursive validity supplies this premise in FrameValueValidity. -/
 theorem load_success_well_minted (s final : MachineState) (id result : ValueId)
     (slot : Nat) (ty : Ty) (table : MintedLineages s)
     (handles : MintedHandles s.nextFrameLineage s.locals)
-    (slotHandles : ∀ lineage slots value,
-      s.lookupValue id = some (.frame lineage slots) → trustIrListGet? slots slot = some value →
+    (slotHandles : ∀ origin lineage slots value,
+      s.lookupValue id = some (frameValue origin lineage slots) →
+      trustIrListGet? slots slot = some value →
       ∀ other innerSlots, value = .frame other innerSlots → other < s.nextFrameLineage)
     (run : Sem.run (semLoadSlot id slot ty) s = .ok (result, final)) :
     MintedLineages final ∧ MintedHandles final.nextFrameLineage final.locals := by
-  obtain ⟨lineage, slots, value, lookup, _, found, _, rfl⟩ :=
+  obtain ⟨origin, lineage, slots, value, lookup, _, found, _, rfl⟩ :=
     load_success_state s final id result slot ty run
-  exact ⟨table, handles_set handles _ value (slotHandles lineage slots value lookup found)⟩
+  exact ⟨table, handles_set handles _ value (slotHandles origin lineage slots value lookup found)⟩
 
 /-- A well-minted outer handle can contain a forged inner handle. The actual
 load succeeds and exposes it, refuting unconditional direct-handle preservation. -/

@@ -214,6 +214,7 @@ impl State {
             | Inst::DropInvoke { .. }
             | Inst::MakeAggregate { .. }
             | Inst::MakeClosure { .. }
+            | Inst::BoxDeref { .. }
             | Inst::ArraySplat { .. }
             | Inst::TensorContract { .. }
             | Inst::TensorMap { .. }

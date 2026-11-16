@@ -13,6 +13,15 @@ impl Work {
         site: ExecutionSite,
     ) -> R {
         let reference = NativeCompilerFactRef::AdtLayout(fact.id);
+        admit(session, site, 2, 0)?;
+        if matches!(
+            definition.layout.as_ref().map(|layout| &layout.encoding),
+            Some(crate::EnumTagEncoding::SingleInhabited { .. })
+        ) && layout.tag_encoding != NativeEnumTagEncoding::Untagged
+        {
+            self.invalid(reference, "enum_layout.tag_encoding", session, site)?;
+        }
+        self.profile_binding(fact, layout, definition, session, site)?;
         let mut index = 0;
         while index < layout.variants.len() {
             admit(session, site, 1, 0)?;
@@ -34,8 +43,44 @@ impl Work {
             if !text_equal(&expected.name, &variant.name, session, site)? {
                 self.invalid(reference, "enum_layout.variant", session, site)?;
             }
+            let profiled_direct = matches!(
+                definition.layout.as_ref().map(|layout| &layout.encoding),
+                Some(crate::EnumTagEncoding::DirectWithUninhabited { .. })
+            );
+            if let Some(crate::EnumTagEncoding::DirectWithUninhabited { variants, .. }) =
+                definition.layout.as_ref().map(|layout| &layout.encoding)
+            {
+                admit(
+                    session,
+                    site,
+                    crate::layout_table::direct_storage::profile_lookup_work(variants.len()),
+                    size_of::<Option<&crate::UninhabitedVariantLayout>>(),
+                )?;
+                if let Some(profile) = crate::layout_table::direct_storage::profile(
+                    definition,
+                    variant.variant_index as usize,
+                ) {
+                    admit(session, site, 4, 0)?;
+                    if profile.size.checked_mul(8) != Some(variant.size_bits) {
+                        self.invalid(reference, "enum_layout.variant.size_bits", session, site)?;
+                    }
+                    if profile.align.checked_mul(8) != variant.align_bits {
+                        self.invalid(reference, "enum_layout.variant.align_bits", session, site)?;
+                    }
+                }
+            }
             admit(session, site, 1, 0)?;
-            if variant.fields.len() != expected.fields.len() {
+            let inactive = matches!(definition.layout.as_ref().map(|layout| &layout.encoding),
+                Some(crate::EnumTagEncoding::SingleInhabited { variant: selected }) if variant.variant_index != *selected);
+            admit(session, site, 3, 0)?;
+            if inactive {
+                if !variant.fields.is_empty() {
+                    self.invalid(reference, "enum_layout.variant.fields", session, site)?;
+                }
+                if variant.size_bits != 0 {
+                    self.invalid(reference, "layout.size_bits", session, site)?;
+                }
+            } else if variant.fields.len() != expected.fields.len() {
                 self.invalid(reference, "enum_layout.variant.fields", session, site)?;
             }
             let mut field_index = 0;
@@ -56,6 +101,27 @@ impl Work {
                             session,
                             site,
                         )?;
+                    }
+                    if profiled_direct {
+                        admit(session, site, 4, 0)?;
+                        let offset = definition
+                            .layout
+                            .as_ref()
+                            .and_then(|layout| {
+                                layout
+                                    .variant_field_offsets
+                                    .get(variant.variant_index as usize)
+                            })
+                            .and_then(|offsets| offsets.get(field_index))
+                            .and_then(|offset| offset.checked_mul(8));
+                        if offset != field.offset_bits {
+                            self.invalid(
+                                reference,
+                                "enum_layout.variant.fields.offset_bits",
+                                session,
+                                site,
+                            )?;
+                        }
                     }
                 }
                 field_index += 1;
@@ -79,11 +145,61 @@ impl Work {
             index += 1;
         }
         admit(session, site, 1, 0)?;
-        match layout.tag_encoding {
-            NativeEnumTagEncoding::Direct => self.direct(fact, layout, session, site),
+        match &layout.tag_encoding {
+            NativeEnumTagEncoding::Direct | NativeEnumTagEncoding::DirectWithUninhabited { .. } => {
+                self.direct(fact, layout, session, site)
+            }
             NativeEnumTagEncoding::Niche => self.niche(fact, layout, definition, session, site),
             NativeEnumTagEncoding::Untagged => self.untagged(fact, layout, session, site),
         }
+    }
+
+    fn profile_binding<O: ExecutionObserver>(
+        &mut self,
+        fact: &NativeAdtLayoutFact,
+        layout: &NativeEnumLayoutFact,
+        definition: &EnumDef,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) -> R {
+        let reference = NativeCompilerFactRef::AdtLayout(fact.id);
+        admit(session, site, 2, 0)?;
+        match (
+            definition.layout.as_ref().map(|layout| &layout.encoding),
+            &layout.tag_encoding,
+        ) {
+            (
+                Some(crate::EnumTagEncoding::DirectWithUninhabited {
+                    tag_offset,
+                    variants,
+                }),
+                NativeEnumTagEncoding::DirectWithUninhabited { variants: native },
+            ) => {
+                if !profiles_equal(variants, native, session, site)? {
+                    self.invalid(reference, "enum_layout.tag_encoding", session, site)?;
+                }
+                admit(session, site, 2, 0)?;
+                if tag_offset.checked_mul(8) != layout.discriminant_offset_bits {
+                    self.invalid(
+                        reference,
+                        "enum_layout.discriminant_offset_bits",
+                        session,
+                        site,
+                    )?;
+                }
+                let tag = definition.canonical_tag_repr_observed(session, site)?;
+                admit(session, site, 2, 0)?;
+                if tag.map(|repr| repr.size_bytes() as u32 * 8) != layout.tag_bits {
+                    self.invalid(reference, "enum_layout.tag_bits", session, site)?;
+                }
+            }
+            (Some(crate::EnumTagEncoding::DirectWithUninhabited { .. }), _)
+            | (_, NativeEnumTagEncoding::DirectWithUninhabited { .. }) => {
+                self.invalid(reference, "enum_layout.tag_encoding", session, site)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn direct<O: ExecutionObserver>(
@@ -221,4 +337,33 @@ impl Work {
         }
         Ok(())
     }
+}
+
+fn profiles_equal<O: ExecutionObserver>(
+    left: &[crate::UninhabitedVariantLayout],
+    right: &[crate::UninhabitedVariantLayout],
+    session: &mut ObservedSession<'_, O>,
+    site: ExecutionSite,
+) -> R<bool> {
+    admit(session, site, 1, 0)?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    for (left, right) in left.iter().zip(right) {
+        admit(session, site, 4, 0)?;
+        if left.variant != right.variant
+            || left.size != right.size
+            || left.align != right.align
+            || left.fields.len() != right.fields.len()
+        {
+            return Ok(false);
+        }
+        for (left, right) in left.fields.iter().zip(&right.fields) {
+            admit(session, site, 2, 0)?;
+            if left.size != right.size || left.align != right.align {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }

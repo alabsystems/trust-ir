@@ -70,7 +70,8 @@ pub(super) fn for_instruction<'a, O: ExecutionObserver>(
         | Inst::PtrMetadata {
             metadata_ty: ty, ..
         }
-        | Inst::PtrFromParts { ptr_ty: ty, .. } => Some(Inferred::Borrowed(ty)),
+        | Inst::PtrFromParts { ptr_ty: ty, .. }
+        | Inst::BoxDeref { ptr_ty: ty, .. } => Some(Inferred::Borrowed(ty)),
         Inst::Cast { dst_ty, .. } => Some(Inferred::Borrowed(dst_ty)),
         Inst::ICmp { ty, .. } | Inst::FCmp { ty, .. } => Some(Inferred::Comparison(ty)),
         Inst::IsUnique { .. } => Some(Inferred::Bool),

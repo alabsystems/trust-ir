@@ -4,6 +4,8 @@
 
 //! The ABI lane count of a slot type, for the placement of a `pair` claim
 //! (roadmap WS3.11): see [`abi_lanes`].
+//! The cached structural walk's linear bound excludes the additional source
+//! reference/profile validation and live-range sorting for Direct storage profiles.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -30,7 +32,11 @@ use super::is_closed_scalar_ty;
 ///   variant has no lanes (rustc's `others_zst`), else `None`; `Direct`, or
 ///   no descriptor (the canonical tagged union), is one tag lane plus the
 ///   widest payload, admitted only when every variant's payload is at most
-///   one lane (a two-lane payload beside a tag is a memory aggregate);
+///   one lane (a two-lane payload beside a tag is a memory aggregate).
+///   `DirectWithUninhabited` additionally validates the complete physical
+///   image, counts only live payloads, and refuses a footprint larger or more
+///   aligned than the packed live tag/payload image. Reserved dead storage
+///   cannot acquire register placement from a small live payload;
 /// * everything else (`Array`, `Vector`, `Record`, `Closure`, `Handle`,
 ///   `Dialect`, …) is `None`.
 ///
@@ -229,6 +235,13 @@ impl AbiLanes {
                             AbiLaneEnumRule::Direct { widest: 0 },
                             (0..variants).collect(),
                         ),
+                        Some(EnumTagEncoding::DirectWithUninhabited { .. }) => {
+                            let Some(order) = direct_storage_order(layouts, def) else {
+                                self.record(node, None);
+                                return Err(None);
+                            };
+                            (AbiLaneEnumRule::Direct { widest: 0 }, order)
+                        }
                     };
                 self.nodes.borrow_mut().insert(node, AbiLaneSlot::Open);
                 stack.push(AbiLaneFrame::Enum {
@@ -395,6 +408,127 @@ impl AbiLanes {
     }
 }
 
+/// This is only the new encoding's conservative Pair-placement envelope, not
+/// an ABI classifier. LayoutTable first validates all source references,
+/// exact dead-profile coverage, and the complete declared physical image.
+/// Nonzero live ranges must form packed scalar/pair storage at their actual
+/// offsets; their complete size and alignment must equal the physical image.
+fn direct_storage_order(layouts: &LayoutTable<'_>, def: &EnumDef) -> Option<Vec<usize>> {
+    let full = layouts.enum_layout(def.id).ok()?;
+    let tag = layouts.ty_layout(&full.tag.ty()).ok()?;
+    let tag_size = tag.size_bytes()?;
+    let tag_align = byte_align(&tag)?;
+    let desc = def.layout.as_ref()?;
+    let EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } = &desc.encoding else {
+        return None;
+    };
+    let mut live_size = 0;
+    let mut live_align = tag_align;
+    let mut order = Vec::new();
+    for (index, variant) in def.variants.iter().enumerate() {
+        if layouts.variant_is_uninhabited(variant) {
+            continue;
+        }
+        order.push(index);
+        let mut ranges = vec![(*tag_offset, tag_size, tag_align)];
+        for (field, offset) in variant
+            .fields
+            .iter()
+            .zip(&desc.variant_field_offsets[index])
+        {
+            let shape = layouts.ty_layout(field).ok()?;
+            let field_align = byte_align(&shape)?;
+            let size = shape.size_bytes()?;
+            live_align = live_align.max(field_align);
+            if size != 0 {
+                ranges.push((*offset, size, field_align));
+            }
+        }
+        ranges.sort_unstable_by_key(|range| range.0);
+        let mut end = 0;
+        for (offset, size, align) in ranges {
+            if offset != align_bytes(end, align)? {
+                return None;
+            }
+            end = offset.checked_add(size)?;
+        }
+        live_size = live_size.max(end);
+    }
+    if order.is_empty() {
+        return None;
+    }
+    let size = align_bytes(live_size, live_align)?;
+    (full.size_bits == size.checked_mul(8)? && full.align_bits == live_align.checked_mul(8)?)
+        .then_some(order)
+}
+
+pub(super) fn byte_align(shape: &trust_ir::shape::TyLayoutShape) -> Option<u64> {
+    shape
+        .align_bits
+        .filter(|bits| *bits != 0 && bits.is_multiple_of(8))
+        .map(|bits| bits / 8)
+}
+
+pub(super) fn align_bytes(size: u64, align: u64) -> Option<u64> {
+    if !align.is_power_of_two() {
+        return None;
+    }
+    size.checked_add(align - 1)
+        .map(|value| value & !(align - 1))
+}
+
+#[cfg(test)]
+pub(super) fn direct_storage_fixture(live: Ty, size: u64, align: u64) -> trust_ir::Module {
+    use trust_ir::ty::{
+        EnumLayoutDescriptor, EnumTagRepr, EnumVariant, FieldStorageLayout,
+        UninhabitedVariantLayout,
+    };
+    let mut module = trust_ir::Module::new("Direct source and physical ABI image");
+    module.target_info = Some(trust_ir::TargetInfo {
+        triple: "x86_64-unknown-linux-gnu".into(),
+        pointer_size: 8,
+        endianness: trust_ir::Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    let offset = align_bytes(4, align).unwrap();
+    let full_align = align.max(4);
+    let full_size = align_bytes(offset + size, full_align).unwrap();
+    let mut def = EnumDef::new(
+        EnumId::new(0),
+        "Profiled",
+        vec![
+            EnumVariant {
+                name: "Dead".into(),
+                fields: vec![Ty::Never],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Live".into(),
+                fields: vec![live],
+                field_names: vec![],
+            },
+        ],
+    )
+    .with_repr(EnumTagRepr::I32);
+    def.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::DirectWithUninhabited {
+            tag_offset: 0,
+            variants: vec![UninhabitedVariantLayout {
+                variant: 0,
+                size: full_size,
+                align: full_align,
+                fields: vec![FieldStorageLayout { size: 0, align: 1 }],
+            }],
+        },
+        size: full_size,
+        align: full_align,
+        variant_field_offsets: vec![vec![4], vec![offset]],
+    });
+    module.enums.push(def);
+    module
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +545,82 @@ mod tests {
             struct_passing: Default::default(),
         });
         module
+    }
+
+    #[test]
+    fn uninhabited_direct_pair_placement_requires_the_complete_packed_live_image() {
+        for (ty, size, align) in [(Ty::U32, 4, 4), (Ty::U128, 16, 16)] {
+            let module = direct_storage_fixture(ty, size, align);
+            let table = module.layout_table();
+            assert!(table.enum_layout(EnumId::new(0)).is_ok());
+            assert_eq!(
+                abi_lanes(&table, &AbiLanes::default(), &Ty::Enum(EnumId::new(0))),
+                Some(2)
+            );
+        }
+        let mut narrow = direct_storage_fixture(Ty::U64, 8, 8);
+        let target = narrow.target_info.as_mut().unwrap();
+        target.triple = "wasm32-unknown-unknown".into();
+        target.pointer_size = 4;
+        assert_eq!(narrow.enums[0].layout.as_ref().unwrap().size, 16);
+        assert_eq!(
+            abi_lanes(
+                &narrow.layout_table(),
+                &AbiLanes::default(),
+                &Ty::Enum(EnumId::new(0))
+            ),
+            Some(2)
+        );
+        narrow.target_info.as_mut().unwrap().triple = "i686-unknown-linux-gnu".into();
+        assert_eq!(
+            abi_lanes(
+                &narrow.layout_table(),
+                &AbiLanes::default(),
+                &Ty::Enum(EnumId::new(0))
+            ),
+            None
+        );
+
+        for change in 0..4 {
+            let mut module = direct_storage_fixture(Ty::U32, 4, 4);
+            let desc = module.enums[0].layout.as_mut().unwrap();
+            let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut desc.encoding else {
+                unreachable!()
+            };
+            match change {
+                0 => {
+                    desc.size = 65552;
+                    desc.align = 16;
+                    variants[0].size = 65552;
+                    variants[0].align = 16;
+                }
+                1 => {
+                    desc.size = 16;
+                    variants[0].size = 16;
+                    desc.variant_field_offsets[1][0] = 12;
+                }
+                2 => {
+                    desc.size = 16;
+                    desc.align = 16;
+                    variants[0].size = 16;
+                    variants[0].align = 16;
+                }
+                3 => {
+                    desc.variant_field_offsets[0][0] = 0;
+                    variants[0].fields[0].size = 4;
+                }
+                _ => unreachable!(),
+            }
+            let table = module.layout_table();
+            if change != 3 {
+                assert!(table.enum_layout(EnumId::new(0)).is_ok());
+            }
+            assert_eq!(
+                abi_lanes(&table, &AbiLanes::default(), &Ty::Enum(EnumId::new(0))),
+                None,
+                "case {change}"
+            );
+        }
     }
 
     fn s(id: u32) -> Ty {
@@ -632,6 +842,18 @@ mod tests {
                     Some(EnumTagEncoding::Direct { .. }) | None => {
                         let mut widest = 0usize;
                         for index in 0..def.variants.len() {
+                            let lanes = variant(index, path)?;
+                            if lanes > 1 {
+                                return None;
+                            }
+                            widest = widest.max(lanes);
+                        }
+                        Some(1 + widest)
+                    }
+                    Some(EnumTagEncoding::DirectWithUninhabited { .. }) => {
+                        let order = direct_storage_order(&module.layout_table(), def)?;
+                        let mut widest = 0;
+                        for index in order {
                             let lanes = variant(index, path)?;
                             if lanes > 1 {
                                 return None;

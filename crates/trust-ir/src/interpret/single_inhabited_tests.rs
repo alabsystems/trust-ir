@@ -47,6 +47,7 @@ fn fixture(active: usize) -> Module {
 fn state() -> ExecState {
     ExecState {
         values: BTreeMap::new(),
+        provenance: provenance::State::default(),
         memory: MemoryState::default(),
         globals: BTreeMap::new(),
         frames: BTreeSet::new(),

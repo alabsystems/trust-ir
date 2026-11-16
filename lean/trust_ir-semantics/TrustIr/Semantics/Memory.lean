@@ -135,6 +135,7 @@ def Ty.byteSize : Ty -> Option Nat
   | .F64   => some 8
   | .Ptr   => some 8   -- 64-bit pointers
   | .Func _ => some 8  -- module-local code word, decoded only with context
+  | .FnItem _ => none  -- requires the actual source-header layout service
   -- Pointer-like reference types are 64-bit (8 bytes)
   | .Ref _    => some 8
   | .RefMut _ => some 8
@@ -163,6 +164,7 @@ def Ty.byteAlign : Ty → Option Nat
   | .Ptr | .Func _ | .Ref _ | .RefMut _ | .PtrConst _ | .PtrMut _ | .Rc _ => some 8
   | .FatPtr _ => some 8
   | .Unit => some 1
+  | .FnItem _ => none
   | .Vector count elemTy =>
     if count == 0 then none else vectorScalarByteSize elemTy
   | _ => none
@@ -180,6 +182,17 @@ def isPow2Fuel : Nat → Nat → Bool
   | _ + 1, 0 => false
   | _ + 1, 1 => true
   | fuel + 1, n + 2 => (n + 2) % 2 == 0 && isPow2Fuel fuel ((n + 2) / 2)
+
+-- Own the modern compiler's lazy equation theorems here. Independent proof
+-- modules otherwise export the same generated names and cannot be imported
+-- together. This leaves the definition and canonical elaboration unchanged.
+run_cmd do
+  if Lean.versionString == "4.30.0-rc2" then
+    let equations ← Lean.Elab.Command.liftTermElabM <| Lean.Meta.getEqnsFor? `TrustIr.isPow2Fuel
+    unless equations.isSome do
+      Lean.throwError "missing structural equations for isPow2Fuel"
+  else if Lean.versionString == "4.8.0" then pure ()
+  else Lean.throwError "unsupported Lean compiler for memory equation ownership"
 
 /-- Is `a` a nonzero power of two? The interpreter's `checked_align` gate.
     The fuel `a` suffices: each step halves `a`. -/
@@ -233,7 +246,7 @@ def encodeValue : Value -> Option (List UInt8)
   | .array _ => none       -- Structural aggregate byte images remain separate work
   | .aggregate _ => none   -- Aggregates: element-by-element in Phase 4
   | .vector _ => none      -- Vectors stay in SSA for this first executable path
-  | .frame _ _ => none       -- Binding frames cannot be stored to memory (Rust-side validation)
+  | .frame _ _ | .sourceFrame _ _ _ _ => none       -- Binding frames cannot be stored to memory (Rust-side validation)
   -- ty supremacy aggregate values live in SSA registers, not memory.
   -- No byte encoding is defined for them; frontends must lower these
   -- through explicit aggregate/scalar stores before hitting memory.
@@ -242,6 +255,7 @@ def encodeValue : Value -> Option (List UInt8)
   | .record _ => none
   | .closure _ _ => none
   | .fnDef _ _ => none  -- a code word needs the module's source-order table
+  | .fnItem _ => none   -- no untyped image may invent a nominal item type
   | .typedClosure _ _ _ => none
   -- A fat pointer's byte image is its two 64-bit lanes back-to-back:
   -- data address followed by canonical metadata. The static Ty determines
@@ -412,6 +426,7 @@ def decodeScalarVectorAt (count : Nat) (elemTy : Ty) (bytes : List UInt8) :
     value keeps the untyped `encodeValue` image. -/
 def encodeValueAt (ty : Ty) (v : Value) : Except SemError (List UInt8) :=
   match ty, v with
+  | .FnItem _, _ => .error (.unsupported .layout "function item Store requires a prepared source plan")
   -- The empty aggregate is the model's Unit value; its typed image is empty.
   -- Width-free aggregate encoding still refuses every aggregate.
   | .Unit, .aggregate [] => .ok []
@@ -569,6 +584,7 @@ def encodeTypedAtModel (model : ByteModel) (ty : Ty) (value : Value) :
   if !(fatPtrStoreValueValidAtModel model ty value) then
     .error (.typeError "fat pointer does not inhabit its target metadata kind")
   else match ty, value with
+    | .FnItem _, _ => .error (.unsupported .layout "function item Store requires a prepared source plan")
     | .Unit, .aggregate [] => .ok []
     | .Vector count elemTy, value => encodeScalarVectorAt count elemTy value
     | _, .float f => encodeFloatAt ty f
@@ -619,6 +635,10 @@ def Ty.hasCanonicalMemoryLayout : Ty → _root_.Bool
   | .Ref _ | .RefMut _ | .Rc _ | .Func _ | .FatPtr _ | .Unit => true
   | .Vector count element => if count == 0 then false else (vectorScalarByteSize element).isSome
   | _ => false
+
+/-- Zero bytes do not authenticate an item identity or its signature. -/
+theorem Ty.fnItem_not_canonicalMemoryLayout (id : FuncId) :
+    (Ty.FnItem id).hasCanonicalMemoryLayout = false := rfl
 
 theorem Ty.hasCanonicalMemoryLayout_eq (ty : Ty) (model : ByteModel) :
     ty.hasCanonicalMemoryLayout = (ty.byteSizeFor model).isSome := by
@@ -715,6 +735,7 @@ def functionTargetAt (model : ByteModel) (order : FunctionAddressOrder)
 def encodeMemoryWithFunctions (model : ByteModel) (order : FunctionAddressOrder)
     (ty : Ty) (value : Value) : Except SemError (List UInt8) := do
   match ty with
+  | .FnItem _ => .error (.unsupported .layout "function item Store requires a prepared source plan")
   | .Func signature =>
     match value with
     | .fnDef held target =>
@@ -731,6 +752,7 @@ def encodeMemoryWithFunctions (model : ByteModel) (order : FunctionAddressOrder)
 def decodeMemoryWithFunctions (model : ByteModel) (order : FunctionAddressOrder)
     (mem : Memory) (ty : Ty) (bytes : List UInt8) : Except SemError Value := do
   match ty with
+  | .FnItem _ => .error (.unsupported .layout "function item Load requires a prepared source plan")
   | .Func signature =>
     if bytes.length = model.pointerBytes then
       let address := decodeIntBytes bytes

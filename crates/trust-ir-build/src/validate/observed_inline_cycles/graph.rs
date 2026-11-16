@@ -178,6 +178,7 @@ impl<'m> State<'m> {
                 | Ty::PtrMut(_)
                 | Ty::Rc(_)
                 | Ty::Func(_)
+                | Ty::FnItem(_)
                 | Ty::Sequence(_)
                 | Ty::Set(..)
                 | Ty::Tensor(..)

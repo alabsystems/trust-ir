@@ -191,6 +191,7 @@ theorem SMTTranslated.wellFormed {width : Nat} {expr : TrustIrExpr} {sort : SMTS
   induction translated with
   | var name leafPositive =>
     refine ⟨leafPositive, ?_⟩
+    apply Or.inl
     rw [SMTTerm.Identifier_function_eq_standard]
     exact smtVariableSymbol_alphabet name
   | _ => simp_all [SMTTerm.WellFormed, SMTTerm.rotate]

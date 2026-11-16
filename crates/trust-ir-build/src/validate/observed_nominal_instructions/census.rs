@@ -72,6 +72,7 @@ pub(super) fn exact<O: ExecutionObserver>(
     }
 }
 pub(super) fn exact_function<O: ExecutionObserver>(
+    module: &Module,
     callee: ValueId,
     sig: trust_ir::value::FuncTyId,
     values: &ObservedValueTypes,
@@ -79,5 +80,30 @@ pub(super) fn exact_function<O: ExecutionObserver>(
 ) -> R<bool> {
     let actual = values.get_observed(callee, work.session, work.site)?;
     work.admit(1, size_of::<bool>())?;
-    Ok(matches!(actual,Some(Ty::Func(actual)) if *actual==sig))
+    match actual {
+        Some(Ty::Func(actual)) => Ok(*actual == sig),
+        Some(Ty::FnItem(id)) => exact_item(module, *id, sig, work),
+        _ => Ok(false),
+    }
+}
+
+pub(super) fn exact_item<O: ExecutionObserver>(
+    module: &Module,
+    id: FuncId,
+    signature: trust_ir::FuncTyId,
+    work: &mut Work<'_, '_, O>,
+) -> R<bool> {
+    let mut found = None;
+    let mut at = 0;
+    while let Some(row) = work.at(&module.functions, at)? {
+        work.admit(2, size_of::<bool>())?;
+        if row.id == id {
+            if found.is_some() {
+                return Ok(false);
+            }
+            found = Some(row.ty);
+        }
+        work.next(&mut at)?;
+    }
+    Ok(found == Some(signature) && work.at(&module.func_types, signature.as_usize())?.is_some())
 }

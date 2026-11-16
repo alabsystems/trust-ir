@@ -399,7 +399,7 @@ WRITES_LITERAL = re.compile(r"write_u8\([^)]*,\s*[0-9]+\s*\)")
 
 # A level-generic carrier (amendment S) is spelled `TyG::` / `InstG::` /
 # `ConstantG::` in the generic codec; its tag space is the level-R alias.
-LEVEL_GENERIC = {"TyG": "Ty", "InstG": "Inst", "ConstantG": "Constant"}
+LEVEL_GENERIC = {"TyG": "Ty", "InstG": "Inst", "ConstantG": "Constant", "BoxPointeeG": "BoxPointee"}
 
 
 def enum_paths(text: str) -> List[str]:

@@ -70,6 +70,7 @@ impl State {
             | Inst::LoadSlot { .. }
             | Inst::MakeAggregate { .. }
             | Inst::MakeClosure { .. }
+            | Inst::BoxDeref { .. }
             | Inst::MemCopy { .. }
             | Inst::MemSet { .. }
             | Inst::NullPtr

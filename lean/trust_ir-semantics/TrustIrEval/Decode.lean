@@ -75,7 +75,7 @@ def tagged (ctx : String) (j : Json) : D (String × Json) :=
   match j with
   | .str s => pure (s, .null)
   | .obj kvs =>
-    match kvs.fold (fun acc k v => (k, v) :: acc) [] with
+    match trustIrJsonObjectFold kvs (fun acc k v => (k, v) :: acc) [] with
     | [(k, v)] => pure (k, v)
     | _ => malformed s!"{ctx}: expected a single-variant object"
   | _ => malformed s!"{ctx}: expected an enum tag"
@@ -101,6 +101,11 @@ def pair (ctx : String) (j : Json) : D (Json × Json) := do
 def valueId (ctx : String) (j : Json) : D ValueId := do pure ⟨← nat ctx j⟩
 def blockId (ctx : String) (j : Json) : D BlockId := do pure ⟨← nat ctx j⟩
 def funcId (ctx : String) (j : Json) : D FuncId := do pure ⟨← nat ctx j⟩
+
+def fnItemId (ctx : String) (j : Json) : D FuncId := do
+  let id ← nat ctx j
+  if id ≥ 2 ^ 32 then malformed s!"{ctx}: function item id outside u32"
+  pure ⟨id⟩
 def valueIds (ctx : String) (j : Json) : D (List ValueId) := do
   (← arr ctx j).mapM (valueId ctx)
 
@@ -123,6 +128,21 @@ def fatPtrKind (j : Json) : D FatPtrKind := do
   | "ContainerLen" => pure .ContainerLen
   | "ContainerVtable" => pure .ContainerVtable
   | other => unsupported s!"fat_ptr_kind.{other}"
+
+/-- Raw serde StorageLayout fields are u64 type data. Substitution transports
+    them exactly, including geometry that later layout/use validation refuses.
+    Parsing this type grants no initialized image or by-value storage authority. -/
+private def storageTy (j : Json) : D Ty := do
+  -- Derived serde accepts both the named-field object and the exact two-field
+  -- sequence. Unknown object fields are ignored by the Rust StorageLayout too.
+  let (sizeJson, alignJson) ← match j with
+    | .arr _ => pair "Storage" j
+    | _ => pure (← field j "size_bytes", ← field j "align_bytes")
+  let size ← nat "Storage.size_bytes" sizeJson
+  if size ≥ 2 ^ 64 then malformed "Storage.size_bytes: outside u64 range"
+  let alignment ← nat "Storage.align_bytes" alignJson
+  if alignment ≥ 2 ^ 64 then malformed "Storage.align_bytes: outside u64 range"
+  pure (.Storage size alignment)
 
 partial def ty (j : Json) : D Ty := do
   let (tag, p) ← tagged "Ty" j
@@ -152,6 +172,8 @@ partial def ty (j : Json) : D Ty := do
     let (e, n) ← pair "Array" p
     pure (.Array ⟨← nat "Array.elem" e⟩ (← nat "Array.len" n))
   | "Func" => pure (.Func ⟨← nat "Func" p⟩)
+  | "FnItem" => pure (.FnItem (← fnItemId "FnItem" p))
+  | "Storage" => storageTy p
   | "Unit" => pure .Unit
   | "Never" => pure .Never
   | "Tuple" => pure (.Tuple (← (← arr "Tuple" p).mapM ty))
@@ -247,6 +269,7 @@ partial def constant (j : Json) : D Constant := do
     pure (.closure (← funcId "Closure.func" (← field p "func"))
       (← (← listField p "captures").mapM constant))
   | "FnDef" => pure (.fnDef (← funcId "FnDef" p))
+  | "FnItem" => pure (.fnItem (← fnItemId "FnItem" p))
   | "SymbolAddr" =>
     pure (.symbolAddr (← strField p "symbol") (← wideInt "addend" (← field p "addend")))
   | "PhantomData" => pure .phantomData
@@ -392,6 +415,83 @@ def optValueId (j : Json) (k : String) : D (Option ValueId) := do
 def optNat (j : Json) (k : String) : D (Option Nat) := do
   optional (← field j k) (nat k)
 
+/-- `Inst::BoxDeref` payload decoders (wire v74). Every enum refuses an
+    unknown variant: a fact this decoder cannot name is malformed, never
+    defaulted. -/
+def boxPointee (j : Json) : D BoxPointee := do
+  let (tag, p) ← tagged "BoxPointee" j
+  match tag with
+  | "Sized" => pure (.sized (← ty (← field p "ty")))
+  | other => malformed s!"BoxPointee: unknown variant {other}"
+
+def validityConjunct (j : Json) : D ValidityConjunct := do
+  match ← str "ValidityConjunct" j with
+  | "NonNull" => pure .nonNull
+  | "Aligned" => pure .aligned
+  | "Dereferenceable" => pure .dereferenceable
+  | "MetadataValid" => pure .metadataValid
+  | other => malformed s!"ValidityConjunct: unknown variant {other}"
+
+def premiseRoot (j : Json) : D PremiseRoot := do
+  match ← str "PremiseRoot" j with
+  | "ParamByValue" => pure .paramByValue
+  | "AllocPostcondition" => pure .allocPostcondition
+  | "ReturnedBoxDischarged" => pure .returnedBoxDischarged
+  | "ReturnedBoxAssumed" => pure .returnedBoxAssumed
+  | "ReferenceArgBoxValid" => pure .referenceArgBoxValid
+  | other => malformed s!"PremiseRoot: unknown variant {other}"
+
+def standingAssumption (j : Json) : D StandingAssumption := do
+  match ← str "StandingAssumption" j with
+  | "SafeBody" => pure .safeBody
+  | "SoundCallees" => pure .soundCallees
+  | "BoxUnique" => pure .boxUnique
+  | other => malformed s!"StandingAssumption: unknown variant {other}"
+
+def validityEvidence (j : Json) : D ValidityEvidence := do
+  let (tag, p) ← tagged "ValidityEvidence" j
+  match tag with
+  | "Premise" =>
+    pure (.premise (← premiseRoot (← field p "root"))
+      (← (← listField p "standing").mapM standingAssumption))
+  | "DominatingCheck" =>
+    pure (.dominatingCheck (← optNat p "align"))
+  | "Obligation" => pure (.obligation ⟨← natField p "obligation"⟩)
+  | other => malformed s!"ValidityEvidence: unknown variant {other}"
+
+def conjunctEvidence (j : Json) : D ConjunctEvidence := do
+  pure { conjunct := ← validityConjunct (← field j "conjunct")
+         evidence := ← validityEvidence (← field j "evidence") }
+
+def boxValidityNonClaim (j : Json) : D BoxValidityNonClaim := do
+  match ← str "BoxValidityNonClaim" j with
+  | "Uniqueness" => pure .uniqueness
+  | "PointeeValidity" => pure .pointeeValidity
+  | "Allocator" => pure .allocator
+  | other => malformed s!"BoxValidityNonClaim: unknown variant {other}"
+
+def boxValidityFact (j : Json) : D BoxValidityFact := do
+  let site ← field j "site"
+  let session ← field j "session"
+  let item ← (← listField site "item").mapM (fun b => do
+    let n ← nat "BoxDerefSite.item" b
+    if n < 256 then pure n else malformed "BoxDerefSite.item: byte > 255")
+  if item.length != 16 then malformed "BoxDerefSite: item is not 16 bytes" else
+  let judged ← match ← str "JudgedBody" (← field session "judged") with
+    | "VerificationSnapshot" => pure JudgedBody.verificationSnapshot
+    | "OptimizedFallback" => pure JudgedBody.optimizedFallback
+    | other => malformed s!"JudgedBody: unknown variant {other}"
+  let producing ← match ← str "ProducingSession" (← field session "producing") with
+    | "ProofSession" => pure ProducingSession.proofSession
+    | "NonProofSession" => pure ProducingSession.nonProofSession
+    | other => malformed s!"ProducingSession: unknown variant {other}"
+  pure { siteItem := item
+         siteOrdinal := ← natField site "ordinal"
+         judged := judged
+         producing := producing
+         evidence := ← (← listField j "evidence").mapM conjunctEvidence
+         notClaimed := ← (← listField j "not_claimed").mapM boxValidityNonClaim }
+
 def switchCase (j : Json) : D SwitchCase := do
   pure { value := ← constant (← field j "value")
          target := ← blockId "target" (← field j "target")
@@ -482,6 +582,9 @@ def inst (j : Json) : D Inst := do
   | "ExtractField" => pure (.ExtractField (← t "ty") (← v "aggregate") (← natField p "field"))
   | "InsertField" =>
     pure (.InsertField (← t "ty") (← v "aggregate") (← natField p "field") (← v "value"))
+  | "BoxDeref" =>
+    pure (.BoxDeref (← t "ptr_ty") (← boxPointee (← field p "pointee")) (← v "operand")
+      (← boxValidityFact (← field p "fact")))
   | "MakeClosure" =>
     pure (.MakeClosure ⟨← natField p "ty"⟩ (← funcId "func" (← field p "func")) (← vs "captures"))
   | "ArraySplat" => pure (.ArraySplat (← t "ty") (← v "value"))
@@ -599,7 +702,7 @@ trustIrDecodeCompilerCommand {
 def abiFields (ctx : String) (j : Json) (allowed : List String) : D Unit :=
   match j with
   | .obj kvs =>
-    match kvs.fold (fun acc k _ => if allowed.contains k then acc else k :: acc) [] with
+    match trustIrJsonObjectFold kvs (fun acc k _ => if allowed.contains k then acc else k :: acc) [] with
     | [] => pure ()
     | key :: _ => unsupported s!"{ctx}.unknown_field.{key}"
   | _ => malformed s!"{ctx}: expected a record"
@@ -755,6 +858,20 @@ def enumTagRepr (j : Json) : D EnumTagRepr := do
   | "U128" => pure .u128 | "I128" => pure .i128
   | other => unsupported s!"enum_tag_repr.{other}"
 
+private def storageNat (j : Json) (name : String) : D Nat := do
+  let value ← natField j name
+  if value ≥ 2 ^ 64 then malformed s!"{name}: expected u64" else pure value
+
+private def fieldStorageLayout (j : Json) : D FieldStorageLayout := do
+  pure { size := ← storageNat j "size", align := ← storageNat j "align" }
+
+private def uninhabitedVariantLayout (j : Json) : D UninhabitedVariantLayout := do
+  let variant ← natField j "variant"
+  if variant ≥ 2 ^ 32 then malformed "UninhabitedVariantLayout.variant: expected u32"
+  let fields ← (← listField j "fields").mapM fieldStorageLayout
+  if fields.length ≥ 2 ^ 32 then malformed "UninhabitedVariantLayout.fields: expected u32 census"
+  pure { variant, size := ← storageNat j "size", align := ← storageNat j "align", fields }
+
 def enumTagEncoding (j : Json) : D EnumTagEncoding := do
   let (tag, value) ← tagged "EnumTagEncoding" j
   match tag with
@@ -767,7 +884,14 @@ def enumTagEncoding (j : Json) : D EnumTagEncoding := do
       start.toNat (← natField value "niche_offset")
       (← enumTagRepr (← field value "niche_ty")))
   | "Untagged" => pure .untagged
-  | "SingleInhabited" => pure (.singleInhabited (← natField value "variant"))
+  | "SingleInhabited" =>
+    let variant ← natField value "variant"
+    if variant ≥ 2 ^ 32 then malformed "SingleInhabited.variant: expected u32"
+    else pure (.singleInhabited variant)
+  | "DirectWithUninhabited" =>
+    let profiles ← (← listField value "variants").mapM uninhabitedVariantLayout
+    if profiles.length ≥ 2 ^ 32 then malformed "DirectWithUninhabited.variants: expected u32 census"
+    pure (.directWithUninhabited (← storageNat value "tag_offset") profiles)
   | other => unsupported s!"enum_tag_encoding.{other}"
 
 def enumLayoutDescriptor (j : Json) : D EnumLayoutDescriptor := do

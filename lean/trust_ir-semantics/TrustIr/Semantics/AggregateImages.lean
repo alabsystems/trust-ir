@@ -96,7 +96,7 @@ private def tagPrefix (size : Nat) (info : Enumeration) (index : Nat) (tag : Val
     if index == 0 then pure empty else typeError "memory image: untagged enum names another variant"
   | .singleInhabited selected =>
     if index == selected then pure empty else typeError "memory image: single-inhabited enum names another variant"
-  | .direct offset =>
+  | .direct offset | .directWithUninhabited offset _ =>
     let raw ← match tag with | .int _ raw => pure raw | _ => typeError "memory image: missing tag"
     overwrite empty offset (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some))
   | .niche untagged start _stop first offset repr =>
@@ -170,6 +170,15 @@ mutual
         return { bytes := ByteImage.fill plan.layout.size none, unwritten := [(0, plan.layout.size)] }
       else return ← rejectUninit
     match plan with
+    | .fnItem target layout =>
+      if layout.size != 0 || layout.alignment != 1 then
+        return ← typeError "memory image: function item layout is not zero-sized/alignment-one"
+      if value.isPoison then return ← ub "memory image: inspecting poison"
+      match value with
+      | .fnItem actual =>
+        if actual == target then pure { bytes := ByteImage.empty }
+        else typeError "memory image: function item identity does not match its source type"
+      | _ => typeError "memory image: expected a nominal function item"
     | .leaf ty layout =>
       let bytes ← encodeLeaf model order ty value
       if bytes.length != layout.size then return ← typeError "memory image: leaf byte count mismatch"
@@ -399,7 +408,7 @@ mutual
       (scalar : ∀ model order ty value, ByteImage.BlockResult (fun _ => True) error (encodeMemoryWithFunctions model order ty value))
       (model : ByteModel) (order : FunctionAddressOrder) (plan : Plan) (value : Value) (allowUnwritten : Bool) :
       ByteImage.BlockResult (fun _ => True) error (encode model order plan value allowUnwritten) := by
-    cases plan <;> rw [encode]
+    cases plan <;> trustIrCompilerProof { rw [encode] } { rw [encode.eq_def] }
     all_goals repeat' first
       | (solve | exact True.intro)
       | (solve | exact typeErrors _)
@@ -482,6 +491,10 @@ end
 /-- Selection by the actual encoder, including its width and live-flag guards. -/
 def EnumEncodingSelects (info : Enumeration) (tag : Value) (position : Nat) : Prop :=
   enumIndex info tag = .ok position
+
+/-- Exact rejection by the actual typed-value encoder selector. -/
+def EnumEncodingRejects (info : Enumeration) (tag : Value) (error : SemError) : Prop :=
+  enumIndex info tag = .error error
 
 theorem EnumEncodingSelects.of_lookup (info : Enumeration) (width : Nat) (raw : Int) (position : Nat)
     (sized : width = tagBits info.tag)
@@ -919,26 +932,61 @@ theorem ImageOverwrite.outside {before bytes after : ByteImage} {offset : Nat}
 def EnumTagPrefix (size : Nat) (info : Enumeration) (position : Nat) (tag : Value) (image : ByteImage) : Prop :=
   tagPrefix size info position tag = .ok image
 
+/-- Both direct encodings use the same actual initialized tag lane.
+Reserved source storage profiles do not alter the tag byte semantics. -/
+def DirectEncodingAt (encoding : EnumTagEncoding) (offset : Nat) : Prop :=
+  encoding = .direct offset ∨ ∃ profiles, encoding = .directWithUninhabited offset profiles
+
+theorem EnumTagPrefix.direct_encoding_lane (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
+    (image : ByteImage) (offset : Nat) (encoding : DirectEncodingAt info.encoding offset)
+    (run : EnumTagPrefix size info position (.int width raw) image) :
+    ByteLane image offset (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)) := by
+  rcases encoding with encoding | ⟨profiles, encoding⟩
+  all_goals
+    unfold EnumTagPrefix tagPrefix at run
+    rw [encoding] at run
+    change ImageOverwrite (ByteImage.fill size none) offset _ image at run
+    exact run.lane
+
 theorem EnumTagPrefix.direct_lane (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
     (image : ByteImage) (offset : Nat) (encoding : info.encoding = .direct offset)
     (run : EnumTagPrefix size info position (.int width raw) image) :
     ByteLane image offset (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)) := by
-  unfold EnumTagPrefix tagPrefix at run
-  rw [encoding] at run
-  change ImageOverwrite (ByteImage.fill size none) offset _ image at run
-  exact run.lane
+  exact EnumTagPrefix.direct_encoding_lane size info position width raw image offset (Or.inl encoding) run
+
+theorem EnumTagPrefix.profiled_direct_lane (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
+    (image : ByteImage) (offset : Nat) {profiles : List UninhabitedVariantLayout} (encoding : info.encoding = .directWithUninhabited offset profiles)
+    (run : EnumTagPrefix size info position (.int width raw) image) :
+    ByteLane image offset (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)) := by
+  exact EnumTagPrefix.direct_encoding_lane size info position width raw image offset (Or.inr ⟨profiles, encoding⟩) run
+
+
+theorem EnumTagPrefix.direct_encoding_exists (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
+    (offset : Nat) (encoding : DirectEncodingAt info.encoding offset)
+    (fits : offset + (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)).size ≤ size) :
+    ∃ image, EnumTagPrefix size info position (.int width raw) image := by
+  rcases encoding with encoding | ⟨profiles, encoding⟩
+  all_goals
+    unfold EnumTagPrefix tagPrefix
+    rw [encoding]
+    change ∃ image, overwrite (ByteImage.fill size none) offset _ = .ok image
+    unfold overwrite
+    simp only [ByteImage.size_fill]
+    rw [if_pos fits]
+    exact ⟨_,rfl⟩
 
 theorem EnumTagPrefix.direct_exists (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
     (offset : Nat) (encoding : info.encoding = .direct offset)
     (fits : offset + (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)).size ≤ size) :
     ∃ image, EnumTagPrefix size info position (.int width raw) image := by
-  unfold EnumTagPrefix tagPrefix
-  rw [encoding]
-  change ∃ image, overwrite (ByteImage.fill size none) offset _ = .ok image
-  unfold overwrite
-  simp only [ByteImage.size_fill]
-  rw [if_pos fits]
-  exact ⟨_,rfl⟩
+  exact EnumTagPrefix.direct_encoding_exists size info position width raw offset (Or.inl encoding) fits
+
+theorem EnumTagPrefix.profiled_direct_exists (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
+    (offset : Nat) {profiles : List UninhabitedVariantLayout} (encoding : info.encoding = .directWithUninhabited offset profiles)
+    (fits : offset + (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)).size ≤ size) :
+    ∃ image, EnumTagPrefix size info position (.int width raw) image := by
+  exact EnumTagPrefix.direct_encoding_exists size info position width raw offset (Or.inr ⟨profiles, encoding⟩) fits
+
 
 theorem EnumTagPrefix.untagged_index (size : Nat) (info : Enumeration) (position : Nat) (tag : Value)
     (image : ByteImage) (encoding : info.encoding = .untagged) (run : EnumTagPrefix size info position tag image) :
@@ -1149,6 +1197,58 @@ def VariantEncoded (model : ByteModel) (order : FunctionAddressOrder)
     (before after : Image) : Prop :=
   encodeVariant model order variants position values before = .ok after
 
+/-- A present selected row and its actual strict field encoding construct
+one variant step, without unfolding unrelated payload ranks. -/
+theorem VariantEncoded.of_fields (model : ByteModel) (order : FunctionAddressOrder)
+    (variants : List (Option (List (Nat × Plan)))) (position : Nat) (values : List Value)
+    (before after : Image) (fields : List (Nat × Plan))
+    (row : (trustIrListGet? variants position) = some (some fields))
+    (run : FieldsEncoded model order fields values false before after) :
+    VariantEncoded model order variants position values before after := by
+  unfold VariantEncoded
+  induction variants generalizing position with
+  | nil => cases row
+  | cons first rest ih =>
+    cases position with
+    | zero =>
+      have same : first = some fields := Option.some.inj row
+      subst first
+      rw [encodeVariant]
+      exact run
+    | succ position =>
+      rw [encodeVariant]
+      exact ih position row
+
+/-- Actual selection, prefix construction, strict payload encoding and its
+final guard compose into the real encoder, independently of plan rank. -/
+theorem encode_enumeration_of_components (model : ByteModel) (order : FunctionAddressOrder)
+    (ty : Ty) (layout : MemoryTypeLayout) (info : Enumeration)
+    (variants : List (Option (List (Nat × Plan)))) (tag : Value) (values : List Value)
+    (position : Nat) (allowUnwritten : Bool) (bytes : ByteImage) (image : Image)
+    (selected : EnumEncodingSelects info tag position)
+    (built : EnumTagPrefix layout.size info position tag bytes)
+    (payload : VariantEncoded model order variants position values { bytes } image)
+    (checked : NichePayloadChecked info position image.bytes) :
+    encode model order (.enumeration ty layout info variants) (.aggregate (tag :: values)) allowUnwritten = .ok image := by
+  unfold EnumEncodingSelects at selected
+  unfold EnumTagPrefix at built
+  unfold VariantEncoded at payload
+  unfold NichePayloadChecked at checked
+  rw [encode]
+  simp only [Value.isUninit,Bool.false_eq_true,ite_false,selected,built,payload,checked,
+    Bind.bind,Except.bind,Pure.pure,Except.pure]
+
+/-- A typed selector rejection propagates its exact error before prefix or
+payload construction; no impossible source value is encoded. -/
+theorem encode_enumeration_of_rejection (model : ByteModel) (order : FunctionAddressOrder)
+    (ty : Ty) (layout : MemoryTypeLayout) (info : Enumeration)
+    (variants : List (Option (List (Nat × Plan)))) (tag : Value) (values : List Value)
+    (allowUnwritten : Bool) (error : SemError) (rejected : EnumEncodingRejects info tag error) :
+    encode model order (.enumeration ty layout info variants) (.aggregate (tag :: values)) allowUnwritten = .error error := by
+  unfold EnumEncodingRejects at rejected
+  rw [encode]
+  simp only [Value.isUninit,Bool.false_eq_true,ite_false,rejected,Bind.bind,Except.bind,Pure.pure,Except.pure]
+
 private theorem fields_encoding_extent (model : ByteModel) (order : FunctionAddressOrder)
     (fields : List (Nat × Plan)) (values : List Value) (allowUnwritten : Bool)
     (before after : Image)
@@ -1223,6 +1323,10 @@ theorem EnumTagPrefix.extent {size position : Nat} {info : Enumeration} {tag : V
     simp only [encoding] at run
     cases tag <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
     exact (ImageOverwrite.extent run).trans (ByteImage.size_fill _ _)
+  | directWithUninhabited offset profiles =>
+    simp only [encoding] at run
+    cases tag <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
+    exact (ImageOverwrite.extent run).trans (ByteImage.size_fill _ _)
   | niche untagged start stop first offset repr =>
     by_cases selected : position = untagged
     · simp [encoding,selected,Pure.pure,Except.pure] at run
@@ -1285,7 +1389,7 @@ theorem encode_extent (model : ByteModel) (order : FunctionAddressOrder) (plan :
     image.bytes.size = plan.layout.size := by
   have original := run
   by_cases uninit : value.isUninit = true
-  · cases plan <;> rw [encode] at run
+  · cases plan <;> trustIrCompilerProof { rw [encode] at run } { rw [encode.eq_def] at run }
     all_goals simp only [uninit,ite_true] at run
     all_goals
       split at run
@@ -1299,7 +1403,7 @@ theorem encode_extent (model : ByteModel) (order : FunctionAddressOrder) (plan :
       | true => exact False.elim (uninit flag)
     cases plan with
     | leaf ty layout =>
-      rw [encode] at run
+      trustIrCompilerProof { rw [encode] at run } { rw [encode.eq_def] at run }
       simp only [initialized,Bool.false_eq_true,ite_false,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       cases leafRun : encodeLeaf model order ty value with
       | error error => simp [leafRun,Bind.bind,Except.bind] at run
@@ -1310,13 +1414,22 @@ theorem encode_extent (model : ByteModel) (order : FunctionAddressOrder) (plan :
           cases run
           simpa [ByteImage.size_ofList] using fits
         · simp [fits,typeError] at run
+    | fnItem target layout =>
+      trustIrCompilerProof { rw [encode] at run } { rw [encode.eq_def] at run }
+      simp only [initialized,Bool.false_eq_true,ite_false,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
+      repeat' first
+        | (solve | cases run)
+        | (simp only [typeError,ub,Bind.bind,Except.bind,Pure.pure,Except.pure] at run)
+        | (split at run)
+      all_goals cases run
+      all_goals simp_all [Plan.layout,ByteImage.empty]
     | fields ty layout fields =>
-      rw [encode] at run
+      trustIrCompilerProof { rw [encode] at run } { rw [encode.eq_def] at run }
       simp only [initialized,Bool.false_eq_true,ite_false,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       cases value <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       exact (FieldsEncoded.extent run).trans (ByteImage.size_fill _ _)
     | array ty layout count element =>
-      rw [encode] at run
+      trustIrCompilerProof { rw [encode] at run } { rw [encode.eq_def] at run }
       simp only [initialized,Bool.false_eq_true,ite_false,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       cases value <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       rename_i values
@@ -1337,7 +1450,7 @@ theorem encode_extent (model : ByteModel) (order : FunctionAddressOrder) (plan :
           · simp [fits,typeError] at run
       · simp [census,typeError] at run
     | enumeration ty layout info variants =>
-      rw [encode] at run
+      trustIrCompilerProof { rw [encode] at run } { rw [encode.eq_def] at run }
       simp only [initialized,Bool.false_eq_true,ite_false,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       cases value <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
       rename_i values
@@ -1480,13 +1593,26 @@ theorem EnumEncodingSelects.functional {info : Enumeration} {tag : Value} {first
   rw [left] at right
   exact Except.ok.inj right
 
+theorem EnumTagPrefix.direct_encoding_tag {size position offset : Nat} {info : Enumeration} {tag : Value}
+    {image : ByteImage} (encoding : DirectEncodingAt info.encoding offset)
+    (run : EnumTagPrefix size info position tag image) : ∃ width raw, tag = .int width raw := by
+  rcases encoding with encoding | ⟨profiles, encoding⟩
+  all_goals
+    unfold EnumTagPrefix tagPrefix at run
+    rw [encoding] at run
+    cases tag <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
+    exact ⟨_,_,rfl⟩
+
 theorem EnumTagPrefix.direct_tag {size position offset : Nat} {info : Enumeration} {tag : Value}
     {image : ByteImage} (encoding : info.encoding = .direct offset)
     (run : EnumTagPrefix size info position tag image) : ∃ width raw, tag = .int width raw := by
-  unfold EnumTagPrefix tagPrefix at run
-  rw [encoding] at run
-  cases tag <;> simp [typeError,Bind.bind,Except.bind,Pure.pure,Except.pure] at run
-  exact ⟨_,_,rfl⟩
+  exact EnumTagPrefix.direct_encoding_tag (Or.inl encoding) run
+
+theorem EnumTagPrefix.profiled_direct_tag {size position offset : Nat} {info : Enumeration} {tag : Value}
+    {image : ByteImage} {profiles : List UninhabitedVariantLayout} (encoding : info.encoding = .directWithUninhabited offset profiles)
+    (run : EnumTagPrefix size info position tag image) : ∃ width raw, tag = .int width raw := by
+  exact EnumTagPrefix.direct_encoding_tag (Or.inr ⟨profiles, encoding⟩) run
+
 
 private theorem encodeLeaf_memory_success (model : ByteModel) (order : FunctionAddressOrder)
     (ty : Ty) (value : Value) (bytes : List UInt8) (run : encodeLeaf model order ty value = .ok bytes) :
@@ -1522,6 +1648,21 @@ theorem encode_leaf_memory_success (model : ByteModel) (order : FunctionAddressO
         cases run
         exact ⟨bytes,encodeLeaf_memory_success model order ty value bytes leafRun,fits,rfl⟩
       · simp [fits,typeError] at run
+
+/-- An ordinary scalar plan cannot acquire the prepared nominal operation.
+The original universal scalar-success law forces this refusal for every value. -/
+theorem encode_fnItem_as_scalar_leaf_refuses (model : ByteModel) (order : FunctionAddressOrder)
+    (target : FuncId) (layout : MemoryTypeLayout) (value : Value) (image : Image) :
+    encode model order (.leaf (.FnItem target) layout) value false ≠ .ok image := by
+  intro success
+  obtain ⟨bytes,scalar,_,_⟩ :=
+    encode_leaf_memory_success model order (.FnItem target) layout value image success
+  trustIrCompilerProof {
+    simp only [encodeMemoryWithFunctions] at scalar
+  } {
+    simp only [encodeMemoryWithFunctions] at scalar
+    cases scalar
+  }
 
 /-- Ordinary successful leaf storage passed the real fat-metadata guard.
     Raw contextual scalar success alone does not imply this guard. -/
@@ -1621,5 +1762,61 @@ theorem encode_float_leaf_of_type (model : ByteModel) (order : FunctionAddressOr
     fatPtrStoreValueValidFor,fatPtrStoreValueValid,fatPtrStoreValueValidAtModel,
     encodeMemoryWithFunctions,encodeMemoryAt,checkPointerImageWords,encodeValueAt,encodeTypedAtModel,
     Bind.bind,Except.bind,Pure.pure,Except.pure]
+
+/-- A typed leaf is a byte operation after source-plan admission. Its exact
+    target is retained even though no address or payload byte is emitted. -/
+theorem encode_fnItem (model : ByteModel) (order : FunctionAddressOrder)
+    (target : FuncId) (layout : MemoryTypeLayout) (value : Value)
+    (allowUnwritten : Bool) :
+    encode model order (.fnItem target layout) value allowUnwritten = (do
+      if value.isUninit then
+        if allowUnwritten then
+          return { bytes := ByteImage.fill layout.size none, unwritten := [(0, layout.size)] }
+        else return ← rejectUninit
+      if layout.size != 0 || layout.alignment != 1 then
+        return ← typeError "memory image: function item layout is not zero-sized/alignment-one"
+      if value.isPoison then return ← ub "memory image: inspecting poison"
+      match value with
+      | .fnItem actual =>
+        if actual == target then pure { bytes := ByteImage.empty }
+        else typeError "memory image: function item identity does not match its source type"
+      | _ => typeError "memory image: expected a nominal function item") := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta encode encode._mutual
+      rw [WellFounded.fix_eq]
+    rfl
+  } {
+    rw [encode.eq_def] <;> rfl
+  }
+
+/-- The array equation keeps the real compact traversal and its element
+    callback, without reducing a rank containing the logical array count. -/
+theorem encode_array (model : ByteModel) (order : FunctionAddressOrder)
+    (ty : Ty) (layout : MemoryTypeLayout) (count : Nat) (element : Plan)
+    (value : Value) (allowUnwritten : Bool) :
+    encode model order (.array ty layout count element) value allowUnwritten = (do
+      if value.isUninit then
+        if allowUnwritten then
+          return { bytes := ByteImage.fill layout.size none, unwritten := [(0, layout.size)] }
+        else return ← rejectUninit
+      let values ← match value with
+        | .array values => pure values
+        | _ => typeError "memory image: expected array elements"
+      if values.size != count then return ← typeError "memory image: array census mismatch"
+      let bytes ← encodeArrayImage (fun value => do
+        pure (← encode model order element value false).bytes) values.tree
+      if bytes.size != layout.size then return ← typeError "memory image: array byte count mismatch"
+      pure { bytes }) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta encode encode._mutual
+      rw [WellFounded.fix_eq]
+    rfl
+  } {
+    rw [encode.eq_def] <;> rfl
+  }
 
 end TrustIr.AggregateMemory

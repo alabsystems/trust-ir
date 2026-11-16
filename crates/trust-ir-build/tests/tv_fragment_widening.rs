@@ -537,25 +537,37 @@ fn s1_mutation_control_bool_result_retyped_to_u8_is_refused() {
 }
 
 #[test]
-fn s1_mutation_control_icmp_at_bool_is_refused() {
-    // `ICmp eq` over two Bools is well-formed IR but outside the fragment
-    // (comparisons are integer comparisons) — named refusal.
-    let mut mb = builder("s1_beq");
-    let sig = mb.add_func_type(vec![Ty::Bool, Ty::Bool], vec![Ty::Bool]);
-    let mut fb = function(&mut mb, "beq", sig);
-    let e = fb.create_block();
-    let p = fb.add_block_param(e, Ty::Bool);
-    let q = fb.add_block_param(e, Ty::Bool);
-    fb.switch_to_block(e);
-    let r = fb.icmp(ICmpOp::Eq, Ty::Bool, p, q);
-    fb.ret(vec![r]);
-    let f = fb.build();
-    assert_fragment_refuses(
-        mb.build().expect("ModuleBuilder::build: test fixture"),
-        f,
-        "ICmp at type bool is outside the TV fragment",
-        "beq",
-    );
+fn s1_mutation_control_ordered_icmp_at_bool_is_refused() {
+    // Equality/inequality now have a checked Bool model (the complete truth
+    // table is held by scalar_source_value_equation). Ordered comparisons
+    // remain outside this TV fragment on both minting and replay paths.
+    for op in [
+        ICmpOp::Ult,
+        ICmpOp::Ule,
+        ICmpOp::Ugt,
+        ICmpOp::Uge,
+        ICmpOp::Slt,
+        ICmpOp::Sle,
+        ICmpOp::Sgt,
+        ICmpOp::Sge,
+    ] {
+        let mut mb = builder("s1_ordered_bool");
+        let sig = mb.add_func_type(vec![Ty::Bool, Ty::Bool], vec![Ty::Bool]);
+        let mut fb = function(&mut mb, "ordered", sig);
+        let e = fb.create_block();
+        let p = fb.add_block_param(e, Ty::Bool);
+        let q = fb.add_block_param(e, Ty::Bool);
+        fb.switch_to_block(e);
+        let r = fb.icmp(op, Ty::Bool, p, q);
+        fb.ret(vec![r]);
+        let f = fb.build();
+        assert_fragment_refuses(
+            mb.build().expect("ModuleBuilder::build: test fixture"),
+            f,
+            &format!("ordered ICmp {op:?} at Bool requires its own model"),
+            "ordered Bool comparison",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

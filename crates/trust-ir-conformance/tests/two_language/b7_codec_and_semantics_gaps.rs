@@ -2377,7 +2377,7 @@ fn no_typed_nondeterministic_choice() {
     // call with an unwind edge — deterministic; under `PanicStrategy::Unwind`
     // the edge is taken exactly when the callee raises, a deterministic
     // consequence of a failed check, never a choice). 67 -> 68 at v63
-    // (`MakeClosure`, a runtime closure constructor — deterministic) and
+    // (`MakeClosure`, a runtime closure constructor — deterministic),
     // 68 -> 69 at the tensor region (`TensorContract`, an integer tensor
     // contraction whose wrapping sum has a pinned fold order — deterministic;
     // mismatched extents are undefined behaviour, never a choice). 69 -> 72 at
@@ -2388,11 +2388,14 @@ fn no_typed_nondeterministic_choice() {
     // all deterministic, none a choice). 72 -> 74 at v69 (`TensorGather` /
     // `TensorScatter`: a read at data coordinates, and a write whose repeated
     // coordinates keep the row-major-last source element — deterministic;
-    // an out-of-range coordinate is undefined behaviour, never a choice).
+    // an out-of-range coordinate is undefined behaviour, never a choice),
+    // and 74 -> 75 at v74 (`BoxDeref`: the identity on a pointer valid as a
+    // `Box`, undefined behaviour otherwise; its carried fact is not read by
+    // either engine — deterministic).
     // The absence itself is now RATIFIED (F-034, WS2.11), not a gap.
     assert!(feature_ratified(
         "b7.nondet.no_choice_opcode",
-        Expect::measured("74 Inst variants, none a choice/input/nondet/havoc opcode"),
+        Expect::measured("75 Inst variants, none a choice/input/nondet/havoc opcode"),
         Outcome::measured(format!(
             "{} Inst variants, {}",
             variants.len(),

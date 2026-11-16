@@ -577,6 +577,10 @@ impl Analysis<'_, '_> {
             | Inst::LandingPad { .. }
             // A fence orders memory; it reads and writes no location.
             | Inst::Fence { .. } => {}
+            // Dereferenceable is a memory-dependent statement at this exact
+            // program point. Record a read so a pure/no-read summary cannot
+            // authorize movement across deallocation.
+            Inst::BoxDeref { operand, .. } => self.access(false, *operand, block, mnemonic),
             Inst::Load { ptr, .. } | Inst::AtomicLoad { ptr, .. } => {
                 self.access(false, *ptr, block, mnemonic);
             }

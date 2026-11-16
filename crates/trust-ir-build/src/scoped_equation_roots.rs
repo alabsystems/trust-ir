@@ -140,10 +140,10 @@ impl Memo {
                 // Canonical closing has ALREADY succeeded. Missing IDs here
                 // are an intersection skip (for example internal formals),
                 // never a new scope-admission decision.
-                if let Some(&position) = external_positions.get(id) {
-                    if position >= initial_len {
-                        prefix = prefix.max(position - initial_len + 1);
-                    }
+                if let Some(&position) = external_positions.get(id)
+                    && position >= initial_len
+                {
+                    prefix = prefix.max(position - initial_len + 1);
                 }
             }
             let generation = generations

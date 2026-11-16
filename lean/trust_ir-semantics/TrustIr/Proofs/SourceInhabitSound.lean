@@ -483,7 +483,9 @@ def decodedCaptureSource (m : TrustIrEval.Module) (model : ByteModel) : Environm
   { model, canonicalScalars := true, hasTargetInfo := m.hasTargetInfo,
     types := m.types, structs := m.structs, enums := m.enums,
     records := m.records.filterMap (·.2), closures := m.closureTys,
-    tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts }
+    tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts,
+    functions := m.functions.map (fun function => (function.id, function.ty)),
+    funcTypes := m.funcTys }
 
 /-- Retained record payloads must keep the key read for their row. A successful
     wire-decoding proof must establish this coherence; arbitrary raw
@@ -520,6 +522,8 @@ theorem contextOf_capture_source (m : TrustIrEval.Module) (maxDepth : Nat) (ctx 
       · cases prepared
         constructor
         · intro id ty resolved
+          change (TrustIrEval.valueSourceOf m).ty id = some ty at resolved
+          rw [FunctionItemPresence.Prepared.ty_eq_source, FunctionItemPresence.Source.ty_eq_list] at resolved
           change ((trustIrListGet? m.types id.index)).join = some ty at resolved
           change (trustIrListGet? m.types id.index) = some (some ty)
           cases row : (trustIrListGet? m.types id.index) with

@@ -4,7 +4,7 @@
 use super::*;
 impl<O: ExecutionObserver> Work<'_, '_, O> {
     pub(super) fn error(&mut self, value: ValidationError) {
-        self.step(259);
+        self.step(269);
         match value {
             ValidationError::InvalidStorageUse { location, detail } => {
                 self.string(location);
@@ -983,6 +983,122 @@ impl<O: ExecutionObserver> Work<'_, '_, O> {
                 self.fixed(block);
                 self.fixed(inst_index);
                 self.fixed(claim);
+            }
+            ValidationError::BoxDerefTypeMismatch {
+                function,
+                block,
+                inst_index,
+                detail,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.string(detail);
+            }
+            ValidationError::BoxDerefPointeeOutOfScope {
+                function,
+                block,
+                inst_index,
+                reason,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(reason);
+            }
+            ValidationError::BoxDerefConjunctCover {
+                function,
+                block,
+                inst_index,
+                detail,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.string(detail);
+            }
+            ValidationError::BoxDerefPremiseNotPinned {
+                function,
+                block,
+                inst_index,
+                conjunct,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(conjunct);
+            }
+            ValidationError::BoxDerefSessionRefused {
+                function,
+                block,
+                inst_index,
+                reason,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(reason);
+            }
+            ValidationError::BoxDerefDominatingCheckInvalid {
+                function,
+                block,
+                inst_index,
+                conjunct,
+                reason,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(conjunct);
+                self.fixed(reason);
+            }
+            ValidationError::BoxDerefObligationUnbound {
+                function,
+                block,
+                inst_index,
+                obligation,
+                reason,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(obligation);
+                self.fixed(reason);
+            }
+            ValidationError::BoxDerefNonClaimsNotPinned {
+                function,
+                block,
+                inst_index,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+            }
+            ValidationError::BoxDerefPremiseContradicted {
+                function,
+                block,
+                inst_index,
+                reason,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(reason);
+            }
+            ValidationError::BoxValidityEvidenceBelowFloor {
+                function,
+                block,
+                inst_index,
+                conjunct,
+                tier,
+                floor,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(conjunct);
+                self.fixed(tier);
+                self.fixed(floor);
             }
             ValidationError::AssertPanicKindUnspecified {
                 function,

@@ -40,6 +40,19 @@ pub(super) fn all() -> Vec<Inst> {
             func: FuncId::new(9),
             captures: vec![v()],
         },
+        Inst::BoxDeref {
+            ptr_ty: Ty::Ptr,
+            pointee: trust_ir::box_validity::BoxPointee::Sized { ty: Ty::I64 },
+            operand: v(),
+            fact: Box::new(trust_ir::box_validity::BoxValidityFact::premise(
+                trust_ir::box_validity::BoxDerefSite {
+                    item: [0; 16],
+                    ordinal: 0,
+                },
+                trust_ir::box_validity::BoxFactSession::PROOF_SNAPSHOT,
+                trust_ir::box_validity::PremiseRoot::ParamByValue,
+            )),
+        },
         frame(2),
         dialect(2),
     ]);

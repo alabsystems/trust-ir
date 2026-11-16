@@ -11,6 +11,7 @@
 
 import TrustIr.Semantics.Eval
 import TrustIr.Proofs.CallProps
+import TrustIr.Proofs.AssertStep
 import TrustIr.Proofs.FloatChoiceProps
 
 namespace TrustIr
@@ -532,6 +533,8 @@ private theorem stepSelect_pnl (ty : Ty) (cond thenVal elseVal : ValueId) :
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | frame lineage f =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
+  | sourceFrame _ _ _ =>
+    exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | set xs =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | sequence xs =>
@@ -541,6 +544,8 @@ private theorem stepSelect_pnl (ty : Ty) (cond thenVal elseVal : ValueId) :
   | closure f caps =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | fnDef sig f =>
+    exact bind_pnl _ _ (throwTypeError_pnl _) tail
+  | fnItem f =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
   | typedClosure cid f caps =>
     exact bind_pnl _ _ (throwTypeError_pnl _) tail
@@ -585,7 +590,13 @@ private theorem semBindSlot_pnl (frameId : ValueId) (slot : Nat) (valueId : Valu
   apply bool_ite_pnl
   · refine bind_pnl _ _ (lv_pnl valueId) ?_
     intro value
-    exact ite_pnl (bf_pnl _) (throwUB_pnl _)
+    apply ite_pnl
+    · refine bind_pnl _ _ (lv_pnl frameId) ?_
+      intro held
+      cases updated : bindSlot held slot value with
+      | none => simp only [updated]; exact throwUB_pnl _
+      | some snapshot => simp only [updated]; exact bf_pnl _
+    · exact throwUB_pnl _
   · exact throwUB_pnl _
 
 private theorem semLoadSlot_pnl (frameId : ValueId) (slot : Nat) (ty : Ty) :
@@ -1111,6 +1122,9 @@ private theorem semExtractElement_tail_pnl (ty : Ty) (arrVal : Value) (idx : Nat
   | frame lineage f =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+  | sourceFrame _ _ _ =>
+    simpa [getElement, Sem.throwTypeError] using
+      (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | set xs =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
@@ -1129,6 +1143,9 @@ private theorem semExtractElement_tail_pnl (ty : Ty) (arrVal : Value) (idx : Nat
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | fnDef sig f =>
+    simpa [getElement, Sem.throwTypeError] using
+      (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
+  | fnItem f =>
     simpa [getElement, Sem.throwTypeError] using
       (t_pnl (SemError.typeError "ExtractElement: operand is not an aggregate or vector"))
   | typedClosure cid f caps =>
@@ -1498,6 +1515,23 @@ private theorem semSeqMapNot_pnl (ty : Ty) (seqId : ValueId) :
   | _ => first
       | (unfold Sem.throwTypeError; exact t_pnl _)
 
+-- A Box deref reads the allocation table and binds a local; it writes no
+-- memory, permission or reference count.
+private theorem semBoxDeref_pnl (pointee : BoxPointee) (v : Value) :
+    pnl (semBoxDeref pointee v) := by
+  unfold semBoxDeref
+  repeat (first
+    | exact accessAlign_pnl _ _ _
+    | exact checkedAccess_pnl _ _ _ _ _
+    | exact rejectPartial_pnl _ _
+    | exact p_pnl _
+    | exact throwUB_pnl _
+    | exact throwTypeError_pnl _
+    | exact throwUnsupported_pnl _ _
+    | exact bf_pnl _
+    | (refine bind_pnl _ _ ?_ (fun value => ?_) <;> dsimp only)
+    | split)
+
 theorem dce_pure_inst (inst : Inst) (s : MachineState)
     (hPure : inst.hasSideEffects = false)
     (hNotTerminator : inst.isTerminator = false)
@@ -1654,6 +1688,13 @@ theorem dce_pure_inst (inst : Inst) (s : MachineState)
       bind_pnl _ _ (lv_pnl operand) fun _ =>
       bind_pnl _ _ (bf_pnl _) fun _ =>
       p_pnl _
+    simp only [stepInst] at hOk
+    exact pnl_to_sel h_pnl s result hOk
+  -- A Box deref binds its operand's pointer or faults; it writes no memory.
+  | BoxDeref ptrTy pointee operand fact =>
+    have h_pnl : pnl (do let v ← Sem.lookupValue operand
+                         semBoxDeref pointee v) :=
+      bind_pnl _ _ (lv_pnl operand) fun v => semBoxDeref_pnl pointee v
     simp only [stepInst] at hOk
     exact pnl_to_sel h_pnl s result hOk
   | Select ty cond thenVal elseVal =>
@@ -1879,41 +1920,6 @@ def block_transform_preserving (transform : BasicBlock -> BasicBlock)
       forall args s result,
         Sem.run (stepBlock block args) s = .ok result ->
         Sem.run (stepBlock (transform block) args) s = .ok result
-
-/-- Monadic bind decomposition for Sem: the result of running a bind
-    is determined by the result of the first computation. -/
-private theorem sem_run_bind_eq {a b : Type} (ma : Sem a) (f : a -> Sem b)
-    (s : MachineState) :
-    Sem.run (ma >>= f) s = match Sem.run ma s with
-      | .ok (a, s') => Sem.run (f a) s'
-      | .error e => .error e := by
-  simp [Sem.run, StateT.run, bind, StateT.bind, Except.bind]
-  cases (ma s) with
-  | ok val => rfl
-  | error e => rfl
-
-/-- A failed assert never succeeds, whatever its kind and site: it computes
-    its panic message (reading the kind's operands), resolves its site's
-    location (amendment P), and then panics (plan item P). -/
-theorem semAssertFail_run_not_ok {α : Type} (k : AssertKind) (site : Option PanicSite)
-    (s : MachineState) (r : α × MachineState) :
-    Sem.run (semAssertFail k site : Sem α) s ≠ .ok r := by
-  intro h
-  unfold semAssertFail at h
-  rw [sem_run_bind_eq] at h
-  cases hm : Sem.run (assertFailMessage k) s with
-  | error e => rw [hm] at h; cases h
-  | ok v =>
-    rw [hm] at h
-    obtain ⟨msg, s1⟩ := v
-    cases site with
-    | none => cases h
-    | some st =>
-      dsimp only at h
-      rw [sem_run_bind_eq] at h
-      cases hl : Sem.run (resolvePanicLocation st.location) s1 with
-      | error e => rw [hl] at h; cases h
-      | ok w => rw [hl] at h; cases h
 
 /-- Helper: stepN preservation under block transform for a specific CFG.
     If every block in cfg is preserved by transform, then stepN on

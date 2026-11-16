@@ -35,6 +35,12 @@ impl State {
                 ty: Ty::Func(_),
                 value: Constant::FnDef(_),
             } => true,
+            Inst::Cast {
+                op: CastOp::ReifyFnPointer,
+                src_ty: Ty::FnItem(id),
+                dst_ty: Ty::Func(signature),
+                ..
+            } => census::exact_item(module, *id, *signature, work)?,
             Inst::Call { .. }
             | Inst::CallCannotUnwind { .. }
             | Inst::Invoke { .. }
@@ -44,7 +50,7 @@ impl State {
             Inst::CallIndirect { callee, sig, .. }
             | Inst::CallIndirectCannotUnwind { callee, sig, .. }
             | Inst::InvokeIndirect { callee, sig, .. } => {
-                census::exact_function(*callee, *sig, values, work)?
+                census::exact_function(module, *callee, *sig, values, work)?
             }
             Inst::CondBr { cond, .. } => census::exact(*cond, &Ty::Bool, values, work)?,
             Inst::Switch { value, .. } => {

@@ -36,6 +36,7 @@ pub(super) struct ObservedIndirectCalls<'c, 'm> {
     function: &'m Function,
     closures: Option<ObservedLocalClosureTargets<'m>>,
     pointers: Option<ObservedStaticFunctionPointerAnalysis<'m>>,
+    item_origins: Option<bool>,
 }
 #[derive(Default)]
 struct State {

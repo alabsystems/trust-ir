@@ -125,11 +125,13 @@ theorem select_lanes_minted (bound : Nat) (mask left right output : List Value)
         | aggregate _ => simp [semVectorSelectLanes] at run
         | vector _ => simp [semVectorSelectLanes] at run
         | frame _ _ => simp [semVectorSelectLanes] at run
+        | sourceFrame _ _ _ _ => simp [semVectorSelectLanes] at run
         | set _ => simp [semVectorSelectLanes] at run
         | sequence _ => simp [semVectorSelectLanes] at run
         | record _ => simp [semVectorSelectLanes] at run
         | closure _ _ => simp [semVectorSelectLanes] at run
         | fnDef _ _ => simp [semVectorSelectLanes] at run
+        | fnItem _ => simp [semVectorSelectLanes] at run
         | typedClosure _ _ _ => simp [semVectorSelectLanes] at run
         | fatPtr _ _ _ => simp [semVectorSelectLanes] at run
         | «partial» _ => simp [semVectorSelectLanes] at run
@@ -278,6 +280,9 @@ theorem select_transport_success (ty : Ty) (condition : Value) (yes no : ValueId
   | frame _ _ =>
     simp [selectTransport, Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
       throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at run
+  | sourceFrame _ _ _ _ =>
+    simp [selectTransport, Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
+      throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at run
   | set _ =>
     simp [selectTransport, Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
       throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at run
@@ -291,6 +296,9 @@ theorem select_transport_success (ty : Ty) (condition : Value) (yes no : ValueId
     simp [selectTransport, Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
       throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at run
   | fnDef _ _ =>
+    simp [selectTransport, Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
+      throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at run
+  | fnItem _ =>
     simp [selectTransport, Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
       throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at run
   | typedClosure _ _ _ =>

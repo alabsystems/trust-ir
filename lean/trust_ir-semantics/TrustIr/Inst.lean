@@ -76,36 +76,6 @@ Mirrors Rust crates/trust_ir/src/inst.rs. See
 designs/2026-04-19-binding-frames-lean-semantics.md section 2.
 -/
 
-/-- A single typed slot in a binding frame. Mirrors Rust
-    trust_ir::inst::BindingSlot from crates/trust_ir/src/inst.rs.
-
-    Each slot has a name (diagnostics / text format) and a declared Ty.
-    The position in BindingFrameDef.slots is the slot index used by
-    Inst.BindSlot and Inst.LoadSlot. -/
-structure BindingSlot where
-  name : String
-  ty   : Ty
-  deriving Repr
-
-/-- Declaration of a binding frame's slot layout. Inline in
-    Inst.OpenFrame, matching Rust trust_ir::inst::BindingFrameDef
-    (crates/trust_ir/src/inst.rs).
-
-    The id is unique within a function (Rust-side validation). The
-    semantics does not depend on that uniqueness; see
-    designs/2026-04-19-binding-frames-lean-semantics.md section 8. -/
-structure BindingFrameDef where
-  id    : BindingFrameId
-  name  : String
-  slots : List BindingSlot
-  deriving Repr
-
-namespace BindingFrameDef
-
-/-- Number of declared slots. -/
-def slotCount (d : BindingFrameDef) : Nat := d.slots.length
-
-end BindingFrameDef
 
 /-- Heap allocation origin, mirroring Rust `trust_ir::AllocOrigin` (a subset of
 the memory model's `AllocationOrigin`). Carried by `Inst.HeapAlloc`. -/
@@ -185,6 +155,89 @@ inductive PanicLocation where
 structure PanicSite where
   entry : FuncId
   location : PanicLocation
+  deriving Repr
+
+/-- The pointee of a `Box` deref (wire v74). `sized` is the only shape: a
+    thin pointer to a value of a statically sized type. Mirrors Rust
+    `trust_ir::box_validity::BoxPointee`. -/
+inductive BoxPointee where
+  | sized (ty : Ty)
+  deriving Repr
+
+/-- The validity conjuncts of a `Box` pointer, in canonical order. Mirrors
+    Rust `ValidityConjunct`. -/
+inductive ValidityConjunct where
+  | nonNull
+  | aligned
+  | dereferenceable
+  | metadataValid
+  deriving Repr, DecidableEq
+
+/-- Where a premise is rooted. Mirrors Rust `PremiseRoot`. -/
+inductive PremiseRoot where
+  | paramByValue
+  | allocPostcondition
+  | returnedBoxDischarged
+  | returnedBoxAssumed
+  | referenceArgBoxValid
+  deriving Repr, DecidableEq
+
+/-- A standing assumption a premise names. Mirrors Rust
+    `StandingAssumption`. -/
+inductive StandingAssumption where
+  | safeBody
+  | soundCallees
+  | boxUnique
+  deriving Repr, DecidableEq
+
+/-- The evidence offered for one conjunct. A premise is a NAMED ASSUMPTION,
+    not a proof; the Rust validator refuses the other two kinds wherever
+    they appear. Mirrors Rust `ValidityEvidence`. -/
+inductive ValidityEvidence where
+  | premise (root : PremiseRoot) (standing : List StandingAssumption)
+  | dominatingCheck (align : Option Nat)
+  | obligation (obligation : ProofId)
+  deriving Repr
+
+/-- One conjunct with its evidence. Mirrors Rust `ConjunctEvidence`. -/
+structure ConjunctEvidence where
+  conjunct : ValidityConjunct
+  evidence : ValidityEvidence
+  deriving Repr
+
+/-- The body the fact was judged on. Mirrors Rust `JudgedBody`. -/
+inductive JudgedBody where
+  | verificationSnapshot
+  | optimizedFallback
+  deriving Repr, DecidableEq
+
+/-- Whether the producing compiler session ran its verifier. A fact exists
+    only in a proof session. Mirrors Rust `ProducingSession`. -/
+inductive ProducingSession where
+  | proofSession
+  | nonProofSession
+  deriving Repr, DecidableEq
+
+/-- What the fact explicitly does not say. Mirrors Rust
+    `BoxValidityNonClaim`. -/
+inductive BoxValidityNonClaim where
+  | uniqueness
+  | pointeeValidity
+  | allocator
+  deriving Repr, DecidableEq
+
+/-- The fact a `BoxDeref` carries: the producer's site id (16 item-hash bytes
+    and an ordinal), the session it was judged in, per-conjunct evidence, and
+    the pinned non-claims. The operational rule reads none of it: the fact is
+    evidence ABOUT the step, judged by the Rust validator, and never changes
+    what the step computes. Mirrors Rust `BoxValidityFact`. -/
+structure BoxValidityFact where
+  siteItem : List Nat
+  siteOrdinal : Nat
+  judged : JudgedBody
+  producing : ProducingSession
+  evidence : List ConjunctEvidence
+  notClaimed : List BoxValidityNonClaim
   deriving Repr
 
 /-- TrustIr instruction. Mirrors Rust `trust_ir::Inst`.
@@ -287,6 +340,13 @@ inductive Inst where
   /-- Runtime captures. The executable model refuses this until its closure
       tables and checked physical target signatures are operational. -/
   | MakeClosure (ty : ClosureTyId) (func : FuncId) (captures : List ValueId) : Inst
+  /-- A `Box` deref carrying its validity fact (wire v74). The result is the
+      operand's pointer, unchanged. The step is undefined behaviour unless
+      the pointer is non-null, aligned for the pointee and, for a pointee of
+      positive size, inside a live allocation covering it (`semBoxDeref`).
+      The fact is evidence about those conjuncts and is not read by the
+      step. Mirrors Rust `Inst::BoxDeref { ptr_ty, pointee, operand, fact }`. -/
+  | BoxDeref (ptrTy : Ty) (pointee : BoxPointee) (operand : ValueId) (fact : BoxValidityFact) : Inst
   /-- `n` copies of one register value: the array `[value; n]` of type
       `ty = Array e n` (wire v50). The register twin of `Constant.splat`,
       denoted `.aggregate (List.replicate n v)`. Mirrors Rust

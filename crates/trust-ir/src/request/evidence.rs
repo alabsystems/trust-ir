@@ -6235,6 +6235,7 @@ pub(crate) const fn native_adapter_input_code(input: &NativeAdapterInput) -> &'s
     match input {
         NativeAdapterInput::RustMir { .. } => "rust_mir",
         NativeAdapterInput::TrustIrModule => "trust_ir_module",
+        NativeAdapterInput::RustThir { .. } => "rust_thir",
     }
 }
 
@@ -7170,10 +7171,10 @@ pub struct ChcX86IcmpCertificateRule {
 pub const CHC_X86_ICMP_CERTIFICATE_RULE: ChcX86IcmpCertificateRule = ChcX86IcmpCertificateRule {
     ay: ChcX86IcmpCertifyingBuild {
         package: "ay",
-        rev: "9dfa20b5790b03c8ffe57fbbe67316ece665c5be",
-        version: "0.28.0",
+        rev: "8bbc43108643d475a81a89b2b4f262e817ee1724",
+        version: "0.28.2",
         build_args: &["-p", "ay", "--features", "cli"],
-        certifying_sha256: &["f5fe9a9c8a1863bdb7ea579de788cbe035da87c6ba067c9e1280fd0f14af2f85"],
+        certifying_sha256: &["4800b9d8ffff0eab5712f541564ec6daa824d3d60de09b66af5937556e69926d"],
     },
     ay_args: &[
         "-smt2",
@@ -7193,13 +7194,10 @@ pub const CHC_X86_ICMP_CERTIFICATE_RULE: ChcX86IcmpCertificateRule = ChcX86IcmpC
     unchecked_proof_rules: &["hole", "lia_generic"],
     clean: ChcX86IcmpCertifyingBuild {
         package: "clean",
-        rev: "e7ae5d418cbac2e1a029369a5b5eda690d471c5c",
-        version: "0.9.0",
+        rev: "fae0c94829740c9ffe527eeeb4ea472f9c08001b",
+        version: "0.9.2",
         build_args: &["-p", "clean", "--features", "clean/carcara-verify"],
-        certifying_sha256: &[
-            "fc3b35ac3ef05ac67eedc04253edfe2caf53b7eee8b828c6021d26ed8135ecaf",
-            "7bff196544f447482f269cf884e84dcf860dc39c46a13105f04ac0a4baac8ba1",
-        ],
+        certifying_sha256: &["15e747b6b9c4183fba40c9799f75eba87b80c9494c8caa606af3cbbc023b2ee4"],
     },
     clean_args: &["cert", "verify-external", "{certificate}", "--verbose"],
     clean_proof_status: "fully verified",
@@ -8129,7 +8127,7 @@ impl NativeTransportIdentity {
             "transport_identity.input.rust_mir.body_digest",
             match self.input {
                 NativeAdapterInput::RustMir { body_digest } => Some(body_digest),
-                NativeAdapterInput::TrustIrModule => None,
+                NativeAdapterInput::TrustIrModule | NativeAdapterInput::RustThir { .. } => None,
             },
         );
         push_optional_digest_manifest_row(

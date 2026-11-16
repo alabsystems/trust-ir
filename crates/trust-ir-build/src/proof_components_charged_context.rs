@@ -376,7 +376,7 @@ mod tests {
             .charged_normalization_context_with_opaque(
                 &scope,
                 &[],
-                &[definition.reference.clone()],
+                std::slice::from_ref(&definition.reference),
                 &[],
             )
             .unwrap();
@@ -389,7 +389,7 @@ mod tests {
             .charged_normalization_context_with_opaque(
                 &scope,
                 &[],
-                &[definition.reference.clone()],
+                std::slice::from_ref(&definition.reference),
                 &[definition.local],
             )
             .unwrap();
@@ -415,8 +415,10 @@ mod tests {
     fn charged_context_small_inventory_budget_refuses_before_publication() {
         let mut scope = LocalScope::new();
         let x = scope.try_local(n()).unwrap();
-        let mut limits = ProofLimits::default();
-        limits.operations = 20;
+        let limits = ProofLimits {
+            operations: 20,
+            ..Default::default()
+        };
         let mut p = ProofComponents::new("charged.inventory", limits);
         p.set_base(&scope, vec![OwnedProofCapture::Parameter(x.clone())])
             .unwrap();
@@ -424,7 +426,7 @@ mod tests {
         assert!(
             p.charged_normalization_context_with_opaque(
                 &scope,
-                &[x.clone()],
+                std::slice::from_ref(&x),
                 &[x.term().clone()],
                 &[]
             )
@@ -445,7 +447,7 @@ mod tests {
         assert!(
             p.charged_normalization_context_with_opaque(
                 &scope,
-                &[x.clone()],
+                std::slice::from_ref(&x),
                 &[x.term().clone()],
                 &[foreign]
             )
@@ -456,9 +458,9 @@ mod tests {
         assert!(
             p.charged_normalization_context_with_opaque(
                 &scope,
-                &[x.clone()],
+                std::slice::from_ref(&x),
                 &[x.term().clone()],
-                &[x.clone()]
+                std::slice::from_ref(&x)
             )
             .is_err()
         );
@@ -467,8 +469,10 @@ mod tests {
     #[test]
     fn charged_context_failed_graph_scan_spends_the_original_pot_without_retry_refill() {
         let mut scope = LocalScope::new();
-        let mut limits = ProofLimits::default();
-        limits.operations = 500;
+        let limits = ProofLimits {
+            operations: 500,
+            ..Default::default()
+        };
         let mut p = ProofComponents::new("charged.graph", limits);
         p.set_base(&scope, vec![]).unwrap();
         let original = p
@@ -479,8 +483,13 @@ mod tests {
             input = Expr::app(Expr::const_str("Nat.succ"), input);
         }
         assert!(
-            p.charged_normalization_context_with_opaque(&scope, &[], &[input.clone()], &[])
-                .is_err()
+            p.charged_normalization_context_with_opaque(
+                &scope,
+                &[],
+                std::slice::from_ref(&input),
+                &[]
+            )
+            .is_err()
         );
         let spent = p.counts().3;
         assert_eq!(spent, 500);
@@ -537,8 +546,8 @@ mod tests {
             .charged_normalization_context_with_opaque(
                 &scope,
                 &[],
-                &[internal.reference.clone()],
-                &[internal.local.clone()],
+                std::slice::from_ref(&internal.reference),
+                std::slice::from_ref(&internal.local),
             )
             .err()
             .unwrap();
@@ -590,19 +599,19 @@ mod tests {
         let mut parts = ProofComponents::new("paid.independence", Default::default());
         parts.set_base(&scope, vec![]).unwrap();
         parts
-            .charged_independent_of(&scope, &[callback.clone()], data.term())
+            .charged_independent_of(&scope, std::slice::from_ref(&callback), data.term())
             .unwrap();
         let before = parts.context_work_remaining().unwrap();
         assert!(
             parts
-                .charged_independent_of(&scope, &[callback.clone()], callback.term())
+                .charged_independent_of(&scope, std::slice::from_ref(&callback), callback.term())
                 .is_err()
         );
         assert!(parts.context_work_remaining().unwrap() < before);
         let before = parts.context_work_remaining().unwrap();
         assert!(
             parts
-                .charged_independent_of(&scope, &[callback.clone()], &Expr::bvar(0))
+                .charged_independent_of(&scope, std::slice::from_ref(&callback), &Expr::bvar(0))
                 .is_err()
         );
         assert!(parts.context_work_remaining().unwrap() < before);
@@ -630,7 +639,7 @@ mod tests {
             term = Expr::app(term, data.term().clone());
         }
         let error = parts
-            .charged_independent_of(&scope, &[callback.clone()], &term)
+            .charged_independent_of(&scope, std::slice::from_ref(&callback), &term)
             .unwrap_err();
         assert!(
             error.contains("normalization dependency visit limit"),
@@ -668,11 +677,11 @@ mod tests {
         };
         let mut serial = parts();
         serial
-            .charged_independent_of(&scope, &[callback.clone()], &shared)
+            .charged_independent_of(&scope, std::slice::from_ref(&callback), &shared)
             .unwrap();
         assert!(
             serial
-                .charged_independent_of(&scope, &[callback.clone()], &parent)
+                .charged_independent_of(&scope, std::slice::from_ref(&callback), &parent)
                 .is_err()
         );
         assert_eq!(serial.context_work_remaining().unwrap(), 0);
@@ -695,11 +704,19 @@ mod tests {
         let mut parts = ProofComponents::new("independence.forest.guards", Default::default());
         parts.set_base(&scope, vec![]).unwrap();
         parts
-            .charged_independent_forest_of(&scope, &[callback.clone()], &[&shared, &shared])
+            .charged_independent_forest_of(
+                &scope,
+                std::slice::from_ref(&callback),
+                &[&shared, &shared],
+            )
             .unwrap();
         let before = parts.counts().3;
         let error = parts
-            .charged_independent_forest_of(&scope, &[callback.clone()], &[&shared, callback.term()])
+            .charged_independent_forest_of(
+                &scope,
+                std::slice::from_ref(&callback),
+                &[&shared, callback.term()],
+            )
             .unwrap_err();
         assert!(error.contains("final CPS callbacks"), "{error}");
         assert!(
@@ -747,8 +764,8 @@ mod caller_work_limit_tests {
             parts.set_base(&scope, vec![]).unwrap();
             let result = parts.charged_materialize_forest_with_limit(
                 &scope,
-                &[local.clone()],
-                &[root.clone()],
+                std::slice::from_ref(&local),
+                std::slice::from_ref(&root),
                 &[1],
                 cap,
             );
@@ -787,7 +804,7 @@ mod caller_work_limit_tests {
         parts.spend_context_work(1).unwrap();
         let result = parts.charged_materialize_forest_with_limit(
             &scope,
-            &[known.clone()],
+            std::slice::from_ref(&known),
             &[known.term().clone(), unknown.term().clone()],
             &[1, 1],
             usize::MAX,
@@ -798,8 +815,8 @@ mod caller_work_limit_tests {
         assert_eq!(parts.counts().0, 0);
         let retry = parts.charged_materialize_forest_with_limit(
             &scope,
-            &[known.clone()],
-            &[known.term().clone()],
+            std::slice::from_ref(&known),
+            std::slice::from_ref(known.term()),
             &[1],
             usize::MAX,
         );

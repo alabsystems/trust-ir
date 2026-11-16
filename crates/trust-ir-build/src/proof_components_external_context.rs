@@ -289,10 +289,14 @@ mod tests {
         let root = b.lam(Expr::nat_lit(0)); // An UNUSED deferred binder still matters.
         let mut parts = parts(&scope, 10_000);
         let mut context = parts
-            .charged_external_context(&scope, &[a.clone()])
+            .charged_external_context(&scope, std::slice::from_ref(&a))
             .unwrap();
         let actual = parts
-            .charged_materialize_external_context_fully(&scope, &context, &[root.clone()])
+            .charged_materialize_external_context_fully(
+                &scope,
+                &context,
+                std::slice::from_ref(&root),
+            )
             .unwrap();
         assert_eq!(
             actual,
@@ -304,7 +308,11 @@ mod tests {
             .unwrap();
         let before = parts.counts().3;
         let error = parts
-            .charged_materialize_external_context_fully(&scope, &context, &[root.clone()])
+            .charged_materialize_external_context_fully(
+                &scope,
+                &context,
+                std::slice::from_ref(&root),
+            )
             .unwrap_err();
         assert_eq!(
             error,
@@ -342,7 +350,7 @@ mod tests {
         let b = scope.try_local(n()).unwrap();
         let mut owner = parts(&scope, 10_000);
         let mut context = owner
-            .charged_external_context(&scope, &[a.clone()])
+            .charged_external_context(&scope, std::slice::from_ref(&a))
             .unwrap();
         let mut other = parts(&scope, 10_000);
         assert!(
@@ -467,7 +475,11 @@ mod tests {
         let root = Expr::app(Expr::const_str("Nat.succ"), Expr::nat_lit(0));
         assert!(
             parts
-                .charged_materialize_external_context_fully(&scope, &context, &[root.clone()])
+                .charged_materialize_external_context_fully(
+                    &scope,
+                    &context,
+                    std::slice::from_ref(&root),
+                )
                 .is_err()
         );
         assert_eq!(parts.context_work_remaining().unwrap(), 0);
@@ -500,7 +512,7 @@ mod prepared_caller_work_limit_tests {
             let mut parts = ProofComponents::new("prepared.caller.cutoff", Default::default());
             parts.set_base(&scope, vec![]).unwrap();
             let mut context = parts
-                .charged_external_context(&scope, &[x.clone()])
+                .charged_external_context(&scope, std::slice::from_ref(&x))
                 .unwrap();
             parts
                 .charged_enable_external_materialization_reuse(&scope, &mut context)
@@ -555,7 +567,7 @@ mod prepared_caller_work_limit_tests {
         let mut parts = ProofComponents::new("prepared.caller.owner", Default::default());
         parts.set_base(&scope, vec![]).unwrap();
         let mut context = parts
-            .charged_external_context(&scope, &[a.clone()])
+            .charged_external_context(&scope, std::slice::from_ref(&a))
             .unwrap();
         parts
             .charged_enable_external_materialization_reuse(&scope, &mut context)
@@ -566,7 +578,7 @@ mod prepared_caller_work_limit_tests {
                 .charged_materialize_prepared_context_with_limit(
                     &scope,
                     &context,
-                    &[root.clone()],
+                    std::slice::from_ref(&root),
                     10_000
                 )
                 .unwrap(),
@@ -579,7 +591,7 @@ mod prepared_caller_work_limit_tests {
                 .charged_materialize_prepared_context_with_limit(
                     &scope,
                     &context,
-                    &[root.clone()],
+                    std::slice::from_ref(&root),
                     10_000
                 )
                 .unwrap_err()
@@ -587,14 +599,14 @@ mod prepared_caller_work_limit_tests {
         );
         let checkpoint = context.checkpoint();
         parts
-            .charged_extend_external_context(&scope, &mut context, &[b.clone()])
+            .charged_extend_external_context(&scope, &mut context, std::slice::from_ref(&b))
             .unwrap();
         assert_eq!(
             parts
                 .charged_materialize_prepared_context_with_limit(
                     &scope,
                     &context,
-                    &[root.clone()],
+                    std::slice::from_ref(&root),
                     10_000
                 )
                 .unwrap_err(),
@@ -608,7 +620,7 @@ mod prepared_caller_work_limit_tests {
                 .charged_materialize_prepared_context_with_limit(
                     &scope,
                     &context,
-                    &[root.clone()],
+                    std::slice::from_ref(&root),
                     10_000
                 )
                 .unwrap_err(),

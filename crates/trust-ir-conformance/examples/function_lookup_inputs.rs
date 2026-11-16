@@ -52,7 +52,7 @@ fn main() {
             .expect("inventory JSON");
     let mut reports = Vec::new();
     let mut accepted = 0;
-    let mut text_refusals = 0;
+    let mut text_transports = 0;
     for row in inventory.as_array().expect("inventory array") {
         let filename = row["path"].as_str().expect("filename");
         let mut request: serde_json::Value =
@@ -78,24 +78,12 @@ fn main() {
                 rmp_serde::from_slice(&msgpack).expect("MessagePack decode"),
             ),
         ];
-        if row["sparse"] == true {
-            let refusal = trust_ir::format::text_checked(&module)
-                .expect_err("sparse IDs are not text-representable");
-            assert!(
-                refusal
-                    .losses
-                    .iter()
-                    .all(|loss| matches!(loss, trust_ir::format::TextLoss::FunctionId { .. })),
-                "{filename}: {refusal:?}"
-            );
-            text_refusals += 1;
-        } else {
-            let text = trust_ir::format::text_checked(&module).expect("dense checked text");
-            carriers.push((
-                "text",
-                trust_ir::parser::parse_module(&text).expect("text decode"),
-            ));
-        }
+        let text = trust_ir::format::text_checked(&module).expect("exact function-ID text");
+        carriers.push((
+            "text",
+            trust_ir::parser::parse_module(&text).expect("text decode"),
+        ));
+        text_transports += 1;
         for (carrier, decoded) in carriers {
             let label = format!("{filename}.{carrier}");
             assert_eq!(
@@ -120,11 +108,13 @@ fn main() {
             accepted += 1;
         }
     }
-    let summary = serde_json::json!({"validated_and_reference_ok": accepted, "checked_text_id_refusals": text_refusals, "cases": reports});
+    let summary = serde_json::json!({"validated_and_reference_ok": accepted, "checked_text_id_refusals": 0, "checked_text_transports": text_transports, "cases": reports});
     std::fs::write(
         output.join("validation.json"),
         serde_json::to_vec_pretty(&summary).expect("summary"),
     )
     .expect("retain summary");
-    println!("validated/reference Ok: {accepted}; checked-text ID refusals: {text_refusals}");
+    println!(
+        "validated/reference Ok: {accepted}; checked-text exact-ID transports: {text_transports}"
+    );
 }

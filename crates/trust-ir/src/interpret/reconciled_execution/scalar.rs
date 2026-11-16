@@ -52,9 +52,91 @@ fn legacy_execution_and_limits_are_unchanged_without_observer() {
 }
 
 #[test]
-fn legacy_interpreter_remains_send_sync_and_copy() {
-    fn unchanged<T: Send + Sync + Copy>() {}
-    unchanged::<Interpreter<'static>>();
+fn interpreter_remains_send_sync_and_clone_shares_the_actual_function_catalog() {
+    fn supported<T: Send + Sync + Clone>() {}
+    fn shorten<'short, 'long: 'short>(value: Interpreter<'long>) -> Interpreter<'short> {
+        value
+    }
+    supported::<Interpreter<'static>>();
+    let source = scalar_module(true, false);
+    let interpreter = Interpreter::with_module(&source);
+    let clone = shorten(interpreter.clone());
+    assert!(std::sync::Arc::ptr_eq(
+        interpreter.functions.as_ref().unwrap(),
+        clone.functions.as_ref().unwrap()
+    ));
+    assert!(interpreter.functions.as_ref().unwrap().get().is_none());
+    assert!(clone.functions.as_ref().unwrap().get().is_none());
+    assert_eq!(
+        clone.execute_func(FuncId::new(0), []).unwrap().returns,
+        interpreter
+            .execute_func(FuncId::new(0), [])
+            .unwrap()
+            .returns
+    );
+    assert!(
+        interpreter.functions.as_ref().unwrap().get().is_none(),
+        "legacy scalar execution must not build the item header catalog"
+    );
+
+    let mut item_source = source.clone();
+    let signature = item_source.functions[0].ty;
+    assert!(
+        item_source.func_types[signature.as_usize()]
+            .params
+            .is_empty()
+    );
+    let count = item_source.func_types[signature.as_usize()].returns.len();
+    let results: Vec<ValueId> = (0..count).map(|index| ValueId::new(index as u32)).collect();
+    let mut caller = Function::new(
+        FuncId::new(42),
+        "nominal_item_caller",
+        signature,
+        BlockId::new(0),
+    );
+    let mut block = Block::new(caller.entry);
+    block.body.push(
+        InstrNode::new(Inst::Const {
+            ty: Ty::FnItem(FuncId::new(0)),
+            value: Constant::FnItem(FuncId::new(0)),
+        })
+        .with_result(ValueId::new(100)),
+    );
+    let mut call = InstrNode::new(Inst::CallIndirect {
+        callee: ValueId::new(100),
+        sig: signature,
+        args: vec![],
+        calling_conv: item_source.functions[0].calling_conv,
+    });
+    call.results = results.clone();
+    block.body.push(call);
+    block
+        .body
+        .push(InstrNode::new(Inst::Return { values: results }));
+    caller.blocks.push(block);
+    item_source.functions.push(caller);
+    let item = Interpreter::with_module(&item_source);
+    let cloned = item.clone();
+    assert!(item.functions.as_ref().unwrap().get().is_none());
+    assert_eq!(
+        cloned.execute_func(FuncId::new(42), []).unwrap().returns,
+        interpreter
+            .execute_func(FuncId::new(0), [])
+            .unwrap()
+            .returns
+    );
+    let actual = item.functions.as_ref().unwrap().get().unwrap();
+    assert!(core::ptr::eq(
+        actual,
+        cloned.functions.as_ref().unwrap().get().unwrap()
+    ));
+    assert!(core::ptr::eq(
+        actual
+            .function_item(&item_source, FuncId::new(0))
+            .unwrap()
+            .0,
+        item_source.function_by_id(FuncId::new(0)).unwrap()
+    ));
 }
 
 struct Host(AtomicUsize);

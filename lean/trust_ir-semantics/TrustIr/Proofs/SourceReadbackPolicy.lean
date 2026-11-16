@@ -4,10 +4,16 @@ import TrustIr.Proofs.SourceStructAdmission
 namespace TrustIr.AggregateMemory
 open SourceLayout
 
+/-- Both comparator obligations are used: soundness certifies a positive
+decision, and reflexivity rules out an equality in the negative branch. -/
+private def comparatorDecEq {α : Type} (compare : α → α → Bool) (a b : α)
+    (reflexive : compare b b = true) (sound : compare a b = true → a = b) : Decidable (a = b) :=
+  if same : compare a b = true then isTrue (sound same)
+  else isFalse (fun equality => same (by cases equality; exact reflexive))
+
 /-- Kernel-backed type equality, using the total recursive closure comparator. -/
 private def policyTyDecEq (a b : Ty) : Decidable (a = b) :=
-  if same : closureTyEq a b = true then isTrue (closureTyEq_sound a b same)
-  else isFalse (fun equality => same ((closureTyEq_iff a b).mpr equality))
+  comparatorDecEq closureTyEq a b (closureTyEq_refl b) (closureTyEq_sound a b)
 
 local instance : DecidableEq Ty := policyTyDecEq
 
@@ -55,6 +61,8 @@ mutual
          | some ty => closureTyEq ty element.ty) && sourceReadbackPolicy source ctx element)
     | .array _ _ _ _ => false
     | .enumeration _ _ _ _ => false
+    -- This sufficient ordinary classifier supplies no nominal header agreement.
+    | .fnItem _ _ => false
   private def sourceReadbackPolicyFields (source : Environment) (ctx : EvalContext) : List (Nat × Plan) → Bool
     | [] => true
     | (_,child) :: rest => sourceReadbackPolicy source ctx child && sourceReadbackPolicyFields source ctx rest
@@ -132,6 +140,7 @@ theorem sourceReadbackPolicy_sound (source : Environment) (ctx : EvalContext) (p
             exact .array id layout count element (by simpa only [same] using resolved) child
       | _ => simp only [sourceReadbackPolicy] at accepted
     | enumeration ty layout info variants => simp only [sourceReadbackPolicy] at accepted
+    | fnItem target layout => simp only [sourceReadbackPolicy] at accepted
   } {
     cases plan with
     | leaf ty layout =>
@@ -192,6 +201,7 @@ theorem sourceReadbackPolicy_sound (source : Environment) (ctx : EvalContext) (p
             exact .array id layout count element (by simpa only [same] using resolved) child
       | _ => simp only [sourceReadbackPolicy] at accepted; cases accepted
     | enumeration ty layout info variants => simp only [sourceReadbackPolicy] at accepted; cases accepted
+    | fnItem target layout => simp only [sourceReadbackPolicy] at accepted; cases accepted
   }
 
 termination_by sizeOf plan

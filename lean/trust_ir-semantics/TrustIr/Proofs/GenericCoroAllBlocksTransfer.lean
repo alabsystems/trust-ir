@@ -284,7 +284,10 @@ theorem evalTransfer_effect (sourceRecurse targetRecurse : Recurse) (base : Eval
       (Sem.run (evalTransfer targetRecurse (scopedContext base target targetTypes)
         depth targetCFG block strategy result) state) := by
   cases result with
-  | Ret values => exact .returned values state state rfl
+  | Ret values =>
+    rw [evalTransfer_ret_scoped_congr sourceRecurse targetRecurse base source target sourceTypes targetTypes
+      depth sourceCFG targetCFG block strategy values]
+    exact effect_refl _
   | Stuck => exact .error _
   | Continue next args => exact paired depth next args strategy state fresh
   | CallReq id args =>

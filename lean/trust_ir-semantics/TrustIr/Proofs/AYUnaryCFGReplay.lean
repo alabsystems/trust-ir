@@ -39,18 +39,32 @@ structure Prefix (ctx : EvalContext) (cfg : CFG) (pc : BlockId) (args : List Val
   block : BasicBlock
   found : cfg pc = some block
   boundState : MachineState
-  bound : Sem.run (bindBlockParamsChecked (ctx.resolveBlock block).params args) state = .ok ((),boundState)
+  bound : Sem.run (bindParameters ctx (ctx.resolveBlock block) args) state = .ok ((),boundState)
   trace : Trace ctx (bodyInstsWithResultDests (ctx.resolveBlock block).body (ctx.resolveBlock block).bodyResultDests) boundState
   after : MachineState
   actual : trace.outcome = .ok ((),after)
+
+private theorem Prefix.parameters_checked {ctx cfg pc args state} (entry : Prefix ctx cfg pc args state) :
+    checkFunctionItemValues ctx ((ctx.resolveBlock entry.block).params.map (·.snd)) args = .ok () := by
+  have bound := entry.bound
+  cases checked : checkFunctionItemValues ctx ((ctx.resolveBlock entry.block).params.map (·.snd)) args with
+  | error reason =>
+    simp only [bindParameters, checked, Sem.fromMemoryExcept] at bound
+    change Except.error reason = Except.ok ((),entry.boundState) at bound
+    cases bound
+  | ok unit => cases unit; rfl
+
+private theorem Prefix.bound_parameters {ctx cfg pc args state} (entry : Prefix ctx cfg pc args state) :
+    Sem.run (bindBlockParamsChecked (ctx.resolveBlock entry.block).params args) state = .ok ((),entry.boundState) := by
+  simpa only [bindParameters, entry.parameters_checked, Sem.fromMemoryExcept, pure_bind] using entry.bound
 
 theorem Prefix.control_error {ctx cfg pc args state} (entry : Prefix ctx cfg pc args state)
     (control : Control (ctx.resolveBlock entry.block).terminator) (error : SemError)
     (actual : Sem.run control.action entry.after = .error error)
     (recurse : Recurse) (depth : Nat) (strategy : PanicStrategy) :
     Sem.run (evalLayer recurse ctx depth cfg pc args strategy) state = .error error := by
-  simp only [evalLayer, entry.found]
-  rw [Sem.run_bind, entry.bound]
+  simp only [evalLayer, entry.found, entry.parameters_checked, Sem.fromMemoryExcept, pure_bind]
+  rw [Sem.run_bind, entry.bound_parameters]
   change Sem.run (do evalBody recurse ctx depth strategy _; _) entry.boundState = _
   rw [Sem.run_bind, entry.trace.correct recurse depth strategy, entry.actual]
   change Sem.run (do let termResult ← stepTermWithContext ctx depth cfg _ strategy; _) entry.after = _
@@ -64,8 +78,8 @@ theorem Prefix.unreachable {ctx cfg pc args state} (entry : Prefix ctx cfg pc ar
     (actual : Sem.run control.action entry.after = .ok (.Stuck,after))
     (recurse : Recurse) (depth : Nat) (strategy : PanicStrategy) :
     Sem.run (evalLayer recurse ctx depth cfg pc args strategy) state = .error (.ub "reached unreachable") := by
-  simp only [evalLayer, entry.found]
-  rw [Sem.run_bind, entry.bound]
+  simp only [evalLayer, entry.found, entry.parameters_checked, Sem.fromMemoryExcept, pure_bind]
+  rw [Sem.run_bind, entry.bound_parameters]
   change Sem.run (do evalBody recurse ctx depth strategy _; _) entry.boundState = _
   rw [Sem.run_bind, entry.trace.correct recurse depth strategy, entry.actual]
   change Sem.run (do let termResult ← stepTermWithContext ctx depth cfg _ strategy; _) entry.after = _
@@ -79,8 +93,8 @@ theorem Prefix.transfer {ctx cfg pc args state} (entry : Prefix ctx cfg pc args 
     (actual : Sem.run control.action entry.after = .ok (.Continue nextPc nextArgs,after))
     (recurse : Recurse) (depth : Nat) (strategy : PanicStrategy) :
     Sem.run (evalLayer recurse ctx depth cfg pc args strategy) state = Sem.run (recurse ctx depth cfg nextPc nextArgs strategy) after := by
-  simp only [evalLayer, entry.found]
-  rw [Sem.run_bind, entry.bound]
+  simp only [evalLayer, entry.found, entry.parameters_checked, Sem.fromMemoryExcept, pure_bind]
+  rw [Sem.run_bind, entry.bound_parameters]
   change Sem.run (do evalBody recurse ctx depth strategy _; _) entry.boundState = _
   rw [Sem.run_bind, entry.trace.correct recurse depth strategy, entry.actual]
   change Sem.run (do let termResult ← stepTermWithContext ctx depth cfg _ strategy; _) entry.after = _
@@ -124,7 +138,7 @@ def CFGTrace.build (ctx : EvalContext) (cfg : CFG) : (fuel : Nat) → (pc : Bloc
     match found : cfg pc with
     | none => .ok (.terminal (.missing found))
     | some block =>
-      match bound : Sem.run (bindBlockParamsChecked (ctx.resolveBlock block).params args) state with
+      match bound : Sem.run (bindParameters ctx (ctx.resolveBlock block) args) state with
       | .error error => .ok (.terminal (.parameterError block found error bound))
       | .ok ((),boundState) => do
         let trace ← Trace.build ctx (bodyInstsWithResultDests (ctx.resolveBlock block).body (ctx.resolveBlock block).bodyResultDests) boundState

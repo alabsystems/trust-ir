@@ -30,6 +30,9 @@ def captureCheckStep (ctx : EvalContext)
   | .PtrConst _, .ptr _ _ | .PtrConst _, .nullPtr
   | .PtrMut _, .ptr _ _ | .PtrMut _, .nullPtr => pure ()
   | .Unit, .aggregate [] => pure ()
+  | .FnItem expected, .fnItem held =>
+    if expected != held then mismatch
+    else do let _ ← functionItemDeclaration ctx expected; pure ()
   | .Func sig, .fnDef held _ => if sig == held then pure () else mismatch
   | .Func _, .nullPtr => pure ()
   | .Tuple ts, .aggregate vs =>

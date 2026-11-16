@@ -120,6 +120,10 @@ pub(super) fn populate(value: &mut NativeVerificationBundle) {
                 ty: Ty::U128,
                 value: Constant::U128(u128::MAX),
             },
+            NativeGenericArg::Const {
+                ty: Ty::FnItem(FuncId::new(0)),
+                value: Constant::FnItem(FuncId::new(0)),
+            },
             NativeGenericArg::LifetimeErased,
             NativeGenericArg::Placeholder { index: 9 },
         ]);

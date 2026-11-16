@@ -86,6 +86,7 @@ pub(super) fn validate_enum_layout_encoding_observed<O: ExecutionObserver>(
         }
         state.table = Some(LayoutTable::new_observed(module, work.session, work.site)?);
         match &layout.encoding {
+            EnumTagEncoding::DirectWithUninhabited { .. } => Ok(()),
             EnumTagEncoding::Untagged => {
                 work.admit(1, size_of::<usize>())?;
                 if enm.variants.len() != 1 {
@@ -105,27 +106,7 @@ pub(super) fn validate_enum_layout_encoding_observed<O: ExecutionObserver>(
                 Ok(())
             }
             EnumTagEncoding::SingleInhabited { variant } => {
-                work.admit(1, size_of::<Option<usize>>())?;
-                let active = usize::try_from(*variant).ok();
-                let mut valid = active.is_some_and(|index| index < enm.variants.len());
-                for (index, item) in enm.variants.iter().enumerate() {
-                    work.admit(1, size_of::<bool>())?;
-                    let uninhabited = state
-                        .table
-                        .as_ref()
-                        .ok_or(ObservedValueError::InvalidRange)?
-                        .variant_is_uninhabited_observed(item, work.session, work.site)?;
-                    if uninhabited == (Some(index) == active) {
-                        valid = false;
-                    }
-                }
-                if !valid {
-                    state.message(enm,
-                        &[Part::Text("one selected inhabited variant and only structurally uninhabited inactive variants")],
-                        &[Part::Text("single-inhabited selector "), Part::Number(u128::from(*variant))],
-                        &mut work)?;
-                }
-                Ok(())
+                state.single_inhabited(enm, variant, &mut work)
             }
             EnumTagEncoding::Direct { tag_offset } => {
                 state.direct(enm, layout, *tag_offset, lane_align, &mut work)
@@ -178,6 +159,34 @@ struct Niche {
     repr: EnumTagRepr,
 }
 impl State<'_> {
+    fn single_inhabited<O: ExecutionObserver>(
+        &mut self,
+        enm: &EnumDef,
+        variant: &u32,
+        work: &mut Work<'_, '_, O>,
+    ) -> R {
+        work.admit(1, size_of::<Option<usize>>())?;
+        let active = usize::try_from(*variant).ok();
+        let mut valid = active.is_some_and(|index| index < enm.variants.len());
+        for (index, item) in enm.variants.iter().enumerate() {
+            work.admit(1, size_of::<bool>())?;
+            let uninhabited = self
+                .table
+                .as_ref()
+                .ok_or(ObservedValueError::InvalidRange)?
+                .variant_is_uninhabited_observed(item, work.session, work.site)?;
+            if uninhabited == (Some(index) == active) {
+                valid = false;
+            }
+        }
+        if !valid {
+            self.message(enm,
+                &[Part::Text("one selected inhabited variant and only structurally uninhabited inactive variants")],
+                &[Part::Text("single-inhabited selector "), Part::Number(u128::from(*variant))],
+                work)?;
+        }
+        Ok(())
+    }
     fn message<O: ExecutionObserver>(
         &mut self,
         enm: &EnumDef,

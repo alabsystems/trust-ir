@@ -144,6 +144,14 @@ impl<'a> Collector<'a> {
                         K::Frame { slots, .. } => Some(json!(["frame", slots.len()])),
                         K::PartialBytes(_) => Some(json!(["poison"])),
                         K::Uninit => Some(json!(["uninit"])),
+                        K::FnItem(func) => {
+                            if value.ty != Ty::FnItem(*func) {
+                                return Err(
+                                    "nominal item observation has a mismatched identity".into()
+                                );
+                            }
+                            Some(json!(["fnitem", func.0]))
+                        }
                         K::FnDef(func) => {
                             let Ty::Func(sig) = value.ty else {
                                 return Err("function observation has no function signature".into());
@@ -611,6 +619,7 @@ fn whole_graph_handles_deep_captures_and_refuses_unrepresentable_values() {
         Ty::Ptr,
         K::Frame {
             lineage: 1,
+            origin: None,
             slots: std::sync::Arc::from(vec![Some(handle)]),
         },
     );
@@ -719,6 +728,7 @@ fn whole_graph_collection_matches_live_lean_corpus_observations() {
             Ty::Ptr,
             K::Frame {
                 lineage: 1,
+                origin: None,
                 slots: std::sync::Arc::from(vec![None]),
             },
         ),
@@ -824,4 +834,29 @@ fn whole_graph_collection_matches_live_lean_corpus_observations() {
             "entire live corpus graph {row} differs: {compared:?}"
         );
     }
+}
+
+#[test]
+fn nominal_item_observations_preserve_ids_and_reject_forged_carriers() {
+    use trust_ir::value::FuncId;
+    let one = value(Ty::FnItem(FuncId::new(7)), K::FnItem(FuncId::new(7)));
+    let two = value(Ty::FnItem(FuncId::new(42)), K::FnItem(FuncId::new(42)));
+    let left = observe(&[one]).unwrap();
+    let right = observe(&[two]).unwrap();
+    assert_eq!(left.nodes()[left.roots()[0]], json!(["fnitem", 7]));
+    assert_eq!(right.nodes()[right.roots()[0]], json!(["fnitem", 42]));
+    assert!(
+        !super::compact_graph_compare::equivalent(&left, &right)
+            .unwrap()
+            .equal
+    );
+    let forged = value(Ty::FnItem(FuncId::new(7)), K::FnItem(FuncId::new(42)));
+    assert!(observe(&[forged]).is_err());
+    assert!(
+        super::compact_value_graph::Graph::decode(&json!({"graph": {
+            "version": 2, "nodes": [["fnitem", 4294967296u64]], "roots": [0]
+        }}))
+        .unwrap_err()
+        .contains("u32")
+    );
 }

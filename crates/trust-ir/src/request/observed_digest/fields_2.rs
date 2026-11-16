@@ -334,7 +334,7 @@ pub(super) fn write_cast_op<O: ExecutionObserver>(
 
 pub(super) fn write_enum_tag_encoding<O: ExecutionObserver>(
     out: &mut Writer<'_, '_, O>,
-    encoding: NativeEnumTagEncoding,
+    encoding: &NativeEnumTagEncoding,
 ) -> Result {
     out.poll()?;
     write_u8(
@@ -343,8 +343,24 @@ pub(super) fn write_enum_tag_encoding<O: ExecutionObserver>(
             NativeEnumTagEncoding::Direct => 0,
             NativeEnumTagEncoding::Niche => 1,
             NativeEnumTagEncoding::Untagged => 2,
+            NativeEnumTagEncoding::DirectWithUninhabited { .. } => 3,
         },
     )?;
+    if let NativeEnumTagEncoding::DirectWithUninhabited { variants } = encoding {
+        write_len(out, variants.len())?;
+        for row in variants {
+            out.poll()?;
+            write_u32(out, row.variant)?;
+            write_u64(out, row.size)?;
+            write_u64(out, row.align)?;
+            write_len(out, row.fields.len())?;
+            for field in &row.fields {
+                out.poll()?;
+                write_u64(out, field.size)?;
+                write_u64(out, field.align)?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -413,7 +429,7 @@ pub(super) fn write_enum_layout_fact<O: ExecutionObserver>(
 ) -> Result {
     out.poll()?;
     write_enum_id(out, layout.enum_id)?;
-    write_enum_tag_encoding(out, layout.tag_encoding)?;
+    write_enum_tag_encoding(out, &layout.tag_encoding)?;
     write_option_u32(out, layout.tag_bits)?;
     write_option_u64(out, layout.discriminant_offset_bits)?;
     write_option_enum_niche_fact(out, layout.niche.as_ref())?;

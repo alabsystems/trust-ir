@@ -118,10 +118,10 @@ pub use merge::{
 // is a free keys on it, and `PinnedHandleHost` does.
 pub use host::PinnedHandleHost;
 pub use validate::{
-    ADMITTED_OBLIGATION_NAMESPACES, CheckedConsumption, CodegenAdmission, CompletenessError,
-    ConsumptionRole, CoverageAssuranceReport, EVIDENCE_BOUND_GATE_AUTHORITIES, GateEvidenceRule,
-    GiveBackReport, HandleEntryPoint, HandlePinError, HandleRegistry, HandleRuntimePin,
-    ModuleValidationReport, PinnedReleaseEntry, PinnedReleaseSubject, PinnedTy,
+    ADMITTED_OBLIGATION_NAMESPACES, BoxDerefValidationRule, CheckedConsumption, CodegenAdmission,
+    CompletenessError, ConsumptionRole, CoverageAssuranceReport, EVIDENCE_BOUND_GATE_AUTHORITIES,
+    GateEvidenceRule, GiveBackReport, HandleEntryPoint, HandlePinError, HandleRegistry,
+    HandleRuntimePin, ModuleValidationReport, PinnedReleaseEntry, PinnedReleaseSubject, PinnedTy,
     PointerConstantRefusal, RESERVED_TRUST_INTERNAL_SPEC_MODULES, RcEntryPoint, RcRuntimePin,
     SourceBoundCallCertificates, SourceToSiliconClaim, SourceToSiliconError,
     TRUST_INTERNAL_SPEC_PREFIX, TRUSTED_HANDLE_RUNTIMES, TRUSTED_RC_RUNTIMES, UnlicensedBodyPolicy,

@@ -10,6 +10,10 @@ open Prefix GenericCoroAllBlocksPlanner AllBlocksContext
 structure EntryEffects (source target : EvalContext) : Prop where
   headers : HeaderAgreement source.functions target.functions
   maxDepth : source.maxCallDepth = target.maxCallDepth
+  /-- The actual public entry checks arguments and returned values outside
+      raw block evaluation. Retain their exact errors as an observation. -/
+  itemChecks : ∀ types values,
+    checkFunctionItemValues source types values = checkFunctionItemValues target types values
   effects : ∀ requested sourceFunction targetFunction,
     source.functions requested = some sourceFunction →
     target.functions requested = some targetFunction →
@@ -41,7 +45,7 @@ theorem headerRelated_trans {source middle target : Option EvalFunction}
       exact .present source target (body.trans nextBody) (convention.trans nextConvention)
 
 theorem EntryEffects.refl (context : EvalContext) : EntryEffects context context := by
-  refine ⟨headerAgreement_refl _, rfl, ?_⟩
+  refine ⟨headerAgreement_refl _, rfl, (fun _ _ => rfl), ?_⟩
   intro requested source target sourceFound targetFound fuel depth args strategy world
   have same : source = target := Option.some.inj (sourceFound.symm.trans targetFound)
   subst target
@@ -51,7 +55,8 @@ theorem EntryEffects.trans {source middle target : EvalContext}
     (first : EntryEffects source middle) (second : EntryEffects middle target) :
     EntryEffects source target := by
   refine ⟨fun id => headerRelated_trans (first.headers id) (second.headers id),
-    first.maxDepth.trans second.maxDepth, ?_⟩
+    first.maxDepth.trans second.maxDepth,
+    (fun types values => (first.itemChecks types values).trans (second.itemChecks types values)), ?_⟩
   intro requested sourceFunction targetFunction sourceFound targetFound fuel depth args strategy world
   cases middleFound : middle.functions requested with
   | none =>
@@ -80,17 +85,21 @@ theorem lowerRows_entryEffects (base : EvalContext) (selected : FuncId)
   let sourceFunction : EvalFunction := {header with cfg := cfgOf blocks, localTypes := some sourceTypes}
   let targetFunction : EvalFunction :=
     {header with cfg := cfgOf (planAllBlocks blocks).rows, localTypes := some targetTypes}
-  refine ⟨headerAgreement_withFunction base selected sourceFunction targetFunction rfl rfl, rfl, ?_⟩
+  refine ⟨headerAgreement_withFunction base selected sourceFunction targetFunction rfl rfl, rfl,
+    (fun types values => itemValues_constantContext
+      (withFunction base selected sourceFunction) (withFunction base selected targetFunction)
+      rfl types values), ?_⟩
   intro requested sourceCallee targetCallee sourceFound targetFound fuel depth args strategy world
-  have simulated := AllBlocksInduction.evaluator_simulation base selected sourceFunction targetFunction
-    rfl rfl rfl ?_ fuel
-  · have selectedEffects := AllBlocksInduction.selected_of_paired (evaluatorAt fuel) (evaluatorAt fuel)
-      base _ _ sourceFunction targetFunction rfl simulated.2
+  have simulated := AllBlocksInduction.evaluator_simulation_uniform base selected sourceFunction targetFunction
+    rfl rfl rfl rfl ?_ fuel
+  · have selectedEffects := fun metadata => AllBlocksInduction.selected_of_paired
+      (evaluatorAt fuel) (evaluatorAt fuel) (callerContext base metadata)
+      _ _ sourceFunction targetFunction rfl (simulated.2 metadata)
     have effects := calleeEffects_of_update (evaluatorAt fuel) (evaluatorAt fuel) base selected
-      sourceFunction targetFunction simulated.1 selectedEffects
+      sourceFunction targetFunction rfl rfl simulated.1 selectedEffects
     exact effects requested sourceCallee targetCallee sourceFound targetFound depth args strategy world
-  · intro sourceRecurse targetRecurse effects paired callDepth pc values panic state fresh
-    exact AllBlocksSimulation.lowerRows_layer_effect sourceRecurse targetRecurse base
+  · intro metadata sourceRecurse targetRecurse effects paired callDepth pc values panic state fresh
+    exact AllBlocksSimulation.lowerRows_layer_effect sourceRecurse targetRecurse (callerContext base metadata)
       (withFunction base selected sourceFunction).functions
       (withFunction base selected targetFunction).functions
       (headerAgreement_withFunction base selected sourceFunction targetFunction rfl rfl) effects

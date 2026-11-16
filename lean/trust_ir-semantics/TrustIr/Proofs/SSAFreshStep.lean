@@ -258,10 +258,13 @@ theorem checkInstructionResults_fresh (ctx : EvalContext) (inst : Inst)
 theorem bindCallResults_fresh (ctx : EvalContext) (inst : Inst)
     (dests : List ValueId) (values : List Value) :
     KeepsFresh (ctx.bindCallResults inst dests values) := by
-  unfold EvalContext.bindCallResults
-  split
-  · exact bindResultDests_fresh dests values
-  · exact bind_fresh _ _ (checkInstructionResults_fresh ctx inst dests values)
+  cases mismatch : (dests.length != values.length) with
+  | true =>
+    simp only [EvalContext.bindCallResults, mismatch, ↓reduceIte]
+    exact bindResultDests_fresh dests values
+  | false =>
+    simp only [EvalContext.bindCallResults, mismatch, Bool.false_eq_true, ↓reduceIte]
+    exact bind_fresh _ _ (checkInstructionResults_fresh ctx inst dests values)
       (fun _ => bindResultDests_fresh dests values)
 
 private theorem checked_then_bind_fresh (ctx : EvalContext) (inst : Inst)
@@ -338,9 +341,9 @@ end TrustIr.SSAFreshStep
 
 #trustIrAxiomsPinned TrustIr.SSAFreshStep.bindInstrResultDests_fresh == [propext, Quot.sound, Classical.choice] modern [propext, Quot.sound]
 
-#trustIrAxiomsPinned TrustIr.SSAFreshStep.checkInstructionResults_fresh == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
+#trustIrAxiomsPinned TrustIr.SSAFreshStep.checkInstructionResults_fresh == [propext, Quot.sound] modern [propext, Quot.sound]
 
-#trustIrAxiomsPinned TrustIr.SSAFreshStep.bindCallResults_fresh == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
+#trustIrAxiomsPinned TrustIr.SSAFreshStep.bindCallResults_fresh == [propext, Quot.sound] modern [propext, Quot.sound]
 
 #trustIrAxiomsPinned TrustIr.SSAFreshStep.bindInstructionResults_fresh == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
 

@@ -512,7 +512,8 @@ mod tests {
         let body = Expr::lam(BinderInfo::Default, a.term().clone(), x.term().clone());
         let mut work = 0;
         let lambda =
-            abstract_materialized(&scope, &[a.clone()], &x, &body, &mut work, 100).unwrap();
+            abstract_materialized(&scope, std::slice::from_ref(&a), &x, &body, &mut work, 100)
+                .unwrap();
         assert_eq!(
             lambda,
             Expr::lam(
@@ -550,7 +551,10 @@ mod tests {
         assert!(
             validate_materialized(&scope, &[x.clone(), x.clone()], x.term(), &mut 0, 100).is_err()
         );
-        assert!(abstract_materialized(&scope, &[x.clone()], &x, x.term(), &mut 0, 100).is_err());
+        assert!(
+            abstract_materialized(&scope, std::slice::from_ref(&x), &x, x.term(), &mut 0, 100)
+                .is_err()
+        );
     }
     #[test]
     fn materialized_owner_caps_and_self_dependent_types_are_not_erased() {
@@ -582,8 +586,15 @@ mod tests {
         let y = scope.try_local(Expr::type_()).unwrap();
         let mut cache = MaterializedCache::default();
         let mut work = 0;
-        validate_materialized_cached(&scope, &[x.clone()], x.term(), &mut work, 1000, &mut cache)
-            .unwrap();
+        validate_materialized_cached(
+            &scope,
+            std::slice::from_ref(&x),
+            x.term(),
+            &mut work,
+            1000,
+            &mut cache,
+        )
+        .unwrap();
         let lambda =
             abstract_materialized_cached(&scope, &[], &x, x.term(), &mut work, 1000, &mut cache)
                 .unwrap();
@@ -604,7 +615,7 @@ mod tests {
         assert!(
             validate_materialized_cached(
                 &other,
-                &[other_x.clone()],
+                std::slice::from_ref(&other_x),
                 other_x.term(),
                 &mut work,
                 1000,
@@ -654,9 +665,9 @@ mod tests {
         }
         let mut cache = MaterializedCache::default();
         let mut work = 0;
-        let _initial = abstract_materialized_cached(
+        let _initial_result = abstract_materialized_cached(
             &scope,
-            &[x.clone()],
+            std::slice::from_ref(&x),
             &y,
             &body,
             &mut work,
@@ -667,7 +678,7 @@ mod tests {
         let initial = work;
         let reused = abstract_materialized_cached(
             &scope,
-            &[x.clone()],
+            std::slice::from_ref(&x),
             &z,
             &body,
             &mut work,
@@ -692,7 +703,7 @@ mod tests {
         let mut work = 0;
         validate_materialized_cached(
             &scope,
-            &[high.clone()],
+            std::slice::from_ref(high),
             high.term(),
             &mut work,
             10000,

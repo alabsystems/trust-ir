@@ -19,6 +19,24 @@ private theorem split_bind_success {α β : Type} (action : Sem α) (next : α �
   | error error => simp [step, bind, Except.bind] at run
   | ok pair => exact ⟨pair.1, pair.2, rfl, by simpa [step] using run⟩
 
+/-- A successful lifted static check cannot change the machine state. This
+law does not assume that arbitrary static results cannot carry unwind errors. -/
+theorem memory_check_success_state {α : Type} (result : Except SemError α)
+    (s final : MachineState) (value : α)
+    (run : Sem.run (Sem.fromMemoryExcept result) s = .ok (value, final)) :
+    final = s := by
+  cases result with
+  | error error => cases run
+  | ok checked => cases run; rfl
+
+theorem memory_check_success_result {α : Type} (result : Except SemError α)
+    (s final : MachineState) (value : α)
+    (run : Sem.run (Sem.fromMemoryExcept result) s = .ok (value, final)) :
+    result = .ok value := by
+  cases result with
+  | error error => cases run
+  | ok checked => cases run; rfl
+
 private theorem lookup_success (s final : MachineState) (id : ValueId) (value : Value)
     (run : Sem.run (Sem.lookupValue id) s = .ok (value, final)) :
     s.lookupValue id = some value ∧ final = s := by
@@ -120,6 +138,9 @@ theorem WellMintedState.bind_value_success (ctx : EvalContext) (inst : Inst)
     (valid : WellMintedState s)
     (run : Sem.run (ctx.bindInstructionResults inst (.value result) dests) s = .ok ((), final)) :
     WellMintedState final := by
+  have publish := fun (result dest : ValueId) (value : Value)
+      (lookup : s.lookupValue result = some value) =>
+    valid.single_publication s result dest value lookup
   cases result with
   | none =>
     cases dests with
@@ -152,7 +173,7 @@ theorem WellMintedState.bind_value_success (ctx : EvalContext) (inst : Inst)
         subst checkedState
         rw [single_publication_run s result dest value lookup] at published
         cases published
-        exact valid.single_publication s result dest value lookup
+        exact publish result dest value lookup
       | cons next rest =>
         simp [EvalContext.bindInstructionResults, bindInstrResultDests,
           Sem.throwTypeError, Sem.run, throw, throwThe, MonadExceptOf.throw,
@@ -247,10 +268,12 @@ private theorem retirement_fold_valid (results dests : List ValueId) (bound : Na
       · simp [ValueMap.get, same] at lookup
         exact valid id value lookup
 
-/-- Multi-result publication looks up every source before writing any destination,
-then retires all private sources except those retained as destinations. -/
-theorem WellMintedState.bind_values_core_success (results dests : List ValueId)
+/-- The publication prefix composes with the actual retirement validity law. -/
+private theorem bind_values_core_with_retirement (results dests : List ValueId)
     (s final : MachineState) (valid : WellMintedState s)
+    (retire : ∀ published : MachineState, WellMintedState published →
+      WellMintedState { published with locals := results.foldl (fun locals tmp =>
+        if dests.contains tmp then locals else fun id => if id == tmp then none else locals id) published.locals })
     (run : Sem.run (bindInstrResultDests (.values results) dests) s = .ok ((), final)) :
     WellMintedState final := by
   by_cases arity : dests.length = results.length
@@ -264,10 +287,20 @@ theorem WellMintedState.bind_values_core_success (results dests : List ValueId)
     change Except.ok ((), { published with locals := results.foldl (fun locals tmp =>
       if dests.contains tmp then locals else fun id => if id == tmp then none else locals id) published.locals }) = Except.ok ((), final) at tail
     cases tail
-    exact ⟨publishedValid.table, retirement_fold_valid results dests _ _ publishedValid.values⟩
+    exact retire published publishedValid
   · simp [bindInstrResultDests, arity, Sem.throwTypeError, Sem.run,
       StateT.run, StateT.lift, bind, pure, Except.bind, Except.pure,
       throw, throwThe, MonadExceptOf.throw] at run
+
+/-- Multi-result publication looks up every source before writing any destination,
+then retires all private sources except those retained as destinations. -/
+theorem WellMintedState.bind_values_core_success (results dests : List ValueId)
+    (s final : MachineState) (valid : WellMintedState s)
+    (run : Sem.run (bindInstrResultDests (.values results) dests) s = .ok ((), final)) :
+    WellMintedState final := by
+  exact bind_values_core_with_retirement results dests s final valid
+    (fun published valid =>
+      ⟨valid.table, retirement_fold_valid results dests _ _ valid.values⟩) run
 
 /-- Production metadata and Char checks remain on the original successful path;
 no independent check-success or source freshness assumption is required. -/
@@ -275,6 +308,14 @@ theorem WellMintedState.bind_values_success (ctx : EvalContext) (inst : Inst)
     (results dests : List ValueId) (s final : MachineState) (valid : WellMintedState s)
     (run : Sem.run (ctx.bindInstructionResults inst (.values results) dests) s = .ok ((), final)) :
     WellMintedState final := by
+  have checkedStateUnchanged := fun (args : List Value) (checkedState : MachineState)
+      (checked : Sem.run (ctx.checkInstructionResults inst dests args) s = .ok ((), checkedState)) =>
+    result_checks_success_state ctx inst dests args s checkedState checked
+  have retire : ∀ published : MachineState, WellMintedState published →
+      WellMintedState { published with locals := results.foldl (fun locals tmp =>
+        if dests.contains tmp then locals else fun id => if id == tmp then none else locals id) published.locals } := by
+    intro published valid
+    exact ⟨valid.table, retirement_fold_valid results dests _ _ valid.values⟩
   by_cases arity : dests.length = results.length
   · simp only [EvalContext.bindInstructionResults, arity, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte] at run
     obtain ⟨args, middle, looked, tail⟩ := split_bind_success _ _ s final () run
@@ -282,10 +323,10 @@ theorem WellMintedState.bind_values_success (ctx : EvalContext) (inst : Inst)
     subst middle
     obtain ⟨unit, checkedState, checked, published⟩ := split_bind_success _ _ s final () tail
     cases unit
-    have same := result_checks_success_state ctx inst dests args s checkedState checked
+    have same := checkedStateUnchanged args checkedState checked
     subst checkedState
-    exact valid.bind_values_core_success results dests s final published
-  · apply valid.bind_values_core_success results dests s final
+    exact bind_values_core_with_retirement results dests s final valid retire published
+  · apply bind_values_core_with_retirement results dests s final valid retire
     simpa [EvalContext.bindInstructionResults, arity] using run
 
 /-- Every successful body-result publication preserves the identity component

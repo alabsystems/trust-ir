@@ -78,7 +78,8 @@ def evalFunctionOfWithTypes (signatures : Array FuncTyDef)
     | .error (.typeError message) => malformed message
     | .error error => malformed s!"SSA declarations: {repr error}"
   let prepared := TrustIr.GenericCoro.IndexedCFG.indexedCFG blocks
-  pure { body := { paramTys := sig.params, returnTys := sig.returns, abi := sig.abi, isVararg := sig.isVararg }
+  pure { sourceId := some f.id
+         body := { paramTys := sig.params, returnTys := sig.returns, abi := sig.abi, isVararg := sig.isVararg }
          cfg := prepared.cfg
          entryBlock := f.entry
          callingConv := f.callingConvention
@@ -98,12 +99,40 @@ private def memoryRootsOfInst (m : Module) : Inst → List Ty
   | .SeqMap (.Sequence element) _ _ => ((trustIrListGet? m.types element.index).join).toList
   | _ => []
 
+/-- Preserve the original function's header and body-declaration provenance
+    together, including malformed headers and undecodable bodies. -/
+def functionDeclarationOf (signatures : Array FuncTyDef) (function : Function) :
+    FunctionItemPresence.FunctionDecl :=
+  { id := function.id
+    header := match trustIrArrayGet? signatures function.ty.index with
+      | some signature => .ok
+          { signatureId := function.ty,
+            header := { signature, callingConv := function.callingConvention } }
+      | none => .error s!"FnItem: function {function.id.index} has no original signature"
+    frames := function.blocks.toOption.map (fun blocks =>
+      trustIrListBind blocks (fun (_, block) => (block.body ++ [block.terminator]).filterMap (fun inst =>
+        match inst with
+        | .OpenFrame declaration => some declaration
+        | _ => none))) }
+
+/-- Lookup and containment share complete original finite declarations,
+    including undecodable rows and their source positions. Function headers
+    and frame origins come from the same raw function rows. -/
+def valueSourceOf (m : Module) : FunctionItemPresence.Prepared :=
+  let signatures := m.funcTys.toArray
+  FunctionItemPresence.prepare
+    { types := m.types, structs := m.structs, enums := m.enums,
+      records := m.records, closures := m.closureTys,
+      functions := m.functions.map (functionDeclarationOf signatures) }
+
 private def memoryServiceOf (m : Module) (model : ByteModel) : AggregateMemory.Service :=
   let source : SourceLayout.Environment :=
     { model, canonicalScalars := true, hasTargetInfo := m.hasTargetInfo,
       types := m.types, structs := m.structs, enums := m.enums,
       records := m.records.filterMap (·.2), closures := m.closureTys,
-      tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts }
+      tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts,
+      functions := m.functions.map (fun function => (function.id, function.ty)),
+      funcTypes := m.funcTys }
   let roots := [.I64] ++ m.globals.map (·.ty) ++ trustIrListBind m.functions (fun function =>
     match function.blocks with
     | .error _ => []
@@ -138,6 +167,7 @@ def contextOf (m : Module) (maxCallDepth : Nat) : D EvalContext := do
     | .error _ => none)
   let lookups := FunctionLookup.prepare m.functions defs
   pure { byteModel := selectedModel
+         valueSource := valueSourceOf m
          memoryService := some (memoryServiceOf m selectedModel)
          functions := fun fid => FunctionLookup.findFunction lookups fid
          functionHeaders := fun fid => headers.find? fid.index
@@ -147,18 +177,13 @@ def contextOf (m : Module) (maxCallDepth : Nat) : D EvalContext := do
          functionOrder := some (m.functions.map (·.id))
          funcPtrs := fun _ => none
          funcTys := fun id => trustIrArrayGet? signatures id.index
-         closures := fun id => trustIrListGet? m.closureTys id.index
          maxCallDepth := maxCallDepth
          globalsTable := fun id => trustIrListGet? m.globals id.index
          -- A bodyless declaration is `unsupported.interprocedural_call` when
          -- called (the interpreter's `UnsupportedCall`), never "undefined".
          declared := fun fid => FunctionLookup.isDeclared lookups fid
          functionErrors := fun fid => FunctionLookup.findError lookups fid
-         enums := fun eid => m.enums.find? (fun d => d.id == eid)
-         structs := fun sid => m.structs.find? (fun d => d.id == sid)
          tupleLayouts := m.tupleLayouts
-         records := fun rid => ((m.records.find? (fun row => row.fst == rid)).map (·.snd)).join
-         types := fun tid => (trustIrListGet? m.types tid.index).join
          -- Amendment D: a drop resolves to the glue of the row keyed on its
          -- type, and is then the ordinary `Call` / `Invoke`.
          dropGlue := dropGlueOf m }
@@ -177,7 +202,9 @@ theorem memoryServiceOf_eq (m : Module) (model : ByteModel) :
       { model, canonicalScalars := true, hasTargetInfo := m.hasTargetInfo,
         types := m.types, structs := m.structs, enums := m.enums,
         records := m.records.filterMap (·.2), closures := m.closureTys,
-        tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts }
+        tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts,
+        functions := m.functions.map (fun function => (function.id, function.ty)),
+        funcTypes := m.funcTys }
       (List.filter (fun ty => !ty.hasCanonicalMemoryLayout) ([Ty.I64] ++ m.globals.map (fun global : GlobalDef => global.ty) ++ trustIrListBind m.functions (fun function =>
         match function.blocks with
         | .error _ => []

@@ -3,8 +3,13 @@
 // Licensed under the Apache License, Version 2.0
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod box_validity;
+#[cfg(test)]
+mod direct_storage_enum_tests;
 #[cfg(test)]
 mod enum_niche_capacity_tests;
+#[cfg(test)]
+mod fn_item_tests;
 mod observed_abi_facts;
 mod observed_abi_lanes;
 mod observed_always_memory;
@@ -116,6 +121,7 @@ mod observed_value_query;
 mod observed_value_types;
 mod observed_vector_types;
 mod observed_weak_uses;
+pub use box_validity::box_validity_floor_errors;
 pub(crate) use effects::validate_effect_summary_observed;
 pub use observed_always_memory::validate_module_always_memory_struct_passing_observed;
 pub use observed_annotation_policy::{
@@ -171,6 +177,9 @@ pub use observed_param_abi_attrs::validate_module_param_abi_attrs_observed;
 use observed_reachable_handles::reachable_handles_text_observed;
 pub use observed_result_arities::validate_module_result_arities_observed;
 pub use observed_source_provenance::validate_function_source_provenance_observed;
+#[cfg(feature = "clean-tv-anchor")]
+#[path = "validate_source_value.rs"]
+mod source_value;
 pub use observed_spec_anchors::validate_spec_anchor_functions_observed;
 pub use observed_spec_reservation::{
     validate_module_name_observed, validate_reserved_spec_module_names_observed,
@@ -193,6 +202,11 @@ pub use observed_value_types::{
 };
 pub use observed_vector_types::{
     validate_module_vector_types_observed, validate_vector_type_observed,
+};
+#[cfg(feature = "clean-tv-anchor")]
+pub use source_value::{
+    CheckedScalarSourceValueEquation, CheckedSourceValueEquation, SourceValueEquationError,
+    check_scalar_source_value_equation, check_uint_source_value_equation,
 };
 use trust_ir::analysis::{SsaDefinitionSite, SsaUseSite, StaticFunctionPointerAnalysis};
 use trust_ir::dialect::vector;
@@ -359,6 +373,42 @@ impl std::fmt::Display for PointerConstantRefusal {
             ),
         }
     }
+}
+
+/// The authoritative class of a Box-dereference validation refusal.
+///
+/// [`ValidationError`] is intentionally non-exhaustive, so a backend cannot
+/// safely classify its Box-specific variants by matching that enum directly.
+/// This smaller enum is deliberately exhaustive: adding a Box validation rule
+/// must break downstream matches until the consumer decides how to handle it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BoxDerefValidationRule {
+    TypeMismatch,
+    PointeeOutOfScope,
+    ConjunctCover,
+    PremiseNotPinned,
+    SessionRefused,
+    DominatingCheckInvalid,
+    ObligationUnbound,
+    NonClaimsNotPinned,
+    PremiseContradicted,
+    EvidenceBelowFloor,
+}
+
+impl BoxDerefValidationRule {
+    /// Every Box validation rule in declaration order.
+    pub const ALL: [Self; 10] = [
+        Self::TypeMismatch,
+        Self::PointeeOutOfScope,
+        Self::ConjunctCover,
+        Self::PremiseNotPinned,
+        Self::SessionRefused,
+        Self::DominatingCheckInvalid,
+        Self::ObligationUnbound,
+        Self::NonClaimsNotPinned,
+        Self::PremiseContradicted,
+        Self::EvidenceBelowFloor,
+    ];
 }
 
 // `#[non_exhaustive]`: validation is expected to grow new checks (and thus new
@@ -1815,6 +1865,132 @@ pub enum ValidationError {
         block: u32,
         inst_index: u32,
         claim: &'static str,
+    },
+    /// `Inst::BoxDeref` (wire v74, `docs/SPEC_RATIFICATIONS.md` §28 rule 1): `ptr_ty` is
+    /// not `Ty::Ptr`, or the operand does not have exactly that type. Corpus
+    /// row `refuse/box_deref_operand_not_ptr`.
+    BoxDerefTypeMismatch {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        detail: String,
+    },
+    /// `Inst::BoxDeref` rule 2: the sized pointee has no computable layout,
+    /// is zero-sized, or is uninhabited. Such a pointee is outside the rule
+    /// set, never vacuously inside it. Corpus rows
+    /// `refuse/box_deref_pointee_zero_sized` and
+    /// `refuse/box_deref_pointee_uninhabited`.
+    BoxDerefPointeeOutOfScope {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        reason: &'static str,
+    },
+    /// `Inst::BoxDeref` rule 3: the evidence list is not exactly the pointee's
+    /// conjunct set, each once, in canonical order. A missing conjunct is
+    /// never defaulted. Corpus rows `refuse/box_deref_conjunct_missing`,
+    /// `refuse/box_deref_conjunct_duplicated`,
+    /// `refuse/box_deref_conjunct_misordered` and
+    /// `refuse/box_deref_metadata_valid_on_sized`.
+    BoxDerefConjunctCover {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        detail: String,
+    },
+    /// `Inst::BoxDeref` rule 4: a premise does not name exactly the pinned
+    /// standing assumptions in canonical order. Corpus row
+    /// `refuse/box_deref_premise_standing_dropped`.
+    BoxDerefPremiseNotPinned {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        conjunct: &'static str,
+    },
+    /// `Inst::BoxDeref` rule 5: the fact does not state a proof session (the
+    /// producer's verifier did not run, so it holds no verdict), or was
+    /// judged on the optimized fallback body. Corpus rows
+    /// `refuse/box_deref_session_not_proof` and
+    /// `refuse/box_deref_session_fallback`.
+    BoxDerefSessionRefused {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        reason: &'static str,
+    },
+    /// `Inst::BoxDeref` rule 6: the fact offers dominating-check evidence.
+    /// The evidence kind has a wire spelling and is refused wherever it
+    /// appears: no check shape is measured against a producer or lowered by
+    /// every target. Corpus rows `refuse/box_deref_check_pinned_shape`,
+    /// `refuse/box_deref_check_address_round_trip`,
+    /// `refuse/box_deref_check_for_dereferenceable`,
+    /// `refuse/box_deref_check_wrong_alignment`,
+    /// `refuse/box_deref_check_absent`,
+    /// `refuse/box_deref_check_not_dominating` and
+    /// `refuse/box_deref_check_on_operand`.
+    BoxDerefDominatingCheckInvalid {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        conjunct: &'static str,
+        reason: &'static str,
+    },
+    /// `Inst::BoxDeref` rule 7: the fact offers obligation evidence. The
+    /// evidence kind has a wire spelling and is refused wherever it appears:
+    /// nothing compares a row's formula with the conjunct. Corpus rows
+    /// `refuse/box_deref_obligation_missing`,
+    /// `refuse/box_deref_obligation_wrong_kind`,
+    /// `refuse/box_deref_obligation_wrong_function`,
+    /// `refuse/box_deref_obligation_wrong_site` and
+    /// `refuse/box_deref_obligation_not_replayed`.
+    BoxDerefObligationUnbound {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        obligation: u32,
+        reason: &'static str,
+    },
+    /// `Inst::BoxDeref` rule 8: the fact does not spell out exactly the pinned
+    /// list of what it does not say. Corpus row
+    /// `refuse/box_deref_non_claim_dropped`.
+    BoxDerefNonClaimsNotPinned {
+        function: String,
+        block: u32,
+        inst_index: u32,
+    },
+    /// `Inst::BoxDeref` rule 9: the premises of one fact name more than one
+    /// root, or the function visibly contradicts the root — the operand is
+    /// defined by `null_ptr`, `undef` or `inttoptr`, the root names a
+    /// parameter, allocation or call the function does not have, or a
+    /// `Dealloc` of the operand dominates the instruction. A sanity refusal:
+    /// a premise that passes it is still an assumption. Corpus rows
+    /// `refuse/box_deref_premise_null_operand`,
+    /// `refuse/box_deref_premise_inttoptr_operand`,
+    /// `refuse/box_deref_premise_param_root_without_parameter`,
+    /// `refuse/box_deref_premise_alloc_root_without_allocation`,
+    /// `refuse/box_deref_premise_freed_operand` and
+    /// `refuse/box_deref_premise_mixed_roots`.
+    BoxDerefPremiseContradicted {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        reason: &'static str,
+    },
+    /// Codegen policy `require_box_validity_evidence`: a conjunct of an
+    /// `Inst::BoxDeref` is backed by evidence below the consumer's floor.
+    /// Refused only under
+    /// [`CodegenAdmission::with_require_box_validity_evidence`]; the
+    /// structural tier accepts the module. Corpus rows
+    /// `refuse/box_deref_premise_tier` and
+    /// `refuse/box_deref_assumed_root_tier`: each accepted by the default
+    /// gate and refused under a floor, every verdict pinned.
+    BoxValidityEvidenceBelowFloor {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        conjunct: &'static str,
+        tier: &'static str,
+        floor: &'static str,
     },
     /// Codegen policy `require_assert_panic_kinds` (plan item P, wire v52):
     /// an `Inst::Assert` whose `kind` is `AssertKind::Unspecified` — a check
@@ -4466,6 +4642,99 @@ impl core::fmt::Display for ValidationError {
                 f,
                 "fn {function}: bb{block}#{inst_index}: `{claim}` claim on the runtime check itself with no resolving ProofRef sited on the node — a claim on the check never licenses eliding it (refuse_unbacked_claims_on_checks)"
             ),
+            ValidationError::BoxDerefTypeMismatch {
+                function,
+                block,
+                inst_index,
+                detail,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref type mismatch: {detail}"
+            ),
+            ValidationError::BoxDerefPointeeOutOfScope {
+                function,
+                block,
+                inst_index,
+                reason,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref pointee is outside the rule set: {reason}"
+            ),
+            ValidationError::BoxDerefConjunctCover {
+                function,
+                block,
+                inst_index,
+                detail,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref evidence does not cover the conjunct set: {detail}"
+            ),
+            ValidationError::BoxDerefPremiseNotPinned {
+                function,
+                block,
+                inst_index,
+                conjunct,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref premise for {conjunct} does not name exactly the pinned standing assumptions (safe_body, sound_callees, box_unique)"
+            ),
+            ValidationError::BoxDerefSessionRefused {
+                function,
+                block,
+                inst_index,
+                reason,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref fact session refused: {reason}"
+            ),
+            ValidationError::BoxDerefDominatingCheckInvalid {
+                function,
+                block,
+                inst_index,
+                conjunct,
+                reason,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref dominating check for {conjunct} is refused: {reason}"
+            ),
+            ValidationError::BoxDerefObligationUnbound {
+                function,
+                block,
+                inst_index,
+                obligation,
+                reason,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref cites obligation {obligation} as evidence, which is refused: {reason}"
+            ),
+            ValidationError::BoxDerefNonClaimsNotPinned {
+                function,
+                block,
+                inst_index,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref fact does not state exactly the pinned non-claims (uniqueness, pointee_validity, allocator)"
+            ),
+            ValidationError::BoxDerefPremiseContradicted {
+                function,
+                block,
+                inst_index,
+                reason,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref premise is contradicted by the function: {reason}"
+            ),
+            ValidationError::BoxValidityEvidenceBelowFloor {
+                function,
+                block,
+                inst_index,
+                conjunct,
+                tier,
+                floor,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref conjunct {conjunct} is backed at tier {tier}, below the required {floor} (require_box_validity_evidence)"
+            ),
             ValidationError::AssertPanicKindUnspecified {
                 function,
                 block,
@@ -5338,6 +5607,32 @@ impl core::fmt::Display for ValidationError {
 impl std::error::Error for ValidationError {}
 
 impl ValidationError {
+    /// Classify this refusal when it belongs to the Box-dereference contract.
+    ///
+    /// Consumers match the exhaustive [`BoxDerefValidationRule`] rather than
+    /// matching the non-exhaustive `ValidationError`. The decoded must-refuse
+    /// corpus and a source-derived census hold this mapping complete.
+    #[must_use]
+    pub fn box_deref_rule(&self) -> Option<BoxDerefValidationRule> {
+        Some(match self {
+            Self::BoxDerefTypeMismatch { .. } => BoxDerefValidationRule::TypeMismatch,
+            Self::BoxDerefPointeeOutOfScope { .. } => BoxDerefValidationRule::PointeeOutOfScope,
+            Self::BoxDerefConjunctCover { .. } => BoxDerefValidationRule::ConjunctCover,
+            Self::BoxDerefPremiseNotPinned { .. } => BoxDerefValidationRule::PremiseNotPinned,
+            Self::BoxDerefSessionRefused { .. } => BoxDerefValidationRule::SessionRefused,
+            Self::BoxDerefDominatingCheckInvalid { .. } => {
+                BoxDerefValidationRule::DominatingCheckInvalid
+            }
+            Self::BoxDerefObligationUnbound { .. } => BoxDerefValidationRule::ObligationUnbound,
+            Self::BoxDerefNonClaimsNotPinned { .. } => BoxDerefValidationRule::NonClaimsNotPinned,
+            Self::BoxDerefPremiseContradicted { .. } => BoxDerefValidationRule::PremiseContradicted,
+            Self::BoxValidityEvidenceBelowFloor { .. } => {
+                BoxDerefValidationRule::EvidenceBelowFloor
+            }
+            _ => return None,
+        })
+    }
+
     /// Concrete ways forward from this refusal, one imperative line each
     /// (v7 D3: the reader of a fail-closed refusal is an AI programmer, so a
     /// refusal names the rule, says why, and ENUMERATES what to do next).
@@ -5768,6 +6063,12 @@ fn visit_instruction_types(inst: &Inst, mut visit: impl FnMut(&Ty)) {
             for ty in &op.result_tys {
                 visit(ty);
             }
+        }
+        Inst::BoxDeref {
+            ptr_ty, pointee, ..
+        } => {
+            visit(ptr_ty);
+            visit(pointee.ty());
         }
         Inst::Fence { .. }
         | Inst::Br { .. }
@@ -9582,6 +9883,8 @@ fn infer_result_type(inst: &Inst) -> Option<Ty> {
         // WS3.5: a fresh aggregate value AT the declared type.
         Inst::MakeAggregate { ty, .. } => Some(ty.clone()),
         Inst::MakeClosure { ty, .. } => Some(Ty::Closure(*ty)),
+        // v72: the operand's pointer, unchanged, at `ptr_ty`.
+        Inst::BoxDeref { ptr_ty, .. } => Some(ptr_ty.clone()),
         // v50: the array `ty` itself.
         Inst::ArraySplat { ty, .. } => Some(ty.clone()),
         // The tensor region: the declared result tensor type.
@@ -9935,6 +10238,14 @@ fn check_cast_compatibility(
         return;
     }
 
+    if matches!(op, CastOp::Bitcast | CastOp::Transmute)
+        && matches!(src, Ty::FnItem(_) | Ty::Unit)
+        && matches!(dst, Ty::FnItem(_) | Ty::Unit)
+        && (matches!(src, Ty::FnItem(_)) || matches!(dst, Ty::FnItem(_)))
+    {
+        return; // complete module validation authenticates every nominal type
+    }
+
     // v43 second line of defence: NO cast has a handle on either side. The
     // transport rule (`validate_nominal_instruction_types`) already refused
     // the node; this arm exists so that `Bitcast`'s width-equality test below
@@ -9995,11 +10306,12 @@ fn check_cast_compatibility(
                 }
             }
             CastOp::ReifyFnPointer => {
-                matches!(src, Ty::Func(_))
-                    && dst
-                        .default_pointer_layout_shape()
-                        .map(|layout| !layout.is_fat())
-                        .unwrap_or(false)
+                matches!((&src, &dst), (Ty::FnItem(_), Ty::Func(_)))
+                    || matches!(src, Ty::Func(_))
+                        && dst
+                            .default_pointer_layout_shape()
+                            .map(|layout| !layout.is_fat())
+                            .unwrap_or(false)
             }
             CastOp::Transmute => {
                 // The structural validator lacks layout and monomorphization
@@ -10887,6 +11199,7 @@ fn is_closed_scalar_ty(ty: &Ty) -> bool {
             | Ty::Bool
             | Ty::Ptr
             | Ty::Unit
+            | Ty::FnItem(_)
     )
 }
 
@@ -12439,6 +12752,7 @@ fn handle_aggregate_lane_rule(
 #[allow(clippy::too_many_arguments)]
 fn validate_nominal_instruction_types(
     module: &Module,
+    functions: &ModuleFunctionCatalog<'_>,
     node: &trust_ir::InstrNode,
     val_ty: &BTreeMap<u32, Ty>,
     nominal_types: &NominalTypeReachability<'_>,
@@ -12498,6 +12812,14 @@ fn validate_nominal_instruction_types(
                 ty: Ty::Func(_),
                 value: Constant::FnDef(_),
             } => true,
+            Inst::Cast {
+                op: CastOp::ReifyFnPointer,
+                src_ty: Ty::FnItem(id),
+                dst_ty: Ty::Func(signature),
+                ..
+            } => functions
+                .function_item(*id)
+                .is_ok_and(|(f, _)| f.ty == *signature),
             // Edge and signature types are checked exactly elsewhere.
             Inst::Call { .. }
             | Inst::CallCannotUnwind { .. }
@@ -12509,9 +12831,15 @@ fn validate_nominal_instruction_types(
             // would be an unpinned origin for the handle it returns.
             Inst::CallIndirect { callee, sig, .. }
             | Inst::CallIndirectCannotUnwind { callee, sig, .. }
-            | Inst::InvokeIndirect { callee, sig, .. } => val_ty
-                .get(&callee.index())
-                .is_some_and(|ty| matches!(ty, Ty::Func(actual) if actual == sig)),
+            | Inst::InvokeIndirect { callee, sig, .. } => {
+                val_ty.get(&callee.index()).is_some_and(|ty| match ty {
+                    Ty::Func(actual) => actual == sig,
+                    Ty::FnItem(id) => functions
+                        .function_item(*id)
+                        .is_ok_and(|(f, _)| f.ty == *sig),
+                    _ => false,
+                })
+            }
             Inst::CondBr { cond, .. } => exact(cond, &Ty::Bool),
             Inst::Switch { value, .. } => val_ty
                 .get(&value.index())
@@ -12598,6 +12926,14 @@ fn validate_nominal_instruction_types(
             ty: Ty::Func(_),
             value: Constant::FnDef(_),
         } => true,
+        Inst::Cast {
+            op: CastOp::ReifyFnPointer,
+            src_ty: Ty::FnItem(id),
+            dst_ty: Ty::Func(signature),
+            ..
+        } => functions
+            .function_item(*id)
+            .is_ok_and(|(f, _)| f.ty == *signature),
         // Existing module validation checks signature and edge types exactly.
         Inst::Call { .. }
         | Inst::CallCannotUnwind { .. }
@@ -12618,6 +12954,9 @@ fn validate_nominal_instruction_types(
         | Inst::CallIndirectCannotUnwind { callee, sig, .. }
         | Inst::InvokeIndirect { callee, sig, .. } => match val_ty.get(&callee.index()) {
             Some(Ty::Func(actual)) if actual == sig => true,
+            Some(Ty::FnItem(id)) => functions
+                .function_item(*id)
+                .is_ok_and(|(f, _)| f.ty == *sig),
             Some(ty) if ty.is_pointer_like() && !nominal_types.contains_dialect(ty) => {
                 let originates_dialect = module.func_types.get(sig.as_usize()).is_none_or(|ft| {
                     ft.returns
@@ -13371,6 +13710,7 @@ fn instruction_kind(inst: &Inst) -> &'static str {
         Inst::InsertField { .. } => "insert_field",
         Inst::MakeAggregate { .. } => "make_aggregate",
         Inst::MakeClosure { .. } => "make_closure",
+        Inst::BoxDeref { .. } => "box_deref",
         Inst::ArraySplat { .. } => "array_splat",
         Inst::TensorContract { .. } => "tensor_contract",
         Inst::TensorMap { .. } => "tensor_map",
@@ -13955,9 +14295,8 @@ use rayon::prelude::*;
 
 /// Validate every function and every module-level invariant. This is the
 /// authoritative full check; [`validate_changed`] is a sound optimization of it.
-/// Trust (#171 Part A): the MODULE-AWARE zero-size test — [`ty_is_zero_sized`] plus the one case
-/// spelling alone cannot decide: a `Ty::Struct(sid)` whose own `StructDef` records `size:
-/// Some(0)`.
+/// Module-aware zero-size test: the spelling-only cases, recorded zero-sized
+/// structs, and function items authenticated by the module's layout table.
 ///
 /// WHY THIS EXISTS. `ty_is_zero_sized`'s doc says nested structs are treated as non-zero-size
 /// because "the check only needs to count the obvious non-ZST fields". That was true until the
@@ -13982,8 +14321,9 @@ use rayon::prelude::*;
 /// re-deriving it from fields would be a second, weaker computation that could disagree with the
 /// one rustc actually performed.
 ///
-/// The definition is the FIRST with the id, found through the pass's layout
-/// table (O(1) amortized) rather than by scanning the struct list per field.
+/// Struct definitions use the table's first definition (O(1) amortized).
+/// Function items require a unique real header and valid signature; their
+/// zero-size layout is never granted from the type spelling alone.
 fn ty_is_zero_sized_in(layouts: &trust_ir::LayoutTable<'_>, ty: &trust_ir::Ty) -> bool {
     if ty_is_zero_sized(ty) {
         return true;
@@ -13992,6 +14332,9 @@ fn ty_is_zero_sized_in(layouts: &trust_ir::LayoutTable<'_>, ty: &trust_ir::Ty) -
         trust_ir::Ty::Struct(sid) => layouts
             .struct_def(*sid)
             .is_some_and(|sd| sd.size == Some(0)),
+        trust_ir::Ty::FnItem(_) => layouts
+            .ty_layout(ty)
+            .is_ok_and(|layout| layout.size_bits == 0),
         _ => false,
     }
 }
@@ -14015,7 +14358,7 @@ fn ty_is_one_zst_in(layouts: &trust_ir::LayoutTable<'_>, ty: &trust_ir::Ty) -> b
 /// non-zero-size, because the spelling alone cannot prove it.
 ///
 /// Prefer [`ty_is_zero_sized_in`] wherever the `Module` is in scope: it resolves exactly that
-/// nested-struct case against the recorded layout. This spelling-only form remains for callers
+/// nested structs and function items against the module. This spelling-only form remains for callers
 /// with no module context, where treating an unresolvable type as non-ZST is the fail-closed
 /// answer.
 fn ty_is_zero_sized(ty: &trust_ir::Ty) -> bool {
@@ -15510,6 +15853,7 @@ pub struct CodegenAdmission<'a> {
     refuse_unbacked_claims_on_checks: bool,
     require_assert_panic_kinds: bool,
     require_assert_panic_sites: bool,
+    require_box_validity_evidence: Option<trust_ir::box_validity::BoxValidityTier>,
 }
 
 impl std::fmt::Debug for CodegenAdmission<'_> {
@@ -15529,6 +15873,10 @@ impl std::fmt::Debug for CodegenAdmission<'_> {
             .field(
                 "require_assert_panic_sites",
                 &self.require_assert_panic_sites,
+            )
+            .field(
+                "require_box_validity_evidence",
+                &self.require_box_validity_evidence,
             )
             .finish()
     }
@@ -15559,6 +15907,7 @@ impl<'a> CodegenAdmission<'a> {
             refuse_unbacked_claims_on_checks: false,
             require_assert_panic_kinds: false,
             require_assert_panic_sites: false,
+            require_box_validity_evidence: None,
         }
     }
 
@@ -15660,6 +16009,37 @@ impl<'a> CodegenAdmission<'a> {
         self
     }
 
+    /// Refuse every `Inst::BoxDeref` conjunct whose evidence tier is below
+    /// `floor` ([`ValidationError::BoxValidityEvidenceBelowFloor`]); `None`
+    /// (the default) sets no floor.
+    ///
+    /// The tiers are ordered `NotAdmitted < AssumedRootPremise <
+    /// NamedPremise < ConsumerRederived`
+    /// ([`trust_ir::box_validity::BoxValidityTier`]). Every premise is a
+    /// named assumption the consumer cannot re-derive; a premise whose root
+    /// says the producing session verified nothing behind it
+    /// (`returned_box_assumed`, `reference_arg_box_valid`) is at
+    /// `AssumedRootPremise`, every other root at `NamedPremise`. A consumer
+    /// that admits the stronger roots only sets the floor to `NamedPremise`.
+    /// A consumer that must not act on a named assumption (a proof-required
+    /// lane) sets it to `ConsumerRederived`; no evidence kind of this
+    /// version reaches that tier, so that floor refuses every `BoxDeref`.
+    /// The floor never relaxes a structural rule: a malformed fact is
+    /// refused by [`validate_module`] under every admission. Must-refuse
+    /// corpus rows `refuse/box_deref_premise_tier` (accepted by the default
+    /// gate and under the `NamedPremise` floor, refused under
+    /// `ConsumerRederived`) and `refuse/box_deref_assumed_root_tier`
+    /// (accepted by the default gate, refused under the `NamedPremise`
+    /// floor); every verdict is pinned.
+    #[must_use]
+    pub fn with_require_box_validity_evidence(
+        mut self,
+        floor: Option<trust_ir::box_validity::BoxValidityTier>,
+    ) -> Self {
+        self.require_box_validity_evidence = floor;
+        self
+    }
+
     /// The structural configuration this admission validates under.
     #[must_use]
     pub fn config(&self) -> &ValidationConfig<'a> {
@@ -15707,6 +16087,12 @@ impl<'a> CodegenAdmission<'a> {
     pub fn require_assert_panic_sites(&self) -> bool {
         self.require_assert_panic_sites
     }
+
+    /// The floor of [`Self::with_require_box_validity_evidence`], if set.
+    #[must_use]
+    pub fn require_box_validity_evidence(&self) -> Option<trust_ir::box_validity::BoxValidityTier> {
+        self.require_box_validity_evidence
+    }
 }
 
 /// Validate `module` with codegen intent under `admission`: the structural
@@ -15737,6 +16123,9 @@ pub fn validate_module_for_codegen_with(
     }
     if admission.require_assert_panic_sites {
         errors.extend(missing_panic_site_errors(module));
+    }
+    if let Some(floor) = admission.require_box_validity_evidence {
+        errors.extend(box_validity_floor_errors(module, floor));
     }
     let mut all = report.into_errors();
     all.extend(errors);
@@ -19424,6 +19813,27 @@ fn validate_module_filtered_with_catalog(
         }
         let Some(layout) = &enm.layout else { continue };
         let location = || format!("enum.{} ({}) layout", enm.id.index(), enm.name);
+        if matches!(
+            &layout.encoding,
+            trust_ir::EnumTagEncoding::DirectWithUninhabited { .. }
+        ) {
+            // The new family's source/deadness and physical-profile checks
+            // share the actual layout authority, without querying dead values.
+            let bound = module
+                .enums
+                .iter()
+                .find(|row| row.id == enm.id)
+                .is_some_and(|row| core::ptr::eq(row, enm));
+            if !bound || layouts.enum_layout(enm.id).is_err() {
+                errors.push(ValidationError::ConstTypeMismatch {
+                    location: location(),
+                    expected: "a valid Direct storage profile for exactly the uninhabited variants"
+                        .into(),
+                    actual: "invalid Direct uninhabited storage".into(),
+                });
+            }
+            continue;
+        }
         // WS2.22: the tag lane's SIZE is the repr's own width
         // (`EnumTagRepr::size_bytes`); its ALIGNMENT is the TARGET's, and the
         // two are different facts — an ABI may align an integer below its
@@ -19434,7 +19844,8 @@ fn validate_module_filtered_with_catalog(
         // count; the alignment clauses below are then skipped, the enum having
         // already drawn its error.
         let lane_repr = match &layout.encoding {
-            trust_ir::EnumTagEncoding::Direct { .. } => enm.canonical_tag_repr(),
+            trust_ir::EnumTagEncoding::Direct { .. }
+            | trust_ir::EnumTagEncoding::DirectWithUninhabited { .. } => enm.canonical_tag_repr(),
             trust_ir::EnumTagEncoding::Niche { niche_ty, .. } => Some(*niche_ty),
             trust_ir::EnumTagEncoding::Untagged
             | trust_ir::EnumTagEncoding::SingleInhabited { .. } => None,
@@ -19664,7 +20075,8 @@ fn validate_module_filtered_with_catalog(
                     push_layout_error("one selected inhabited variant and only structurally uninhabited inactive variants".into(), format!("single-inhabited selector {variant}"));
                 }
             }
-            trust_ir::EnumTagEncoding::Direct { tag_offset } => {
+            trust_ir::EnumTagEncoding::Direct { tag_offset }
+            | trust_ir::EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
                 if let Some(repr) = enm.canonical_tag_repr() {
                     let tag_size = repr.size_bytes();
                     if let Some(tag_align) = lane_align {
@@ -20288,6 +20700,12 @@ fn validate_module_filtered_with_catalog(
             let mut errors = Vec::new();
             let func_ty = get_func_ty(module, &func.name, func.ty, &mut errors);
             let val_ty = build_module_value_types(func, module);
+            let has_item_origins = func.blocks.iter().any(|block| {
+                block.body.iter().any(|node| {
+                    matches!(&node.inst, Inst::Const { ty: Ty::FnItem(expected),
+                    value: Constant::FnItem(actual) } if expected == actual)
+                })
+            });
             // WS3.6: the tag-switch guard state a handle-bearing enum lane
             // read is decided against. Built only for a handle-bearing module
             // whose function actually reads a non-tag lane; when it is absent
@@ -20363,6 +20781,7 @@ fn validate_module_filtered_with_catalog(
                     if let Some(nominal_types) = &nominal_types {
                         validate_nominal_instruction_types(
                             module,
+                            &function_catalog,
                             node,
                             &val_ty,
                             nominal_types,
@@ -20754,6 +21173,45 @@ fn validate_module_filtered_with_catalog(
                                 }
                             }
 
+                            // A nominal singleton statically names this exact actual row;
+                            // same-shaped signatures cannot substitute another FuncId.
+                            if let Some(Ty::FnItem(id)) = val_ty.get(&callee.index()) {
+                                match function_catalog.function_item(*id) {
+                                    Err(error) => errors.push(ValidationError::ConstTypeMismatch {
+                                        location: format!("function '{}' bb{block_id} indirect callee", func.name),
+                                        expected: "a unique nominal function item".into(), actual: error.to_string(),
+                                    }),
+                                    Ok((target, _)) => {
+                                        if target.ty != *sig {
+                                            errors.push(ValidationError::CallEdgeSignatureMismatch {
+                                                block: block_id, callee: target.name.clone(),
+                                                declared: format!("functy.{}", sig.index()),
+                                                actual: format!("functy.{}", target.ty.index()),
+                                            });
+                                        }
+                                        if target.calling_conv != *calling_conv {
+                                            errors.push(ValidationError::CallEdgeConvMismatch {
+                                                block: block_id, callee: target.name.clone(),
+                                                declared: calling_conv.to_string(), actual: target.calling_conv.to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
+                            if has_item_origins
+                                && matches!(val_ty.get(&callee.index()), Some(Ty::Func(_)))
+                                && let Some(item) = fn_pointer_analysis.and_then(|analysis| analysis.resolve_item_for_rejection(*callee))
+                                && let Ok((target, _)) = function_catalog.function_item(item)
+                            {
+                                if target.ty != *sig { errors.push(ValidationError::CallEdgeSignatureMismatch {
+                                    block: block_id, callee: target.name.clone(), declared: format!("functy.{}", sig.index()), actual: format!("functy.{}", target.ty.index()),
+                                }); }
+                                if target.calling_conv != *calling_conv { errors.push(ValidationError::CallEdgeConvMismatch {
+                                    block: block_id, callee: target.name.clone(), declared: calling_conv.to_string(), actual: target.calling_conv.to_string(),
+                                }); }
+                            }
+
                             // G18-2: a `Ty::Closure` callee. This arm is
                             // ADDITIVE — it fires only when the callee's type is
                             // a closure type, and the `Ty::Func` rules above ran
@@ -20821,6 +21279,14 @@ fn validate_module_filtered_with_catalog(
                                                         ),
                                                     },
                                                 );
+                                            }
+                                            if target_func.calling_conv != *calling_conv {
+                                                errors.push(ValidationError::CallEdgeConvMismatch {
+                                                    block: block_id,
+                                                    callee: target_func.name.clone(),
+                                                    declared: calling_conv.to_string(),
+                                                    actual: target_func.calling_conv.to_string(),
+                                                });
                                             }
                                         }
                                     }
@@ -21084,6 +21550,7 @@ fn validate_module_filtered_with_catalog(
         import_policy,
     ));
     errors.extend(validate_proof_refs_with_authority(module, &authority));
+    errors.extend(box_validity::box_deref_errors(module));
     errors.extend(validate_discharged_authority(module, &discharged_authority));
     errors.extend(validate_value_facts(module));
     errors.extend(certified_evidence_errors);
@@ -24653,15 +25120,6 @@ mod source_bound_calls;
 pub use source_bound_calls::{
     SourceBoundCallCertificates, certify_source_bound_call_family,
     certify_source_bound_readonly_call_family,
-};
-
-#[cfg(feature = "clean-tv-anchor")]
-#[path = "validate_source_value.rs"]
-mod source_value;
-#[cfg(feature = "clean-tv-anchor")]
-pub use source_value::{
-    CheckedScalarSourceValueEquation, CheckedSourceValueEquation, SourceValueEquationError,
-    check_scalar_source_value_equation, check_uint_source_value_equation,
 };
 
 /// In-process re-checker for the **clean-backend translation-validation**
@@ -28311,6 +28769,7 @@ fn validate_type_table_references(
 ) -> (Vec<ValidationError>, NominalCensus) {
     let mut errors = Vec::new();
     let census = std::cell::Cell::new(NominalCensus::default());
+    let functions = ModuleFunctionCatalog::new(module);
 
     let check_node = |ty: &Ty, location: &str, errors: &mut Vec<ValidationError>| {
         match ty {
@@ -28324,7 +28783,7 @@ fn validate_type_table_references(
             }),
             _ => {}
         }
-        check_ty_reference_node(module, handle_registry, ty, location, errors);
+        check_ty_reference_node(module, &functions, handle_registry, ty, location, errors);
     };
 
     let check = |ty: &Ty, location: &str, errors: &mut Vec<ValidationError>| {
@@ -28459,6 +28918,7 @@ mod nominal_census_tests {
 
 fn check_ty_reference_node(
     module: &Module,
+    functions: &ModuleFunctionCatalog<'_>,
     handle_registry: &HandleRegistry,
     ty: &Ty,
     location: &str,
@@ -28514,6 +28974,13 @@ fn check_ty_reference_node(
             errors.push(ValidationError::DanglingTypeReference {
                 location: location.to_string(),
                 kind: "closure_type",
+                id: id.index(),
+            });
+        }
+        Ty::FnItem(id) if functions.function_item(*id).is_err() => {
+            errors.push(ValidationError::DanglingTypeReference {
+                location: location.to_owned(),
+                kind: "function_item",
                 id: id.index(),
             });
         }
@@ -29027,7 +29494,7 @@ fn validate_obligation_sites(
 /// |---|---|
 /// | `ArithmeticSafety` | `BinOp`, `UnOp`, `Overflow`, `Cast`, `CondBr`; a check (`Assert` / `AssertInvoke`) of kind `Overflow(_)`, `DivByZero`, `RemByZero` or `Unspecified` |
 /// | `BoundsCheck` | `CondBr`, `GEP`, `Load`, `Store`, `ExtractElement`, `InsertElement`, `TensorGather`, `TensorScatter`; a check of kind `BoundsCheck` or `Unspecified` |
-/// | `MemorySafety` | `Load`, `Store`, `GEP`, `Dealloc`, `Borrow`, `BorrowMut`, `EndBorrow`, `AtomicLoad`, `AtomicStore`, `AtomicRMW`, `CmpXchg`, `Call`, `CallIndirect`, `Invoke`, `HeapAlloc`, `MemCopy`, `MemSet`; a check of kind `MisalignedPtr` or `NullPtr` |
+/// | `MemorySafety` | `Load`, `Store`, `GEP`, `Dealloc`, `Borrow`, `BorrowMut`, `EndBorrow`, `AtomicLoad`, `AtomicStore`, `AtomicRMW`, `CmpXchg`, `Call`, `CallIndirect`, `Invoke`, `HeapAlloc`, `MemCopy`, `MemSet`, `BoxDeref`; a check of kind `MisalignedPtr` or `NullPtr` |
 /// | `PanicFreedom` | a check of any kind, `CondBr`, `Call`, `CallIndirect`, `Invoke`, `Unreachable`, `Return` |
 /// | every other kind | unconstrained |
 ///
@@ -29058,6 +29525,12 @@ fn validate_obligation_sites(
 /// a `MemorySafety` row there is refused, and an out-of-range coordinate is
 /// undefined behaviour, never a panic, so an `ArithmeticSafety` or
 /// `PanicFreedom` row there is refused too.
+///
+/// `BoxDeref` (wire v74) was folded into the `MemorySafety` row: a
+/// `MemorySafety` row may be sited on the instruction, and no other
+/// constrained kind is about a pointer's validity. Siting a row there backs
+/// nothing: the instruction's validity fact may not cite a row
+/// (`validate/box_validity.rs` rule 7 refuses obligation evidence).
 ///
 /// Amendment P (wire v54, `docs/SPEC_RATIFICATIONS.md` §19.1 rule 8): an
 /// obligation sited on a CHECK must be of a kind the check discharges — the
@@ -29142,6 +29615,7 @@ pub fn obligation_kind_admits_site_instruction(
                 | Inst::HeapAlloc { .. }
                 | Inst::MemCopy { .. }
                 | Inst::MemSet { .. }
+                | Inst::BoxDeref { .. }
         ),
         ObligationKind::PanicFreedom => matches!(
             inst,
@@ -30326,7 +30800,11 @@ pub fn consumption_role(inst: &Inst) -> ConsumptionRole {
         // PKG-U13d: likewise; a coordinate is an integer position, never a
         // refined value the gather or the scatter consumes.
         | Inst::TensorGather { .. }
-        | Inst::TensorScatter { .. } => NoDeclaredRequirement(PRODUCER_SIDE_ONLY),
+        | Inst::TensorScatter { .. }
+        // A Box deref transports a plain pointer: `ptr_ty` is its own
+        // declared result type, and no refinement is declared for the
+        // operand.
+        | Inst::BoxDeref { .. } => NoDeclaredRequirement(PRODUCER_SIDE_ONLY),
         Inst::Cast { .. } => NoDeclaredRequirement(
             "a cast RE-TYPES its operand; `src_ty`/`dst_ty` are the instruction's own claims, and \
              whether a fact survives the width change is a propagation question (see \
@@ -39404,6 +39882,33 @@ mod closure_constant_tests {
     }
 
     #[test]
+    fn known_closure_call_checks_target_convention_through_copy() {
+        for copy_hop in [false, true] {
+            let mut module = closure_call_module(vec![Ty::I32, Ty::I32], copy_hop, false);
+            module.target_info = Some(trust_ir::TargetInfo {
+                triple: "aarch64-apple-darwin".into(),
+                pointer_size: 8,
+                endianness: trust_ir::Endianness::Little,
+                abi: None,
+                struct_passing: trust_ir::StructPassingPolicy::Unclassified,
+            });
+            assert!(validate_module(&module).is_empty());
+
+            module.functions[1].calling_conv = trust_ir::CallingConv::Rust;
+            let errors = validate_module(&module);
+            assert!(
+                matches!(
+                    errors.as_slice(),
+                    [ValidationError::CallEdgeConvMismatch {
+                        callee, declared, actual, ..
+                    }] if callee == "add_env" && declared == "ccc" && actual == "rustcc"
+                ),
+                "known closure targets must retain their convention through Copy: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn closure_call_whose_target_drops_the_environment_is_rejected() {
         // Target is `(i32) -> i32`: it has NO leading capture parameter, so the
         // captured environment would be silently dropped at the call.
@@ -46254,3 +46759,7 @@ pub(crate) fn install_operational_island(
 ) -> Result<Vec<clean_kernel::Name>, String> {
     clean_island::install(environment, island)
 }
+
+#[cfg(all(test, feature = "source-value-operational"))]
+#[path = "validate_tv_environment_epoch/tests.rs"]
+mod tv_environment_epoch_tests;

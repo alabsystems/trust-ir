@@ -34,6 +34,7 @@ pub(super) fn pair<'a, O: ExecutionObserver>(
         Kind::Record => record(s, a, b, left, right, w),
         Kind::Closure => closure(s, a, b, left, right, w),
         Kind::Func => func(s, a, b, left, right, w),
+        Kind::FnItem => fn_item(s, a, b, left, right, w),
         Kind::TyId | Kind::Pred => Err(ObservedValueError::InvalidRange),
     }
 }
@@ -293,6 +294,56 @@ pub(super) fn variants<'a, O: ExecutionObserver>(
             s.push(Task::Variants(rest_a, rest_b), w)?;
             s.push(Task::Types(&a.fields, &b.fields), w)?;
         }
+    }
+    Ok(())
+}
+
+fn fn_item<'a, O: ExecutionObserver>(
+    s: &mut State<'a>,
+    a: &'a Module,
+    b: &'a Module,
+    left: u32,
+    right: u32,
+    w: &mut Work<'_, '_, O>,
+) -> R {
+    if s.functions_a.is_none() {
+        s.functions_a = Some(crate::ModuleFunctionCatalog::new_at_request_observed(
+            a, w.session, w.site,
+        )?);
+    }
+    if s.functions_b.is_none() {
+        s.functions_b = Some(crate::ModuleFunctionCatalog::new_at_request_observed(
+            b, w.session, w.site,
+        )?);
+    }
+    let da = s
+        .functions_a
+        .as_ref()
+        .ok_or(ObservedValueError::InvalidRange)?
+        .unique_observed(crate::FuncId::new(left), w.session, w.site)?;
+    let db = s
+        .functions_b
+        .as_ref()
+        .ok_or(ObservedValueError::InvalidRange)?
+        .unique_observed(crate::FuncId::new(right), w.session, w.site)?;
+    w.admit(2, 2 * size_of::<Option<&crate::FuncTy>>())?;
+    let (Some(da), Some(db)) = (da, db) else {
+        s.last = false;
+        return Ok(());
+    };
+    if a.func_type(da.ty).is_none() || b.func_type(db.ty).is_none() {
+        s.last = false;
+        return Ok(());
+    }
+    w.admit(2, size_of::<bool>())?;
+    if core::ptr::eq(a, b) && left != right {
+        s.last = false;
+        return Ok(());
+    }
+    s.last =
+        da.calling_conv == db.calling_conv && w.text(da.name.as_bytes(), db.name.as_bytes())?;
+    if s.last {
+        s.push(Task::Nominal(Kind::Func, da.ty.index(), db.ty.index()), w)?;
     }
     Ok(())
 }

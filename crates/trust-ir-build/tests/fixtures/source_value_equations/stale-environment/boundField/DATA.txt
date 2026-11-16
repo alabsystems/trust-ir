@@ -1,0 +1,4 @@
+DATA ONLY: external consumer rederives the goal and audits every declaration.
+definition-0: name=boundSubDictionary is_reducible=true reducibility=Reducible
+definition-1: name=boundField is_reducible=true reducibility=Reducible
+source=boundField

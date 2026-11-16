@@ -431,7 +431,7 @@ fn readonly_indexed_call_rejects_wrong_base_initialized_but_inaccessible_and_for
     }
 }
 #[cfg(feature = "source-value-operational")]
-#[path = "core_execution_readonly_licensed_tests.rs"]
+#[path = "../core_execution_readonly_licensed_tests.rs"]
 mod licensed;
 #[cfg(feature = "source-value-operational")]
 #[test]

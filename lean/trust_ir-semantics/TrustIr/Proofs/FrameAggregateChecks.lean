@@ -68,7 +68,17 @@ theorem declared_field_type_no_unwind (ctx : EvalContext) (ty : Ty) (held : Valu
     ExceptNoUnwind (declaredFieldTy ctx ty held field) := by
   unfold declaredFieldTy
   try dsimp only
-  pure_leaves
+  repeat' first
+    | exact ok_safe _
+    | exact type_safe _
+    | exact ub_safe _
+    | exact unsupported_safe _ _
+    | exact cast_float_membership_no_unwind _ _
+    | exact vector_lane_no_unwind _ _ _
+    | exact vector_shape_no_unwind _ _ _
+    | (rw [HistoryEffects.conditional_property_iff ExceptNoUnwind]; constructor <;> intro selected)
+    | (refine ExceptNoUnwind.bind _ _ ?_ (fun input => ?_) <;> try dsimp only)
+    | (split <;> try dsimp only)
 
 theorem typed_integer_no_unwind (model : ByteModel) (ty : Ty) (value : Value) :
     ExceptNoUnwind (typedIntegerValue model ty value) := by

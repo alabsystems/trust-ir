@@ -105,6 +105,31 @@ theorem direct_prefix_decoding_agrees (size : Nat) (info : Enumeration) (positio
   rw [normalization]
   exact (selected.lookup info width raw position).2
 
+theorem profiled_direct_prefix_decoding_agrees (size : Nat) (info : Enumeration) (position width : Nat) (raw : Int)
+    (image : ByteImage) (offset : Nat) {profiles : List UninhabitedVariantLayout} (encoding : info.encoding = .directWithUninhabited offset profiles)
+    (built : EnumTagPrefix size info position (.int width raw) image)
+    (selected : EnumEncodingSelects info (.int width raw) position)
+    (nonnegative : 0 ≤ raw) (canonical : raw < (2 : Int) ^ tagBits info.tag)
+    (live : (trustIrListGet? info.uninhabited position) = some false) (bound : position < info.discriminants.length) :
+    EnumDecodingSelects info image position := by
+  let bytes := encodeIntBytes raw (tagBits info.tag / 8)
+  have lane := EnumTagPrefix.profiled_direct_lane size info position width raw image offset encoding built
+  have read := lane.initialized bytes
+  have sized : bytes.length = tagBits info.tag / 8 := encodeIntBytes_length _ _
+  rw [sized] at read
+  have decoded : Int.ofNat (decodeIntBytes bytes) = raw :=
+    decode_encode_integer raw _ nonnegative (by rw [tag_byte_capacity]; exact canonical)
+  apply EnumDecodingSelects.profiled_direct info image offset position bytes encoding read ?_ live bound
+  rw [decoded]
+  have normalization : (if tagSigned info.tag then toSigned raw (tagBits info.tag) else raw) = enumTagValue info.tag raw := by
+    unfold enumTagValue
+    split
+    · rfl
+    · rw [truncateUnsigned,Int.emod_eq_of_lt nonnegative canonical]
+  rw [normalization]
+  exact (selected.lookup info width raw position).2
+
+
 /-- Payload bytes cannot change untagged selection after its actual built guard. -/
 theorem untagged_prefix_decoding_agrees (size : Nat) (info : Enumeration) (position : Nat) (tag : Value)
     (prefixImage image : ByteImage) (encoding : info.encoding = .untagged)
@@ -195,7 +220,7 @@ def EnumPrefixSound (size : Nat) (info : Enumeration) (position : Nat) (tag : Va
   ∀ initial, EnumTagPrefix size info position tag initial →
     match info.encoding with
     | .untagged | .singleInhabited _ => ∀ image, EnumDecodingSelects info image position
-    | .direct _ => EnumDecodingSelects info initial position
+    | .direct _ | .directWithUninhabited _ _ => EnumDecodingSelects info initial position
     | .niche untagged _ _ _ offset repr =>
       if position = untagged then
         ∀ image bytes, InitializedLane image offset (tagBits repr / 8) bytes →
@@ -264,6 +289,17 @@ theorem enum_prefix_sound (value : Summary) (info : Enumeration) (present : valu
     intro initial built
     rw [encoding]
     exact direct_prefix_decoding_agrees size info position width raw initial offset encoding built selected nonnegative canonical live bound
+  | directWithUninhabited offset profiles =>
+    rw [encoding] at guarded
+    obtain ⟨align,aligned,laneBounds,profileLanes,separated⟩ := guarded
+    have fits : offset + (ByteImage.ofList ((encodeIntBytes raw (tagBits info.tag / 8)).map some)).size ≤ size := by
+      simp only [ByteImage.size_ofList,List.length_map,encodeIntBytes_length]
+      rw [extent]
+      exact laneBounds.2.2.1
+    refine ⟨EnumTagPrefix.profiled_direct_exists size info position width raw offset encoding fits,?_⟩
+    intro initial built
+    rw [encoding]
+    exact profiled_direct_prefix_decoding_agrees size info position width raw initial offset encoding built selected nonnegative canonical live bound
   | niche untagged start stop first offset repr =>
     rw [encoding] at guarded
     obtain ⟨align,aligned,laneBounds,cardinality,untaggedBound,ordered,endBound,firstFits,rangeFits,allowed,carrier,separated⟩ := guarded

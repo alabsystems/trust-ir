@@ -417,7 +417,7 @@ fn referent_members<'module>(
 // The cast rule (shape.rs, `LayoutTable::layout_sensitive_cast_evidence`)
 // ---------------------------------------------------------------------------
 
-pub fn layout_sensitive_cast_evidence(
+pub fn legacy_layout_sensitive_cast_evidence(
     module: &Module,
     op: CastOp,
     src: &Ty,
@@ -506,4 +506,84 @@ pub fn layout_sensitive_cast_evidence(
         }
         _ => Ok(CastLayoutEvidence::NotLayoutSensitive),
     }
+}
+
+/// The current Storage-first cast policy layered over the frozen legacy rule.
+/// Handle refusal still precedes Storage; all remaining legacy answers stay
+/// byte-for-byte derived by the historical function above. This independent
+/// reference never delegates Storage presence to the implementation under test.
+pub fn layout_sensitive_cast_evidence(
+    module: &Module,
+    op: CastOp,
+    src: &Ty,
+    dst: &Ty,
+) -> Result<CastLayoutEvidence, LayoutError> {
+    if op.is_layout_sensitive()
+        && !type_reaches_handle(module, src)
+        && !type_reaches_handle(module, dst)
+        && (storage_value_present(module, src) || storage_value_present(module, dst))
+    {
+        return Err(LayoutError::UnsupportedTyShape(
+            trust_ir::shape::TyShape::Storage,
+        ));
+    }
+    legacy_layout_sensitive_cast_evidence(module, op, src, dst)
+}
+
+/// Independent raw-definition Storage-presence walk for the current policy.
+/// It follows every declared by-value child, including duplicate definitions,
+/// empty arrays and inactive enum fields. Missing rows and seedless cycles add
+/// no Storage. Pointer/code boundaries stop; closure captures do not.
+///
+/// This is presence, not StorageClosed validity, layout, initialization or ABI
+/// admission. It deliberately uses no Module/LayoutTable reach query or memo.
+pub fn storage_value_present(module: &Module, root: &Ty) -> bool {
+    let mut seen = HashSet::new();
+    let mut pending = vec![root];
+    while let Some(ty) = pending.pop() {
+        match ty {
+            Ty::Storage(_) => return true,
+            Ty::Tuple(fields) => pending.extend(fields),
+            Ty::Vector(element, _) | Ty::Tensor(element, _) => pending.push(element),
+            Ty::Array(id, _) | Ty::Refine(id, _) | Ty::Sequence(id) | Ty::Set(id, _) => {
+                if seen.insert(TableReferent::Ty(id.as_usize()))
+                    && let Some(child) = module.types.get(id.as_usize())
+                {
+                    pending.push(child);
+                }
+            }
+            Ty::Struct(id) => {
+                if seen.insert(TableReferent::Struct(id.index())) {
+                    for row in module.structs.iter().filter(|row| row.id == *id) {
+                        pending.extend(row.fields.iter().map(|field| &field.ty));
+                    }
+                }
+            }
+            Ty::Enum(id) => {
+                if seen.insert(TableReferent::Enum(id.index())) {
+                    for row in module.enums.iter().filter(|row| row.id == *id) {
+                        pending.extend(row.variants.iter().flat_map(|variant| &variant.fields));
+                    }
+                }
+            }
+            Ty::Record(id) => {
+                if seen.insert(TableReferent::Record(id.index())) {
+                    for row in module.records.iter().filter(|row| row.id == *id) {
+                        pending.extend(row.fields.iter().map(|field| &field.ty));
+                    }
+                }
+            }
+            Ty::Closure(id) => {
+                if seen.insert(TableReferent::ClosureTy(id.as_usize()))
+                    && let Some(row) = module.closure_types.get(id.as_usize())
+                {
+                    pending.extend(&row.captures);
+                }
+            }
+            // Scalars, opaque types, pointers/references/Rc/fat pointers and
+            // function pointers carry no by-value Storage child.
+            _ => {}
+        }
+    }
+    false
 }

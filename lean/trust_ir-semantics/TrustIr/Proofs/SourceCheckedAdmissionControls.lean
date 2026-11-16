@@ -38,7 +38,7 @@ private def context (base : EvalContext) : EvalContext :=
   { base with
     byteModel := .le64
     functionOrder := order
-    types := fun id => if id.index == 0 then some elementTy else none }
+    valueSource := FunctionItemPresence.prepare { base.valueSource.source with types := [some elementTy] } }
 private def elementInput : Value := .aggregate [.int 8 7,.bool true,.ptr 1025 (some ⟨99⟩)]
 private def input : Value := .aggregate [.array (.uniform 2 elementInput),
   .fatPtr 1034 (some ⟨99⟩) (.int 64 3),.int 32 128512,.fnDef ⟨0⟩ ⟨42⟩,.aggregate []]
@@ -140,7 +140,7 @@ private def emptySource : Environment := { types := [some .F64], enums := [] }
 private def emptyPlan : Plan := .array (.Array ⟨0⟩ 0) ⟨0,8⟩ 0 (.leaf .F64 ⟨8,8⟩)
 private def emptyInput : Value := .array (.uniform 0 .uninit)
 private def emptyContext (base : EvalContext) : EvalContext :=
-  { context base with types := fun id => if id.index == 0 then some .U8 else none }
+  { context base with valueSource := FunctionItemPresence.prepare { (context base).valueSource.source with types := [some .U8] } }
 private theorem emptyPrepared : (prepare emptySource []).query (.Array ⟨0⟩ 0) = .ok emptyPlan := by
   trustIrCompilerProof {
     exact rfl

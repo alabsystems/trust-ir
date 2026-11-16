@@ -37,6 +37,7 @@ pub(super) fn shape<O: ExecutionObserver>(
         TyShape::Tuple => "tuple",
         TyShape::Enum => "enum",
         TyShape::Function => "function",
+        TyShape::FnItem => "fnitem",
         TyShape::Ref => "ref",
         TyShape::RefMut => "ref_mut",
         TyShape::PtrConst => "ptr_const",

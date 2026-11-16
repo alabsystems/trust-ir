@@ -9,19 +9,29 @@ open GenericCoro.Prefix
 and errors. No additional return policy is invented by the replay. -/
 def returnValues (ids : List ValueId) : Sem (List Value) := ids.mapM Sem.lookupValue
 
+/-- The exact contextual validation prefix before ordinary SSA binding. -/
+def bindParameters (ctx : EvalContext) (block : BasicBlock) (args : List Value) : Sem Unit := do
+  let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (block.params.map (·.snd)) args)
+  bindBlockParamsChecked block.params args
+
+/-- Ordered payload lookup followed by the actual contextual return check. -/
+def checkedReturnValues (ctx : EvalContext) (ids : List ValueId) : Sem (List Value) := do
+  let values ← returnValues ids
+  GenericCoro.checkedReturn ctx values
+
 theorem evalLayer_return (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (cfg : CFG) (pc : BlockId)
     (args : List Value) (strategy : PanicStrategy) (block : BasicBlock) (found : cfg pc = some block)
     (ids : List ValueId) (returns : (ctx.resolveBlock block).terminator = .Return ids) :
     evalLayer recurse ctx depth cfg pc args strategy = (do
-      bindBlockParamsChecked (ctx.resolveBlock block).params args
+      bindParameters ctx (ctx.resolveBlock block) args
       evalBody recurse ctx depth strategy (bodyInstsWithResultDests (ctx.resolveBlock block).body (ctx.resolveBlock block).bodyResultDests)
-      returnValues ids) := by
+      checkedReturnValues ctx ids) := by
   unfold evalLayer
   rw [found]
   dsimp only
   rw [returns]
   cases strategy <;> simp [stepTermWithContext, closureTermWithContext, stepTermUnwind, stepInst, semReturn,
-    returnValues, bind_assoc]
+    returnValues, checkedReturnValues, GenericCoro.checkedReturn, bindParameters, bind_assoc] <;> rfl
 
 /-- A point replay tied to the actual CFG lookup, resolved source block,
 parameter outcome and original production body. A failed prefix keeps its
@@ -29,13 +39,13 @@ unreached terminator, without claiming it is statically supported. -/
 inductive ReturnBlock (ctx : EvalContext) (cfg : CFG) (pc : BlockId) (args : List Value) (state : MachineState) where
   | missing (absent : cfg pc = none)
   | parameterError (block : BasicBlock) (found : cfg pc = some block) (error : SemError)
-      (actual : Sem.run (bindBlockParamsChecked (ctx.resolveBlock block).params args) state = .error error)
+      (actual : Sem.run (bindParameters ctx (ctx.resolveBlock block) args) state = .error error)
   | bodyError (block : BasicBlock) (found : cfg pc = some block) (boundState : MachineState)
-      (bound : Sem.run (bindBlockParamsChecked (ctx.resolveBlock block).params args) state = .ok ((),boundState))
+      (bound : Sem.run (bindParameters ctx (ctx.resolveBlock block) args) state = .ok ((),boundState))
       (trace : Trace ctx (bodyInstsWithResultDests (ctx.resolveBlock block).body (ctx.resolveBlock block).bodyResultDests) boundState)
       (error : SemError) (actual : trace.outcome = .error error)
   | returned (block : BasicBlock) (found : cfg pc = some block) (boundState : MachineState)
-      (bound : Sem.run (bindBlockParamsChecked (ctx.resolveBlock block).params args) state = .ok ((),boundState))
+      (bound : Sem.run (bindParameters ctx (ctx.resolveBlock block) args) state = .ok ((),boundState))
       (trace : Trace ctx (bodyInstsWithResultDests (ctx.resolveBlock block).body (ctx.resolveBlock block).bodyResultDests) boundState)
       (after : MachineState) (actual : trace.outcome = .ok ((),after))
       (ids : List ValueId) (returns : (ctx.resolveBlock block).terminator = .Return ids)
@@ -44,14 +54,14 @@ def ReturnBlock.outcome {ctx cfg pc args state} : ReturnBlock ctx cfg pc args st
   | .missing _ => .error (.typeError s!"undefined block: {repr pc}")
   | .parameterError _ _ error _ => .error error
   | .bodyError _ _ _ _ _ error _ => .error error
-  | .returned _ _ _ _ _ after _ ids _ => Sem.run (returnValues ids) after
+  | .returned _ _ _ _ _ after _ ids _ => Sem.run (checkedReturnValues ctx ids) after
 
 def ReturnBlock.build (ctx : EvalContext) (cfg : CFG) (pc : BlockId) (args : List Value) (state : MachineState) :
     Except String (ReturnBlock ctx cfg pc args state) :=
   match found : cfg pc with
   | none => .ok (.missing found)
   | some block =>
-    match bound : Sem.run (bindBlockParamsChecked (ctx.resolveBlock block).params args) state with
+    match bound : Sem.run (bindParameters ctx (ctx.resolveBlock block) args) state with
     | .error error => .ok (.parameterError block found error bound)
     | .ok ((),boundState) => do
       let trace ← Trace.build ctx (bodyInstsWithResultDests (ctx.resolveBlock block).body (ctx.resolveBlock block).bodyResultDests) boundState
@@ -68,20 +78,37 @@ theorem ReturnBlock.layer_correct {ctx cfg pc args state} (checked : ReturnBlock
   cases checked with
   | missing absent => simp only [evalLayer, absent]; rfl
   | parameterError block found error actual =>
-    simp only [evalLayer, found]
-    rw [Sem.run_bind, actual]
-    rfl
+    cases checked : checkFunctionItemValues ctx ((ctx.resolveBlock block).params.map (·.snd)) args with
+    | error reason =>
+      simp only [bindParameters, checked, Sem.fromMemoryExcept] at actual
+      change Except.error reason = Except.error error at actual
+      cases actual
+      simp only [evalLayer, found, checked, Sem.fromMemoryExcept]
+      rfl
+    | ok unit =>
+      cases unit
+      simp only [bindParameters, checked, Sem.fromMemoryExcept, pure_bind] at actual
+      simp only [evalLayer, found, checked, Sem.fromMemoryExcept, pure_bind]
+      rw [Sem.run_bind, actual]
+      rfl
   | bodyError block found boundState bound trace error actual =>
-    simp only [evalLayer, found]
-    rw [Sem.run_bind, bound]
-    change Sem.run (do
-      evalBody recurse ctx depth strategy _
-      _) boundState = _
-    rw [Sem.run_bind, trace.correct recurse depth strategy, actual]
-    rfl
+    cases checked : checkFunctionItemValues ctx ((ctx.resolveBlock block).params.map (·.snd)) args with
+    | error reason =>
+      simp only [bindParameters, checked, Sem.fromMemoryExcept] at bound
+      cases bound
+    | ok unit =>
+      cases unit
+      simp only [bindParameters, checked, Sem.fromMemoryExcept, pure_bind] at bound
+      simp only [evalLayer, found, checked, Sem.fromMemoryExcept, pure_bind]
+      rw [Sem.run_bind, bound]
+      change Sem.run (do
+        evalBody recurse ctx depth strategy _
+        _) boundState = _
+      rw [Sem.run_bind, trace.correct recurse depth strategy, actual]
+      rfl
   | returned block found boundState bound trace after actual ids returns =>
     rw [evalLayer_return recurse ctx depth cfg pc args strategy block found ids returns, Sem.run_bind, bound]
-    change Sem.run (do evalBody recurse ctx depth strategy _; returnValues ids) boundState = _
+    change Sem.run (do evalBody recurse ctx depth strategy _; checkedReturnValues ctx ids) boundState = _
     rw [Sem.run_bind, trace.correct recurse depth strategy, actual]
     rfl
 

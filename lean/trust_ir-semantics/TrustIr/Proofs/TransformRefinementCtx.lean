@@ -7,6 +7,7 @@
 
 import TrustIr.Proofs.TransformCorrectness
 import TrustIr.Proofs.ConstantTypingEquations
+import TrustIr.Proofs.GenericCoroPrefixLayer
 
 namespace TrustIr
 
@@ -141,10 +142,12 @@ theorem constValueAtWithDefs_splat_i8 (ctx : EvalContext) (element : TyId)
     (count : Nat) (literal : Int) (hType : ctx.types element = some .I8) :
     constValueAtWithDefs ctx (.Array element count) (.splat (.int literal) count) =
       .ok (.array (CompactArray.Packed.uniform count (Value.intAt 8 literal))) := by
+  change ctx.valueSource.ty element = some .I8 at hType
   unfold constValueAtWithDefs
   rw [constValueAtWithDefsIn_splat_eq]
   simp only [constPointerFormsSupported, Bool.not_true, Bool.false_eq_true,
-    bne_self_eq_false, ↓reduceIte, EvalContext.constantContext, hType,
+    bne_self_eq_false, ↓reduceIte, EvalContext.constantContext, ConstantEvalContext.types,
+    EvalContext.types, hType,
     Except.bind, Except.pure, Bind.bind, Pure.pure]
   rw [constValueAtWithDefsIn_int_eq]
   simp only [constPointerFormsSupported, Bool.not_true, Bool.false_eq_true,
@@ -161,6 +164,62 @@ theorem constValueAtWithDefs_splat_i8 (ctx : EvalContext) (element : TyId)
 def mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext) : EvalContext :=
   { ctx with functions := (fun fn =>
       (ctx.functions fn).map (fun f => { f with cfg := transform f.cfg })) }
+
+/-- Nominal checks read the finite source carrier and original headers, not
+    executable CFGs. The recursive value visitor is an explicit parameter. -/
+theorem checkFunctionItemLayer_withFunctions (ctx : EvalContext)
+    (functions : FuncId → Option EvalFunction) (recurse : Ty → Value → Except SemError Unit)
+    (ty : Ty) (value : Value) :
+    checkFunctionItemLayer { ctx with functions := functions } recurse ty value =
+      checkFunctionItemLayer ctx recurse ty value := rfl
+
+theorem checkFunctionItemLanes_withFunctions (ctx : EvalContext)
+    (functions : FuncId → Option EvalFunction) (fuel : Nat) (ty : Ty) (value : Value) :
+    checkFunctionItemLanes { ctx with functions := functions } fuel ty value =
+      checkFunctionItemLanes ctx fuel ty value := by
+  induction fuel generalizing ty value with
+  | zero => rfl
+  | succ fuel ih =>
+    have recursion : checkFunctionItemLanes { ctx with functions := functions } fuel =
+        checkFunctionItemLanes ctx fuel := funext (fun t => funext (fun v => ih t v))
+    simp only [checkFunctionItemLanes, recursion, checkFunctionItemLayer_withFunctions]
+
+theorem checkFunctionItemValues_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext)
+    (types : List Ty) (values : List Value) :
+    checkFunctionItemValues (mapFunctionCFGs transform ctx) types values =
+      checkFunctionItemValues ctx types values := by
+  simp only [checkFunctionItemValues, mapFunctionCFGs, checkFunctionItemLanes_withFunctions]
+
+theorem checkFunctionItemCalleeType_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext)
+    (operand : ValueId) (value : Value) :
+    checkFunctionItemCalleeType (mapFunctionCFGs transform ctx) operand value =
+      checkFunctionItemCalleeType ctx operand value := rfl
+
+theorem functionItemCall_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext)
+    (target : FuncId) (signature : FuncTyId) (convention : CallingConv) :
+    functionItemCall (mapFunctionCFGs transform ctx) target signature convention =
+      functionItemCall ctx target signature convention := rfl
+
+/-- Body resolution here is observed only for its success/error. A genuine
+    body changes under the map; erasing its unused value preserves that
+    observation without asserting equality of the transformed CFG. -/
+theorem resolveFunctionItemBody_mapUnit_mapFunctionCFGs (transform : CFG → CFG)
+    (ctx : EvalContext) (target : FuncId) :
+    (resolveFunctionItemBody (mapFunctionCFGs transform ctx) target).map (fun _ => ()) =
+      (resolveFunctionItemBody ctx target).map (fun _ => ()) := by
+  trustIrCompilerProof {
+    cases present : ctx.functions target <;>
+      simp only [resolveFunctionItemBody, mapFunctionCFGs, present, Option.map, Except.map]
+  } {
+    cases present : ctx.functions target <;>
+      simp only [resolveFunctionItemBody, mapFunctionCFGs, present, Option.map, Except.map] <;> rfl
+  }
+
+private theorem ignoreMemoryExcept_congr {α β : Type} (source target : Except SemError α)
+    (observation : source.map (fun _ => ()) = target.map (fun _ => ())) (next : Sem β) :
+    (do let _ ← Sem.fromMemoryExcept source; next) =
+      (do let _ ← Sem.fromMemoryExcept target; next) := by
+  cases source <;> cases target <;> cases observation <;> rfl
 
 /-- The original header view never depends on an executable CFG, including
     the genuine-function fallback used by manually constructed contexts. -/
@@ -289,6 +348,19 @@ theorem functionCall_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContex
     simp [functionCall, mapFunctionCFGs, hTarget,
       Except.bind, Except.pure, Bind.bind, Pure.pure]
 
+/-- CFG rewriting retains both logical resolution and the actual convention
+    inspected by ordinary indirect application. -/
+theorem functionCallWithConvention_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext)
+    (held : FuncTyId) (target : FuncId) (sig : FuncTyId) (convention : CallingConv) :
+    functionCallWithConvention (mapFunctionCFGs transform ctx) held target sig convention =
+      functionCallWithConvention ctx held target sig convention := by
+  unfold functionCallWithConvention
+  rw [functionCall_mapFunctionCFGs transform ctx held target sig]
+  cases checked : functionCall ctx held target sig with
+  | error error => rfl
+  | ok resolved =>
+    cases found : ctx.functions resolved <;> simp only [mapFunctionCFGs, found, Option.map]
+
 /-- A function-table CFG rewrite cannot perturb constant evaluation. This
     removes the former opaque-constant obstruction to proving whole-program
     refinement; call and control-flow preservation are separate obligations. -/
@@ -318,7 +390,8 @@ theorem checkClosureValueAt_withFunctions (ctx : EvalContext)
         checkClosureValueAt ctx fuel := funext (fun t => funext (fun x => ih t x))
     trustIrCompilerProof {
       rw [checkClosureValueAt.eq_2, checkClosureValueAt.eq_2]
-      simp only [hRec]
+      simp only [hRec, EvalContext.closures, EvalContext.enums, EvalContext.structs,
+        EvalContext.records, EvalContext.types, EvalContext.functionItems, functionItemDeclaration]
     } {
       conv =>
         lhs
@@ -326,7 +399,8 @@ theorem checkClosureValueAt_withFunctions (ctx : EvalContext)
       conv =>
         rhs
         unfold checkClosureValueAt
-      simp only [hRec]
+      simp only [hRec, EvalContext.closures, EvalContext.enums, EvalContext.structs,
+        EvalContext.records, EvalContext.types, EvalContext.functionItems, functionItemDeclaration]
     }
 
 /-- The value-derived structural budget is unchanged by function-body rewrites. -/
@@ -359,7 +433,7 @@ theorem checkedClosureCaptures_withFunctions (ctx : EvalContext)
     (functions : FuncId → Option EvalFunction) (cid : ClosureTyId) (captures : List Value) :
     checkedClosureCaptures { ctx with functions := functions } cid captures =
       checkedClosureCaptures ctx cid captures := by
-  simp only [checkedClosureCaptures, checkClosureValue_withFunctions]
+  simp only [checkedClosureCaptures, EvalContext.closures, checkClosureValue_withFunctions]
 
 /-- Extracting a capture preserves its exact value and every refusal after an
     arbitrary executable-function-table replacement. -/
@@ -401,16 +475,16 @@ theorem makeClosureValue_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalCo
     (cid : ClosureTyId) (fn : FuncId) (captures : List Value) :
     makeClosureValue (mapFunctionCFGs transform ctx) cid fn captures =
       makeClosureValue ctx cid fn captures := by
-  cases hDefinition : ctx.closures cid with
-  | none => simp [makeClosureValue, closureContract, mapFunctionCFGs, hDefinition, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
+  cases hDefinition : ctx.valueSource.closureTy cid with
+  | none => simp [makeClosureValue, closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
   | some definition =>
     cases hSignature : ctx.funcTys definition.func with
-    | none => simp [makeClosureValue, closureContract, mapFunctionCFGs, hDefinition, hSignature, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
+    | none => simp [makeClosureValue, closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, hSignature, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
     | some signature =>
       cases hTarget : ctx.functions fn with
       | none =>
         cases hDeclared : ctx.declared fn <;>
-          simp [makeClosureValue, closureContract, mapFunctionCFGs, hDefinition, hSignature, hTarget, hDeclared,
+          simp [makeClosureValue, closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, hSignature, hTarget, hDeclared,
           Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
       | some target =>
         cases hAbi : (signature.abi.isSome || target.body.abi.isSome) <;>
@@ -418,7 +492,7 @@ theorem makeClosureValue_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalCo
             !(closureTyListEq target.body.paramTys (definition.captures ++ signature.params)) ||
             !(closureTyListEq target.body.returnTys signature.returns) ||
             target.body.abi != signature.abi) <;>
-          simp [makeClosureValue, closureContract, mapFunctionCFGs, hDefinition, hSignature, hTarget, hAbi, hShape,
+          simp [makeClosureValue, closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, hSignature, hTarget, hAbi, hShape,
             checkClosureValue_withFunctions, Except.bind, Except.pure, Bind.bind, Pure.pure,
             throw, throwThe, MonadExceptOf.throw]
 
@@ -431,16 +505,16 @@ theorem closureCall_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext
       closureCall ctx cid fn captures sig args conv := by
   unfold closureCall
   simp only [makeClosureValue_mapFunctionCFGs]
-  cases hDefinition : ctx.closures cid with
-  | none => simp [closureContract, mapFunctionCFGs, hDefinition, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
+  cases hDefinition : ctx.valueSource.closureTy cid with
+  | none => simp [closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
   | some definition =>
     cases hSignature : ctx.funcTys definition.func with
-    | none => simp [closureContract, mapFunctionCFGs, hDefinition, hSignature, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
+    | none => simp [closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, hSignature, Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
     | some signature =>
       cases hTarget : ctx.functions fn with
       | none =>
         cases hDeclared : ctx.declared fn <;>
-          simp [closureContract, mapFunctionCFGs, hDefinition, hSignature, hTarget, hDeclared,
+          simp [closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, hSignature, hTarget, hDeclared,
           Except.bind, Except.pure, Bind.bind, Pure.pure, throw, throwThe, MonadExceptOf.throw]
       | some target =>
         cases hAbi : (signature.abi.isSome || target.body.abi.isSome) <;>
@@ -448,9 +522,56 @@ theorem closureCall_mapFunctionCFGs (transform : CFG → CFG) (ctx : EvalContext
             !(closureTyListEq target.body.paramTys (definition.captures ++ signature.params)) ||
             !(closureTyListEq target.body.returnTys signature.returns) ||
             target.body.abi != signature.abi) <;>
-          simp [closureContract, mapFunctionCFGs, hDefinition, hSignature, hTarget, hAbi, hShape,
+          simp [closureContract, mapFunctionCFGs, EvalContext.closures, hDefinition, hSignature, hTarget, hAbi, hShape,
             checkClosureValue_withFunctions, Except.bind, Except.pure, Bind.bind, Pure.pure,
             throw, throwThe, MonadExceptOf.throw]
+
+/-- The exact contextual Cast dispatcher, separated from unrelated instruction
+    cases. This exposes the operational branches without reducing pure header
+    queries or recursive byte codecs during context-congruence proofs. -/
+theorem stepInstWithContext_cast_eq (ctx : EvalContext) (op : CastOp)
+    (source destination : Ty) (operand : ValueId) :
+    stepInstWithContext ctx (.Cast op source destination operand) =
+      (match op, source, destination with
+      | .ReifyFnPointer, .FnItem held, .Func signature => do
+        let value ← Sem.lookupValue operand
+        Sem.rejectPartial value "ReifyFnPointer"
+        match value with
+        | .fnItem actual =>
+          if actual != held then
+            Sem.throwTypeError "ReifyFnPointer: item identity differs from source type"
+          let declaration ← Sem.fromMemoryExcept (functionItemDeclaration ctx held)
+          if declaration.signatureId != signature then
+            Sem.throwTypeError "ReifyFnPointer: destination signature differs from item declaration"
+          pure (.value (some (← Sem.bindFresh (.fnDef signature held))))
+        | _ => Sem.throwTypeError "ReifyFnPointer: source is not a nominal function item"
+      | _, _, _ =>
+        if (op == .Bitcast || op == .Transmute) &&
+            ((match source with | .FnItem _ => true | _ => false) ||
+             (match destination with | .FnItem _ => true | _ => false)) then do
+          let service ← match ctx.memoryService with
+            | some service => pure service
+            | none => Sem.throwTypeError "FnItem cast: original source layouts are absent"
+          if service.model != ctx.byteModel then
+            Sem.throwTypeError "FnItem cast: source layout target differs from evaluator target"
+          let sourcePlan ← Sem.fromMemoryExcept (service.query source)
+          let destinationPlan ← Sem.fromMemoryExcept (service.query destination)
+          if sourcePlan.layout.size != destinationPlan.layout.size then
+            Sem.throwTypeError "FnItem cast: byte extents differ"
+          let value ← Sem.lookupValue operand
+          Sem.rejectPartial value "FnItem cast"
+          let image ← Sem.fromMemoryExcept
+            (AggregateMemory.encode ctx.byteModel ctx.functionOrder sourcePlan value false)
+          let state ← Sem.getState
+          let result ← Sem.fromMemoryExcept
+            (AggregateMemory.decode ctx.byteModel ctx.functionOrder state.memory destinationPlan image.bytes)
+          pure (.value (some (← Sem.bindFresh result)))
+        else stepInst (.Cast op source destination operand) ctx.byteModel) := by
+  cases op <;> first
+    | rfl
+    | cases source <;> first
+      | rfl
+      | cases destination <;> rfl
 
 /-- Every contextual instruction keeps its complete state transition under a
     function-table CFG rewrite. This includes closure construction and capture
@@ -460,6 +581,12 @@ theorem stepInstWithContext_mapFunctionCFGs (transform : CFG → CFG)
     (ctx : EvalContext) (inst : Inst) :
     stepInstWithContext (mapFunctionCFGs transform ctx) inst =
       stepInstWithContext ctx inst := by
+  have frameTypes (value : Value) :
+      bindingFrameTypes (mapFunctionCFGs transform ctx) value = bindingFrameTypes ctx value := rfl
+  have itemLanes (fuel : Nat) (ty : Ty) (value : Value) :
+      checkFunctionItemLanes (mapFunctionCFGs transform ctx) fuel ty value =
+        checkFunctionItemLanes ctx fuel ty value :=
+    checkFunctionItemLanes_withFunctions ctx _ fuel ty value
   cases inst
   case Const ty c =>
     exact stepInstWithContext_const_withFunctions ctx _ ty c
@@ -467,6 +594,15 @@ theorem stepInstWithContext_mapFunctionCFGs (transform : CFG → CFG)
     cases ty <;> rfl
   case Undef ty =>
     cases ty <;> rfl
+  case Cast op source destination operand =>
+    rw [stepInstWithContext_cast_eq, stepInstWithContext_cast_eq]
+    rfl
+  case BindSlot frame slot value =>
+    simp only [stepInstWithContext, frameTypes, itemLanes] <;> rfl
+  case LoadSlot frame slot ty =>
+    simp only [stepInstWithContext, frameTypes, itemLanes] <;> rfl
+  case CloseFrame frame =>
+    simp only [stepInstWithContext, frameTypes] <;> rfl
   case ExtractElement ty array index =>
     simp only [stepInstWithContext, elementIndex_mapFunctionCFGs] <;> rfl
   case InsertElement ty array index value =>
@@ -495,9 +631,18 @@ theorem closureTermWithContext_mapFunctionCFGs (transform : CFG → CFG)
     (ctx : EvalContext) (depth : Nat) (term : Inst) (fallback : Sem InstrResult) :
     closureTermWithContext (mapFunctionCFGs transform ctx) depth term fallback =
       closureTermWithContext ctx depth term fallback := by
+  have bodyChecks (function : FuncId) (next : Sem InstrResult) :
+      (do
+        let _ ← Sem.fromMemoryExcept
+          (resolveFunctionItemBody (mapFunctionCFGs transform ctx) function)
+        next) =
+      (do let _ ← Sem.fromMemoryExcept (resolveFunctionItemBody ctx function); next) :=
+    ignoreMemoryExcept_congr _ _
+      (resolveFunctionItemBody_mapUnit_mapFunctionCFGs transform ctx function) next
   cases term <;>
-    simp only [closureTermWithContext, functionCall_mapFunctionCFGs,
-      closureCall_mapFunctionCFGs]
+    simp only [closureTermWithContext, functionCallWithConvention_mapFunctionCFGs,
+      closureCall_mapFunctionCFGs, checkFunctionItemCalleeType_mapFunctionCFGs,
+      functionItemCall_mapFunctionCFGs, bodyChecks]
 
 /-- With the same current CFG, contextual terminator resolution is independent
     of rewritten callee bodies under both panic strategies. Unwind pad lookup
@@ -782,6 +927,7 @@ theorem stepNWithContext_unreachableToReturn (ctx : EvalContext) (cfg : CFG) :
       · rename_i hT
         refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
         refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
+        refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
         apply RunsLikeUnlessUB.of_ub
         intro s
         have hRT : (ctx.resolveBlock blk).terminator = .Unreachable := by
@@ -789,6 +935,7 @@ theorem stepNWithContext_unreachableToReturn (ctx : EvalContext) (cfg : CFG) :
         simp only [hRT]
         exact ⟨_, rfl⟩
       · refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
+        refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
         refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
         refine RunsLikeUnlessUB.bind (RunsLikeUnlessUB.refl _) (fun _ => ?_)
         rename_i termResult
@@ -840,11 +987,22 @@ theorem unreachableToReturn_refines_in : behaviour_refines_in .abort unreachable
   exact behavesIn_of_runsLike ctx .abort _ cfg pc args s
     (fun fuel depth => stepNWithContext_unreachableToReturn ctx cfg fuel depth pc args) hNoUB o h
 
+private theorem checkFunctionItemValues_nil (ctx : EvalContext) (types : List Ty) :
+    checkFunctionItemValues ctx types [] = .ok () := by
+  simp only [checkFunctionItemValues, List.zip_nil_right]
+  rfl
+
 /-- Non-vacuity: in any context the UB source `unreachableCFG` becomes a
     returning body. -/
 theorem unreachableToReturn_unreachableCFG_returns_in (ctx : EvalContext) :
     ∃ r, Sem.run (stepNWithContext ctx 1 0 (unreachableToReturn unreachableCFG) ⟨0⟩ [] .abort)
-      MachineState.empty = .ok r := ⟨_, rfl⟩
+      MachineState.empty = .ok r := by
+  change ∃ r, Sem.run (do
+    if let some expected := ctx.functionReturnTypes then
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected [])
+      pure []
+    else pure []) MachineState.empty = .ok r
+  cases ctx.functionReturnTypes <;> simp only [checkFunctionItemValues_nil] <;> exact ⟨_, rfl⟩
 
 -- =================================================================
 -- Inlining, frame-discipline form, at the behaviour level
@@ -989,7 +1147,25 @@ theorem failingAssertCFG_panics_in (ctx : EvalContext) (n depth : Nat) (s : Mach
 /-- In any context, the asserts-deleted target returns. -/
 theorem assertElim_failingAssertCFG_returns_in (ctx : EvalContext) :
     ∃ r, Sem.run (stepNWithContext ctx 1 0 (assertElim failingAssertCFG) ⟨0⟩ [.bool false] .abort)
-      MachineState.empty = .ok r := ⟨_, rfl⟩
+      MachineState.empty = .ok r := by
+  trustIrCompilerProof {
+    change ∃ r, Sem.run (do
+      bindBlockParamsChecked [(⟨0⟩, .Bool)] [.bool false]
+      if let some expected := ctx.functionReturnTypes then
+        let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected [])
+        pure []
+      else pure []) MachineState.empty = .ok r
+    cases ctx.functionReturnTypes <;> simp only [checkFunctionItemValues_nil] <;> exact ⟨_, rfl⟩
+  } {
+    let bound : MachineState :=
+      { MachineState.empty with locals := ValueMap.empty.set ⟨0⟩ (.bool false), nextValueId := 1 }
+    refine ⟨([], bound), ?_⟩
+    rw [GenericCoro.Prefix.stepNWithContext_succ_layer]
+    trustIrReduce
+    all_goals
+      cases returns : ctx.functionReturnTypes <;>
+        simp only [returns, checkFunctionItemValues_nil] <;> rfl
+  }
 
 /-- Zero fuel is `outOfFuel`, at every depth. -/
 theorem stepNWithContext_zero_run (ctx : EvalContext) (depth : Nat) (cfg : CFG) (pc : BlockId)
@@ -1242,8 +1418,13 @@ theorem callProgram_zero_budget_runs_out (fuel : Nat) (s : MachineState) :
 /-- `returnCFG` returns at every positive fuel and every depth, in every
     context. -/
 theorem returnCFG_returns_in (ctx : EvalContext) (n depth : Nat) (s : MachineState) :
-    ∃ r, Sem.run (stepNWithContext ctx (n + 1) depth returnCFG ⟨0⟩ [] .abort) s = .ok r :=
-  ⟨_, rfl⟩
+    ∃ r, Sem.run (stepNWithContext ctx (n + 1) depth returnCFG ⟨0⟩ [] .abort) s = .ok r := by
+  change ∃ r, Sem.run (do
+    if let some expected := ctx.functionReturnTypes then
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected [])
+      pure []
+    else pure []) s = .ok r
+  cases ctx.functionReturnTypes <;> simp only [checkFunctionItemValues_nil] <;> exact ⟨_, rfl⟩
 
 /-- Every behaviour of `returnCFG` in a context is a return: it never traps,
     is never UB and never diverges. -/
@@ -1310,15 +1491,22 @@ def selfCallCtx : EvalContext :=
 theorem selfCall_runs_out (fuel depth : Nat) (s : MachineState) :
     Sem.run (stepNWithContext selfCallCtx fuel depth (callCFG ⟨0⟩) ⟨0⟩ [] .abort) s
       = .error .outOfFuel := by
-  induction fuel generalizing depth s with
-  | zero => rfl
-  | succ n ih =>
-    cases depth with
-    | zero => rfl
-    | succ d =>
-      rw [stepNWithContext_callReq_eq_runCallReq selfCallCtx n d (callCFG ⟨0⟩) ⟨0⟩ [] []
-        ⟨0⟩ [] rfl]
-      exact inlining_error_transfer selfCallCtx n d ⟨0⟩ _ [] s .outOfFuel rfl rfl rfl rfl (ih d _)
+  have runs (fuel : Nat) : ∀ depth returns s,
+      Sem.run (stepNWithContext { selfCallCtx with functionReturnTypes := returns }
+        fuel depth (callCFG ⟨0⟩) ⟨0⟩ [] .abort) s = .error .outOfFuel := by
+    induction fuel with
+    | zero => intro _ _ _; rfl
+    | succ n ih =>
+      intro depth returns s
+      cases depth with
+      | zero => rfl
+      | succ d =>
+        rw [stepNWithContext_callReq_eq_runCallReq
+          { selfCallCtx with functionReturnTypes := returns } n d (callCFG ⟨0⟩) ⟨0⟩ [] []
+          ⟨0⟩ [] rfl]
+        exact inlining_error_transfer { selfCallCtx with functionReturnTypes := returns }
+          n d ⟨0⟩ _ [] s .outOfFuel rfl rfl rfl rfl (ih d (some []) _)
+  exact runs fuel depth none s
 
 /-- **Review control: unbounded recursion is divergence.** Replacing a
     returning body by a call that recurses forever is refused: call depth is
@@ -1340,7 +1528,24 @@ theorem panicToLoop_failingAssertBrCFG_diverges_in (fuel depth : Nat) (s : Machi
     have hStep : ∃ s', Sem.run (stepNWithContext EvalContext.empty (n + 1) depth
           (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false] .abort) s
         = Sem.run (stepNWithContext EvalContext.empty n depth
-          (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false] .abort) s' := ⟨_, rfl⟩
+          (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false] .abort) s' := by
+      trustIrCompilerProof { exact ⟨_, rfl⟩ } {
+        let bound : MachineState :=
+          { s with
+            locals := s.locals.set ⟨0⟩ (.bool false)
+            nextValueId := if s.nextValueId ≤ 1 then 1 else s.nextValueId }
+        have one (recurse : GenericCoro.Prefix.Recurse) :
+            Sem.run (GenericCoro.Prefix.evalLayer recurse EvalContext.empty depth
+              (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false] .abort) s =
+              Sem.run (recurse EvalContext.empty depth
+                (panicToLoop failingAssertBrCFG) ⟨0⟩ [.bool false] .abort) bound := by
+          dsimp only [bound]
+          trustIrReduce
+          congr 1 <;> trustIrReduce
+        refine ⟨bound, ?_⟩
+        rw [GenericCoro.Prefix.stepNWithContext_succ_layer]
+        exact one _
+      }
     obtain ⟨s', hs'⟩ := hStep
     rw [hs']
     exact ih s'
@@ -1353,7 +1558,8 @@ theorem panicToLoop_not_refines_in : ¬ behaviour_refines_in .abort panicToLoop 
   intro h
   have hPanic : ∀ n depth, Sem.run (stepNWithContext EvalContext.empty (n + 1) depth
       failingAssertBrCFG ⟨0⟩ [.bool false] .abort) MachineState.empty
-        = .error (.panic "assertion failed" none) := fun _ _ => rfl
+        = .error (.panic "assertion failed" none) := by
+    trustIrCompilerProof { exact fun _ _ => rfl } { exact fun _ _ => by trustIrReduce }
   have hNoUB : ¬ BehavesIn EvalContext.empty .abort failingAssertBrCFG ⟨0⟩ [.bool false]
       MachineState.empty .ub := by
     intro hB

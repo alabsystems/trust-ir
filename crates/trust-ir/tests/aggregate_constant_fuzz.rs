@@ -336,6 +336,9 @@ fn decl_ty_for_wrapper(module: &mut Module, c: &Constant) -> Ty {
                 .expect("Module::add_func_type: test fixture");
             Ty::Func(ft)
         }
+        // This serialization-only wrapper preserves the nominal target; it
+        // does not manufacture the declaration needed for value admission.
+        Constant::FnItem(function) => Ty::FnItem(*function),
         // A relocatable symbol address is a native pointer-sized value.
         Constant::SymbolAddr { .. } => Ty::Ptr,
         Constant::PhantomData => Ty::Unit,

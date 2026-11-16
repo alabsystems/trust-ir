@@ -1184,10 +1184,14 @@ pub enum InstG<X> {
     },
     /// Indirect call through a first-class callee value.
     ///
-    /// # Two callee shapes, one instruction (G18-2)
+    /// # Three exact callee shapes, one instruction
     ///
     /// * **`Ty::Func(s)`** — a bare function pointer. `s` must equal `sig`, and
     ///   `args` must match `func_types[sig]` exactly. Unchanged.
+    /// * **`Ty::FnItem(f)`** — the zero-byte nominal singleton. `f` must
+    ///   resolve uniquely, its actual signature id must equal `sig`, and its
+    ///   calling convention must equal the declared edge convention. No
+    ///   environment or code-pointer fallback is involved.
     /// * **`Ty::Closure(c)`** — a first-class closure. `sig` must equal
     ///   `closure_types[c].func`, the closure's APPARENT signature (what a
     ///   caller sees), and `args` is checked against it by that same rule. The
@@ -2091,6 +2095,49 @@ pub enum InstG<X> {
         /// One coordinate tensor per axis of `init`, in axis order.
         coords: Vec<ValueId>,
     },
+    /// The deref of a `Box<T>`: Rust's `BoxDerefTransmute`, a pointer-to-
+    /// pointer transmute carrying the validity hypothesis it rests on (wire
+    /// v72, Inst tag 77; `docs/SPEC_RATIFICATIONS.md` §28).
+    ///
+    /// One result of type `ptr_ty`, EQUAL to `operand`: bits and provenance
+    /// are preserved. The instruction is undefined behaviour unless every
+    /// conjunct of "valid as a `Box` of `pointee`" holds at this point: the
+    /// address is non-null, it is a multiple of the pointee's alignment, and,
+    /// for a pointee of positive size, it points into a live allocation
+    /// covering the pointee's bytes. The reference interpreter checks all
+    /// three and refuses a false one as undefined behaviour.
+    ///
+    /// That undefined behaviour is NOT a licence to transform. No consumer
+    /// or pass may use it, or a fact below a tier its own contract states,
+    /// to remove a check or a branch, or to move or introduce a memory
+    /// access; `Dereferenceable` holds at this instruction only and is never
+    /// carried to another program point (§28, "No licence from the undefined
+    /// behaviour"). The admitted evidence is a named assumption, and a
+    /// named assumption is carried and reported, never acted on.
+    ///
+    /// `fact` is MANDATORY and is the carrier of that hypothesis: per
+    /// conjunct, the authority the producer holds it on
+    /// ([`crate::box_validity::BoxValidityFact`]). It is NOT a proof that the
+    /// conjuncts hold, it says nothing about uniqueness, about the pointee's
+    /// bytes or about the allocator, and it never changes what the
+    /// instruction computes. A consumer MUST validate it before lowering and
+    /// refuse a missing, malformed or out-of-scope one
+    /// (`refuse/box_deref_conjunct_missing` and its sibling rows); a consumer
+    /// that has not modelled this instruction refuses it by name, never
+    /// lowers it as a plain `Cast` with the fact dropped. Pointer to pointer
+    /// only: projecting the pointer out of the `Box` aggregate stays in the
+    /// existing constructs. Outside the lowering-target subset.
+    BoxDeref {
+        /// The operand's type and the result's type. `Ty::Ptr` for every
+        /// stage-1 pointee.
+        ptr_ty: TyG<X>,
+        /// What the box points at.
+        pointee: crate::box_validity::BoxPointeeG<X>,
+        /// The box's pointer.
+        operand: ValueId,
+        /// The validity hypothesis, with its evidence.
+        fact: Box<crate::box_validity::BoxValidityFact>,
+    },
 }
 
 /// One node of an [`InstG::TensorMap`] body (PKG-U13c): a scalar
@@ -2169,12 +2216,26 @@ impl<X: Clone> TensorMapNode<X> {
 impl<X> TensorMapNode<X> {
     /// Every type this node spells, in field order.
     pub fn types(&self) -> Vec<&TyG<X>> {
+        let (first, second) = self.type_fields();
+        match second {
+            Some(second) => vec![first, second],
+            None => vec![first],
+        }
+    }
+
+    /// Borrow every spelled type in field order without allocating scratch.
+    pub fn iter_types(&self) -> impl Iterator<Item = &TyG<X>> + '_ {
+        let (first, second) = self.type_fields();
+        std::iter::once(first).chain(second)
+    }
+
+    fn type_fields(&self) -> (&TyG<X>, Option<&TyG<X>>) {
         match self {
             TensorMapNode::BinOp { ty, .. }
             | TensorMapNode::UnOp { ty, .. }
             | TensorMapNode::ICmp { ty, .. }
-            | TensorMapNode::Select { ty, .. } => vec![ty],
-            TensorMapNode::Cast { src_ty, dst_ty, .. } => vec![src_ty, dst_ty],
+            | TensorMapNode::Select { ty, .. } => (ty, None),
+            TensorMapNode::Cast { src_ty, dst_ty, .. } => (src_ty, Some(dst_ty)),
         }
     }
 }
@@ -2633,6 +2694,7 @@ variant_shape! {
         TensorView,
         TensorGather,
         TensorScatter,
+        BoxDeref,
     }
 }
 
@@ -2980,6 +3042,8 @@ impl Inst {
                     try_visit!(coord);
                 }
             }
+            // ONE operand: the fact names no SSA value.
+            Inst::BoxDeref { operand, .. } => try_visit!(*operand),
             Inst::ExtractField { aggregate, .. } => try_visit!(*aggregate),
             Inst::InsertField {
                 aggregate, value, ..
@@ -3318,6 +3382,7 @@ impl Inst {
             | Inst::DialectOp(_)
             | Inst::MakeAggregate { .. }
             | Inst::MakeClosure { .. }
+            | Inst::BoxDeref { .. }
             | Inst::ArraySplat { .. }
             | Inst::TensorContract { .. }
             | Inst::TensorMap { .. }
@@ -3542,6 +3607,13 @@ impl Inst {
             // lane-typing rule IS its side condition — so an unused result is
             // freely removable.
             Inst::MakeAggregate { .. } | Inst::MakeClosure { .. } => false,
+
+            // Point-in-time Box validity is checked at this exact program
+            // point. Section 28 forbids deleting, moving, hoisting or
+            // speculating the check until a consumer contract explicitly
+            // licenses a transformation, so DCE must retain it even when its
+            // pointer-copy result is unused.
+            Inst::BoxDeref { .. } => true,
 
             // `n` copies of one register value: a fresh array value, total and
             // statically typed (the validator's element rule is its side

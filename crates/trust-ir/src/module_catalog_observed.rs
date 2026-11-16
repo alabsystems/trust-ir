@@ -34,6 +34,27 @@ impl<'module> ModuleFunctionCatalog<'module> {
         session: &mut ObservedSession<'_, O>,
         site: ExecutionSite,
     ) -> Result<Self, ObservedValueError> {
+        Self::build_observed(module, session, site, ExecutionSite::Entry)
+    }
+
+    /// Composite operations whose contract keeps every child event at their
+    /// original request site use the same row/index algorithm under that site.
+    /// This changes event location only; it introduces no owner or grant and
+    /// does not omit any declaration, fee, duplicate check or cleanup.
+    pub(crate) fn new_at_request_observed<O: ExecutionObserver>(
+        module: &'module Module,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) -> Result<Self, ObservedValueError> {
+        Self::build_observed(module, session, site, |_| site)
+    }
+
+    fn build_observed<O: ExecutionObserver>(
+        module: &'module Module,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+        declaration_site: impl Fn(crate::FuncId) -> ExecutionSite,
+    ) -> Result<Self, ObservedValueError> {
         session.admit(ExecutionProgress {
             phase: ExecutionPhase::ModuleLookup,
             site,
@@ -48,7 +69,7 @@ impl<'module> ModuleFunctionCatalog<'module> {
                 )?;
                 session.admit(ExecutionProgress {
                     phase: ExecutionPhase::ModuleLookup,
-                    site: ExecutionSite::Entry(function.id),
+                    site: declaration_site(function.id),
                     work: cost.work,
                     copy_bytes: cost.copy_bytes,
                 })?;

@@ -48,11 +48,8 @@ theorem stepInstWithContext_nonpartial_undef (ctx : EvalContext) (ty : Ty)
 
 private def unwrittenEnumContext : EvalContext :=
   { EvalContext.empty with
-    enums := fun id => if id.index == 0 then
-      some { id := ⟨0⟩
-             name := "CarriesTuple"
-             variants := [{ name := "Only", fields := [.Tuple [.U64, .U64]] }] }
-      else none }
+    valueSource := FunctionItemPresence.prepare
+      { enums := [{ id := ⟨0⟩, name := "CarriesTuple", variants := [{ name := "Only", fields := [.Tuple [.U64, .U64]] }] }] } }
 
 theorem makeAggregateValueWithContext_transports_unwritten_tuple :
     makeAggregateValueWithContext unwrittenEnumContext (.Enum ⟨0⟩) (some 0)

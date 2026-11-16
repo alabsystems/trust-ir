@@ -106,9 +106,11 @@ fn prefix_graph(cyclic: bool) -> PrefixGraph {
     }
 }
 
+type EntryArrival = (Option<EntryHeaderEdge>, Vec<ValueId>, Vec<ValueId>);
+
 struct EntryModel {
     inner: Model,
-    arrivals: RefCell<Vec<(Option<EntryHeaderEdge>, Vec<ValueId>, Vec<ValueId>)>>,
+    arrivals: RefCell<Vec<EntryArrival>>,
     instructions: RefCell<Vec<(BlockId, usize)>>,
 }
 impl EntryModel {
@@ -433,10 +435,10 @@ fn entry_image_refuses_original_invalid_returns_residual_cycles_and_limits() {
         .find(|f| f.id == g.g.function)
         .unwrap();
     for block in &mut f.blocks {
-        if block.id != g.g.failed {
-            if let Inst::Return { values } = &mut block.body.last_mut().unwrap().inst {
-                values.clear();
-            }
+        if block.id != g.g.failed
+            && let Inst::Return { values } = &mut block.body.last_mut().unwrap().inst
+        {
+            values.clear();
         }
     }
     let report = crate::validate_module_report(&invalid);

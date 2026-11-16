@@ -118,6 +118,21 @@ fn evidence<O: ExecutionObserver>(
             same_size(table, src, dst, work)
         }
         CastOp::ReifyFnPointer => {
+            if let (Ty::FnItem(target), Ty::Func(signature)) = (src, dst) {
+                if !work.function_item_valid(table.module, *target)?
+                    || work
+                        .function_headers
+                        .get(&target.index())
+                        .copied()
+                        .flatten()
+                        != Some(*signature)
+                {
+                    return Err(LayoutError::NotFunctionPointerSource(src.shape()).into());
+                }
+                return Ok(CastLayoutEvidence::ReifyFnPointer {
+                    pointer_bits: table.module.pointer_bits(),
+                });
+            }
             if !matches!(src, Ty::Func(_)) {
                 return Err(LayoutError::NotFunctionPointerSource(src.shape()).into());
             }

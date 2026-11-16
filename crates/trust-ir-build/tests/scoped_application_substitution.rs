@@ -159,10 +159,15 @@ fn conditional_result_source_survives_applied_function_substitution() {
                 &scope,
                 &external,
                 &bindings,
-                &[observation.clone()],
+                std::slice::from_ref(&observation),
             )
         } else {
-            parts.substitute_scoped_terms(&scope, &external, &bindings, &[observation.clone()])
+            parts.substitute_scoped_terms(
+                &scope,
+                &external,
+                &bindings,
+                std::slice::from_ref(&observation),
+            )
         }
         .unwrap();
         let endpoint = candidate.remove(0);
@@ -355,7 +360,7 @@ fn application_substitution_refuses_foreign_duplicate_shadowed_and_open_inputs()
                     (f.clone(), replacement.clone()),
                     (f.clone(), replacement.clone())
                 ],
-                &[root.clone()]
+                std::slice::from_ref(&root)
             )
             .is_err()
     );
@@ -365,7 +370,7 @@ fn application_substitution_refuses_foreign_duplicate_shadowed_and_open_inputs()
                 &scope,
                 &external,
                 &[(absent.clone(), Expr::nat_lit(0))],
-                &[root.clone()]
+                std::slice::from_ref(&root)
             )
             .is_err()
     );
@@ -375,7 +380,7 @@ fn application_substitution_refuses_foreign_duplicate_shadowed_and_open_inputs()
                 &scope,
                 &external,
                 &[(f.clone(), Expr::bvar(0))],
-                &[root.clone()]
+                std::slice::from_ref(&root)
             )
             .unwrap_err()
             .contains("loose bound")

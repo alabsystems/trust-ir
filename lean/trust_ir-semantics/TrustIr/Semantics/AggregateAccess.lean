@@ -18,6 +18,14 @@ theorem checkedPlan_errors (error : SemError → Prop)
   · exact (safe ty).1
   · exact typeErrors _
 
+/-- A matching target exposes the real prepared query, including its refusals. -/
+theorem checkedPlan_of_model (service : Service) (model : ByteModel) (ty : Ty)
+    (matching : model = service.model) :
+    checkedPlan service model ty = service.query ty := by
+  unfold checkedPlan
+  rw [← matching]
+  cases model <;> rfl
+
 def layoutQuery (service : Service) (model : ByteModel) (ty : Ty) : Except SemError MemoryTypeLayout := do
   if model == service.model then service.queryLayout ty
   else .error (.typeError "memory: source layout target does not match evaluator target")
@@ -56,6 +64,36 @@ def loadValue (service : Service) (order : FunctionAddressOrder) (ty : Ty) (poin
         | none => Sem.fromMemoryExcept (decodeUnwritten model order state.memory plan image)
         | some _ => Sem.throwUB "Load: reading uninitialized covered memory"
       | _ => Sem.throwUB "Load: reading uninitialized covered memory"
+
+/-- A zero-byte typed load still checks its real prepared plan, pointer and
+    allocation. Once those checks succeed, its result is the original decoder's
+    result, including any decoder refusal; no value is assumed here. -/
+theorem loadValue_run_empty (service : Service) (order : FunctionAddressOrder)
+    (ty : Ty) (plan : Plan) (held : Value) (state : MachineState)
+    (address : Nat) (allocation : AllocId) (model : ByteModel)
+    (matching : model = service.model)
+    (prepared : service.query ty = .ok plan)
+    (layout : plan.layout = ⟨0, 1⟩)
+    (pointer : held = .ptr address (some allocation))
+    (access : Sem.run (Sem.checkedAccess "Load" address allocation 0 1 model) state =
+      .ok (address, state))
+    (image : state.memory.readImage address 0 = ByteImage.empty) :
+    Sem.run (loadValue service order ty held false none model) state =
+      Sem.run (Sem.fromMemoryExcept (decode model order state.memory plan ByteImage.empty)) state := by
+  unfold loadValue
+  rw [checkedPlan_of_model _ _ _ matching, prepared]
+  have alignment_eq : checkedMemoryAlign "Load" 1 none = .ok 1 := rfl
+  have reject : Sem.rejectPartial (.ptr address (some allocation)) "Load" = pure () := rfl
+  have expected : Sem.expectPointer "Load" (.ptr address (some allocation)) =
+      pure (address, allocation) := rfl
+  simp only [layout, alignment_eq, Sem.fromMemoryExcept, pure_bind, pointer, reject, expected]
+  rw [Sem.run_bind, access]
+  simp only [Except.bind]
+  have get_state : Sem.run Sem.getState state = .ok (state, state) := rfl
+  rw [Sem.run_bind, get_state]
+  simp only [Except.bind, image]
+  have missing : (firstMissing ByteImage.empty).isNone = true := rfl
+  simp only [missing, if_true]
 
 def load (service : Service) (order : FunctionAddressOrder) (ty : Ty) (pointer : ValueId)
     (strict : Bool := false) (align : Option Nat := none) (model : ByteModel := .le64) : Sem ValueId := do

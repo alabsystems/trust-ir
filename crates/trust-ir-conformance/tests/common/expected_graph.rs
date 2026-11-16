@@ -63,6 +63,7 @@ pub(super) fn expected_graph(values: &[Val]) -> Result<Graph, String> {
             }
             Val::Closure { func, captures } => json!(["closure", func, list(nodes, captures)?]),
             Val::Function { signature, func } => json!(["function", signature, func]),
+            Val::FnItem(func) => json!(["fnitem", func]),
             Val::Uninit => json!(["uninit"]),
             Val::PtrAt { .. } | Val::Tensor { .. } | Val::Other(_) => {
                 return Err("expectation has no W5b graph observation".into());

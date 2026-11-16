@@ -28,7 +28,8 @@ private theorem evalFunctionOfWithTypes_inferred (signatures : Array FuncTyDef)
     (actual : inferLocalTypesWithEvidence direct (fun id => (trustIrArrayGet? signatures id.index))
       (graphParams rows) (graphNodes rows) = .ok inferred) :
     evalFunctionOfWithTypes signatures direct function rows = .ok
-      { body := {paramTys := signature.params, returnTys := signature.returns, abi := signature.abi, isVararg := signature.isVararg}
+      { sourceId := some function.id
+        body := {paramTys := signature.params, returnTys := signature.returns, abi := signature.abi, isVararg := signature.isVararg}
         cfg := TrustIrEval.cfgOf rows, entryBlock := function.entry,
         callingConv := function.callingConvention, localTypes := some inferred.table } := by
   trustIrCompilerProof {
@@ -83,7 +84,8 @@ theorem lowerFunction_evaluated (signatures : Array FuncTyDef)
           | expanded targetRows sourceInferred targetInferred =>
             subst target
             let header : EvalFunction :=
-              { body := {paramTys := signature.params, returnTys := signature.returns, abi := signature.abi, isVararg := signature.isVararg}
+              { sourceId := some source.id
+                body := {paramTys := signature.params, returnTys := signature.returns, abi := signature.abi, isVararg := signature.isVararg}
                 cfg := TrustIrEval.cfgOf rows, entryBlock := source.entry,
                 callingConv := source.callingConvention }
             have sourceEvaluated := evalFunctionOfWithTypes_inferred signatures direct source rows signature
@@ -140,7 +142,8 @@ theorem lowerFunction_evaluated (signatures : Array FuncTyDef)
           | expanded targetRows sourceInferred targetInferred =>
             subst target
             let header : EvalFunction :=
-              { body := {paramTys := signature.params, returnTys := signature.returns, abi := signature.abi, isVararg := signature.isVararg}
+              { sourceId := some source.id
+                body := {paramTys := signature.params, returnTys := signature.returns, abi := signature.abi, isVararg := signature.isVararg}
                 cfg := TrustIrEval.cfgOf rows, entryBlock := source.entry,
                 callingConv := source.callingConvention }
             have sourceEvaluated := evalFunctionOfWithTypes_inferred signatures direct source rows signature
@@ -368,6 +371,102 @@ private theorem produced_imageRoots (signatures : Array FuncTyDef) (direct : Fun
       simp only [List.flatMap_cons, lowerFunction_imageRoots signatures direct _ _ actual types, ih]
   }
 
+/-- The exact original OpenFrame census is source metadata, not a
+    reconstructed type from runtime frame children. -/
+private def frameDeclaration : Inst → Option BindingFrameDef
+  | .OpenFrame declaration => some declaration
+  | _ => none
+
+private def blockFrameDeclarations (block : BasicBlock) : List BindingFrameDef :=
+  (block.body ++ [block.terminator]).filterMap frameDeclaration
+
+private def graphFrameDeclarations (rows : Rows) : List BindingFrameDef :=
+  trustIrListBind rows (fun row => blockFrameDeclarations row.2)
+
+private theorem frameDeclaration_append (left right : List Inst) :
+    (left ++ right).filterMap frameDeclaration =
+      left.filterMap frameDeclaration ++ right.filterMap frameDeclaration := by
+  induction left with
+  | nil => rfl
+  | cons inst rest ih =>
+    cases found : frameDeclaration inst <;>
+      simp only [List.cons_append, List.filterMap, found, List.cons_append]
+    all_goals first | exact ih | exact congrArg (List.cons _) ih
+
+private theorem expandedEntry_frameDeclarations (names : Names) (block : BasicBlock) :
+    blockFrameDeclarations (expandedEntry names block) = blockFrameDeclarations block := by
+  cases term : block.terminator <;> simp only [expandedEntry, term]
+  simp only [blockFrameDeclarations, term, frameDeclaration_append,
+    List.filterMap, frameDeclaration, List.append_nil]
+
+private theorem plans_frameDeclarations {domain : Nat} {used : List Nat}
+    {before after : GenericCoroFreshCursor.Cursor domain used} {source target : Rows} {trace : Trace}
+    (plan : Plans before after source target trace) :
+    graphFrameDeclarations target = graphFrameDeclarations source := by
+  induction plan with
+  | nil => rfl
+  | keep _ _ id block _ source target trace _rest ih =>
+    trustIrCompilerProof {
+      simp only [graphFrameDeclarations, List.cons_bind] at ih ⊢
+    } {
+      simp only [graphFrameDeclarations, List.flatMap_cons] at ih ⊢
+    }
+    rw [ih]
+  | expand _ _ _ id block _ names _ source target trace _rest ih =>
+    trustIrCompilerProof {
+      simp only [graphFrameDeclarations, List.cons_bind] at ih ⊢
+    } {
+      simp only [graphFrameDeclarations, List.flatMap_cons] at ih ⊢
+    }
+    rw [expandedEntry_frameDeclarations, ih]
+
+private def functionFrameDeclarations (function : Function) : Option (List BindingFrameDef) :=
+  function.blocks.toOption.map graphFrameDeclarations
+
+private theorem lowerFunction_frameDeclarations (signatures : Array FuncTyDef)
+    (direct : FuncId → Option FuncTyDef) (source target : Function)
+    (actual : lowerFunction signatures direct source = .ok target) :
+    functionFrameDeclarations target = functionFrameDeclarations source := by
+  rcases lowerFunction_prepared signatures direct source target actual with declaration | prepared
+  · rw [declaration.2]
+  · obtain ⟨rows, expansion, _declared, sourceBody, prepared, targetEq⟩ := prepared
+    have ready := prepareRows_ready u32Domain direct (fun id => trustIrArrayGet? signatures id.index) rows expansion prepared
+    cases expansion with
+    | unchanged inferred => rw [targetEq]
+    | capacity inferred certificate => exact False.elim targetEq
+    | expanded targetRows sourceInferred targetInferred =>
+      rw [targetEq, functionFrameDeclarations, functionFrameDeclarations, sourceBody]
+      simp only [Except.toOption, Option.map]
+      rw [ready.2.1]
+      exact congrArg some (plans_frameDeclarations (lowerRows_ready u32Domain rows ready.2.2.1))
+
+private theorem produced_functionDeclarations (signatures : Array FuncTyDef)
+    (direct : FuncId → Option FuncTyDef) {source target : List Function}
+    (produced : Produced signatures direct source target) :
+    target.map (functionDeclarationOf signatures) =
+      source.map (functionDeclarationOf signatures) := by
+  induction produced with
+  | nil => rfl
+  | cons actual _rest ih =>
+    simp only [List.map_cons, ih]
+    apply congrArg (List.cons · _)
+    have same := (lowerFunction_law signatures direct _ _ actual).1
+    have frames := lowerFunction_frameDeclarations signatures direct _ _ actual
+    unfold functionDeclarationOf
+    rw [sameHeader_id same, sameHeader_ty same, sameHeader_callingConvention same]
+    congr 1
+    all_goals exact frames
+
+private theorem produced_valueSource (source : Module) (targets : List Function)
+    (produced : Produced source.funcTys.toArray
+      (directHeaders (headerIndex source.funcTys.toArray source.functions)) source.functions targets) :
+    valueSourceOf {source with functions := targets} = valueSourceOf source := by
+  have functions := produced_functionDeclarations _ _ produced
+  unfold valueSourceOf
+  apply congrArg FunctionItemPresence.prepare
+  apply congrArg (fun rows => ({ types := source.types, structs := source.structs, enums := source.enums, records := source.records, closures := source.closureTys, functions := rows } : FunctionItemPresence.Source))
+  exact functions
+
 private theorem header_foldl {α : Type} (step : α → Function → α)
     (respects : ∀ state source target, sameHeader source target → step state target = step state source)
     {source target : List Function} (law : FunctionsLaw source target) (initial : α) :
@@ -396,6 +495,13 @@ private theorem headers_original (signatures : Array FuncTyDef)
   apply header_foldl _ _ law
   intro table source target same
   rw [sameHeader_id same, sameHeader_ty same, sameHeader_callingConvention same]
+
+private theorem header_functions {source target : List Function} (law : FunctionsLaw source target) :
+    target.map (fun function => (function.id, function.ty)) =
+      source.map (fun function => (function.id, function.ty)) := by
+  induction law with
+  | nil => rfl
+  | cons law _rest ih => simp only [List.map_cons, sameHeader_id law.1, sameHeader_ty law.1, ih]
 
 private theorem header_ids {source target : List Function} (law : FunctionsLaw source target) :
     target.map Function.id = source.map Function.id := by
@@ -511,6 +617,10 @@ private theorem contextOf_erased_produced (source : Module) (targets : List Func
       produced_evaluated _ _ produced
     dsimp only [executableEntries] at sourceEntries targetEntries
     have originalHeaders := headers_original source.funcTys.toArray law
+    have valueSource (selected : D ByteModel) :
+        valueSourceOf {source with byteModel := selected, functions := targets} = valueSourceOf source :=
+      produced_valueSource {source with byteModel := selected} targets produced
+    have storageHeaders := header_functions law
     have indexes := law.headerIndex source.funcTys.toArray
     have order := header_ids law
     have declarations := header_declared law
@@ -527,15 +637,10 @@ private theorem contextOf_erased_produced (source : Module) (targets : List Func
         simp only [contextOf, FunctionLookup.findFunction_prepare, FunctionLookup.findError_prepare,
           FunctionLookup.isDeclared_prepare, model, Bind.bind, Except.bind, typed, Bool.false_eq_true,
           if_false, HeaderMaps.localTypeHeadersOf_eq, indexes, Pure.pure, Except.pure, Except.map]
-        simp only [eraseFunctions]
+        simp only [eraseFunctions, originalHeaders, valueSource,
+          sourceEntries, targetEntries, order, declarations, dropGlueOf]
         congr 1
-        try simp only [originalHeaders]
-        simp only [sourceEntries, targetEntries,
-          function_errors_none source.functions sourceDecoded FunctionUpdate.source updates,
-          function_errors_none targets targetDecoded FunctionUpdate.target updates,
-          order, declarations, dropGlueOf]
-        simp only [memoryServiceOf_eq, memoryRootsOfInst_eq]
-        change _ = _
+        simp only [memoryServiceOf_eq, memoryRootsOfInst_eq, storageHeaders]
         have rootsEqual := congrArg (fun rest =>
           (source.globals.map (·.ty)).filter (fun ty => !ty.hasCanonicalMemoryLayout) ++ rest) roots
         congr 1
@@ -605,6 +710,10 @@ private theorem contextOf_erased_produced (source : Module) (targets : List Func
       produced_evaluated _ _ produced
     dsimp only [executableEntries] at sourceEntries targetEntries
     have originalHeaders := headers_original source.funcTys.toArray law
+    have valueSource (selected : D ByteModel) :
+        valueSourceOf {source with byteModel := selected, functions := targets} = valueSourceOf source :=
+      produced_valueSource {source with byteModel := selected} targets produced
+    have storageHeaders := header_functions law
     have indexes := law.headerIndex source.funcTys.toArray
     have order := header_ids law
     have declarations := header_declared law
@@ -621,15 +730,10 @@ private theorem contextOf_erased_produced (source : Module) (targets : List Func
         simp only [contextOf, FunctionLookup.findFunction_prepare, FunctionLookup.findError_prepare,
           FunctionLookup.isDeclared_prepare, model, Bind.bind, Except.bind, typed, Bool.false_eq_true,
           if_false, HeaderMaps.localTypeHeadersOf_eq, indexes, Pure.pure, Except.pure, Except.map]
-        simp only [eraseFunctions]
+        simp only [eraseFunctions, originalHeaders, valueSource,
+          sourceEntries, targetEntries, order, declarations, dropGlueOf]
         congr 1
-        try simp only [originalHeaders]
-        simp only [sourceEntries, targetEntries,
-          function_errors_none source.functions sourceDecoded FunctionUpdate.source updates,
-          function_errors_none targets targetDecoded FunctionUpdate.target updates,
-          order, declarations, dropGlueOf]
-        simp only [memoryServiceOf_eq, memoryRootsOfInst_eq]
-        change _ = _
+        simp only [memoryServiceOf_eq, memoryRootsOfInst_eq, storageHeaders]
         have rootsEqual := congrArg (fun rest =>
           (source.globals.map (·.ty)).filter (fun ty => !ty.hasCanonicalMemoryLayout) ++ rest) roots
         congr 1

@@ -63,7 +63,7 @@ import TrustIr.Proofs.TransformRefinementCtx
 
 #trustIrAxiomsPinned TrustIr.lookupFunctionHeader_mapFunctionCFGs == [propext] modern [propext]
 
-#trustIrAxiomsPinned TrustIr.functionHeader_matches_mapCFG == [propext, Classical.choice, Quot.sound] modern []
+#trustIrAxiomsPinned TrustIr.functionHeader_matches_mapCFG == [] modern []
 
 #trustIrAxiomsPinned TrustIr.functionErrors_mapFunctionCFGs == [] modern []
 
@@ -83,17 +83,17 @@ import TrustIr.Proofs.TransformRefinementCtx
 
 #trustIrAxiomsPinned TrustIr.AggregateImageProps.inhabited_variant_encodes_with_dead_payload_absent == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-#trustIrAxiomsPinned TrustIr.AggregateImageProps.covered_dead_tag_is_type_error_before_missing_payload == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
+#trustIrAxiomsPinned TrustIr.AggregateImageProps.covered_dead_tag_is_ub_before_missing_payload == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
 
-#trustIrAxiomsPinned TrustIr.AggregateImageProps.initialized_dead_tag_is_type_error == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+#trustIrAxiomsPinned TrustIr.AggregateImageProps.initialized_dead_tag_is_ub == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
 #trustIrAxiomsPinned TrustIr.AggregateImageProps.dead_value_store_is_type_error == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-#trustIrAxiomsPinned TrustIr.AggregateImageProps.unknown_tag_remains_type_error == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
+#trustIrAxiomsPinned TrustIr.AggregateImageProps.unknown_tag_is_ub == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
 
 #trustIrAxiomsPinned TrustIr.AggregateImageProps.missing_tag_remains_uninitialized == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
 
-#trustIrAxiomsPinned TrustIr.AggregateImageProps.zero_byte_untagged_dead_is_type_error == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+#trustIrAxiomsPinned TrustIr.AggregateImageProps.zero_byte_untagged_dead_is_ub == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
 #trustIrAxiomsPinned TrustIr.AggregateImageProps.standalone_never_image_query_remains_refused == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 

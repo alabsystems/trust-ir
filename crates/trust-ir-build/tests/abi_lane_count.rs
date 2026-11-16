@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use trust_ir::ty::{
     EnumDef, EnumLayoutDescriptor, EnumTagEncoding, EnumTagRepr, EnumVariant, FatPtrKind, FieldDef,
-    FuncTy, StructDef, StructRepr, Ty,
+    FieldStorageLayout, FuncTy, StructDef, StructRepr, Ty, UninhabitedVariantLayout,
 };
 use trust_ir::value::{BlockId, EnumId, FuncTyId, RecordId, StructId, TyId};
 use trust_ir::{Endianness, FuncId, Function, Module, ParamAttrs, PassMode, TargetInfo};
@@ -71,6 +71,90 @@ fn is_closed_scalar_ty(ty: &Ty) -> bool {
     )
 }
 
+/// Authenticate the actual nominal header without asking the production
+/// catalog, layout service or ABI counter. Function IDs are sparse; an
+/// ambiguous ID and a missing signature cannot establish a singleton.
+fn item_lanes(module: &Module, id: FuncId) -> Option<usize> {
+    let mut declarations = module.functions.iter().filter(|function| function.id == id);
+    let declaration = declarations.next()?;
+    if declarations.next().is_some() {
+        return None;
+    }
+    module.func_types.get(declaration.ty.as_usize())?;
+    Some(0)
+}
+
+fn rounded_up(size: u64, align: u64) -> Option<u64> {
+    align.is_power_of_two().then_some(())?;
+    size.checked_add(align - 1).map(|size| size / align * align)
+}
+
+/// The layout API judges source references/deadness and physical geometry,
+/// just as it supplies scalar sizes above. This oracle then independently
+/// checks the register envelope; it never calls the production ABI counter.
+/// For each occupied lane its predecessor is found by a pairwise comparison,
+/// rather than by the counter's sorted cursor walk. Dead fields are not queried.
+fn profiled_live_variants(module: &Module, def: &EnumDef) -> Option<Vec<usize>> {
+    let descriptor = def.layout.as_ref()?;
+    let EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } = &descriptor.encoding else {
+        return None;
+    };
+    let table = module.layout_table();
+    let image = table.enum_layout(def.id).ok()?;
+    let dimensions = |ty: &Ty| -> Option<(u64, u64)> {
+        let shape = table.ty_layout(ty).ok()?;
+        let size = shape.size_bytes()?;
+        let align = shape.align_bits.filter(|bits| bits.is_multiple_of(8))? / 8;
+        align.is_power_of_two().then_some((size, align))
+    };
+    let (tag_size, tag_align) = dimensions(&image.tag.ty())?;
+    let mut live = Vec::new();
+    let mut required_align = tag_align;
+    let mut largest_end = 0;
+    for (index, variant) in def.variants.iter().enumerate() {
+        if module.variant_is_uninhabited(variant) {
+            continue;
+        }
+        live.push(index);
+        let mut occupied = vec![(*tag_offset, tag_size, tag_align)];
+        for (field, offset) in variant
+            .fields
+            .iter()
+            .zip(&descriptor.variant_field_offsets[index])
+        {
+            let (size, align) = dimensions(field)?;
+            required_align = required_align.max(align);
+            if size != 0 {
+                occupied.push((*offset, size, align));
+            }
+        }
+        for (lane, (offset, size, align)) in occupied.iter().enumerate() {
+            let mut preceding_end = 0;
+            for (other_lane, (other, width, _)) in occupied.iter().enumerate() {
+                if lane == other_lane {
+                    continue;
+                }
+                if other < offset {
+                    preceding_end = preceding_end.max(other.checked_add(*width)?);
+                } else if other == offset {
+                    return None;
+                }
+            }
+            if *offset != rounded_up(preceding_end, *align)? {
+                return None;
+            }
+            largest_end = largest_end.max(offset.checked_add(*size)?);
+        }
+    }
+    if live.is_empty()
+        || image.size_bits != rounded_up(largest_end, required_align)?.checked_mul(8)?
+        || image.align_bits != required_align.checked_mul(8)?
+    {
+        return None;
+    }
+    Some(live)
+}
+
 /// The recursion before the memo, verbatim (with `module.ty_layout_shape`
 /// for the scalar sizes), its 16-level cut-off included.
 fn capped(module: &Module, ty: &Ty, depth: usize) -> Option<usize> {
@@ -87,6 +171,9 @@ fn capped(module: &Module, ty: &Ty, depth: usize) -> Option<usize> {
         Some(lanes)
     };
     match ty {
+        // Function-item identity did not exist in the historical oracle.
+        // Preserve its old domain rather than assigning a pointer lane.
+        Ty::FnItem(_) => None,
         _ if is_closed_scalar_ty(ty) => Some(usize::from(size_of(ty)? != 0)),
         Ty::Ref(_) | Ty::RefMut(_) | Ty::PtrConst(_) | Ty::PtrMut(_) | Ty::Rc(_) => Some(1),
         Ty::FatPtr(_) => Some(2),
@@ -132,6 +219,9 @@ fn capped(module: &Module, ty: &Ty, depth: usize) -> Option<usize> {
                     }
                     Some(1 + widest)
                 }
+                // This profile family did not exist in the historical
+                // capped algorithm. Keep that old oracle's scope explicit.
+                Some(EnumTagEncoding::DirectWithUninhabited { .. }) => None,
             }
         }
         _ => None,
@@ -160,6 +250,7 @@ fn uncapped(module: &Module, ty: &Ty, path: &mut Vec<Open>) -> Option<usize> {
         Some(lanes)
     }
     match ty {
+        Ty::FnItem(id) => item_lanes(module, *id),
         _ if is_closed_scalar_ty(ty) => Some(usize::from(size_of(ty)? != 0)),
         Ty::Ref(_) | Ty::RefMut(_) | Ty::PtrConst(_) | Ty::PtrMut(_) | Ty::Rc(_) => Some(1),
         Ty::FatPtr(_) => Some(2),
@@ -207,6 +298,17 @@ fn uncapped(module: &Module, ty: &Ty, path: &mut Vec<Open>) -> Option<usize> {
                 Some(EnumTagEncoding::Direct { .. }) | None => {
                     let mut widest = 0usize;
                     for index in 0..def.variants.len() {
+                        let lanes = variant_lanes(index, path)?;
+                        if lanes > 1 {
+                            return None;
+                        }
+                        widest = widest.max(lanes);
+                    }
+                    Some(1 + widest)
+                }
+                Some(EnumTagEncoding::DirectWithUninhabited { .. }) => {
+                    let mut widest = 0;
+                    for index in profiled_live_variants(module, def)? {
                         let lanes = variant_lanes(index, path)?;
                         if lanes > 1 {
                             return None;
@@ -602,19 +704,26 @@ fn successors(module: &Module, node: Node) -> Vec<Node> {
         }
         Node::Enum(id) => {
             if let Some(def) = module.enums.iter().find(|def| def.id == id) {
-                if let Some(EnumTagEncoding::SingleInhabited { variant }) =
-                    def.layout.as_ref().map(|layout| &layout.encoding)
-                {
-                    if let Some(selected) = selected_variant(module, def, *variant) {
-                        def.variants[selected]
-                            .fields
-                            .iter()
-                            .for_each(|ty| named(ty, &mut out));
+                let rows: Vec<usize> = match def.layout.as_ref().map(|layout| &layout.encoding) {
+                    Some(EnumTagEncoding::SingleInhabited { variant }) => {
+                        selected_variant(module, def, *variant)
+                            .into_iter()
+                            .collect()
                     }
-                } else {
-                    def.variants
+                    Some(EnumTagEncoding::DirectWithUninhabited { .. }) => {
+                        profiled_live_variants(module, def).unwrap_or_default()
+                    }
+                    Some(
+                        EnumTagEncoding::Untagged
+                        | EnumTagEncoding::Niche { .. }
+                        | EnumTagEncoding::Direct { .. },
+                    )
+                    | None => (0..def.variants.len()).collect(),
+                };
+                for index in rows {
+                    def.variants[index]
+                        .fields
                         .iter()
-                        .flat_map(|variant| &variant.fields)
                         .for_each(|ty| named(ty, &mut out));
                 }
             }
@@ -632,8 +741,9 @@ fn successors(module: &Module, node: Node) -> Vec<Node> {
 /// it because a rule short-circuits first (a `Niche` other variant with
 /// lanes, a `Direct` payload of two, an `Untagged` enum of two variants);
 /// here every node that can reach a cycle is "no count" outright. They agree
-/// because every rule answers a count only after counting every member it
-/// names, so each short-circuit is itself "no count".
+/// because every rule answers a count only after counting every value member
+/// it names, so each short-circuit is itself "no count". A proved-dead row is
+/// not a value dependency: its nominal reference cycle cannot veto a live pair.
 struct WellFounded<'m> {
     module: &'m Module,
     cyclic: std::collections::HashMap<Node, bool>,
@@ -696,6 +806,7 @@ impl<'m> WellFounded<'m> {
         };
         let module = self.module;
         let node = match ty {
+            Ty::FnItem(id) => return item_lanes(module, *id),
             _ if is_closed_scalar_ty(ty) => return Some(usize::from(size_of(ty)? != 0)),
             Ty::Ref(_) | Ty::RefMut(_) | Ty::PtrConst(_) | Ty::PtrMut(_) | Ty::Rc(_) => {
                 return Some(1);
@@ -718,55 +829,61 @@ impl<'m> WellFounded<'m> {
                     None => None,
                 },
                 Node::Enum(id) => match module.enums.iter().find(|def| def.id == id) {
-                    Some(def) => {
-                        if def.variants.is_empty() {
-                            return None;
+                    Some(def) if def.variants.is_empty() => None,
+                    Some(def) => match def.layout.as_ref().map(|layout| &layout.encoding) {
+                        Some(EnumTagEncoding::Untagged) => match def.variants.as_slice() {
+                            [only] => self.sum(only.fields.iter()),
+                            _ => None,
+                        },
+                        Some(EnumTagEncoding::SingleInhabited { variant }) => {
+                            selected_variant(module, def, *variant)
+                                .and_then(|index| self.sum(def.variants[index].fields.iter()))
                         }
-                        if let Some(EnumTagEncoding::SingleInhabited { variant }) =
-                            def.layout.as_ref().map(|layout| &layout.encoding)
-                        {
-                            return self.sum(
-                                def.variants[selected_variant(module, def, *variant)?]
-                                    .fields
-                                    .iter(),
-                            );
+                        Some(EnumTagEncoding::Niche {
+                            untagged_variant, ..
+                        }) => {
+                            let dataful = *untagged_variant as usize;
+                            let variants: Vec<_> = def
+                                .variants
+                                .iter()
+                                .map(|variant| self.sum(variant.fields.iter()))
+                                .collect();
+                            let others_empty = variants
+                                .iter()
+                                .enumerate()
+                                .all(|(index, lanes)| index == dataful || *lanes == Some(0));
+                            if others_empty {
+                                variants.get(dataful).copied().flatten()
+                            } else {
+                                None
+                            }
                         }
-                        let variants: Vec<Option<usize>> = def
-                            .variants
-                            .iter()
-                            .map(|variant| self.sum(variant.fields.iter()))
-                            .collect();
-                        match def.layout.as_ref().map(|layout| &layout.encoding) {
-                            Some(EnumTagEncoding::SingleInhabited { .. }) => {
-                                unreachable!("selected physical dependency handled above")
+                        Some(EnumTagEncoding::Direct { .. }) | None => {
+                            let variants: Vec<_> = def
+                                .variants
+                                .iter()
+                                .map(|variant| self.sum(variant.fields.iter()))
+                                .collect();
+                            if variants.iter().all(|lanes| matches!(lanes, Some(0 | 1))) {
+                                Some(1 + variants.iter().flatten().max().copied().unwrap_or(0))
+                            } else {
+                                None
                             }
-                            Some(EnumTagEncoding::Untagged) => match variants.as_slice() {
-                                [only] => *only,
-                                _ => None,
-                            },
-                            Some(EnumTagEncoding::Niche {
-                                untagged_variant, ..
-                            }) => {
-                                let dataful = *untagged_variant as usize;
-                                let others_empty = variants
-                                    .iter()
-                                    .enumerate()
-                                    .all(|(index, lanes)| index == dataful || *lanes == Some(0));
-                                if others_empty {
-                                    variants.get(dataful).copied().flatten()
-                                } else {
-                                    None
-                                }
-                            }
-                            Some(EnumTagEncoding::Direct { .. }) | None => {
+                        }
+                        Some(EnumTagEncoding::DirectWithUninhabited { .. }) => {
+                            profiled_live_variants(module, def).and_then(|indices| {
+                                let variants: Vec<_> = indices
+                                    .into_iter()
+                                    .map(|index| self.sum(def.variants[index].fields.iter()))
+                                    .collect();
                                 if variants.iter().all(|lanes| matches!(lanes, Some(0 | 1))) {
                                     Some(1 + variants.iter().flatten().max().copied().unwrap_or(0))
                                 } else {
                                     None
                                 }
-                            }
+                            })
                         }
-                    }
+                    },
                     None => None,
                 },
             }
@@ -1024,4 +1141,379 @@ fn deep_chains_of_every_wrapper_count_as_the_rules_say() {
         })
         .expect("spawn");
     worker.join().expect("the chains count as the rules say");
+}
+
+// Direct profiles are tested separately from the historical 4000 graphs:
+// their absence from `capped` must not be reported as a depth-cut-off result.
+// Retained SingleInhabited controls also exercise the existing selector rule.
+fn assert_current_oracles(module: &Module, ty: &Ty, expected: Option<usize>) {
+    assert_eq!(
+        uncapped(module, ty, &mut Vec::new()),
+        expected,
+        "recursive {ty:?}"
+    );
+    assert_eq!(WellFounded::new(module).lanes(ty), expected, "graph {ty:?}");
+    let mut claimed = module.clone();
+    let ids = claim_pairs(&mut claimed, std::slice::from_ref(ty));
+    assert_eq!(
+        refused_pairs(&claimed).contains(&ids[0]),
+        expected != Some(2),
+        "validator {ty:?}"
+    );
+}
+
+fn item_targets() -> [Option<TargetInfo>; 3] {
+    [
+        None,
+        Some(TargetInfo {
+            triple: "wasm32-unknown-unknown".into(),
+            pointer_size: 4,
+            ..target()
+        }),
+        Some(target()),
+    ]
+}
+
+fn item_module(selected_target: Option<TargetInfo>) -> Module {
+    let mut module = Module::new("independent nominal item ABI");
+    module.target_info = selected_target;
+    module.func_types.push(FuncTy {
+        params: vec![],
+        returns: vec![],
+        abi: None,
+        is_vararg: false,
+    });
+    for id in [7, 42] {
+        module.functions.push(Function::new(
+            FuncId::new(id),
+            format!("actual_item_{id}"),
+            FuncTyId::new(0),
+            BlockId::new(0),
+        ));
+    }
+    module
+}
+
+#[test]
+fn current_fn_item_oracles_authenticate_sparse_headers_and_count_zero_lanes() {
+    for selected_target in item_targets() {
+        let mut module = item_module(selected_target);
+        for id in [7, 42] {
+            let ty = Ty::FnItem(FuncId::new(id));
+            assert_current_oracles(&module, &ty, Some(0));
+            assert_eq!(capped(&module, &ty, 0), None);
+        }
+        // Source row order is not nominal identity or a dense-ID promise.
+        module.functions.swap(0, 1);
+        assert_current_oracles(&module, &Ty::FnItem(FuncId::new(7)), Some(0));
+    }
+}
+
+#[test]
+fn current_fn_item_oracles_omit_item_lanes_in_live_structs() {
+    for selected_target in item_targets() {
+        let mut module = item_module(selected_target);
+        module.structs = vec![
+            strukt(0, vec![Ty::FnItem(FuncId::new(7))]),
+            strukt(
+                1,
+                vec![
+                    Ty::FnItem(FuncId::new(7)),
+                    Ty::U32,
+                    Ty::FnItem(FuncId::new(42)),
+                ],
+            ),
+            strukt(
+                2,
+                vec![
+                    Ty::FnItem(FuncId::new(7)),
+                    Ty::U32,
+                    Ty::FnItem(FuncId::new(42)),
+                    Ty::Ptr,
+                ],
+            ),
+        ];
+        for (id, lanes) in [(0, 0), (1, 1), (2, 2)] {
+            assert_current_oracles(&module, &s(id), Some(lanes));
+            assert_eq!(capped(&module, &s(id), 0), None);
+        }
+    }
+}
+
+#[test]
+fn current_fn_item_oracles_refuse_missing_ambiguous_or_unresolvable_headers() {
+    for selected_target in item_targets() {
+        let module = item_module(selected_target);
+        assert_current_oracles(&module, &Ty::FnItem(FuncId::new(99)), None);
+
+        let mut duplicate = module.clone();
+        duplicate.functions.push(duplicate.functions[0].clone());
+        assert_current_oracles(&duplicate, &Ty::FnItem(FuncId::new(7)), None);
+
+        let mut missing_signature = module;
+        missing_signature.functions[0].ty = FuncTyId::new(99);
+        assert_current_oracles(&missing_signature, &Ty::FnItem(FuncId::new(7)), None);
+    }
+}
+
+fn nominal_dead_declarations(module: &mut Module) -> Ty {
+    module
+        .enums
+        .push(EnumDef::new(EnumId::new(99), "Infallible", vec![]));
+    module
+        .structs
+        .push(strukt(99, vec![Ty::Enum(EnumId::new(99))]));
+    s(99)
+}
+
+fn profiled_module(live: Ty, size: u64, align: u64, offset: u64) -> Module {
+    let mut module = Module::new("independent Direct ABI image");
+    module.target_info = Some(target());
+    module.types.push(Ty::U128);
+    let dead = nominal_dead_declarations(&mut module);
+    let mut def = enum_def(
+        0,
+        vec![vec![dead], vec![live]],
+        EnumTagEncoding::DirectWithUninhabited {
+            tag_offset: 0,
+            variants: vec![UninhabitedVariantLayout {
+                variant: 0,
+                size: 4,
+                align: 4,
+                fields: vec![FieldStorageLayout { size: 0, align: 1 }],
+            }],
+        },
+    )
+    .with_repr(EnumTagRepr::U32);
+    let descriptor = def.layout.as_mut().unwrap();
+    descriptor.size = size;
+    descriptor.align = align;
+    descriptor.variant_field_offsets = vec![vec![4], vec![offset]];
+    module.enums.push(def);
+    module
+}
+
+fn profiled_root(module: &mut Module) -> &mut EnumDef {
+    module
+        .enums
+        .iter_mut()
+        .find(|def| def.id == EnumId::new(0))
+        .unwrap()
+}
+
+#[test]
+fn current_single_inhabited_oracles_skip_dead_nominal_and_overflowing_storage() {
+    for selected in [0, 1] {
+        for dead_kind in 0..3 {
+            let mut module = Module::new("independent selected enum ABI");
+            module.target_info = Some(target());
+            module.types.push(Ty::U128);
+            let nominal = nominal_dead_declarations(&mut module);
+            let dead = match dead_kind {
+                0 => vec![nominal],
+                1 => vec![Ty::Never, Ty::Array(TyId::new(0), u64::MAX)],
+                _ => {
+                    module.structs.push(strukt(55, vec![s(55)]));
+                    vec![Ty::Never, s(55)]
+                }
+            };
+            let mut rows = vec![dead, vec![Ty::U64, Ty::Ptr]];
+            if selected == 0 {
+                rows.swap(0, 1);
+            }
+            let mut def = enum_def(
+                0,
+                rows,
+                EnumTagEncoding::SingleInhabited { variant: selected },
+            );
+            def.layout.as_mut().unwrap().variant_field_offsets = if selected == 0 {
+                vec![vec![0, 8], vec![]]
+            } else {
+                vec![vec![], vec![0, 8]]
+            };
+            module.enums.push(def);
+            assert!(module.layout_table().enum_layout(EnumId::new(0)).is_ok());
+            assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), Some(2));
+            assert_eq!(capped(&module, &Ty::Enum(EnumId::new(0)), 0), Some(2));
+            // These declarations intentionally provide no dead wrapper storage.
+            assert!(
+                module
+                    .structs
+                    .iter()
+                    .find(|def| def.id == StructId::new(99))
+                    .unwrap()
+                    .size
+                    .is_none()
+            );
+        }
+    }
+
+    let mut module = Module::new("invalid Single selectors");
+    module.target_info = Some(target());
+    module.enums.push(enum_def(
+        0,
+        vec![vec![Ty::Never], vec![Ty::U64, Ty::Ptr]],
+        EnumTagEncoding::SingleInhabited { variant: 2 },
+    ));
+    assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), None);
+    module.enums[0].layout.as_mut().unwrap().encoding =
+        EnumTagEncoding::SingleInhabited { variant: 1 };
+    module.enums[0].variants[0].fields = vec![Ty::U32];
+    assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), None);
+    module.enums[0].variants[0].fields = vec![Ty::Never];
+    module.enums[0].variants[1].fields = vec![Ty::Never];
+    assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), None);
+}
+
+#[test]
+fn current_profiled_direct_oracles_require_exact_packed_live_storage() {
+    for (live, size, align, offset) in [(Ty::U32, 8, 4, 4), (Ty::U128, 32, 16, 16)] {
+        let module = profiled_module(live, size, align, offset);
+        assert!(module.layout_table().enum_layout(EnumId::new(0)).is_ok());
+        assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), Some(2));
+        assert_eq!(capped(&module, &Ty::Enum(EnumId::new(0)), 0), None);
+    }
+    // The packed tag can follow the live field; packing is not source order.
+    let mut reversed = profiled_module(Ty::U32, 8, 4, 4);
+    let descriptor = profiled_root(&mut reversed).layout.as_mut().unwrap();
+    let EnumTagEncoding::DirectWithUninhabited {
+        tag_offset,
+        variants,
+    } = &mut descriptor.encoding
+    else {
+        unreachable!()
+    };
+    *tag_offset = 4;
+    variants[0].size = 8;
+    descriptor.variant_field_offsets[1][0] = 0;
+    assert!(reversed.layout_table().enum_layout(EnumId::new(0)).is_ok());
+    assert_current_oracles(&reversed, &Ty::Enum(EnumId::new(0)), Some(2));
+
+    let mut cyclic_dead = profiled_module(Ty::U32, 8, 4, 4);
+    cyclic_dead.structs[0] = strukt(99, vec![Ty::Never, s(99)]);
+    assert!(
+        cyclic_dead
+            .layout_table()
+            .enum_layout(EnumId::new(0))
+            .is_ok()
+    );
+    assert_current_oracles(&cyclic_dead, &Ty::Enum(EnumId::new(0)), Some(2));
+
+    // Exact coverage also admits an empty profile list when no row is dead.
+    let mut all_live = profiled_module(Ty::U32, 8, 4, 4);
+    let root = profiled_root(&mut all_live);
+    root.variants[0].fields.clear();
+    let descriptor = root.layout.as_mut().unwrap();
+    descriptor.variant_field_offsets[0].clear();
+    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut descriptor.encoding else {
+        unreachable!()
+    };
+    variants.clear();
+    assert!(all_live.layout_table().enum_layout(EnumId::new(0)).is_ok());
+    assert_current_oracles(&all_live, &Ty::Enum(EnumId::new(0)), Some(2));
+
+    for (size, align, offset) in [(16, 4, 12), (16, 16, 4)] {
+        let module = profiled_module(Ty::U32, size, align, offset);
+        assert!(module.layout_table().enum_layout(EnumId::new(0)).is_ok());
+        assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), None);
+    }
+    let mut three_lanes = profiled_module(Ty::U64, 24, 8, 8);
+    let root = profiled_root(&mut three_lanes);
+    root.variants[1].fields.push(Ty::Ptr);
+    root.layout.as_mut().unwrap().variant_field_offsets[1].push(16);
+    assert!(
+        three_lanes
+            .layout_table()
+            .enum_layout(EnumId::new(0))
+            .is_ok()
+    );
+    assert_current_oracles(&three_lanes, &Ty::Enum(EnumId::new(0)), None);
+}
+
+#[test]
+fn nested_dead_storage_does_not_make_a_small_live_payload_a_pair() {
+    let mut module = profiled_module(Ty::U32, 65552, 16, 4);
+    let root = profiled_root(&mut module);
+    root.variants[0].fields = vec![Ty::Tuple(vec![
+        Ty::Enum(EnumId::new(99)),
+        Ty::Array(TyId::new(0), 4096),
+    ])];
+    let descriptor = root.layout.as_mut().unwrap();
+    descriptor.variant_field_offsets[0][0] = 16;
+    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut descriptor.encoding else {
+        unreachable!()
+    };
+    variants[0] = UninhabitedVariantLayout {
+        variant: 0,
+        size: 65552,
+        align: 16,
+        fields: vec![FieldStorageLayout {
+            size: 65536,
+            align: 16,
+        }],
+    };
+    assert!(module.tuple_layouts.is_empty());
+    let image = module.layout_table().enum_layout(EnumId::new(0)).unwrap();
+    assert_eq!((image.size_bits, image.align_bits), (65552 * 8, 16 * 8));
+    assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), None);
+}
+
+#[test]
+fn profiled_direct_oracles_refuse_malformed_profiles_and_source_refs() {
+    for change in 0..13 {
+        let mut module = profiled_module(Ty::U32, 8, 4, 4);
+        if change == 12 {
+            // A cycle by itself proves no declaration impossible.
+            module.structs[0] = strukt(99, vec![s(99)]);
+        }
+        let root = profiled_root(&mut module);
+        let descriptor = root.layout.as_mut().unwrap();
+        let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut descriptor.encoding
+        else {
+            unreachable!()
+        };
+        match change {
+            0 => variants.clear(),
+            1 => variants.push(variants[0].clone()),
+            2 => variants[0].variant = 1,
+            3 => variants[0].fields.clear(),
+            4 => variants[0].fields[0].align = 3,
+            5 => variants[0].fields[0] = FieldStorageLayout { size: 3, align: 2 },
+            6 => variants[0].size = 16,
+            7 => variants[0].fields[0].size = u64::MAX,
+            8 => {
+                descriptor.variant_field_offsets[0][0] = 0;
+                variants[0].fields[0] = FieldStorageLayout { size: 4, align: 4 };
+            }
+            9 => variants[0].variant = u32::MAX,
+            10 => root.variants[0].fields = vec![s(999)],
+            11 => {
+                root.variants[0].fields =
+                    vec![Ty::Tuple(vec![Ty::Never, Ty::PtrConst(Box::new(s(999)))])]
+            }
+            12 => {}
+            _ => unreachable!(),
+        }
+        assert!(
+            module.layout_table().enum_layout(EnumId::new(0)).is_err(),
+            "change {change}"
+        );
+        assert_current_oracles(&module, &Ty::Enum(EnumId::new(0)), None);
+    }
+}
+
+#[test]
+fn current_enum_oracles_do_not_count_empty_or_all_dead_values() {
+    let mut module = profiled_module(Ty::Never, 8, 4, 4);
+    let descriptor = profiled_root(&mut module).layout.as_mut().unwrap();
+    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut descriptor.encoding else {
+        unreachable!()
+    };
+    let mut other = variants[0].clone();
+    other.variant = 1;
+    variants.push(other);
+    assert!(module.layout_table().enum_layout(EnumId::new(0)).is_ok());
+    for ty in [Ty::Enum(EnumId::new(0)), Ty::Enum(EnumId::new(99)), s(99)] {
+        assert_current_oracles(&module, &ty, None);
+    }
 }

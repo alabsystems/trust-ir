@@ -31,6 +31,21 @@ theorem throwTypeError_fresh {α : Type} (message : String) :
 theorem throwUnsupported_fresh {α : Type} (feature : UnsupportedFeature) (message : String) :
     KeepsFresh (Sem.throwUnsupported feature message : Sem α) := throw_fresh _
 
+theorem semBoxDeref_fresh (pointee : BoxPointee) (value : Value) (model : ByteModel) :
+    KeepsFresh (semBoxDeref pointee value model) := by
+  unfold semBoxDeref
+  repeat (first
+    | exact accessAlign_fresh _ _ _ _
+    | exact checkedAccess_fresh _ _ _ _ _ _
+    | exact rejectPartial_fresh _ _
+    | exact pure_fresh _
+    | exact throwUB_fresh _
+    | exact throwTypeError_fresh _
+    | exact throwUnsupported_fresh _ _
+    | exact bindFresh_fresh _
+    | (refine bind_fresh _ _ ?_ (fun value => ?_) <;> dsimp only)
+    | split)
+
 local macro "step_leaves" : tactic =>
   `(tactic| with_reducible (repeat (first
     | apply semBinOp_fresh
@@ -82,6 +97,7 @@ local macro "step_leaves" : tactic =>
     | apply semMemCopy_fresh
     | apply semMemSet_fresh
     | apply semCoroSuspend_fresh
+    | apply semBoxDeref_fresh
     | apply lookupLanes_fresh
     | exact pure_fresh _
     | apply throwUB_fresh

@@ -810,13 +810,21 @@ gate wire-allocation-owners wire_owners_audit
 gate enforcement-links \
     python3 -B "$ROOT/scripts/check_enforcement_links.py" --root "$ROOT" check
 gate internal-gate-tests bash "$ROOT/scripts/run_script_tests.sh"
-gate workspace-format "$ROOT/scripts/run-targo.sh" fmt --check --all
+format_workspace() (
+    # Formatting has its own managed product; preserve the caller's build
+    # target for later compilation while selecting the formatter normally.
+    unset CARGO_TARGET_DIR
+    "$ROOT/scripts/run-targo.sh" fmt --check --all
+)
+gate workspace-format format_workspace
 # Tippy keeps its OWN target directory: Tippy and direct compilation record
 # different compiler hashes, and one shared directory makes each overwrite the
 # other's build-script fingerprints, rebuilding unchanged dependencies on every
-# switch (CLAUDE.md, "Build, test, gates").
+# switch (CLAUDE.md, "Build, test, gates"). Keep it a sibling: putting a
+# separate product inside an unclaimed build root prevents normal ownership
+# admission when the workspace build starts.
 lint() {
-    CARGO_TARGET_DIR="$TARGET_DIR/tippy" "$TARGO_RUNNER" tippy --locked --workspace \
+    CARGO_TARGET_DIR="$TARGET_DIR-tippy" "$TARGO_RUNNER" tippy --locked --workspace \
         --all-targets --all-features -- -D warnings
 }
 gate workspace-clippy lint

@@ -188,6 +188,13 @@ macro "trustIrHashMapFind? " map:term:max key:term:max : term => do
   else if Lean.versionString == "4.30.0-rc2" then `(Std.HashMap.get? $map $key)
   else Lean.Macro.throwError "unsupported Lean compiler for TrustIR hash map lookup"
 
+/-- Preserve the JSON object's ascending-key accumulator fold. The canonical
+    RBNode API calls it `fold`; the modern raw tree API calls it `foldl`. -/
+macro "trustIrJsonObjectFold " object:term:max callback:term:max initial:term:max : term => do
+  if Lean.versionString == "4.8.0" then `(($object).fold $callback $initial)
+  else if Lean.versionString == "4.30.0-rc2" then `(($object).foldl $callback $initial)
+  else Lean.Macro.throwError "unsupported Lean compiler for ordered JSON object fold"
+
 /-- Both pinned recursors use `Nat.lt_wfRel.wf.fix`; only the public name
     changed. Select the compiler's actual eliminator, without a new axiom. -/
 macro "trustIrNatStrongInduction" : term => do

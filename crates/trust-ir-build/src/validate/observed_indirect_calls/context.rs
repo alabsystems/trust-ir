@@ -25,6 +25,7 @@ impl<'c, 'm> ObservedIndirectCalls<'c, 'm> {
             function,
             closures: None,
             pointers: None,
+            item_origins: None,
         };
         let result: R = (|| {
             work.admit(1, size_of::<Option<ObservedLocalClosureTargets<'_>>>())?;
@@ -49,6 +50,31 @@ impl<'c, 'm> ObservedIndirectCalls<'c, 'm> {
             return Err(work.terminal(error));
         }
         Ok(out)
+    }
+    pub(super) fn has_item_origins<O: ExecutionObserver>(
+        &mut self,
+        work: &mut Work<'_, '_, O>,
+    ) -> R<bool> {
+        if let Some(answer) = self.item_origins {
+            return Ok(answer);
+        }
+        let mut b = 0;
+        while let Some(block) = work.at(&self.function.blocks, b)? {
+            let mut n = 0;
+            while let Some(node) = work.at(&block.body, n)? {
+                work.admit(4, size_of::<bool>())?;
+                if matches!(&node.inst, Inst::Const { ty: Ty::FnItem(expected),
+                    value: Constant::FnItem(actual) } if expected == actual)
+                {
+                    self.item_origins = Some(true);
+                    return Ok(true);
+                }
+                work.next(&mut n)?;
+            }
+            work.next(&mut b)?;
+        }
+        self.item_origins = Some(false);
+        Ok(false)
     }
     /// Consume all derived private caches under the same original caller owner.
     pub(in crate::validate) fn retire_observed<O: ExecutionObserver>(

@@ -142,6 +142,23 @@ fn unread_lambda_body_is_not_a_replacement_absence_hint() {
     );
     let mut cache = CaseSupportCache::default();
     search_at(&checker, &scope, &source, &mut cache, 0).unwrap();
+    let mut support_work = 0;
+    let mut support_visits = 0;
+    let summary = cache
+        .summary(
+            &checker,
+            &scope,
+            &source,
+            &mut support_work,
+            100_000,
+            64,
+            1024,
+            &mut support_visits,
+        )
+        .unwrap()
+        .expect("ordinary lambda support is indexed before replacement");
+    assert!(support_visits > 0);
+    assert!(summary.search_height < summary.replacement_height);
     let cold = replace_at(
         &checker,
         &scope,

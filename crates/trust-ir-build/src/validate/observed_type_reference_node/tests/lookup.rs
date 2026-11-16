@@ -223,3 +223,25 @@ fn interior_fallback_stop_retains_and_fully_retires_prior_raw_state() {
         assert!(o.events.len() > cut + 8);
     }
 }
+
+#[test]
+fn nominal_item_reference_requires_a_unique_sparse_header_and_signature() {
+    let mut m = targets();
+    let id = FuncId::new(7001);
+    m.functions
+        .push(Function::new(id, "item", FuncTyId::new(0), BlockId::new(0)));
+    let r = registry();
+    assert!(run(&m, &r, &Ty::FnItem(id), "item").0.0.is_empty());
+    assert_eq!(
+        run(&m, &r, &Ty::FnItem(FuncId::new(7002)), "item")
+            .0
+            .0
+            .len(),
+        1
+    );
+    m.functions.push(m.functions[0].clone());
+    assert_eq!(run(&m, &r, &Ty::FnItem(id), "item").0.0.len(), 1);
+    m.functions.pop();
+    m.functions[0].ty = FuncTyId::new(999);
+    assert_eq!(run(&m, &r, &Ty::FnItem(id), "item").0.0.len(), 1);
+}

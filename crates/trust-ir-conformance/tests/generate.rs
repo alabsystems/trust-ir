@@ -797,6 +797,81 @@ pub fn build_closure_layout() -> Result<Module, FixtureError> {
     Ok(m)
 }
 
+/// The v74 golden: the one evidence kind a `BoxDeref` can validly carry, a
+/// named premise, on two roots. `fresh` roots its fact in the allocation it
+/// just made; `checked` roots its fact in its by-value parameter; `run`
+/// allocates and calls `checked`, so the golden executes both. The module
+/// holds no assert, so every target's consumer meets the same instructions.
+pub fn build_box_deref() -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{BoxDerefSite, BoxFactSession, BoxValidityFact, PremiseRoot};
+    use trust_ir::inst::AllocOrigin;
+
+    let site = |ordinal: u32| BoxDerefSite {
+        item: [
+            0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2,
+            0xe1, 0xf0,
+        ],
+        ordinal,
+    };
+    let mut mb = ModuleBuilder::new("box_deref");
+
+    let fresh_ty = mb.add_func_type(vec![], vec![Ty::I64]);
+    {
+        let mut fb = mb.function("fresh", fresh_ty);
+        let entry = fb.create_block();
+        fb.switch_to_block(entry);
+        let raw = fb.heap_alloc(Ty::I64, None, None, AllocOrigin::RustHeap);
+        let value = fb.const_value(Ty::I64, Constant::Int(24));
+        fb.store(Ty::I64, raw, value);
+        let boxed = fb.box_deref(
+            Ty::I64,
+            raw,
+            BoxValidityFact::premise(
+                site(0),
+                BoxFactSession::PROOF_SNAPSHOT,
+                PremiseRoot::AllocPostcondition,
+            ),
+        );
+        let read = fb.load(Ty::I64, boxed);
+        fb.ret(vec![read]);
+        fb.set_body_gate(trust_ir::BodyGate::Ungated);
+        fb.build();
+    }
+
+    let checked_ty = mb.add_func_type(vec![Ty::Ptr], vec![Ty::I64]);
+    let checked = {
+        let mut fb = mb.function("checked", checked_ty);
+        let entry = fb.create_block();
+        let pointer = fb.add_block_param(entry, Ty::Ptr);
+        fb.switch_to_block(entry);
+        let fact = BoxValidityFact::premise(
+            site(1),
+            BoxFactSession::PROOF_SNAPSHOT,
+            PremiseRoot::ParamByValue,
+        );
+        let boxed = fb.box_deref(Ty::I64, pointer, fact);
+        let read = fb.load(Ty::I64, boxed);
+        fb.ret(vec![read]);
+        fb.set_body_gate(trust_ir::BodyGate::Ungated);
+        fb.build()
+    };
+
+    {
+        let mut fb = mb.function("run", fresh_ty);
+        let entry = fb.create_block();
+        fb.switch_to_block(entry);
+        let raw = fb.heap_alloc(Ty::I64, None, None, AllocOrigin::RustHeap);
+        let value = fb.const_value(Ty::I64, Constant::Int(42));
+        fb.store(Ty::I64, raw, value);
+        let read = fb.call(checked, vec![raw]);
+        fb.ret(vec![read]);
+        fb.set_body_gate(trust_ir::BodyGate::Ungated);
+        fb.build();
+    }
+
+    mb.build().or_fixture("ModuleBuilder::build")
+}
+
 /// Runtime capture construction over the existing declared two-capture frame.
 /// The older closure_layout goldens remain unchanged; this fixture selects v63.
 pub fn build_make_closure() -> Result<Module, FixtureError> {
@@ -7619,6 +7694,9 @@ pub fn build_storage_only() -> Result<Module, FixtureError> {
         let mut b = mb
             .define_function(root)
             .or_fixture("storage fixture definition")?;
+        // Declare the body truthfully as ungated; this fixture carries no
+        // compiler proof or licensing claim and must not use the pre-v41 None.
+        b.set_body_gate(trust_ir::BodyGate::Ungated);
         let entry = b.create_block();
         b.switch_to_block(entry);
         let slot = b.alloca(Ty::Struct(parent));
@@ -7630,6 +7708,12 @@ pub fn build_storage_only() -> Result<Module, FixtureError> {
         b.build();
     }
     let mut m = mb.build().or_fixture("storage fixture module")?;
+    // Geometry supplies no verification license for this fixture's body.
+    for function in &mut m.functions {
+        if !function.is_declaration() {
+            function.body_gate = Some(trust_ir::BodyGate::Ungated);
+        }
+    }
     m.target_info = Some(TargetInfo {
         triple: "aarch64-apple-darwin".into(),
         pointer_size: 8,

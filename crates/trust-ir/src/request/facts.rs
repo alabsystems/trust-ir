@@ -72,6 +72,10 @@ pub enum NativeAdapterInput {
     /// Already-native TrustIr input. The bundle's `trust_ir_module_digest` is the
     /// artifact digest.
     TrustIrModule,
+    /// Complete compiler-owned THIR/Instance source artifact. Its separately
+    /// transported artifact must be independently replayed by the native caller;
+    /// this digest is identity, never source-generation or proof authority.
+    RustThir { source_digest: ProofDigest },
 }
 
 /// TrustVc operation requested by a native bundle.
@@ -3944,7 +3948,7 @@ impl core::fmt::Display for NativeMonomorphizationId {
 }
 
 /// Frontend enum tag strategy, carried as data for verifier encoders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NativeEnumTagEncoding {
     /// A concrete discriminant/tag field is present in memory.
@@ -3953,6 +3957,12 @@ pub enum NativeEnumTagEncoding {
     Niche,
     /// No runtime tag is needed for this layout.
     Untagged,
+    /// Direct storage with explicit byte extents for every dead source row.
+    /// The profile is data bound to the enclosing IR descriptor, not proof or
+    /// source-generation authority. Legacy variants keep their stable tags.
+    DirectWithUninhabited {
+        variants: Vec<crate::UninhabitedVariantLayout>,
+    },
 }
 
 /// Integer range used by niche-optimized enum layout facts.

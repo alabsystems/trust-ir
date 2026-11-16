@@ -33,14 +33,17 @@ def SelectedEffects (sourceRecurse targetRecurse : Recurse) (base : EvalContext)
       (Sem.run (targetRecurse (scopedContext base target targetFunction.localTypes)
         depth targetFunction.cfg targetFunction.entryBlock args strategy) (callerWorld world))
 
-/-- Classify callees by their actual function-table key. No CFG-identity
-    assumption is used for unrelated functions. -/
+/-- Classify genuine callees at their actual header return declarations.
+    The two supplied families are derived by the uniform fuel induction,
+    not by assuming successful evaluation or any well-typed argument. -/
 theorem calleeEffects_of_update (sourceRecurse targetRecurse : Recurse) (base : EvalContext)
     (selected : FuncId) (sourceFunction targetFunction : EvalFunction)
-    (same : SameGraphs sourceRecurse targetRecurse base
+    (body : sourceFunction.body = targetFunction.body)
+    (sourceIdentity : sourceFunction.sourceId = targetFunction.sourceId)
+    (same : ∀ metadata, SameGraphs sourceRecurse targetRecurse (callerContext base metadata)
       (withFunction base selected sourceFunction).functions
       (withFunction base selected targetFunction).functions)
-    (selectedEffects : SelectedEffects sourceRecurse targetRecurse base
+    (selectedEffects : ∀ metadata, SelectedEffects sourceRecurse targetRecurse (callerContext base metadata)
       (withFunction base selected sourceFunction).functions
       (withFunction base selected targetFunction).functions sourceFunction targetFunction) :
     CalleeEffects sourceRecurse targetRecurse base
@@ -52,30 +55,87 @@ theorem calleeEffects_of_update (sourceRecurse targetRecurse : Recurse) (base : 
     simp only [withFunction, equality, if_true, Option.some.injEq] at sourceFound targetFound
     subst sourceCallee
     subst targetCallee
-    exact selectedEffects depth args strategy world
+    simpa only [calleeContext, body, sourceIdentity] using
+      selectedEffects ⟨some sourceFunction.body.returnTys, sourceFunction.sourceId⟩ depth args strategy world
   | false =>
     simp only [withFunction, equality, Bool.false_eq_true, if_false] at sourceFound targetFound
     have callees : sourceCallee = targetCallee := Option.some.inj (sourceFound.symm.trans targetFound)
     subst targetCallee
-    rw [same sourceCallee.localTypes depth sourceCallee.cfg sourceCallee.entryBlock args strategy]
+    change EffectRelation
+      (Sem.run (sourceRecurse
+        (scopedContext (callerContext base ⟨some sourceCallee.body.returnTys, sourceCallee.sourceId⟩)
+          (withFunction base selected sourceFunction).functions sourceCallee.localTypes)
+        depth sourceCallee.cfg sourceCallee.entryBlock args strategy) (callerWorld world))
+      (Sem.run (targetRecurse
+        (scopedContext (callerContext base ⟨some sourceCallee.body.returnTys, sourceCallee.sourceId⟩)
+          (withFunction base selected targetFunction).functions sourceCallee.localTypes)
+        depth sourceCallee.cfg sourceCallee.entryBlock args strategy) (callerWorld world))
+    rw [same ⟨some sourceCallee.body.returnTys, sourceCallee.sourceId⟩ sourceCallee.localTypes depth
+      sourceCallee.cfg sourceCallee.entryBlock args strategy]
     exact effectRelation_refl _
 
-/-- Simultaneous resource induction. The selected-entry premise is a local
-    one-layer proof consuming only predecessor callee effects; recursive and
-    mutually recursive prefixes therefore use the same fuel induction as
-    unchanged graphs and terminal continuations. -/
-theorem evaluator_simulation (base : EvalContext) (selected : FuncId)
+/-- Uniformity in inherited return and owner metadata is required by actual recursive
+    calls: entering a function replaces that metadata with its own header.
+    The local layer proof is still consumed at every context in the family. -/
+theorem evaluator_simulation_uniform (base : EvalContext) (selected : FuncId)
     (sourceFunction targetFunction : EvalFunction)
     (body : sourceFunction.body = targetFunction.body)
     (convention : sourceFunction.callingConv = targetFunction.callingConv)
-    (selectedLayer : ∀ sourceRecurse targetRecurse,
-      CalleeEffects sourceRecurse targetRecurse base
+    (sourceIdentity : sourceFunction.sourceId = targetFunction.sourceId)
+    (selectedLayer : ∀ metadata sourceRecurse targetRecurse,
+      CalleeEffects sourceRecurse targetRecurse (callerContext base metadata)
         (withFunction base selected sourceFunction).functions
         (withFunction base selected targetFunction).functions →
       SelectedEffects
         (fun ctx depth cfg pc args strategy => evalLayer sourceRecurse ctx depth cfg pc args strategy)
         (fun ctx depth cfg pc args strategy => evalLayer targetRecurse ctx depth cfg pc args strategy)
-        base (withFunction base selected sourceFunction).functions
+        (callerContext base metadata) (withFunction base selected sourceFunction).functions
+        (withFunction base selected targetFunction).functions sourceFunction targetFunction)
+    (fuel : Nat) :
+    (∀ metadata, SameGraphs (evaluatorAt fuel) (evaluatorAt fuel) (callerContext base metadata)
+      (withFunction base selected sourceFunction).functions
+      (withFunction base selected targetFunction).functions) ∧
+    (∀ metadata, SelectedEffects (evaluatorAt fuel) (evaluatorAt fuel) (callerContext base metadata)
+      (withFunction base selected sourceFunction).functions
+      (withFunction base selected targetFunction).functions sourceFunction targetFunction) := by
+  induction fuel with
+  | zero =>
+    constructor
+    · intro metadata types depth cfg pc args strategy
+      rfl
+    · intro metadata depth args strategy world
+      exact .error .outOfFuel
+  | succ fuel ih =>
+    have effects := calleeEffects_of_update (evaluatorAt fuel) (evaluatorAt fuel) base selected
+      sourceFunction targetFunction body sourceIdentity ih.1 ih.2
+    have headers := headerAgreement_withFunction base selected sourceFunction targetFunction body convention
+    constructor
+    · intro metadata types depth cfg pc args strategy
+      simp only [evaluatorAt, stepNWithContext_succ_layer]
+      apply evalLayer_congr _ _ (callerContext base metadata) _ _ headers effects types depth cfg pc args strategy
+      intro block result
+      exact evalTransfer_congr _ _ (callerContext base metadata) _ _ headers effects (ih.1 metadata)
+        types depth cfg block strategy result
+    · intro metadata depth args strategy world
+      simpa only [evaluatorAt, stepNWithContext_succ_layer] using
+        selectedLayer metadata (evaluatorAt fuel) (evaluatorAt fuel) effects depth args strategy world
+
+/-- Specialize the uniform induction back to the caller's original lexical metadata.
+    The unchanged-graph and selected-entry conclusions retain their complete
+    original domains. -/
+theorem evaluator_simulation (base : EvalContext) (selected : FuncId)
+    (sourceFunction targetFunction : EvalFunction)
+    (body : sourceFunction.body = targetFunction.body)
+    (convention : sourceFunction.callingConv = targetFunction.callingConv)
+    (sourceIdentity : sourceFunction.sourceId = targetFunction.sourceId)
+    (selectedLayer : ∀ metadata sourceRecurse targetRecurse,
+      CalleeEffects sourceRecurse targetRecurse (callerContext base metadata)
+        (withFunction base selected sourceFunction).functions
+        (withFunction base selected targetFunction).functions →
+      SelectedEffects
+        (fun ctx depth cfg pc args strategy => evalLayer sourceRecurse ctx depth cfg pc args strategy)
+        (fun ctx depth cfg pc args strategy => evalLayer targetRecurse ctx depth cfg pc args strategy)
+        (callerContext base metadata) (withFunction base selected sourceFunction).functions
         (withFunction base selected targetFunction).functions sourceFunction targetFunction)
     (fuel : Nat) :
     SameGraphs (evaluatorAt fuel) (evaluatorAt fuel) base
@@ -84,25 +144,9 @@ theorem evaluator_simulation (base : EvalContext) (selected : FuncId)
     SelectedEffects (evaluatorAt fuel) (evaluatorAt fuel) base
       (withFunction base selected sourceFunction).functions
       (withFunction base selected targetFunction).functions sourceFunction targetFunction := by
-  induction fuel with
-  | zero =>
-    constructor
-    · intro types depth cfg pc args strategy
-      rfl
-    · intro depth args strategy world
-      exact .error .outOfFuel
-  | succ fuel ih =>
-    have effects := calleeEffects_of_update (evaluatorAt fuel) (evaluatorAt fuel) base selected
-      sourceFunction targetFunction ih.1 ih.2
-    have headers := headerAgreement_withFunction base selected sourceFunction targetFunction body convention
-    constructor
-    · intro types depth cfg pc args strategy
-      simp only [evaluatorAt, stepNWithContext_succ_layer]
-      apply evalLayer_congr _ _ base _ _ headers effects types depth cfg pc args strategy
-      intro block result
-      exact evalTransfer_congr _ _ base _ _ headers effects ih.1 types depth cfg block strategy result
-    · intro depth args strategy world
-      simpa only [evaluatorAt, stepNWithContext_succ_layer] using
-        selectedLayer (evaluatorAt fuel) (evaluatorAt fuel) effects depth args strategy world
+  have uniform := evaluator_simulation_uniform base selected sourceFunction targetFunction
+    body convention sourceIdentity selectedLayer fuel
+  simpa only [callerContext_self] using
+    And.intro (uniform.1 (CallerMetadata.ofContext base)) (uniform.2 (CallerMetadata.ofContext base))
 
 end TrustIr.GenericCoro.Prefix

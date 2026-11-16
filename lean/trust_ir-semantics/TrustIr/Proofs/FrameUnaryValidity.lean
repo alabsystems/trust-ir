@@ -88,11 +88,13 @@ theorem unary_lane_minted (bound : Nat) (op : UnOp) (ty : Ty) (operand result : 
   | aggregate _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | vector _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | frame _ _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
+  | sourceFrame _ _ _ _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | set _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | sequence _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | record _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | closure _ _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | fnDef _ _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
+  | fnItem _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | typedClosure _ _ _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | fatPtr _ _ _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
   | «partial» _ => simp [throw, throwThe, MonadExceptOf.throw] at tail
@@ -144,11 +146,13 @@ theorem unary_value_minted (bound : Nat) (op : UnOp) (ty : Ty) (operand result :
   | array _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | aggregate _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | frame _ _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
+  | sourceFrame _ _ _ _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | set _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | sequence _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | record _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | closure _ _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | fnDef _ _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
+  | fnItem _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | typedClosure _ _ _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | fatPtr _ _ _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run
   | «partial» _ => simp [semUnOpValue, throw, throwThe, MonadExceptOf.throw] at run

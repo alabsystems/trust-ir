@@ -81,8 +81,9 @@ pub enum TyShape {
     Handle,
     Storage,
     /// A tensor (`Ty::Tensor`): no memory layout, as `Sequence` has none.
-    /// Appended last so earlier serde discriminants stay.
+    /// Follows Storage so earlier serde discriminants stay.
     Tensor,
+    FnItem,
 }
 
 impl core::fmt::Display for TyShape {
@@ -123,6 +124,7 @@ impl core::fmt::Display for TyShape {
             TyShape::Storage => f.write_str("storage"),
             TyShape::Handle => f.write_str("handle"),
             TyShape::Tensor => f.write_str("tensor"),
+            TyShape::FnItem => f.write_str("fnitem"),
         }
     }
 }
@@ -192,6 +194,7 @@ impl Ty {
             Ty::Tuple(_) => TyShape::Tuple,
             Ty::Enum(_) => TyShape::Enum,
             Ty::Func(_) => TyShape::Function,
+            Ty::FnItem(_) => TyShape::FnItem,
             Ty::Ref(_) => TyShape::Ref,
             Ty::RefMut(_) => TyShape::RefMut,
             Ty::PtrConst(_) => TyShape::PtrConst,
@@ -500,6 +503,7 @@ pub enum TyLayoutKind {
     },
     /// Geometry only; no initialized value encoding exists.
     Storage,
+    FnItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -607,6 +611,7 @@ impl core::fmt::Display for TyLayoutKind {
             TyLayoutKind::Storage => f.write_str("storage"),
             TyLayoutKind::Unit => f.write_str("unit"),
             TyLayoutKind::Never => f.write_str("never"),
+            TyLayoutKind::FnItem => f.write_str("function_item"),
         }
     }
 }
@@ -1236,6 +1241,17 @@ impl crate::LayoutTable<'_> {
                 })
             }
             CastOp::ReifyFnPointer => {
+                if let (Ty::FnItem(target), Ty::Func(signature)) = (src, dst) {
+                    let valid = self
+                        .function_item(*target)
+                        .is_ok_and(|(function, _)| function.ty == *signature);
+                    if !valid {
+                        return Err(LayoutError::NotFunctionPointerSource(src.shape()));
+                    }
+                    return Ok(CastLayoutEvidence::ReifyFnPointer {
+                        pointer_bits: module.pointer_bits(),
+                    });
+                }
                 if !matches!(src, Ty::Func(_)) {
                     return Err(LayoutError::NotFunctionPointerSource(src.shape()));
                 }
@@ -1365,6 +1381,7 @@ pub(crate) fn leaf_layout(
             Some(pointer_bits),
         )),
         Ty::Char => int(false, 32),
+        Ty::FnItem(_) => return None, // requires authenticated module context
         Ty::Error => Err(LayoutError::UnsupportedTyShape(TyShape::Error)),
         Ty::Dialect(_) => Err(LayoutError::UnsupportedTyShape(TyShape::Dialect)),
         // v43: a handle is one pointer-sized SCALAR word. Deliberately not
@@ -1701,6 +1718,7 @@ pub enum ConstantShape {
     TensorBlob {
         rank: usize,
     },
+    FnItem,
 }
 
 impl core::fmt::Display for ConstantShape {
@@ -1719,6 +1737,7 @@ impl core::fmt::Display for ConstantShape {
             ConstantShape::Record { fields } => write!(f, "record[{fields}]"),
             ConstantShape::Closure { captures } => write!(f, "closure[{captures}]"),
             ConstantShape::FnDef => f.write_str("fndef"),
+            ConstantShape::FnItem => f.write_str("fnitem"),
             ConstantShape::SymbolAddr => f.write_str("symaddr"),
             ConstantShape::PhantomData => f.write_str("phantomdata"),
             ConstantShape::Uninit => f.write_str("uninit"),
@@ -1748,6 +1767,7 @@ impl Constant {
                 captures: captures.len(),
             },
             Constant::FnDef(_) => ConstantShape::FnDef,
+            Constant::FnItem(_) => ConstantShape::FnItem,
             Constant::SymbolAddr { .. } => ConstantShape::SymbolAddr,
             Constant::PhantomData => ConstantShape::PhantomData,
             Constant::Uninit => ConstantShape::Uninit,
@@ -1762,6 +1782,7 @@ impl Constant {
                 format!("closure<func.{}>[{}]", func.index(), captures.len())
             }
             Constant::FnDef(func) => format!("fndef<func.{}>", func.index()),
+            Constant::FnItem(func) => format!("fnitem<func.{}>", func.index()),
             Constant::SymbolAddr { symbol, addend } => {
                 format!("symaddr<{symbol} + {addend}>")
             }
@@ -1842,6 +1863,7 @@ impl Constant {
             (Constant::Record(_), Ty::Record(_)) => true,
             (Constant::Closure { .. }, Ty::Closure(_)) => true,
             (Constant::FnDef(_), Ty::Func(_)) => true,
+            (Constant::FnItem(a), Ty::FnItem(b)) => a == b,
             // A relocatable symbol address is a native pointer: it can stand
             // for a data-global pointer (`Ty::Ptr`) or a function pointer
             // (`Ty::Func`). It also appears as an element inside an aggregate

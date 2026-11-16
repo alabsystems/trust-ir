@@ -71,6 +71,8 @@ inductive TemplateTy where
   | param : Nat -> TemplateTy
   /-- Type hole `?h`, answered by the host. -/
   | hole : Nat -> TemplateTy
+  /-- Exact nominal zero-byte function item, not a reified pointer. -/
+  | FnItem : FuncId -> TemplateTy
   deriving Repr
 
 mutual
@@ -118,6 +120,7 @@ def substTy (σ η : Nat → Option Ty) : TemplateTy → Option Ty
   | .Dialect a0 a1 a2 => some (.Dialect a0 a1 a2)
   | .Storage a0 a1 => some (.Storage a0 a1)
   | .Handle a0 a1 => some (.Handle a0 a1)
+  | .FnItem id => some (.FnItem id)
   | .param i => σ i
   | .hole h => η h
 /-- `substTy` over a list. -/
@@ -170,6 +173,7 @@ def embed : Ty → TemplateTy
   | .Dialect a0 a1 a2 => .Dialect a0 a1 a2
   | .Storage a0 a1 => .Storage a0 a1
   | .Handle a0 a1 => .Handle a0 a1
+  | .FnItem id => .FnItem id
 /-- `embed` over a list. -/
 def embeds : List Ty → List TemplateTy
   | [] => []
@@ -221,6 +225,7 @@ def refsOk (σ η : Nat → Option Ty) : TemplateTy → Bool
   | .Dialect _ _ _ => true
   | .Storage _ _ => true
   | .Handle _ _ => true
+  | .FnItem _ => true
   | .param i => (σ i).isSome
   | .hole h => (η h).isSome
 /-- `refsOk` over a list. -/

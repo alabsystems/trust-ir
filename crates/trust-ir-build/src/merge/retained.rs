@@ -6,9 +6,10 @@
 //! actual canonical placement receipts can reuse its own recorded file rows.
 //! This is unlicensed data custody, never Rust/source/ABI/proof authority.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use trust_ir::Module;
+use trust_ir::{FuncId, Module};
 
 use super::{MergeError, MergePolicy, Merger, Remap, len_u32};
 
@@ -22,6 +23,9 @@ use super::{MergeError, MergePolicy, Merger, Remap, len_u32};
 pub struct RetainedImage {
     module: Arc<Module>,
     origins: Vec<Placement>,
+    // Complete canonical receipt DAG, independent of file-origin dedup.
+    // Nodes are topologically ordered and retain actual immutable image Arcs.
+    history: Vec<Arc<Receipt>>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,11 +79,61 @@ impl RetainedImage {
         Ok(Self {
             module,
             origins: vec![origin],
+            history: Vec::new(),
         })
     }
 
     pub fn module(&self) -> &Module {
         &self.module
+    }
+
+    /// Locate a function of an actual earlier immutable image in this image.
+    /// Only the canonical merge receipts retained here supply the mapping.
+    /// Equal modules, symbols, digests and independently rewrapped data do not
+    /// recover a placement. This is data correspondence, not body authority.
+    pub fn function_from(&self, input: &Self, function: FuncId) -> Result<FuncId, MergeError> {
+        self.validate()?;
+        input.validate()?;
+        if input.module.function_by_id(function).is_none() {
+            return Err(MergeError::Dangling {
+                table: "retained original function",
+                id: function.index(),
+            });
+        }
+        let invalid = || MergeError::Malformed {
+            table: "retained function placement",
+            id: function.index(),
+            detail: "actual input or canonical function placement is absent or contradictory",
+        };
+        // Pointer keys only index the actual live immutable Arcs retained by
+        // this image. No caller address, copied token or content key is read.
+        let mut placed = HashMap::new();
+        placed.insert(Arc::as_ptr(&input.module), function);
+        for receipt in &self.history {
+            let destination = placed.get(&Arc::as_ptr(&receipt.destination)).copied();
+            let source = placed
+                .get(&Arc::as_ptr(&receipt.source))
+                .map(|id| receipt.remap.func(*id).ok_or_else(invalid))
+                .transpose()?;
+            if destination.is_some_and(|id| source.is_some_and(|other| id != other)) {
+                return Err(invalid());
+            }
+            if let Some(current) = destination.or(source) {
+                if receipt.result.function_by_id(current).is_none() {
+                    return Err(invalid());
+                }
+                if placed
+                    .insert(Arc::as_ptr(&receipt.result), current)
+                    .is_some_and(|old| old != current)
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+        placed
+            .get(&Arc::as_ptr(&self.module))
+            .copied()
+            .ok_or_else(invalid)
     }
 
     /// Extract data only. A later `new` starts a distinct input; it cannot
@@ -89,6 +143,13 @@ impl RetainedImage {
     }
 
     fn validate(&self) -> Result<(), MergeError> {
+        if self
+            .history
+            .last()
+            .is_some_and(|receipt| !Arc::ptr_eq(&receipt.result, &self.module))
+        {
+            return Err(stale());
+        }
         for placement in &self.origins {
             let mut current = &placement.original;
             let count = len_u32(current.files.len(), "files")?;
@@ -161,6 +222,16 @@ impl RetainedImage {
             result: Arc::clone(&result),
             remap: remap.clone(),
         });
+        // Both predecessor closures must survive even if all their original
+        // file inputs already occur on the destination side. Keeping only the
+        // selected Placement paths loses genuine intermediate source images.
+        let mut history = self.history.clone();
+        for prior in &source.history {
+            if !history.iter().any(|old| Arc::ptr_eq(old, prior)) {
+                history.push(Arc::clone(prior));
+            }
+        }
+        history.push(Arc::clone(&receipt));
         let mut origins: Vec<Placement> = Vec::new();
         for (image, side) in [(self, Side::Destination), (source, Side::Source)] {
             for old in &image.origins {
@@ -192,6 +263,7 @@ impl RetainedImage {
         let output = Self {
             module: result,
             origins,
+            history,
         };
         output.validate()?;
         Ok((output, remap))

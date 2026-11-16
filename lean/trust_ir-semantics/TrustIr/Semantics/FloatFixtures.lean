@@ -506,12 +506,13 @@ theorem ws2_23_review_struct_const_inexact_float_refused :
     an exact binary32 payload alone cannot establish a named struct's type. -/
 def floatStructContext : EvalContext :=
   { EvalContext.empty with
-    structs := fun id => if id.index == 0 then some
-      { id := StructId.mk 0, name := "FloatStruct",
-        fields := [{ name := "float", ty := .F32, offset := none },
-                   { name := "integer", ty := .I64, offset := none }],
-        size := none, align := none }
-      else none }
+    valueSource := FunctionItemPresence.prepare
+      { structs := [{ id := StructId.mk 0
+                      name := "FloatStruct"
+                      fields := [{ name := "float", ty := .F32, offset := none },
+                                 { name := "integer", ty := .I64, offset := none }]
+                      size := none
+                      align := none }] } }
 
 /-- A binary32-exact field keeps its value under the declared F32 type. -/
 theorem ws2_23_review_struct_const_exact_float_admitted :

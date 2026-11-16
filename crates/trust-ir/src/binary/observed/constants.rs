@@ -123,6 +123,10 @@ fn constant_head<'a, O: ExecutionObserver>(
             observed_write_u8(buf, 9)?;
             observed_write_func_id(buf, *func)?;
         }
+        ConstantG::FnItem(func) => {
+            observed_write_u8(buf, 19)?;
+            observed_write_func_id(buf, *func)?;
+        }
         ConstantG::SymbolAddr { symbol, addend } => {
             observed_write_u8(buf, 12)?;
             observed_write_str(buf, pool, symbol)?;

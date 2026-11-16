@@ -1,6 +1,6 @@
 # Lowering-target conformance subset
 
-**Version:** v5 (2026-10-20)
+**Version:** v6 (2026-11-12)
 **Machine-readable mirror:** `trust_ir_conformance::subset`
 (`crates/trust-ir-conformance/src/subset.rs`) — the gate test
 (`crates/trust-ir-conformance/tests/lowering_subset.rs`) fails if this doc
@@ -49,14 +49,14 @@ proof annotations remain claims — the subset pins which annotation
 claims with `ProofRef` per fast-1; see the trust boundary note in
 `TRUST.md`).
 
-## Types — `Ty` (35 of 42 allowed)
+## Types — `Ty` (36 of 43 allowed)
 
 Allowed:
 
 `I8` `I16` `I32` `I64` `I128` `U8` `U16` `U32` `U64` `U128` `F32` `F64`
 `Bool` `Ptr` `Vector` `Unit` `Never` `Array` `Tuple` `Struct` `Enum` `Func`
 `Sequence` `Set` `Record` `Closure` `Ref` `RefMut` `PtrConst` `PtrMut` `Rc`
-`FatPtr` `Isize` `Usize` `Char`
+`FatPtr` `Isize` `Usize` `Char` `FnItem`
 
 Excluded:
 
@@ -135,6 +135,7 @@ Excluded:
 | `ArraySplat` | **v4 addendum (v50, 2026-09-27).** The constant-size uniform array (`%r = array_splat [e x n] %v`, `n` copies of one register value; its constant twin `Constant::Splat`, `splat[ c; n ]`, is excluded wherever a constant is emitted — an `Inst::Const` value or a global initializer, at any depth). It landed complete as a FORMAT construct: wire tags (Inst 59, Constant 16, binary v50), Lean semantics (`semArraySplat` / `Value.ofConstant (.splat ..)`, both `List.replicate`, with the `extract_array_splat` law proved), a lazy reference-interpreter value (O(1) in `n`), and a constant-time validator rule with the §3 canonicality check. What it lacks is a CONSUMER: trust-cg has no lowering, and admitting a new opcode is an additive expansion under the bump policy below (allowlist + this doc + `SUBSET_VERSION` in lockstep, with the lowering). `bridge.rs` (`constant_splat_excluded` for the constant) and the mirror exclude both by name until then. **Coupling:** the validated one-spelling rule (`docs/SPEC_RATIFICATIONS.md` §3.1) makes `Splat` the ONLY valid spelling of a uniform constant list such as `[0u8; 16]`, so while this exclusion stands such an array has no validated in-subset constant spelling; the §3.1 validation, the producer switch to the splat constructors, the trust-cg lowering and this admission must reach consumers in ONE pin move (§3.1 "Landing order"). |
 | `AssertInvoke` | **v4 addendum (amendment P, wire v54, 2026-10-01).** The sited check whose failure must enter an in-frame landing pad (MIR `UnwindAction::Cleanup` / `Terminate`): `assert_invoke %c[, KIND], panic @func.E at LOC to bbN(..) unwind bbM`. It landed complete as a FORMAT construct — Inst tag 67, the validator's `Invoke` unwind rules, both engines (the panic=abort projection: a passing check takes its normal edge, a failing one is the sited panic; the Lean theorem `assertInvoke_is_sited_assert_then_br`) — but no consumer lowers its unwind edge (trust-cg compiles panic=abort only), and admitting an opcode no consumer lowers is not admission. `bridge.rs` and the mirror exclude it by name until a subset bump admits it with the lowering. A plain sited `Assert` is inside. |
 | `MemCopy`, `MemSet` | **Not yet admitted (WS3.20, F-057).** Both have Lean semantics (`semMemCopy` / `semMemSet`, Semantics/Memory.lean, with the byte-level contract `memcopy_preserves_bytes`), execute in the reference interpreter, and are validated (`bulk_memory_ops`); admitting a new opcode is an additive EXPANSION under the bump policy below (allowlist + this doc + `SUBSET_VERSION` in lockstep, and a consumer that lowers them — trust-cg has none yet); their binary tags (Inst 61 / 62) landed with the v51 INST wire batch. `bridge.rs` and the mirror exclude them by name until that bump, so a module using them fails closed rather than being called in-subset by omission. |
+| `BoxDeref` | **Not admitted (wire v74, `docs/SPEC_RATIFICATIONS.md` §28).** A Box deref carrying its validity fact. Both models execute it as the identity on a pointer that is non-null, aligned and inside a live allocation covering the pointee, and as undefined behaviour otherwise; the fact is judged by the validator and read by no backend or engine. Excluded by name until a consumer contract for acting on a fact is ratified; admission is a subset-contract bump with the consumer. |
 | `Drop` | **Rewritten 2026-10-01 (amendment D, wire v55, `docs/SPEC_RATIFICATIONS.md` §20).** A drop RESOLVES through the module drop-glue table and executes in both models as a call of its `drop_glue` row's glue (the reference interpreter; the Lean model's `EvalContext.resolveDrop`, proved an identity of the evaluator by `stepNWithContext_resolveDrops`); an UNRESOLVED drop is refused by both (`UnsupportedInstruction`; `unsupported.destructor`) and by the default codegen gate. Awaiting a backend lowering: `bridge.rs` and the mirror exclude it by name until the v5 EXPANSION admits it (structural condition 9: every drop resolves). |
 | `DropInvoke` | **v4 addendum (amendment D, wire v55, 2026-10-01).** The unwinding twin of `Drop` (`drop_invoke <ty>, %p to bbN(..) unwind bbM`, Inst tag 68): executes in both models as an `Invoke` of its glue under the panic=abort projection (the unwind edge is never taken), with `Invoke`'s validator rules. Awaiting a backend lowering of the drop and its EH call-site entry: excluded by name with `Drop` until the v5 expansion. |
 | `TensorContract` | **v5 addendum (the tensor region, PKG-U13a, wire v67, 2026-11-13).** The integer tensor contraction in XLA `DotGeneral`'s shape (`tensor_contract tensor<i32, 2> %a, %b batch [] contract [1:0]` is a matrix multiply; Inst tag 71): wrapping integer arithmetic summed in a pinned order, with paired axes of different extents and a result count past `usize` undefined behaviour. The reference interpreter and SemR execute it, and the validator checks its ranks and axes (`InvalidTensorContract`), but no backend lowers it and its operands have no layout, so the default codegen gate refuses it (`UnlowerableForCodegen`) and `bridge.rs` and the mirror exclude it by name until a subset bump admits it with a lowering. |
@@ -392,6 +393,7 @@ which rather than forbidding them:
 | `tensor_map_reduce_view` | `Tensor`, `TensorMap`, `TensorReduce`, `TensorView` — the tensor region's map, reduce and view chained in one function (every map node kind, a row sum, a left pad with a fill; the only golden whose header is `TENSOR_MAP_REDUCE_VIEW_FORMAT_VERSION`); both engines execute it, but a tensor has no memory layout and no backend lowers the three, so excluded by name — see the `Ty` and `Inst` exclusion tables |
 | `tensor_weight_blob` | `Tensor` and the `Constant::TensorBlob` its `Const` nodes carry — content-addressed weight blobs (one row named at `i32` and `u8`, an empty row, a blob fed to a contraction; the only golden whose header is `TENSOR_BLOB_FORMAT_VERSION`); both engines read them, but a tensor has no memory layout and no backend lowers a blob constant, so excluded through its tensor type — see the `Ty` exclusion table |
 | `tensor_gather_scatter` | `Tensor`, `TensorGather`, `TensorScatter` — the tensor region's gather and scatter chained in one function (a gather of a `tensor<i32, 2>` at `i64` and `u8` coordinate tensors, then a scatter of the result at `usize` coordinates; the only golden whose header is `TENSOR_GATHER_SCATTER_FORMAT_VERSION`); both engines execute it, but a tensor has no memory layout and no backend lowers the two, so excluded by name — see the `Ty` and `Inst` exclusion tables |
+| `box_deref` | `BoxDeref` — v74 Box-deref validity-fact wire coverage (all-premise facts on two roots); outside the proven lowering subset and grants no native or proof admission |
 
 ## Worked example
 
@@ -910,7 +912,7 @@ Ratified with the 2026-07-04 promotion audit:
 ## Versioning and bump policy
 
 The subset is versioned as a single integer
-(`trust_ir_conformance::subset::SUBSET_VERSION`, currently **3**; this doc's
+(`trust_ir_conformance::subset::SUBSET_VERSION`, currently **6**; this doc's
 `**Version:**` header must match — the gate cross-checks the marker).
 
 * **Expanding the subset (additive)** — e.g. admitting `vector.fma`, full
@@ -932,6 +934,20 @@ The subset is versioned as a single integer
   entries.
 
 ### History
+
+* **v6 (2026-11-12)** — adds `Ty::FnItem(FuncId)` and the corresponding
+  nominal singleton constant/value. A module must contain exactly one actual
+  function row for that ID and a resolvable signature; duplicate or missing
+  headers do not become zero-byte values. Distinct IDs remain distinct despite
+  identical signatures and zero storage/ABI lanes. Module composition relocates
+  both the type and constant IDs together. Item calls authenticate the exact
+  row, signature ID and calling convention. A requested receipt older than
+  v6 refuses the new type or constant wherever stored; an unknown future
+  receipt is refused rather than treated as implemented. Existing instruction, cast and
+  target restrictions remain unchanged, including the restrictions on
+  `ReifyFnPointer` and non-scalar `Transmute`. This structural conformance
+  definition does not authenticate any producer's concrete-callee mapping or
+  establish universal source/native correctness.
 
 * **v5 addendum (2026-11-14, no version bump)** — content-addressed weight
   blobs (PKG-U13e, wire v70) add `Constant::TensorBlob` and the module blob

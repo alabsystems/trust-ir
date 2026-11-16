@@ -89,3 +89,33 @@ fn all_semantic_diagnostics_are_independent_of_later_input_mutation() {
     m.enums.clear();
     assert_eq!(out, old);
 }
+
+#[test]
+fn connected_empty_nominal_declaration_rejects_each_metadata_claim_without_a_tag() {
+    let mut base = Module::new("connected empty nominal identity");
+    base.enums
+        .push(EnumDef::new(EnumId::new(9), "Infallible", vec![]));
+    assert!(run(&base).0.is_empty());
+    for which in 0..4 {
+        let mut m = base.clone();
+        match which {
+            0 => m.enums[0].discriminants = vec![Some(0)],
+            1 => m.enums[0].discriminants = vec![None],
+            2 => m.enums[0].repr = Some(EnumTagRepr::U8),
+            3 => {
+                m.enums[0].layout = Some(EnumLayoutDescriptor {
+                    encoding: EnumTagEncoding::Direct { tag_offset: 0 },
+                    size: 0,
+                    align: 1,
+                    variant_field_offsets: vec![],
+                })
+            }
+            _ => unreachable!(),
+        }
+        let errors = run(&m).0;
+        assert!(
+            matches!(&errors[0], ValidationError::ConstTypeMismatch { actual, .. }
+            if actual == "no canonical tag")
+        );
+    }
+}

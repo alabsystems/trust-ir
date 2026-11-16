@@ -568,5 +568,5 @@ impl ReadonlyEightLoaded<'_, '_> {
 }
 
 #[cfg(test)]
-#[path = "core_execution_readonly_indexed_call_tests.rs"]
+#[path = "core_execution_readonly_indexed_call/tests.rs"]
 mod tests;

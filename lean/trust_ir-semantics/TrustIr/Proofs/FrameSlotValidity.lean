@@ -91,14 +91,20 @@ theorem bind_success_signature (accepts : Ty → Value → Prop)
     (operand : ∀ value, s.lookupValue rhs = some value → accepts declared.ty value)
     (run : Sem.run (semBindSlot frame index rhs) s = .ok (result, final)) :
     TypedFrameAt accepts signature final result := by
-  obtain ⟨lineage, values, value, lookup, rhsLookup, _, _, rfl, rfl⟩ :=
+  obtain ⟨origin, lineage, values, value, lookup, rhsLookup, _, _, rfl, rfl⟩ :=
     bind_success_state s final frame rhs result index run
   obtain ⟨originalLineage, originalValues, originalLookup, typed⟩ := source
-  rw [lookup] at originalLookup
-  cases originalLookup
-  exact ⟨lineage, values.set index value,
-    bind_new_snapshot s lineage values index value,
-    typed.update index declared found value (operand value rhsLookup)⟩
+  cases origin with
+  | none =>
+    rw [lookup] at originalLookup
+    cases originalLookup
+    exact ⟨lineage, values.set index value,
+      bind_new_snapshot s lineage values index value,
+      typed.update index declared found value (operand value rhsLookup)⟩
+  | some origin =>
+    rcases origin with ⟨function, declaration⟩
+    rw [lookup] at originalLookup
+    cases originalLookup
 
 /-- A successful load returns the declaration's value or its own unbound
 poison, regardless of the requested type. Validation supplies the type bridge. -/
@@ -109,17 +115,23 @@ theorem load_success_declared_signature (accepts : Ty → Value → Prop)
     (found : trustIrListGet? signature index = some declared)
     (run : Sem.run (semLoadSlot frame index requested) s = .ok (result, final)) :
     ∃ value, final.lookupValue result = some value ∧ SlotTyped accepts declared.ty value := by
-  obtain ⟨lineage, values, value, lookup, _, selected, rfl, rfl⟩ :=
+  obtain ⟨origin, lineage, values, value, lookup, _, selected, rfl, rfl⟩ :=
     load_success_state s final frame result index requested run
   obtain ⟨originalLineage, originalValues, originalLookup, typed⟩ := source
-  rw [lookup] at originalLookup
-  cases originalLookup
-  obtain ⟨expected, payload, valid⟩ := typed.lookup index declared found
-  rw [selected] at payload
-  cases payload
-  refine ⟨value, ?_, ?_⟩
-  · simp [afterLoad, MachineState.lookupValue, ValueMap.get, ValueMap.set]
-  · exact valid
+  cases origin with
+  | none =>
+    rw [lookup] at originalLookup
+    cases originalLookup
+    obtain ⟨expected, payload, valid⟩ := typed.lookup index declared found
+    rw [selected] at payload
+    cases payload
+    refine ⟨value, ?_, ?_⟩
+    · simp [afterLoad, MachineState.lookupValue, ValueMap.get, ValueMap.set]
+    · exact valid
+  | some origin =>
+    rcases origin with ⟨function, declaration⟩
+    rw [lookup] at originalLookup
+    cases originalLookup
 
 /-- Exact declaration agreement transports the load result to the requested
 type. A refinement bridge may instead use load_success_declared_signature. -/
@@ -141,7 +153,7 @@ theorem close_success_signature (accepts : Ty → Value → Prop)
     (source : TypedFrameAt accepts signature s handle)
     (run : Sem.run (semCloseFrame closing) s = .ok ((), final)) :
     TypedFrameAt accepts signature final handle := by
-  obtain ⟨lineage, _, _, _, rfl⟩ := close_success_state s final closing run
+  obtain ⟨_, lineage, _, _, _, rfl⟩ := close_success_state s final closing run
   exact source
 
 /-- Negative boundary: the actual runtime ignores LoadSlot's requested type.

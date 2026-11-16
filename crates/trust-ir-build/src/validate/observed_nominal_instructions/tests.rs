@@ -196,6 +196,7 @@ fn run(
     let mut expected = vec![];
     super::super::validate_nominal_instruction_types(
         m,
+        &ModuleFunctionCatalog::new(m),
         node,
         &old_values,
         &old_nominal,

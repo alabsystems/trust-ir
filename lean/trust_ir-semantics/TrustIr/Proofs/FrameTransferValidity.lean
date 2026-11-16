@@ -19,6 +19,25 @@ private theorem split_bind_success {α β : Type} (action : Sem α) (next : α �
   | error error => simp [step, bind, Except.bind] at run
   | ok pair => exact ⟨pair.1, pair.2, rfl, by simpa [step] using run⟩
 
+/-- Successful evaluator return postchecks retain both the original values
+and the exact world; refusal outcomes are deliberately unconstrained here. -/
+theorem checked_return_success (ctx : EvalContext) (returned values : List Value)
+    (s final : MachineState)
+    (run : Sem.run (GenericCoro.checkedReturn ctx returned) s = .ok (values, final)) :
+    final = s ∧ values = returned := by
+  cases expected : ctx.functionReturnTypes with
+  | none =>
+    simp only [GenericCoro.checkedReturn, expected] at run
+    cases run
+    exact ⟨rfl, rfl⟩
+  | some expected =>
+    simp only [GenericCoro.checkedReturn, expected] at run
+    obtain ⟨unit, middle, checked, finished⟩ := split_bind_success _ _ s final values run
+    have same := memory_check_success_state _ s middle unit checked
+    subst middle
+    cases finished
+    exact ⟨rfl, rfl⟩
+
 private theorem lookup_success (s final : MachineState) (id : ValueId) (value : Value)
     (run : Sem.run (Sem.lookupValue id) s = .ok (value, final)) :
     s.lookupValue id = some value ∧ final = s := by
@@ -160,6 +179,12 @@ theorem cond_transfer_success (condition : ValueId) (yes no : BlockId)
   | vector _ =>
     simp [Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
       throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at tail
+  | fnItem _ =>
+    simp [Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
+      throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at tail
+  | sourceFrame _ _ _ _ =>
+    simp [Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
+      throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at tail
   | frame _ _ =>
     simp [Sem.throwTypeError, Sem.run, StateT.run, StateT.lift,
       throw, throwThe, MonadExceptOf.throw, bind, pure, Except.bind, Except.pure] at tail
@@ -298,6 +323,10 @@ theorem frame_layer_success (recurse : Recurse) (ctx : EvalContext) (depth : Nat
   | some block =>
     obtain ⟨sites, ⟨control⟩⟩ := grammar pc block found
     simp only [evalLayer, found] at run
+    obtain ⟨unit, checkedState, checked, run⟩ := split_bind_success _ _ s final values run
+    have same := memory_check_success_state _ s checkedState unit checked
+    subst checkedState
+    cases unit
     obtain ⟨unit, bound, params, tail⟩ := split_bind_success _ _ s final values run
     cases unit
     have boundValid := WellMintedState.checked_params_success _ args s bound valid incoming params
@@ -311,8 +340,10 @@ theorem frame_layer_success (recurse : Recurse) (ctx : EvalContext) (depth : Nat
     cases step with
     | Continue next nextArgs => exact continuation next nextArgs afterBody final values bodyValid transported tail
     | Ret returned =>
-      change Except.ok (returned, afterBody) = Except.ok (values, final) at tail
-      cases tail
+      change Sem.run (GenericCoro.checkedReturn ctx returned) afterBody = .ok (values,final) at tail
+      obtain ⟨same, equal⟩ := checked_return_success ctx returned values afterBody final tail
+      subst final
+      subst values
       exact ⟨bodyValid, transported⟩
     | Stuck =>
       change Except.error (SemError.ub "reached unreachable") = Except.ok (values, final) at tail

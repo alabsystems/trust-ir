@@ -40,7 +40,7 @@ fn every_actual_cleanup_and_terminal_callback_keeps_first_cause_and_finishes_all
 }
 
 #[test]
-fn already_sticky_original_session_still_consumes_all_259_variants_and_nested_payloads() {
+fn already_sticky_original_session_still_consumes_all_269_variants_and_nested_payloads() {
     let mut observer = Observer {
         stop: Some(1),
         refuse_later: true,

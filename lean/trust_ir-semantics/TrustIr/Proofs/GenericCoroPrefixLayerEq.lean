@@ -48,9 +48,18 @@ theorem evalLayer_congr (sourceRecurse targetRecurse : Recurse) (base : EvalCont
         stepTermWithContext (scopedContext base target types) depth cfg inst strat := by
     intro inst
     exact GenericCoro.stepTermWithContext_congr _ _ depth cfg inst strat rfl
-      (functionCall_congr base source target headers types types)
+      (functionCallWithConvention_congr base source target headers types types)
       (closureCall_congr base source target headers types types)
+      (fun operand _ value =>
+        checkFunctionItemCalleeType_scoped_congr base source target types types operand value rfl)
+      (fun _ _ _ => rfl)
+      (resolveFunctionItemBody_congr base source target headers types types)
+  have itemChecks (declared : List Ty) (values : List Value) :
+      checkFunctionItemValues (scopedContext base source types) declared values =
+        checkFunctionItemValues (scopedContext base target types) declared values :=
+    GenericCoro.itemValues_constantContext (scopedContext base source types)
+      (scopedContext base target types) rfl declared values
   rw [evalLayer_eq_transfer, evalLayer_eq_transfer]
-  simp only [resolveBlock_scoped, body, term, transfers]
+  simp only [resolveBlock_scoped, itemChecks, body, term, transfers]
 
 end TrustIr.GenericCoro.Prefix

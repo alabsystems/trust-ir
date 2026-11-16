@@ -84,9 +84,9 @@ def IntegerCastTarget.emit {op : CastOp} {input output : SMTSort} (plan : Intege
   | .sext source extra _ _ => arg.unary (.bvSignExtend source extra)
   | .truncBool source narrow =>
       let low := arg.unary (.bvExtract source 0 0 (Nat.zero_le _) (Nat.lt_trans (by decide : 0 < 1) narrow))
-      low.binary (.eq (.bv 1)) ⟨.bvConst 1 1, [], by change 0 < 1; decide, rfl⟩
-  | .zextBool target widen => arg.ite ⟨.bvConst target 1, [], Nat.lt_trans (by decide : 0 < 1) widen, rfl⟩ ⟨.bvConst target 0, [], Nat.lt_trans (by decide : 0 < 1) widen, rfl⟩
-  | .sextBool target widen => arg.ite ⟨.bvConst target (-1), [], Nat.lt_trans (by decide : 0 < 1) widen, rfl⟩ ⟨.bvConst target 0, [], Nat.lt_trans (by decide : 0 < 1) widen, rfl⟩
+      low.binary (.eq (.bv 1)) ⟨.bvConst 1 1, [], by change 0 < 1; decide, rfl, [], rfl⟩
+  | .zextBool target widen => arg.ite ⟨.bvConst target 1, [], Nat.lt_trans (by decide : 0 < 1) widen, rfl, [], rfl⟩ ⟨.bvConst target 0, [], Nat.lt_trans (by decide : 0 < 1) widen, rfl, [], rfl⟩
+  | .sextBool target widen => arg.ite ⟨.bvConst target (-1), [], Nat.lt_trans (by decide : 0 < 1) widen, rfl, [], rfl⟩ ⟨.bvConst target 0, [], Nat.lt_trans (by decide : 0 < 1) widen, rfl, [], rfl⟩
 
 def IntegerCastTarget.eval {op : CastOp} {input output : SMTSort} (plan : IntegerCastTarget op input output) :
     input.CoreValue → output.CoreValue :=
@@ -257,8 +257,8 @@ theorem IntegerCastTarget.context_outcome {op : CastOp} {input output : SMTSort}
     (lookup : state.lookupValue operand = some (input.irValue (arg.term.eval env))) :
     Sem.run (stepInstWithContext ctx (.Cast op srcTy dstTy operand)) state =
       bindEncodedValue state (.ok (output.irValue ((plan.emit arg).term.eval env))) := by
-  simpa only [stepInstWithContext] using
-    plan.step_outcome srcTy dstTy ctx.byteModel sourceType destinationType arg env operand state lookup
+  have actual := plan.step_outcome srcTy dstTy ctx.byteModel sourceType destinationType arg env operand state lookup
+  cases plan <;> simpa only [stepInstWithContext] using actual
 
 /-- A source-bound semantic subject, not a module-validation or body license.
 The original operation, types and byte model constrain the target construction. -/

@@ -12,13 +12,13 @@ theorem FrameInstruction.step_no_unwind {inst : Inst} (site : FrameInstruction i
     CallCheckNoUnwind (stepInstWithContext ctx inst) := by
   cases site with
   | «open» definition =>
-    exact CallCheckNoUnwind.bind _ _ (open_frame_no_unwind definition) (fun _ => pure_safe _)
+    exact contextual_open_no_unwind ctx definition
   | bind frame slot value =>
-    exact CallCheckNoUnwind.bind _ _ (bind_slot_no_unwind frame slot value) (fun _ => pure_safe _)
+    exact contextual_bind_no_unwind ctx frame slot value
   | load frame slot ty =>
-    exact CallCheckNoUnwind.bind _ _ (load_slot_no_unwind frame slot ty) (fun _ => pure_safe _)
+    exact contextual_load_no_unwind ctx frame slot ty
   | close frame =>
-    exact CallCheckNoUnwind.bind _ _ (close_frame_no_unwind frame) (fun _ => pure_safe _)
+    exact contextual_close_no_unwind ctx frame
   | unary op ty operand =>
     exact CallCheckNoUnwind.bind _ _ (unary_action_no_unwind op ty operand) (fun _ => pure_safe _)
   | icmp op ty left right =>
@@ -26,7 +26,7 @@ theorem FrameInstruction.step_no_unwind {inst : Inst} (site : FrameInstruction i
   | fcmp op ty left right =>
     exact CallCheckNoUnwind.bind _ _ (float_compare_action_no_unwind op ty left right) (fun _ => pure_safe _)
   | cast op srcTy dstTy operand =>
-    exact CallCheckNoUnwind.bind _ _ (semCast_no_unwind op srcTy dstTy operand ctx.byteModel) (fun _ => pure_safe _)
+    exact contextual_cast_no_unwind ctx op srcTy dstTy operand
   | overflow op ty left right =>
     exact CallCheckNoUnwind.bind _ _ (overflow_action_no_unwind op ty left right) (fun _ => pure_safe _)
   | ptrData ty operand =>

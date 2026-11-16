@@ -9,6 +9,23 @@ use crate::ty::EnumLayoutDescriptor;
 mod descriptor;
 mod tag;
 
+impl<O: ExecutionObserver> crate::layout_table::direct_storage::Work for Work<'_, '_, O> {
+    type Error = Error;
+    fn poll(&mut self) -> R {
+        Work::poll(self)
+    }
+    fn references(&mut self, module: &Module, def: &EnumDef) -> R<bool> {
+        crate::layout_table::references::walk(
+            module,
+            def.variants.iter().flat_map(|row| &row.fields),
+            self,
+        )
+    }
+    fn dead(&mut self, module: &Module, variant: &EnumVariant) -> R<bool> {
+        inhabit::some(module, variant.fields.iter(), self)
+    }
+}
+
 pub(super) struct Frame<'q> {
     pub(super) index: usize,
     def: &'q EnumDef,
@@ -39,16 +56,48 @@ impl<'q> Frame<'q> {
         let def = &table.module.enums[index];
         let discriminants = tag::discriminants(def, work)?;
         let prepared = (|| {
+            // Use the same strict reference walk before inactive storage is
+            // skipped; its existing Work adapter retains polling/retirement.
+            if matches!(
+                def.layout.as_ref().map(|layout| &layout.encoding),
+                Some(EnumTagEncoding::SingleInhabited { .. })
+            ) && !crate::layout_table::references::walk(
+                table.module,
+                def.variants
+                    .iter()
+                    .flat_map(|variant| variant.fields.iter()),
+                work,
+            )? {
+                return Err(LayoutError::EnumLayoutUnavailable(def.id).into());
+            }
             let tag = tag::canonical(def, &discriminants, work)?;
             let lane = match def.layout.as_ref().map(|desc| &desc.encoding) {
-                None | Some(EnumTagEncoding::Direct { .. }) => {
-                    Some(tag::alignment(table, tag, work)?)
-                }
+                None
+                | Some(
+                    EnumTagEncoding::Direct { .. } | EnumTagEncoding::DirectWithUninhabited { .. },
+                ) => Some(tag::alignment(table, tag, work)?),
                 Some(EnumTagEncoding::Niche { niche_ty, .. }) => {
                     Some(tag::alignment(table, *niche_ty, work)?)
                 }
                 Some(EnumTagEncoding::Untagged | EnumTagEncoding::SingleInhabited { .. }) => None,
             };
+            if let Some(
+                desc @ EnumLayoutDescriptor {
+                    encoding: EnumTagEncoding::DirectWithUninhabited { .. },
+                    ..
+                },
+            ) = &def.layout
+                && !crate::layout_table::direct_storage::validate(
+                    table.module,
+                    def,
+                    desc,
+                    tag.size_bytes(),
+                    lane.ok_or(LayoutError::EnumLayoutUnavailable(def.id))? / 8,
+                    work,
+                )?
+            {
+                return Err(LayoutError::EnumLayoutUnavailable(def.id).into());
+            }
             Ok((tag, lane))
         })();
         let (tag, lane_align_bits) = match prepared {
@@ -93,6 +142,33 @@ impl<'q> Frame<'q> {
     ) -> R<Option<&'q Ty>> {
         while let Some(variant) = self.def.variants.get(self.variant) {
             work.poll()?;
+            if let Some(EnumTagEncoding::DirectWithUninhabited { variants, .. }) =
+                self.def.layout.as_ref().map(|desc| &desc.encoding)
+            {
+                work.admit(
+                    crate::layout_table::direct_storage::profile_lookup_work(variants.len()),
+                    size_of::<Option<&crate::UninhabitedVariantLayout>>(),
+                )?;
+            }
+            if let Some(profile) =
+                crate::layout_table::direct_storage::profile(self.def, self.variant)
+            {
+                for field in &profile.fields {
+                    work.push(&mut self.field_sizes, field.size)?;
+                    work.push(&mut self.field_aligns, field.align)?;
+                    work.admit(6, 2 * size_of::<u64>())?;
+                    let align = field
+                        .align
+                        .checked_mul(8)
+                        .ok_or(LayoutError::SizeOverflow)?;
+                    let size = field.size.checked_mul(8).ok_or(LayoutError::SizeOverflow)?;
+                    self.offset_bits = align_up_bits(self.offset_bits, align)?
+                        .checked_add(size)
+                        .ok_or(LayoutError::SizeOverflow)?;
+                    self.variant_align_bits = self.variant_align_bits.max(align);
+                }
+                self.field = variant.fields.len();
+            }
             let inactive = matches!(&self.def.layout, Some(layout) if matches!(layout.encoding,
                 EnumTagEncoding::SingleInhabited { variant } if usize::try_from(variant).ok() != Some(self.variant)));
             if !inactive && let Some(field) = variant.fields.get(self.field) {

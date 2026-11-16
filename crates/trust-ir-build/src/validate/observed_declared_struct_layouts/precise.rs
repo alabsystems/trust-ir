@@ -38,7 +38,7 @@ impl State<'_> {
                     if let Some(offset) = field.offset {
                         work.admit(2, 0)?;
                         if offset > size
-                            || (offset == size && !query::zero(module, &field.ty, work)?)
+                            || (offset == size && !query::zero(self, module, &field.ty, work)?)
                         {
                             self.push(
                                 id,

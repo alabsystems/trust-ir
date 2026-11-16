@@ -29,8 +29,8 @@
 use std::path::{Path, PathBuf};
 
 use trust_ir_conformance::subset::{
-    CASTOP_ALLOWLIST_V5, DIALECT_OP_ALLOWLIST_V5, INST_ALLOWLIST_V5, PROOF_ALLOWLIST_V5,
-    SUBSET_VERSION, TY_ALLOWLIST_V5, module_subset_violations,
+    CASTOP_ALLOWLIST_V6, DIALECT_OP_ALLOWLIST_V6, INST_ALLOWLIST_V6, PROOF_ALLOWLIST_V6,
+    SUBSET_VERSION, TY_ALLOWLIST_V6, module_subset_violations,
 };
 
 // Fixture generators live in a sibling file and are included directly so
@@ -193,7 +193,17 @@ const MODULE_FIXTURES: &[ModuleFixture] = &[
     // so the fixture is on the exemption list below.
     ("closure_layout", generate::build_closure_layout),
     ("make_closure", generate::build_make_closure),
+    // v74: Box derefs carrying their validity facts. `BoxDeref` is excluded
+    // from the subset by name, so the fixture is on the exemption list below.
+    ("box_deref", generate::build_box_deref),
     ("storage_only", generate::build_storage_only),
+    // Retain both actual metadata-only corpus builders in this inventory.
+    // The ordinary subset checker must judge their complete type tables.
+    (
+        "single_inhabited_enums",
+        generate::build_single_inhabited_enums,
+    ),
+    ("closure_frame_origin", generate::build_closure_frame_origin),
     // The tensor region (PKG-U13a): `Ty::Tensor` and `Inst::TensorContract`
     // have no machine lowering, so the fixture is on the exemption list below.
     ("tensor_contract", generate::build_tensor_contract),
@@ -344,6 +354,11 @@ const SUBSET_EXEMPT_FIXTURES: &[(&str, &str)] = &[
          types and fed to a contraction; both engines read them, but a tensor has no memory \
          layout and no backend lowers a blob constant, so excluded by its tensor type until a \
          subset bump admits it",
+    ),
+    (
+        "box_deref",
+        "Inst::BoxDeref — Box-deref validity-fact wire coverage; excluded from the \
+         lowering-target subset by name until a consumer contract is ratified",
     ),
 ];
 
@@ -536,7 +551,7 @@ fn spec_doc_matches_machine_readable_subset() {
     };
     check_axis(
         "## Instructions",
-        INST_ALLOWLIST_V5,
+        INST_ALLOWLIST_V6,
         // `Dealloc` left the subset in G18-1 (2026-09-01): the format cannot
         // state the allocator origin or the layout a correct free needs.
         // `MakeAggregate` (WS3.5, 2026-09-19) landed after v3 was cut without
@@ -572,7 +587,7 @@ fn spec_doc_matches_machine_readable_subset() {
     );
     check_axis(
         "## Types",
-        TY_ALLOWLIST_V5,
+        TY_ALLOWLIST_V6,
         // v4 (WS2.17) promoted `Isize` / `Usize` / `Char` out of this table.
         // The tensor region (PKG-U13a): `Tensor` has no memory layout.
         &[
@@ -581,16 +596,16 @@ fn spec_doc_matches_machine_readable_subset() {
     );
     check_axis(
         "## Casts",
-        CASTOP_ALLOWLIST_V5,
+        CASTOP_ALLOWLIST_V6,
         &["ReifyFnPointer", "FPToSISat", "FPToUISat"],
     );
-    check_axis("## Dialect ops", DIALECT_OP_ALLOWLIST_V5, &["vector.fma"]);
+    check_axis("## Dialect ops", DIALECT_OP_ALLOWLIST_V6, &["vector.fma"]);
     check_axis(
         "## Proof annotations",
-        PROOF_ALLOWLIST_V5,
+        PROOF_ALLOWLIST_V6,
         // Both havoc markers are wire-encodable, NOT feature-gated, and were
         // never ratified into the subset — `proof_annotation_excluded`
-        // (trust-ir::bridge) and `PROOF_ALLOWLIST_V5` both fail closed on
+        // (trust-ir::bridge) and `PROOF_ALLOWLIST_V6` both fail closed on
         // them, so the doc must carry them in its Excluded table too.
         &["Custom", "FreshSymbolicHavoc", "RegionHavocStore"],
     );

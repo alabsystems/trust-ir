@@ -1,3 +1,4 @@
+import TrustIr.Proofs.AxiomAuditCompat
 -- Copyright 2026 Andrew Yates | Apache-2.0
 -- Exact public-declaration guards for the shared decoded Module/coroutine bridge.
 -- These are model proofs, not raw-entry refinement or native admission.
@@ -15,1931 +16,1038 @@ import TrustIr.Proofs.GenericCoroEntryObservation
 import TrustIr.Proofs.GenericCoroModuleEntryEffects
 import TrustIr.Proofs.GenericCoroModuleContextControls
 
-/-- info: 'Lean.RBNode.find.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms Lean.RBNode.find.eq_1
-
-/-- info: 'Lean.RBNode.find.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms Lean.RBNode.find.eq_2
-
-/-- info: 'Lean.RBNode.ins.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms Lean.RBNode.ins.eq_1
-
-/-- info: 'Lean.RBNode.ins.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms Lean.RBNode.ins.eq_2
-
-/-- info: 'Lean.RBNode.ins.eq_3' does not depend on any axioms -/
-#guard_msgs in
-#print axioms Lean.RBNode.ins.eq_3
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.both_mutual_factory_results_are_expanded' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.both_mutual_factory_results_are_expanded
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.direct' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.direct
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.duplicate_key_composition_preserves_winning_occurrence' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.duplicate_key_composition_preserves_winning_occurrence
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.graph' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.graph
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.header' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.header
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.signature' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.signature
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.two_updated_mutual_entries_preserve_every_framed_call' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.two_updated_mutual_entries_preserve_every_framed_call
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.Controls.undefined_and_bodyless_other_entries_keep_exact_errors' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.Controls.undefined_and_bodyless_other_entries_keep_exact_errors
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FactoryReplacement' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FactoryReplacement
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FactoryReplacement.framedCallsEquivalent' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FactoryReplacement.framedCallsEquivalent
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.refl' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.refl
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.run' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.run
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.symm' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.symm
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.trans' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.trans
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.casesOn
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.id' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.id
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.inj
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.injEq
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.noConfusion
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.noConfusionType
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.rec
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.recOn
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.source' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.source
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.target' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.target
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.functions_expanded_framedCallsEquivalent' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.functions_expanded_framedCallsEquivalent
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.installFirst' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.installFirst
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.installFirst_framedCallsEquivalent' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.installFirst_framedCallsEquivalent
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.installFirst_functions' depends on axioms: [Quot.sound, propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.installFirst_functions
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.installFirst_functions.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.installFirst_functions.match_1
-
-/-- info: 'TrustIr.GenericCoro.AllBlocksContext.lowerRows_framedCallsEquivalent' depends on axioms: [propext,
- Quot.sound,
- Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksContext.lowerRows_framedCallsEquivalent
-
-/-- info: 'TrustIr.GenericCoro.HeaderMaps.firstValue_header' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.HeaderMaps.firstValue_header
-
-/-- info: 'TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_direct' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_direct
-
-/-- info: 'TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_eq' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_eq
-
-/-- info: 'TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_signatures' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_signatures
-
-/-- info: 'TrustIr.GenericCoro.HeaderMaps.original_fold_classifier' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.HeaderMaps.original_fold_classifier
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.ContextCallsEquivalent' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.ContextCallsEquivalent
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.ContextCallsEquivalent.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.ContextCallsEquivalent.match_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.EvaluatedOccurrence' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.EvaluatedOccurrence
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.lowerFunction_evaluated' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.lowerFunction_evaluated
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.lowerFunction_imageRoots' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.lowerFunction_imageRoots
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.produced_context_calls' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.produced_context_calls
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.produced_evaluated' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.produced_evaluated
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.transform_ready_context_calls' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.transform_ready_context_calls
-
-/-- info: 'TrustIr.GenericCoro.ModuleContext.transform_ready_runCallReq' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.transform_ready_runCallReq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.absent_function_signature_refuses' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.absent_function_signature_refuses
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.actual_all_other_fields' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.actual_all_other_fields
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.actual_ast_headers_and_order' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.actual_ast_headers_and_order
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.actual_call_prefix_preparation_provenance' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.actual_call_prefix_preparation_provenance
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.actual_multifunction_ast' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.actual_multifunction_ast
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.actual_no_suspend_terminators' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.actual_no_suspend_terminators
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.actual_produced_not_assumed' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.actual_produced_not_assumed
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.callPrefix' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.callPrefix
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.caller' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.caller
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.coroutine' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.coroutine
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.declaration' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.declaration
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.declaration_header_types_real_call_prefix' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.declaration_header_types_real_call_prefix
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.declarations_keep_bodyless_status' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.declarations_keep_bodyless_status
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_function_occurrences_both_emitted' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_function_occurrences_both_emitted
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_id_first_missing_signature_stays_missing' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_id_first_missing_signature_stays_missing
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_id_first_signature_stays_first' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_id_first_signature_stays_first
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.emitted' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.emitted
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.empty_module_identity' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.empty_module_identity
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.expandedCaller' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.expandedCaller
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.forged_declaration_has_explicit_error' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.forged_declaration_has_explicit_error
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.inference_failure_rolls_back' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.inference_failure_rolls_back
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.malformed_payload_is_not_relabelled' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.malformed_payload_is_not_relabelled
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.no_suspend_needs_no_capacity' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.no_suspend_needs_no_capacity
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.ordinary' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.ordinary
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.preparationTag' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.preparationTag
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.preparationTag.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.preparationTag.match_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.real_partial_capacity_certificate' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.real_partial_capacity_certificate
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.retained_decode_failure_rolls_back' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.retained_decode_failure_rolls_back
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.source' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.source
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.source_error_precedes_zero_capacity' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.source_error_precedes_zero_capacity
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Controls.target' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Controls.target
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionHeader' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionHeader
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionLaw' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionLaw
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.cons' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.cons
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.nil' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.nil
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.brecOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.brecOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.cons' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.cons
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.declarations' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.declarations
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.headerIndex' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.headerIndex
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.headers' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.headers
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.nil' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.nil
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.noSuspends' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.noSuspends
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.recOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.noConfusion
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.noConfusionType
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.ready' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.ready
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.ready.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.ready.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.ready.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.ready.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.ready.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.ready.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.recOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.rejected' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.rejected
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.PreparedAt' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.PreparedAt
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.capacity' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.capacity
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.capacity.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.capacity.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.capacity.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.capacity.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.capacity.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.capacity.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.decode' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.decode
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.decode.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.decode.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.decode.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.decode.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.decode.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.decode.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.inference' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.inference
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.inference.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.inference.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.inference.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.inference.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.inference.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.inference.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.noConfusion
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.noConfusionType
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Problem.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Problem.recOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.below' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.below
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.below.casesOn' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.below.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.below.cons' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.below.cons
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.below.nil' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.below.nil
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.below.rec' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.below.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.brecOn' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.brecOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.casesOn' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.cons' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.cons
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.nil' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.nil
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.prepared' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.prepared
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.rec' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.Produced.recOn' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.Produced.recOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.casesOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.noConfusion
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.noConfusionType
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.rec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.recOn
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.toFunctions' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.toFunctions
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.toFunctions.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.toFunctions.match_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.inj
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.injEq
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.sizeOf_spec
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.RowsReady' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.RowsReady
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.directHeaders' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.directHeaders
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.firstHeader' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.firstHeader
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.firstHeader.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.firstHeader.eq_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.firstHeader.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.firstHeader.eq_2
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.firstHeader.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.firstHeader.match_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.functionHeader' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.functionHeader
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.headerIndex' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.headerIndex
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.headerIndex_find' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.headerIndex_find
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_2
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_3' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_3
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction_decode_error' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction_decode_error
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction_law' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction_law
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunction_prepared' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunction_prepared
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.eq_1' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.eq_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.eq_2' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.eq_2
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.match_1
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_error' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_error
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_produced' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_produced
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_ready' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_ready
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.noSuspendBody' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.noSuspendBody
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.prepareRows' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.prepareRows
-
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.prepareRows.match_1' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.prepareRows.match_1
+#trustIrAxiomsPinned Lean.RBNode.find.eq_1 == [] modern []
 
+#trustIrAxiomsPinned Lean.RBNode.find.eq_2 == [] modern []
+
+#trustIrAxiomsByCompiler Lean.RBNode.ins.eq_1 == [] modern [propext]
+
+#trustIrAxiomsByCompiler Lean.RBNode.ins.eq_2 == [] modern [propext]
+
+#trustIrAxiomsByCompiler Lean.RBNode.ins.eq_3 == [] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.both_mutual_factory_results_are_expanded == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.direct == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.duplicate_key_composition_preserves_winning_occurrence == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.graph == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.header == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.signature == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.two_updated_mutual_entries_preserve_every_framed_call == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.Controls.undefined_and_bodyless_other_entries_keep_exact_errors == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FactoryReplacement == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FactoryReplacement.framedCallsEquivalent == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.refl == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.run == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.symm == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FramedCallsEquivalent.trans == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.id == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.mk.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.source == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.FunctionUpdate.target == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.functions_expanded_framedCallsEquivalent == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.installFirst == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.installFirst_framedCallsEquivalent == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.installFirst_functions == [Quot.sound, propext] modern [propext, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.installFirst_functions.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksContext.lowerRows_framedCallsEquivalent == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.HeaderMaps.firstValue_header == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_direct == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_eq == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.HeaderMaps.localTypeHeadersOf_signatures == [propext, Quot.sound] modern [propext, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.HeaderMaps.original_fold_classifier == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.ContextCallsEquivalent == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.ContextCallsEquivalent.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.EvaluatedOccurrence == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.lowerFunction_evaluated == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.lowerFunction_imageRoots == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.produced_context_calls == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.produced_evaluated == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.transform_ready_context_calls == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.transform_ready_runCallReq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.absent_function_signature_refuses == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.actual_all_other_fields == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.actual_ast_headers_and_order == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.actual_call_prefix_preparation_provenance == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.actual_multifunction_ast == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.actual_no_suspend_terminators == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.actual_produced_not_assumed == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.callPrefix == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.caller == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.coroutine == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.declaration == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.declaration_header_types_real_call_prefix == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.declarations_keep_bodyless_status == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_function_occurrences_both_emitted == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_id_first_missing_signature_stays_missing == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.duplicate_id_first_signature_stays_first == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.emitted == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.empty_module_identity == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.expandedCaller == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.forged_declaration_has_explicit_error == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.inference_failure_rolls_back == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.malformed_payload_is_not_relabelled == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.no_suspend_needs_no_capacity == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.ordinary == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.preparationTag == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.preparationTag.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.real_partial_capacity_certificate == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.retained_decode_failure_rolls_back == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.source == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.source_error_precedes_zero_capacity == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Controls.target == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionHeader == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionLaw == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.cons == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.nil == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.below.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.brecOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.cons == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.declarations == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.headerIndex == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.headers == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.nil == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.noSuspends == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.FunctionsLaw.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.ready == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.ready.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.ready.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.ready.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.rejected == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Outcome.rejected.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.PreparedAt == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.capacity == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.capacity.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.capacity.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.capacity.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.decode == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.decode.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.decode.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.decode.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.inference == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.inference.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.inference.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.inference.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Problem.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.below == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.below.casesOn == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.below.cons == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.below.nil == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.below.rec == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.brecOn == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.casesOn == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.cons == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.nil == [propext, Classical.choice, Quot.sound] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.prepared == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.rec == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.Produced.recOn == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.capacity.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.expanded.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.toFunctions == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.toFunctions.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowExpansion.unchanged.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.RowsReady == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.directHeaders == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.firstHeader == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.firstHeader.eq_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.firstHeader.eq_2 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.firstHeader.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.functionHeader == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.headerIndex == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.headerIndex_find == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_2 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction.match_3 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction_decode_error == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction_law == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunction_prepared == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.eq_1 == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.eq_2 == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_error == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_produced == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.lowerFunctionsLoop_ready == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.noSuspendBody == [] modern []
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.prepareRows == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.prepareRows.match_1 == [propext, Quot.sound] modern [propext, Quot.sound]
+
+trustIrCanonicalOnly
 /-- info: 'TrustIr.GenericCoro.ModuleFactory.prepareRows.proof_1' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIr.GenericCoro.ModuleFactory.prepareRows.proof_1
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.prepareRows_error_source' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.prepareRows_error_source
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.prepareRows_error_source == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.prepareRows_ready' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.prepareRows_ready
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.prepareRows_ready == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.prepareRows_toFunctions' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.prepareRows_toFunctions
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.prepareRows_toFunctions == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.sameHeader' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.sameHeader
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.sameHeader == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.sameHeader_header' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.sameHeader_header
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.sameHeader_header == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.sameHeader_id' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.sameHeader_id
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.sameHeader_id == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.sameHeader_ty' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.sameHeader_ty
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.sameHeader_ty == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.suspendCount_zero_of_any' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.suspendCount_zero_of_any
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.suspendCount_zero_of_any == [propext] modern [propext]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform.match_1
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform.match_1 == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_declarations' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_declarations
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_declarations == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_directHeaders' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_directHeaders
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_directHeaders == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_headers' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_headers
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_headers == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_noSuspends' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_noSuspends
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_noSuspends == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_produced' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_produced
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_produced == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_ready' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_ready
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_ready == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_rejected_at' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_rejected_at
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_rejected_at == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleFactory.transform_rejected_original' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleFactory.transform_rejected_original
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleFactory.transform_rejected_original == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.below' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.below
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.below == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.below.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.below.casesOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.below.casesOn == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.below.cons' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.below.cons
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.below.cons == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.below.nil' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.below.nil
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.below.nil == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.below.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.below.rec
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.below.rec == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.brecOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.brecOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.brecOn == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.casesOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.casesOn == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.cons' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.cons
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.cons == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.cross' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.cross
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.cross == [propext] modern [propext]
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.insert_rows' depends on axioms: [Classical.choice, propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.insert_rows
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.insert_rows == [Classical.choice, propext, Quot.sound] modern [propext]
 
+trustIrCanonicalOnly
 /-- info: 'TrustIr.NatRBMapInsert.Ascending.insert_rows.match_1' does not depend on any axioms -/
 #guard_msgs in
 #print axioms TrustIr.NatRBMapInsert.Ascending.insert_rows.match_1
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.left' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.left
+#trustIrAxiomsByCompiler TrustIr.NatRBMapInsert.Ascending.left == [] modern [propext]
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.nil' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.nil
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.nil == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.rec
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.rec == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.recOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.recOn == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Ascending.right' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ascending.right
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ascending.right == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.actual_duplicate_function_header_classifier' depends on axioms: [propext,
- Quot.sound,
- Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.actual_duplicate_function_header_classifier
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.actual_duplicate_function_header_classifier == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.actual_original_helper_duplicate_control' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.actual_original_helper_duplicate_control
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.actual_original_helper_duplicate_control == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.actual_original_helper_instantiates_classifier_bridge' depends on axioms: [propext,
- Quot.sound,
- Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.actual_original_helper_instantiates_classifier_bridge
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.actual_original_helper_instantiates_classifier_bridge == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.duplicate_insert_overwrites_only_selected_key' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.duplicate_insert_overwrites_only_selected_key
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.duplicate_insert_overwrites_only_selected_key == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.first_missing_function_signature_not_recovered' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.first_missing_function_signature_not_recovered
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.first_missing_function_signature_not_recovered == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.first_none_payload_is_occupied' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.first_none_payload_is_occupied
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.first_none_payload_is_occupied == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.first_wins_and_missing' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.first_wins_and_missing
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.first_wins_and_missing == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.four_actual_rotation_paths' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.four_actual_rotation_paths
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.four_actual_rotation_paths == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.function' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.function
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.function == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.insertAllFrom' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.insertAllFrom
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.insertAllFrom == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.insertAllFrom_history' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.insertAllFrom_history
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.insertAllFrom_history == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.mapOf' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.mapOf
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.mapOf == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.mapOf_history' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.mapOf_history
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.mapOf_history == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.module' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.module
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.module == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.optionEntries' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.optionEntries
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.optionEntries == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.overwrite_after_rotation' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.overwrite_after_rotation
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.overwrite_after_rotation == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.overwrite_exact_others_retained' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.overwrite_exact_others_retained
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.overwrite_exact_others_retained == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.signatures' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.signatures
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.signatures == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.sparse_high_keys' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.sparse_high_keys
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.sparse_high_keys == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Controls.unordered_node_is_not_covered' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Controls.unordered_node_is_not_covered
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Controls.unordered_node_is_not_covered == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.below' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.below
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.below == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.below.casesOn' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.below.casesOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.below.casesOn == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.below.empty' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.below.empty
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.below.empty == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.below.insert' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.below.insert
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.below.insert == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.below.rec' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.below.rec
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.below.rec == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.brecOn' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.brecOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.brecOn == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.casesOn' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.casesOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.casesOn == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.empty' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.empty
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.empty == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.insert' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.insert
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.insert == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.ordered' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.ordered
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.ordered == [propext, Quot.sound, Classical.choice] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.rec' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.rec
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.rec == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.InsertOnly.recOn' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.InsertOnly.recOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.InsertOnly.recOn == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.Ordered' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.Ordered
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.Ordered == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.find?_empty' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.find?_empty
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.find?_empty == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.find?_insert' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.find?_insert
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.find?_insert == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.find_eq_lookupRows' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.find_eq_lookupRows
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.find_eq_lookupRows == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.find_insert' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.find_insert
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.find_insert == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.firstValue' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstValue
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstValue == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.firstValue.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstValue.eq_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstValue.eq_1 == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.firstValue.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstValue.eq_2
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstValue.eq_2 == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.firstValue.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstValue.match_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstValue.match_1 == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.firstWinsFrom' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstWinsFrom
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstWinsFrom == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.firstWinsFrom_find' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstWinsFrom_find
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstWinsFrom_find == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.firstWinsFrom_insertOnly' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstWinsFrom_insertOnly
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstWinsFrom_insertOnly == [propext, Quot.sound, Classical.choice] modern [propext, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.firstWins_empty_find' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.firstWins_empty_find
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.firstWins_empty_find == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.NatRBMapInsert.insertRows' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.insertRows.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows.eq_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows.eq_1 == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.insertRows.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows.eq_2
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows.eq_2 == [] modern []
 
-/-- info: 'TrustIr.NatRBMapInsert.insertRows.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows.match_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows.match_1 == [] modern []
 
+trustIrCanonicalOnly
 /-- info: 'TrustIr.NatRBMapInsert.insertRows.match_2' does not depend on any axioms -/
 #guard_msgs in
 #print axioms TrustIr.NatRBMapInsert.insertRows.match_2
 
-/-- info: 'TrustIr.NatRBMapInsert.insertRows_append_before' depends on axioms: [Classical.choice, propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows_append_before
-
-/-- info: 'TrustIr.NatRBMapInsert.insertRows_mem' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows_mem
-
-/-- info: 'TrustIr.NatRBMapInsert.insertRows_skip_prefix' depends on axioms: [Classical.choice, propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.insertRows_skip_prefix
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows.eq_1
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows.eq_2
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows.match_1
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows_append' depends on axioms: [Classical.choice, propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows_append
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows_append.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows_append.match_1
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows_insert' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows_insert
-
-/-- info: 'TrustIr.NatRBMapInsert.lookupRows_none' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.lookupRows_none
-
-/-- info: 'TrustIr.NatRBMapInsert.ordered_insert' depends on axioms: [Classical.choice, propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.ordered_insert
-
-/-- info: 'TrustIr.NatRBMapInsert.ordered_node' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.ordered_node
-
-/-- info: 'TrustIr.NatRBMapInsert.prefer' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.prefer
-
-/-- info: 'TrustIr.NatRBMapInsert.prefer.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.prefer.match_1
-
-/-- info: 'TrustIr.NatRBMapInsert.rows' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows
-
-/-- info: 'TrustIr.NatRBMapInsert.rows.eq_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows.eq_1
-
-/-- info: 'TrustIr.NatRBMapInsert.rows.eq_2' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows.eq_2
-
-/-- info: 'TrustIr.NatRBMapInsert.rows.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows.match_1
-
-/-- info: 'TrustIr.NatRBMapInsert.rows_balance1' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows_balance1
-
-/-- info: 'TrustIr.NatRBMapInsert.rows_balance2' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows_balance2
-
-/-- info: 'TrustIr.NatRBMapInsert.rows_ins' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows_ins
-
-/-- info: 'TrustIr.NatRBMapInsert.rows_insert' depends on axioms: [Classical.choice, propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows_insert
-
-/-- info: 'TrustIr.NatRBMapInsert.rows_setBlack' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.NatRBMapInsert.rows_setBlack
-
-/-- info: 'TrustIrEval.D' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.D
-
-/-- info: 'TrustIrEval.DecodeError' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError
-
-/-- info: 'TrustIrEval.DecodeError.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.casesOn
-
-/-- info: 'TrustIrEval.DecodeError.malformed' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.malformed
-
-/-- info: 'TrustIrEval.DecodeError.malformed.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.malformed.inj
-
-/-- info: 'TrustIrEval.DecodeError.malformed.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.malformed.injEq
-
-/-- info: 'TrustIrEval.DecodeError.malformed.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.malformed.sizeOf_spec
-
-/-- info: 'TrustIrEval.DecodeError.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.noConfusion
-
-/-- info: 'TrustIrEval.DecodeError.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.noConfusionType
-
-/-- info: 'TrustIrEval.DecodeError.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.rec
-
-/-- info: 'TrustIrEval.DecodeError.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.recOn
-
-/-- info: 'TrustIrEval.DecodeError.unsupported' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.unsupported
-
-/-- info: 'TrustIrEval.DecodeError.unsupported.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.unsupported.inj
-
-/-- info: 'TrustIrEval.DecodeError.unsupported.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.unsupported.injEq
-
-/-- info: 'TrustIrEval.DecodeError.unsupported.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.DecodeError.unsupported.sizeOf_spec
-
-/-- info: 'TrustIrEval.Function' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function
-
-/-- info: 'TrustIrEval.Function.blocks' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.blocks
-
-/-- info: 'TrustIrEval.Function.callingConvention' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.callingConvention
-
-/-- info: 'TrustIrEval.Function.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.casesOn
-
-/-- info: 'TrustIrEval.Function.entry' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.entry
-
-/-- info: 'TrustIrEval.Function.id' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.id
-
-/-- info: 'TrustIrEval.Function.isDeclaration' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.isDeclaration
-
-/-- info: 'TrustIrEval.Function.mk' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.mk
-
-/-- info: 'TrustIrEval.Function.mk.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.mk.inj
-
-/-- info: 'TrustIrEval.Function.mk.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.mk.injEq
-
-/-- info: 'TrustIrEval.Function.mk.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.mk.sizeOf_spec
-
-/-- info: 'TrustIrEval.Function.name' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.name
-
-/-- info: 'TrustIrEval.Function.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.noConfusion
-
-/-- info: 'TrustIrEval.Function.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.noConfusionType
-
-/-- info: 'TrustIrEval.Function.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.rec
-
-/-- info: 'TrustIrEval.Function.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.recOn
-
-/-- info: 'TrustIrEval.Function.ty' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Function.ty
-
-/-- info: 'TrustIrEval.Module' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module
-
-/-- info: 'TrustIrEval.Module.byteModel' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.byteModel
-
-/-- info: 'TrustIrEval.Module.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.casesOn
-
-/-- info: 'TrustIrEval.Module.closureLayouts' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.closureLayouts
-
-/-- info: 'TrustIrEval.Module.closureTys' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.closureTys
-
-/-- info: 'TrustIrEval.Module.dropGlue' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.dropGlue
-
-/-- info: 'TrustIrEval.Module.enums' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.enums
-
-/-- info: 'TrustIrEval.Module.funcTys' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.funcTys
-
-/-- info: 'TrustIrEval.Module.functions' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.functions
-
-/-- info: 'TrustIrEval.Module.globals' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.globals
-
-/-- info: 'TrustIrEval.Module.hasTargetInfo' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.hasTargetInfo
-
-/-- info: 'TrustIrEval.Module.mk' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.mk
-
-/-- info: 'TrustIrEval.Module.mk.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.mk.inj
-
-/-- info: 'TrustIrEval.Module.mk.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.mk.injEq
-
-/-- info: 'TrustIrEval.Module.mk.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.mk.sizeOf_spec
-
-/-- info: 'TrustIrEval.Module.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.noConfusion
-
-/-- info: 'TrustIrEval.Module.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.noConfusionType
-
-/-- info: 'TrustIrEval.Module.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.rec
-
-/-- info: 'TrustIrEval.Module.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.recOn
-
-/-- info: 'TrustIrEval.Module.records' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.records
-
-/-- info: 'TrustIrEval.Module.structs' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.structs
-
-/-- info: 'TrustIrEval.Module.tupleLayouts' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.tupleLayouts
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows_append_before == [Classical.choice, propext, Quot.sound] modern [propext]
 
-/-- info: 'TrustIrEval.Module.types' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Module.types
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows_mem == [] modern []
 
-/-- info: 'TrustIrEval.Node' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.insertRows_skip_prefix == [Classical.choice, propext, Quot.sound] modern [propext]
 
-/-- info: 'TrustIrEval.Node.casesOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.casesOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows == [] modern []
 
-/-- info: 'TrustIrEval.Node.inst' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.inst
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows.eq_1 == [] modern []
 
-/-- info: 'TrustIrEval.Node.mk' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.mk
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows.eq_2 == [] modern []
 
-/-- info: 'TrustIrEval.Node.mk.inj' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.mk.inj
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows.match_1 == [] modern []
 
-/-- info: 'TrustIrEval.Node.mk.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.mk.injEq
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows_append == [Classical.choice, propext, Quot.sound] modern []
 
-/-- info: 'TrustIrEval.Node.mk.sizeOf_spec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.mk.sizeOf_spec
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows_append.match_1 == [] modern []
 
-/-- info: 'TrustIrEval.Node.noConfusion' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.noConfusion
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows_insert == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIrEval.Node.noConfusionType' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.noConfusionType
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.lookupRows_none == [] modern []
 
-/-- info: 'TrustIrEval.Node.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.rec
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.ordered_insert == [Classical.choice, propext, Quot.sound] modern [propext]
 
-/-- info: 'TrustIrEval.Node.recOn' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.recOn
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.ordered_node == [propext] modern [propext]
 
-/-- info: 'TrustIrEval.Node.results' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.Node.results
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.prefer == [] modern []
 
-/-- info: 'TrustIrEval.blocksDrop' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.blocksDrop
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.prefer.match_1 == [] modern []
 
-/-- info: 'TrustIrEval.blocksDrop.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.blocksDrop.match_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows == [] modern []
 
-/-- info: 'TrustIrEval.calleesOf' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.calleesOf
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows.eq_1 == [] modern []
 
-/-- info: 'TrustIrEval.calleesOf.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.calleesOf.match_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows.eq_2 == [] modern []
 
-/-- info: 'TrustIrEval.calleesOfInst' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.calleesOfInst
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows.match_1 == [] modern []
 
-/-- info: 'TrustIrEval.calleesOfInst.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.calleesOfInst.match_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows_balance1 == [propext] modern [propext]
 
-/-- info: 'TrustIrEval.cfgOf' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.cfgOf
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows_balance2 == [propext] modern [propext]
 
-/-- info: 'TrustIrEval.contextOf' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIrEval.contextOf
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows_ins == [propext, Classical.choice, Quot.sound] modern [propext]
 
-/-- info: 'TrustIrEval.contextOf.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.contextOf.match_1
+#trustIrAxiomsPinned TrustIr.NatRBMapInsert.rows_insert == [Classical.choice, propext, Quot.sound] modern [propext]
 
-/-- info: 'TrustIrEval.FunctionLookup.findFunction.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.FunctionLookup.findFunction.match_1
+#trustIrAxiomsByCompiler TrustIr.NatRBMapInsert.rows_setBlack == [] modern [propext]
 
-/-- info: 'TrustIrEval.FunctionLookup.findError.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.FunctionLookup.findError.match_1
+#trustIrAxiomsPinned TrustIrEval.D == [] modern []
 
+#trustIrAxiomsPinned TrustIrEval.DecodeError == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.malformed == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.malformed.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.malformed.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.malformed.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.unsupported == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.unsupported.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.unsupported.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIrEval.DecodeError.unsupported.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.blocks == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.callingConvention == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.entry == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.id == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.isDeclaration == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.mk == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.mk.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.mk.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIrEval.Function.mk.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.name == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Function.ty == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.byteModel == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.closureLayouts == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.closureTys == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.dropGlue == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.enums == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.funcTys == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.functions == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.globals == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.hasTargetInfo == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.mk == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.mk.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.mk.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIrEval.Module.mk.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.records == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.structs == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.tupleLayouts == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Module.types == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.casesOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.inst == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.mk == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.mk.inj == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.mk.injEq == [propext] modern [propext]
+
+#trustIrAxiomsPinned TrustIrEval.Node.mk.sizeOf_spec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.noConfusion == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.noConfusionType == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.rec == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.recOn == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.Node.results == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.blocksDrop == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.blocksDrop.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.calleesOf == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.calleesOf.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.calleesOfInst == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.calleesOfInst.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.cfgOf == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.contextOf == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
+
+#trustIrAxiomsPinned TrustIrEval.contextOf.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.FunctionLookup.findFunction.match_1 == [] modern []
+
+#trustIrAxiomsPinned TrustIrEval.FunctionLookup.findError.match_1 == [] modern []
+
+trustIrCanonicalOnly
 /-- info: 'TrustIrEval.FunctionLookup.findError.match_2' does not depend on any axioms -/
 #guard_msgs in
 #print axioms TrustIrEval.FunctionLookup.findError.match_2
 
-/-- info: 'TrustIrEval.FunctionLookup.prepareSourceFrom.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.FunctionLookup.prepareSourceFrom.match_1
+#trustIrAxiomsPinned TrustIrEval.FunctionLookup.prepareSourceFrom.match_1 == [] modern []
 
-/-- info: 'TrustIrEval.dropGlueOf' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.dropGlueOf
+#trustIrAxiomsPinned TrustIrEval.dropGlueOf == [] modern []
 
-/-- info: 'TrustIrEval.evalFunctionOf' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIrEval.evalFunctionOf
+#trustIrAxiomsPinned TrustIrEval.evalFunctionOf == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIrEval.evalFunctionOf.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.evalFunctionOf.match_1
+#trustIrAxiomsPinned TrustIrEval.evalFunctionOf.match_1 == [] modern []
 
-/-- info: 'TrustIrEval.evalFunctionOfWithTypes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIrEval.evalFunctionOfWithTypes
+#trustIrAxiomsPinned TrustIrEval.evalFunctionOfWithTypes == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIrEval.evalFunctionOfWithTypes.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.evalFunctionOfWithTypes.match_1
+#trustIrAxiomsPinned TrustIrEval.evalFunctionOfWithTypes.match_1 == [] modern []
 
+trustIrCanonicalOnly
 /-- info: 'TrustIrEval.evalFunctionOfWithTypes.match_2' does not depend on any axioms -/
 #guard_msgs in
 #print axioms TrustIrEval.evalFunctionOfWithTypes.match_2
 
-/-- info: 'TrustIrEval.instInhabitedDecodeError' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.instInhabitedDecodeError
+#trustIrAxiomsPinned TrustIrEval.instInhabitedDecodeError == [] modern []
 
-/-- info: 'TrustIrEval.instReprDecodeError' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIrEval.instReprDecodeError
+#trustIrAxiomsPinned TrustIrEval.instReprDecodeError == [propext] modern [propext]
 
-/-- info: 'TrustIrEval.localTypeHeadersOf' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIrEval.localTypeHeadersOf
+#trustIrAxiomsPinned TrustIrEval.localTypeHeadersOf == [propext, Quot.sound] modern [propext, Quot.sound]
 
-/-- info: 'TrustIrEval.malformed' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.malformed
+#trustIrAxiomsPinned TrustIrEval.malformed == [] modern []
 
-/-- info: 'TrustIrEval.memoryRootsOfInst_eq' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.memoryRootsOfInst_eq
+#trustIrAxiomsByCompiler TrustIrEval.memoryRootsOfInst_eq == [] modern [propext]
 
-/-- info: 'TrustIrEval.memoryServiceOf_eq' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIrEval.memoryServiceOf_eq
+#trustIrAxiomsPinned TrustIrEval.memoryServiceOf_eq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIrEval.unsupported' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIrEval.unsupported
+#trustIrAxiomsPinned TrustIrEval.unsupported == [] modern []
 
 
 -- Actual raw-entry effects and public entry observation.
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.Controls.mutual_factories_and_duplicate_have_raw_entry_effects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.Controls.mutual_factories_and_duplicate_have_raw_entry_effects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.Controls.mutual_factories_and_duplicate_have_raw_entry_effects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.casesOn' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.casesOn
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.casesOn == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.effects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.effects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.effects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.headers' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.headers
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.headers == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.maxDepth' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.maxDepth
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.maxDepth == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
+trustIrCanonicalOnly
 /-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.noConfusion' depends on axioms: [propext,
  Classical.choice,
  Quot.sound] -/
 #guard_msgs in
 #print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.noConfusion
 
+trustIrCanonicalOnly
 /-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.noConfusionType' depends on axioms: [propext,
  Classical.choice,
  Quot.sound] -/
 #guard_msgs in
 #print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.noConfusionType
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.rec' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.rec
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.rec == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.recOn' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.recOn
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.recOn == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.refl' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.refl
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.refl == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.trans' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.trans
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.trans == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.effectRelation_trans' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.effectRelation_trans
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.effectRelation_trans == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.factoryReplacement_entryEffects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.factoryReplacement_entryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.factoryReplacement_entryEffects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.functions_expanded_entryEffects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.functions_expanded_entryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.functions_expanded_entryEffects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.headerRelated_trans' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.headerRelated_trans
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.headerRelated_trans == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.installFirst_entryEffects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.installFirst_entryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.installFirst_entryEffects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.AllBlocksEntryEffects.lowerRows_entryEffects' depends on axioms: [propext,
- Quot.sound,
- Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.AllBlocksEntryEffects.lowerRows_entryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.AllBlocksEntryEffects.lowerRows_entryEffects == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.entry_effect_of_steps' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.entry_effect_of_steps
+#trustIrAxiomsPinned TrustIr.GenericCoro.EntryObservation.entry_effect_of_steps == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.entry_observe_eq_of_steps' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.entry_observe_eq_of_steps
+#trustIrAxiomsPinned TrustIr.GenericCoro.EntryObservation.entry_observe_eq_of_steps == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.exitUnwinding_effect' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.exitUnwinding_effect
+#trustIrAxiomsByCompiler TrustIr.GenericCoro.EntryObservation.exitUnwinding_effect == [] modern [propext]
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.missing_entry_observe_eq' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.missing_entry_observe_eq
+#trustIrAxiomsPinned TrustIr.GenericCoro.EntryObservation.missing_entry_observe_eq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.observe' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.observe
+#trustIrAxiomsPinned TrustIr.GenericCoro.EntryObservation.observe == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.observe_eq_of_effectRelation' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.observe_eq_of_effectRelation
+#trustIrAxiomsPinned TrustIr.GenericCoro.EntryObservation.observe_eq_of_effectRelation == [propext] modern [propext]
 
-/-- info: 'TrustIr.GenericCoro.EntryObservation.returnGuard_effect' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.EntryObservation.returnGuard_effect
+#trustIrAxiomsPinned TrustIr.GenericCoro.EntryObservation.returnGuard_effect == [propext] modern [propext]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.produced_context_updates' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.produced_context_updates
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.produced_context_updates == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleEntryEffects.entry_observe_eq' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleEntryEffects.entry_observe_eq
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleEntryEffects.entry_observe_eq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleEntryEffects.produced_context_entryEffects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleEntryEffects.produced_context_entryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleEntryEffects.produced_context_entryEffects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_constructed_entry_observe_eq' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_constructed_entry_observe_eq
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_constructed_entry_observe_eq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_entryEffects' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_entryEffects
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_entryEffects == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_entry_observe_eq' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_entry_observe_eq
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_entry_observe_eq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_initial_entry_observe_eq' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_initial_entry_observe_eq
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleEntryEffects.transform_ready_initial_entry_observe_eq == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
 
 -- Closed actual produced-module execution controls.
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.actual_mutual_publication' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.actual_mutual_publication
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.actual_mutual_publication == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.actual_mutual_tables_preserve_every_entry' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.actual_mutual_tables_preserve_every_entry
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.actual_mutual_tables_preserve_every_entry == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.actual_source_context_built' depends on axioms: [propext,
- Quot.sound,
- Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.actual_source_context_built
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.actual_source_context_built == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.actual_target_context_built' depends on axioms: [propext,
- Quot.sound,
- Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.actual_target_context_built
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.actual_target_context_built == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.arguments' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.arguments
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.arguments == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.caller' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.caller
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.caller == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.caller.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.caller.match_1
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.caller.match_1 == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.concrete_complete_runs_equal' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.concrete_complete_runs_equal
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.concrete_complete_runs_equal == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.concrete_source_mutual_call_succeeds' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.concrete_source_mutual_call_succeeds
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.concrete_source_mutual_call_succeeds == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.concrete_target_mutual_call_succeeds' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.concrete_target_mutual_call_succeeds
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.concrete_target_mutual_call_succeeds == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.observation' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.observation
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.observation == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.source' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.source
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.source == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.sourceContext' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.sourceContext
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.sourceContext == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.sourceContext.match_1' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.sourceContext.match_1
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.sourceContext.match_1 == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.target' does not depend on any axioms -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.target
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.target == [] modern []
 
-/-- info: 'TrustIr.GenericCoro.ModuleContext.Controls.targetContext' depends on axioms: [propext, Quot.sound, Classical.choice] -/
-#guard_msgs in
-#print axioms TrustIr.GenericCoro.ModuleContext.Controls.targetContext
+#trustIrAxiomsPinned TrustIr.GenericCoro.ModuleContext.Controls.targetContext == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
+
+-- Exact complete modern rosters replace the absent canonical generated names.
+
+trustIrModernOnly
+#trustIrModernAxiomFamily TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects == [
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.casesOn,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.effects,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.headers,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.itemChecks,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.maxDepth,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk._flat_ctor,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.rec,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.recOn,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.refl,
+  TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.trans]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.casesOn == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.effects == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.headers == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.itemChecks == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.maxDepth == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.mk._flat_ctor == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.rec == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.recOn == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.refl == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.AllBlocksEntryEffects.EntryEffects.trans == [propext, Classical.choice, Quot.sound]
+
+trustIrModernOnly
+#trustIrModernAxiomFamily TrustIr.GenericCoro.ModuleFactory.prepareRows == [
+  TrustIr.GenericCoro.ModuleFactory.prepareRows._proof_1,
+  TrustIr.GenericCoro.ModuleFactory.prepareRows.eq_1,
+  TrustIr.GenericCoro.ModuleFactory.prepareRows.match_1]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.ModuleFactory.prepareRows._proof_1 == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.ModuleFactory.prepareRows.eq_1 == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.GenericCoro.ModuleFactory.prepareRows.match_1 == [propext, Quot.sound]
+
+trustIrModernOnly
+#trustIrModernAxiomFamily TrustIr.NatRBMapInsert.Ascending.insert_rows == [
+  TrustIr.NatRBMapInsert.Ascending.insert_rows.match_1_1]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.Ascending.insert_rows.match_1_1 == []
+
+trustIrModernOnly
+#trustIrModernAxiomFamily TrustIr.NatRBMapInsert.insertRows == [
+  TrustIr.NatRBMapInsert.insertRows._f,
+  TrustIr.NatRBMapInsert.insertRows._sunfold,
+  TrustIr.NatRBMapInsert.insertRows._unsafe_rec,
+  TrustIr.NatRBMapInsert.insertRows.eq_1,
+  TrustIr.NatRBMapInsert.insertRows.eq_2,
+  TrustIr.NatRBMapInsert.insertRows.eq_def,
+  TrustIr.NatRBMapInsert.insertRows.match_1,
+  TrustIr.NatRBMapInsert.insertRows.match_3]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows._f == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows._sunfold == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows._unsafe_rec == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows.eq_1 == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows.eq_2 == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows.eq_def == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows.match_1 == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIr.NatRBMapInsert.insertRows.match_3 == []
+
+trustIrModernOnly
+#trustIrModernAxiomFamily TrustIrEval.FunctionLookup.findError == [
+  TrustIrEval.FunctionLookup.findError.match_1,
+  TrustIrEval.FunctionLookup.findError.match_3]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.FunctionLookup.findError.match_1 == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.FunctionLookup.findError.match_3 == []
+
+trustIrModernOnly
+#trustIrModernAxiomFamily TrustIrEval.evalFunctionOfWithTypes == [
+  TrustIrEval.evalFunctionOfWithTypes._sparseCasesOn_3,
+  TrustIrEval.evalFunctionOfWithTypes._sparseCasesOn_3.else_eq,
+  TrustIrEval.evalFunctionOfWithTypes.eq_1,
+  TrustIrEval.evalFunctionOfWithTypes.match_1,
+  TrustIrEval.evalFunctionOfWithTypes.match_3]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.evalFunctionOfWithTypes._sparseCasesOn_3 == [propext]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.evalFunctionOfWithTypes._sparseCasesOn_3.else_eq == [propext]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.evalFunctionOfWithTypes.eq_1 == [propext, Classical.choice, Quot.sound]
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.evalFunctionOfWithTypes.match_1 == []
+trustIrModernOnly
+#trustIrAxiomsExact TrustIrEval.evalFunctionOfWithTypes.match_3 == [propext]

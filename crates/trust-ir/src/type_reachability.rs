@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 use crate::value::{ClosureTyId, FuncTyId};
-use crate::{FatPtrKind, Inst, Module, Ty};
+use crate::{FatPtrKind, Inst, Module, ModuleFunctionCatalog, Ty};
 mod observed;
 pub use observed::ObservedNominalTypeReachability;
 
@@ -129,6 +129,7 @@ fn seeds(axis: NominalAxis, ty: &Ty) -> bool {
         NominalAxis::Callable => matches!(
             ty,
             Ty::Func(_)
+                | Ty::FnItem(_)
                 | Ty::Closure(_)
                 | Ty::FatPtr(FatPtrKind::TraitObject { .. } | FatPtrKind::ContainerVtable)
         ),
@@ -146,6 +147,8 @@ fn seeds(axis: NominalAxis, ty: &Ty) -> bool {
 pub struct CallableCarriers {
     /// Function-pointer signatures the value may hold.
     pub fn_types: BTreeSet<FuncTyId>,
+    /// Nominal function-item identities; zero bytes never erase a callback.
+    pub fn_items: BTreeSet<crate::FuncId>,
     /// Closure types the value may hold.
     pub closures: BTreeSet<ClosureTyId>,
     /// Trait-object principals ([`FatPtrKind::TraitObject`] ids).
@@ -166,6 +169,7 @@ impl CallableCarriers {
     #[must_use]
     pub fn carries_typed_callable(&self) -> bool {
         !self.fn_types.is_empty()
+            || !self.fn_items.is_empty()
             || !self.closures.is_empty()
             || !self.principals.is_empty()
             || self.erased_dyn
@@ -322,18 +326,22 @@ impl Module {
     /// missing table entry, an untyped pointer and an opaque type set
     /// [`CallableCarriers::opaque`] rather than contributing nothing.
     /// Duplicate named ids contribute ALL matching definitions.
+    /// Carried function items also require one duplicate-aware pass over the
+    /// function table; types without items do not read that table. Repeated
+    /// queries can reuse [`ModuleFunctionCatalog::callable_carriers`].
     pub fn callable_carriers(&self, ty: &Ty) -> CallableCarriers {
-        self.callable_carriers_in(&mut crate::reach::DefIndex::default(), ty)
+        let carriers = self.carrier_types_in(&mut crate::reach::DefIndex::default(), ty);
+        if carriers.fn_items.is_empty() {
+            carriers
+        } else {
+            ModuleFunctionCatalog::new(self).authenticate_carriers(carriers)
+        }
     }
 
-    /// [`Self::callable_carriers`] reading `defs`, an all-definitions index
-    /// over THIS module that a pass shares across its questions, so each call
-    /// costs only the type's reach.
-    pub(crate) fn callable_carriers_in(
-        &self,
-        defs: &mut crate::reach::DefIndex,
-        ty: &Ty,
-    ) -> CallableCarriers {
+    /// Collect carried type identities before authenticating function-item
+    /// headers. Kept private: only the public query or its exact borrowed
+    /// catalog may publish the result.
+    fn carrier_types_in(&self, defs: &mut crate::reach::DefIndex, ty: &Ty) -> CallableCarriers {
         let mut carriers = CallableCarriers::default();
         let mut seen: HashSet<TableReferent> = HashSet::new();
         let mut frontier: Vec<TableReferent> = Vec::new();
@@ -399,11 +407,41 @@ impl Module {
     }
 }
 
+impl ModuleFunctionCatalog<'_> {
+    /// [`Module::callable_carriers`] reusing this exact module's prepared
+    /// duplicate-aware function index. Each query visits only the type's
+    /// reachable closure and any named definition tables it meets.
+    pub fn callable_carriers(&self, ty: &Ty) -> CallableCarriers {
+        self.callable_carriers_in(&mut crate::reach::DefIndex::default(), ty)
+    }
+
+    /// A composite pass shares both its actual function catalog and its
+    /// all-definitions index across type queries.
+    pub(crate) fn callable_carriers_in(
+        &self,
+        defs: &mut crate::reach::DefIndex,
+        ty: &Ty,
+    ) -> CallableCarriers {
+        self.authenticate_carriers(self.source_module().carrier_types_in(defs, ty))
+    }
+
+    fn authenticate_carriers(&self, mut carriers: CallableCarriers) -> CallableCarriers {
+        carriers.opaque |= carriers
+            .fn_items
+            .iter()
+            .any(|id| self.function_item(*id).is_err());
+        carriers
+    }
+}
+
 /// Record one inline occurrence's own contribution to a carrier census.
 /// Exhaustive so a new `Ty` variant forces a decision here.
 fn record_carrier(carriers: &mut CallableCarriers, ty: &Ty) {
     match ty {
         Ty::Storage(_) => {}
+        Ty::FnItem(function) => {
+            carriers.fn_items.insert(*function);
+        }
         Ty::Func(signature) => {
             carriers.fn_types.insert(*signature);
         }
@@ -519,7 +557,7 @@ pub(crate) enum TableReferent {
 
 pub(crate) fn table_referent(ty: &Ty) -> Option<TableReferent> {
     Some(match ty {
-        Ty::Storage(_) => return None,
+        Ty::Storage(_) | Ty::FnItem(_) => return None,
         Ty::Array(id, _)
         | Ty::Set(id, _)
         | Ty::Sequence(id)

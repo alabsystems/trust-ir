@@ -513,11 +513,12 @@ fn opaque_normalization_retains_unused_cold_invalid_original_for_complete_reject
         .untrusted_normalization_context_with_opaque(
             &scope,
             &[local.term().clone()],
-            &[local.clone()],
+            std::slice::from_ref(&local),
         )
         .unwrap();
     let environment = env();
-    let (plain, _) = scope.close_external_forest(&[local.term().clone()], &[local.clone()], &[1]);
+    let (plain, _) =
+        scope.close_external_forest(&[local.term().clone()], std::slice::from_ref(&local), &[1]);
     let plain = plain.unwrap().remove(0);
     assert_eq!(
         clean_kernel::TypeChecker::with_context(&environment, opaque).whnf(&plain),

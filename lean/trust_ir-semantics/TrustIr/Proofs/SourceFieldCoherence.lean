@@ -73,6 +73,13 @@ theorem enum_checked_fields_avoid_tag (value : Summary) (info : Enumeration)
     apply variant_avoids bindings extents position offset (tagBits info.tag / 8)
     intro metadata row field member
     exact separated metadata (member_of_lookup info.variants position metadata row) field member
+  | directWithUninhabited offset profiles =>
+    rw [encoding] at guarded
+    obtain ⟨align,aligned,laneBounds,profileLanes,separated⟩ := guarded
+    rw [EnumPayloadAvoidsTag,encoding]
+    apply variant_avoids bindings extents position offset (tagBits info.tag / 8)
+    intro metadata row field member
+    exact separated metadata (member_of_lookup info.variants position metadata row) field member
   | niche untagged start stop first offset repr =>
     rw [encoding] at guarded
     obtain ⟨align,aligned,laneBounds,cardinality,untaggedBound,ordered,endBound,firstFits,rangeFits,allowed,carrier,separated⟩ := guarded

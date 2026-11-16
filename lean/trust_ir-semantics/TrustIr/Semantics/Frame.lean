@@ -34,6 +34,9 @@ The monotone lineage counter is independent of SSA ids and survives calls.
     frame or the slot index is out of bounds. -/
 def bindSlot (v : Value) (slot : Nat) (newVal : Value) : Option Value :=
   match v with
+  | .sourceFrame lineage origin declaration slots =>
+    if slot < slots.length then some (.sourceFrame lineage origin declaration (slots.set slot newVal))
+    else none
   | .frame lineage slots =>
     if slot < slots.length then some (.frame lineage (slots.set slot newVal))
     else none
@@ -43,7 +46,7 @@ def bindSlot (v : Value) (slot : Nat) (newVal : Value) : Option Value :=
     not a frame or the slot is out of bounds (via optional list indexing). -/
 def loadSlot (v : Value) (slot : Nat) : Option Value :=
   match v with
-  | .frame _ slots => trustIrListGet? slots slot
+  | .frame _ slots | .sourceFrame _ _ _ slots => trustIrListGet? slots slot
   | _ => none
 
 /-- Build the initial frame for an OpenFrame: every slot is set to
@@ -65,7 +68,7 @@ def Sem.frameHandle (frameId : ValueId) (op : String) : Sem (Nat × List Value) 
   let value ← Sem.lookupValue frameId
   Sem.rejectPartial value "frame handle use"
   match value with
-  | .frame lineage slots => pure (lineage, slots)
+  | .frame lineage slots | .sourceFrame lineage _ _ slots => pure (lineage, slots)
   | _ => Sem.throwTypeError s!"{op}: operand is not a frame"
 
 /-- Runtime frame-lineage width. The exponent remains a computation in compiled code, as `Sem.addrBits`
@@ -90,7 +93,11 @@ def semBindSlot (frameId : ValueId) (slot : Nat) (valueId : ValueId) : Sem Value
   let state ← Sem.getState
   if state.openFrameLineages.contains lineage then
     let value ← Sem.lookupValue valueId
-    if slot < slots.length then Sem.bindFresh (.frame lineage (slots.set slot value))
+    if slot < slots.length then
+      let held ← Sem.lookupValue frameId
+      match bindSlot held slot value with
+      | some snapshot => Sem.bindFresh snapshot
+      | none => Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots"
     else Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots"
   else Sem.throwUB "BindSlot: frame is not open"
 
@@ -121,19 +128,19 @@ def semCloseFrame (frameId : ValueId) : Sem Unit := do
 /-- Predicate: a value is a frame with at least n slots. -/
 def hasSlots (v : Value) (n : Nat) : Prop :=
   match v with
-  | .frame _ slots => slots.length >= n
+  | .frame _ slots | .sourceFrame _ _ _ slots => slots.length >= n
   | _ => False
 
 /-- Predicate: a value is a frame (any number of slots). -/
 def isFrame (v : Value) : Prop :=
   match v with
-  | .frame _ _ => True
+  | .frame _ _ | .sourceFrame _ _ _ _ => True
   | _ => False
 
 /-- Predicate: BindSlot is safe on this frame at this slot. -/
 def bindSlotSafe (v : Value) (slot : Nat) : Prop :=
   match v with
-  | .frame _ slots => slot < slots.length
+  | .frame _ slots | .sourceFrame _ _ _ slots => slot < slots.length
   | _ => False
 
 end TrustIr

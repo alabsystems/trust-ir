@@ -21,6 +21,521 @@ namespace TrustIr.SourceLayout
 
 private abbrev Build := StateM Graph
 
+-- Source-reference facts are independent of omitted physical storage.
+-- Single and reserved Direct roots retain every declared payload reference.
+
+private def referenceRecordBase (index : Index) : Nat := index.count
+
+mutual
+  /-- Data-source-reference validity is separate from storage and inhabitedness.
+      Pointer pointees are checked, but no size, alignment or image is asked.
+      FuncTy and predicate rows are absent from Environment; their semantic
+      validity remains with the module validator, as in Rust's layout service. -/
+  def referenceFormula (index : Index) : Ty → Formula
+    | .Error => .no
+    | .FnItem id => if (index.functionItem id).isOk then .yes else .no
+    | .Array element count =>
+      if count > word64Max || !(trustIrArrayGet? index.typeRows element.index).isSome then .no
+      else .ref element.index
+    | .Set element _ | .Sequence element | .Refine element _ =>
+      if (trustIrArrayGet? index.typeRows element.index).isSome then .ref element.index else .no
+    | .FatPtr (.Slice element) =>
+      if (trustIrArrayGet? index.typeRows element.index).isSome then .ref element.index else .no
+    | .Struct id => match index.structShapePositions.find id.index with
+      | some position => .ref (index.structBase + position)
+      | none => .no
+    | .Enum id => match index.enumShapePositions.find id.index with
+      | some position => .ref (index.enumBase + position)
+      | none => .no
+    | .Record id => match (firstPositionIndex index.source.records (·.id.index)).find id.index with
+      | some position => .ref (referenceRecordBase index + position)
+      | none => .no
+    | .Closure id =>
+      if (trustIrArrayGet? index.closureRows id.index).isSome then .ref (index.closureBase + id.index)
+      else .no
+    | .Tuple fields => .all (referenceFormulas index fields)
+    | .Vector count element =>
+      if count ≥ 2 ^ 32 then .no else referenceFormula index element
+    | .Storage size align => if size > word64Max || align > word64Max then .no else .yes
+    | .Ref element | .RefMut element | .PtrConst element
+    | .PtrMut element | .Rc element => referenceFormula index element
+    | _ => .yes
+  def referenceFormulas (index : Index) : List Ty → List Formula
+    | [] => []
+    | first :: rest => referenceFormula index first :: referenceFormulas index rest
+end
+
+theorem referenceFormula_step (index : Index) (ty : Ty) :
+    referenceFormula index ty = (match ty with
+    | .Error => .no
+    | .FnItem id => if (index.functionItem id).isOk then .yes else .no
+    | .Array element count =>
+      if count > word64Max || !(trustIrArrayGet? index.typeRows element.index).isSome then .no
+      else .ref element.index
+    | .Set element _ | .Sequence element | .Refine element _ =>
+      if (trustIrArrayGet? index.typeRows element.index).isSome then .ref element.index else .no
+    | .FatPtr (.Slice element) =>
+      if (trustIrArrayGet? index.typeRows element.index).isSome then .ref element.index else .no
+    | .Struct id => match index.structShapePositions.find id.index with
+      | some position => .ref (index.structBase + position)
+      | none => .no
+    | .Enum id => match index.enumShapePositions.find id.index with
+      | some position => .ref (index.enumBase + position)
+      | none => .no
+    | .Record id => match (firstPositionIndex index.source.records (·.id.index)).find id.index with
+      | some position => .ref (index.count + position)
+      | none => .no
+    | .Closure id =>
+      if (trustIrArrayGet? index.closureRows id.index).isSome then .ref (index.closureBase + id.index)
+      else .no
+    | .Tuple fields => .all (referenceFormulas index fields)
+    | .Vector count element =>
+      if count ≥ 2 ^ 32 then .no else referenceFormula index element
+    | .Storage size align => if size > word64Max || align > word64Max then .no else .yes
+    | .Ref element | .RefMut element | .PtrConst element
+    | .PtrMut element | .Rc element => referenceFormula index element
+    | _ => .yes) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta referenceFormula referenceFormula._mutual
+      rw [WellFounded.fix_eq]
+    cases ty <;> try rfl
+    rename_i kind
+    cases kind <;> rfl
+  } {
+    cases ty <;> try rfl
+    rename_i kind
+    cases kind <;> rfl
+  }
+
+theorem referenceFormulas_step (index : Index) (types : List Ty) :
+    referenceFormulas index types = (match types with
+    | [] => []
+    | first :: rest => referenceFormula index first :: referenceFormulas index rest) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta referenceFormulas referenceFormula._mutual
+      rw [WellFounded.fix_eq]
+    cases types <;> rfl
+  } {
+    cases types <;> rfl
+  }
+
+private def referenceEquations (index : Index) : NatIndexTree Formula := Id.run do
+  let mut out := NatIndexTree.empty
+  for (ty, position) in numbered index.source.types do
+    out := out.insert position (match ty with | some ty => referenceFormula index ty | none => .no)
+  for (definition, position) in numbered index.source.structs do
+    out := out.insert (index.structBase + position)
+      (.all (referenceFormulas index (definition.fields.map (·.ty))))
+  for (definition, position) in numbered index.source.enums do
+    out := out.insert (index.enumBase + position)
+      (.all (definition.variants.map (fun variant => .all (referenceFormulas index variant.fields))))
+  for (definition, position) in numbered index.source.closures do
+    out := out.insert (index.closureBase + position) (.all (referenceFormulas index definition.captures))
+  for (definition, position) in numbered index.source.records do
+    out := out.insert (referenceRecordBase index + position)
+      (.all (referenceFormulas index (definition.fields.map (·.ty))))
+  return out
+
+/-- Exact builder equation for kernel-checked source-service computations. -/
+theorem referenceEquations_eq (index : Index) :
+    referenceEquations index = Id.run do
+  let mut out := NatIndexTree.empty
+  for (ty, position) in numbered index.source.types do
+    out := out.insert position (match ty with | some ty => referenceFormula index ty | none => .no)
+  for (definition, position) in numbered index.source.structs do
+    out := out.insert (index.structBase + position)
+      (.all (referenceFormulas index (definition.fields.map (·.ty))))
+  for (definition, position) in numbered index.source.enums do
+    out := out.insert (index.enumBase + position)
+      (.all (definition.variants.map (fun variant => .all (referenceFormulas index variant.fields))))
+  for (definition, position) in numbered index.source.closures do
+    out := out.insert (index.closureBase + position) (.all (referenceFormulas index definition.captures))
+  for (definition, position) in numbered index.source.records do
+    out := out.insert (referenceRecordBase index + position)
+      (.all (referenceFormulas index (definition.fields.map (·.ty))))
+  return out := rfl
+
+private theorem reference_find_valid (test : Nat → Bool) (rows : List Nat) (key : Nat)
+    (found : rows.find? test = some key) : key ∈ rows ∧ test key = true := by
+  induction rows with
+  | nil => cases found
+  | cons first rest ih =>
+    by_cases yes : test first = true
+    · simp [List.find?, yes] at found
+      cases found
+      exact ⟨by simp, yes⟩
+    · simp [List.find?, yes] at found
+      obtain ⟨member, result⟩ := ih found
+      exact ⟨List.mem_cons_of_mem first member, result⟩
+
+private def referenceChoice (test : Nat → Bool) (rows : List Nat) :
+    Option { key : Nat // key ∈ rows ∧ test key = true } :=
+  match found : rows.find? test with
+  | none => none
+  | some key => some ⟨key, reference_find_valid test rows key found⟩
+
+private def presentReferences (remaining : List Nat) : NatIndexTree Unit :=
+  remaining.foldl (fun facts key => facts.insert key ()) .empty
+
+/-- The greatest reference-valid solution permits cycles only as references.
+    Each removal has an actual missing-reference witness and strictly shrinks
+    the finite source domain. It never proves a variant uninhabited. -/
+private def pruneReferences (rules : NatIndexTree Formula) (remaining : List Nat) : NatIndexTree Unit :=
+  let facts := presentReferences remaining
+  match referenceChoice (fun key => !((rules.find key).any (·.holds facts))) remaining with
+  | none => facts
+  | some selected => pruneReferences rules (remaining.erase selected.val)
+termination_by remaining.length
+decreasing_by exact erase_length_lt remaining selected.val selected.property.1
+
+def referenceFacts (index : Index) : NatIndexTree Unit :=
+  pruneReferences (referenceEquations index)
+    (List.range (referenceRecordBase index + index.source.records.length))
+
+def fieldsHaveReferences (index : Index) (facts : NatIndexTree Unit) (fields : List Ty) : Bool :=
+  (Formula.all (referenceFormulas index fields)).holds facts
+
+
+
+/-- Physical rows are checked against the actual enum container.
+The profile's own size and alignment remain distinct source metadata. -/
+private def profileContainerValid (descriptor : EnumLayoutDescriptor) (fields : List Field) : Bool :=
+  powerOfTwo descriptor.align && (descriptor.size % descriptor.align == 0 &&
+    (!hasOverlap fields && fields.all (fun field =>
+      powerOfTwo field.align && (field.offset % field.align == 0 &&
+        (field.align ≤ descriptor.align && field.offset + field.size ≤ descriptor.size)))))
+
+/-- A reserved row node describes its enum container, as declaredFields does
+for live descriptor rows. Its fields come from the genuine checked profile. -/
+def uninhabitedVariantContainer (mode : Mode) (id : Nat) (descriptor : EnumLayoutDescriptor)
+    (profile : UninhabitedVariantLayout) (types : List Ty) : Result Summary := do
+  let storage ← uninhabitedVariant mode id descriptor profile types
+  if !profileContainerValid descriptor storage.fields then throw (.incoherent "enum" id)
+  finish mode { size := descriptor.size, align := some descriptor.align, fields := storage.fields }
+
+private theorem profileContainerValid_fields (descriptor : EnumLayoutDescriptor) (fields : List Field)
+    (valid : profileContainerValid descriptor fields = true) :
+    powerOfTwo descriptor.align = true ∧ descriptor.size % descriptor.align = 0 ∧
+    FieldsSeparated fields ∧ FieldsContained descriptor.size fields ∧
+    FieldPowers fields ∧ FieldsAligned (fun _ => True) descriptor.align fields := by
+  simp only [profileContainerValid, Bool.and_eq_true_iff, beq_iff_eq, Bool.not_eq_true,
+    List.all_eq_true, decide_eq_true_eq] at valid
+  have separated : hasOverlap fields = false := by
+    cases overlap : hasOverlap fields <;> simp_all
+  refine ⟨valid.1, valid.2.1, (hasOverlap_false_iff_separated fields).mp separated, ?_, ?_, ?_⟩
+  · intro field member
+    exact (valid.2.2.2 field member).2.2.2
+  · intro field member
+    exact (valid.2.2.2 field member).1
+  · intro field member
+    have checked := valid.2.2.2 field member
+    exact ⟨powerOfTwo_nonzero field.align checked.1, checked.2.1, fun _ => checked.2.2.1⟩
+
+private theorem uninhabitedVariantContainer_post (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    ∃ storage, uninhabitedVariant mode id descriptor profile types = .ok storage ∧
+      profileContainerValid descriptor storage.fields = true ∧
+      finish mode { size := descriptor.size, align := some descriptor.align, fields := storage.fields } = .ok output := by
+  unfold uninhabitedVariantContainer at run
+  cases physical : uninhabitedVariant mode id descriptor profile types with
+  | error error => simp [physical, Bind.bind, Except.bind] at run
+  | ok storage =>
+    simp only [physical, Bind.bind, Except.bind] at run
+    cases valid : profileContainerValid descriptor storage.fields with
+    | false => simp [valid, MonadExceptOf.throw] at run
+    | true =>
+      exact ⟨storage, rfl, valid, by simpa only [valid, Bool.not_true, Bool.false_eq_true, ite_false] using run⟩
+
+private theorem uninhabitedVariantContainer_word (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    WordBounds 1 output := by
+  obtain ⟨storage, physical, valid, finished⟩ := uninhabitedVariantContainer_post mode id descriptor profile types output run
+  exact finish_word_bounds mode _ _ finished
+
+private theorem uninhabitedVariantContainer_mode (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    FinishBounds mode output := by
+  obtain ⟨storage, physical, valid, finished⟩ := uninhabitedVariantContainer_post mode id descriptor profile types output run
+  have checked := (finish_ok_iff mode _ output).mp finished
+  exact checked.1 ▸ checked.2
+
+private theorem uninhabitedVariantContainer_storage (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    StorageGeometry output ∧ FieldsSeparated output.fields ∧ FieldsContained descriptor.size output.fields := by
+  obtain ⟨storage, physical, valid, finished⟩ := uninhabitedVariantContainer_post mode id descriptor profile types output run
+  rw [((finish_ok_iff mode _ output).mp finished).1]
+  have checked := profileContainerValid_fields descriptor storage.fields valid
+  refine ⟨⟨⟨checked.2.2.1, checked.2.2.2.1⟩, ?_⟩, checked.2.2.1, checked.2.2.2.1⟩
+  intro enumeration impossible
+  cases impossible
+
+private theorem uninhabitedVariantContainer_power (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    PowerAlignment output := by
+  obtain ⟨storage, physical, valid, finished⟩ := uninhabitedVariantContainer_post mode id descriptor profile types output run
+  rw [((finish_ok_iff mode _ output).mp finished).1]
+  intro align actual
+  cases actual
+  have checked := profileContainerValid_fields descriptor storage.fields valid
+  exact ⟨checked.1, checked.2.1⟩
+
+private theorem uninhabitedVariantContainer_fields (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    FieldAlignmentSummary output ∧ VariantAligned (some descriptor.align) output := by
+  obtain ⟨storage, physical, valid, finished⟩ := uninhabitedVariantContainer_post mode id descriptor profile types output run
+  rw [((finish_ok_iff mode _ output).mp finished).1]
+  have checked := profileContainerValid_fields descriptor storage.fields valid
+  refine ⟨⟨?_, ?_⟩, ?_⟩
+  · intro field member
+    have powered := checked.2.2.2.2.1 field member
+    have aligned := checked.2.2.2.2.2 field member
+    refine ⟨powered, aligned.2.1, ?_⟩
+    intro align actual nonzero
+    cases actual
+    exact aligned.2.2 trivial
+  · intro enumeration impossible
+    cases impossible
+  · refine ⟨descriptor.align, rfl, checked.2.2.2.2.1, checked.2.2.2.2.2, ?_⟩
+    intro expected same
+    cases same
+    rfl
+
+private theorem uninhabitedVariantContainer_no_enum (mode : Mode) (id : Nat)
+    (descriptor : EnumLayoutDescriptor) (profile : UninhabitedVariantLayout) (types : List Ty)
+    (output : Summary) (run : uninhabitedVariantContainer mode id descriptor profile types = .ok output) :
+    output.enumeration = none := by
+  obtain ⟨storage, physical, valid, finished⟩ := uninhabitedVariantContainer_post mode id descriptor profile types output run
+  rw [((finish_ok_iff mode _ output).mp finished).1]
+
+/-- Encodings which omit inactive storage still check declared references. -/
+private def directReferenceFacts (index : Index) : NatIndexTree Unit :=
+  if index.source.enums.any (fun definition => match definition.layout with
+      | some descriptor => match descriptor.encoding with
+        | .directWithUninhabited _ _ | .singleInhabited _ => true | _ => false
+      | none => false) then referenceFacts index else .empty
+
+private def directVariantInvalid (index : Index) (facts : NatIndexTree Unit)
+    (profiles : List UninhabitedVariantLayout) (variantIndex : Nat) (variant : EnumVariantDef) : Bool :=
+  !fieldsHaveReferences index (directReferenceFacts index) variant.fields ||
+    (variantUninhabited index facts variant.fields &&
+      !profiles.any (fun profile => profile.variant == variantIndex))
+
+/-- A physical profile never requests the value layout of a dead payload.
+A missing profile for a proved-dead row refuses before any such query. -/
+def directVariantResult (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) : Option (Result Summary) :=
+  match definition.layout with
+  | some descriptor => match descriptor.encoding with
+    | .directWithUninhabited _ profiles =>
+      if directVariantInvalid index facts profiles variantIndex variant then
+        some (.error (.incoherent "enum" definition.id.index))
+      else (profiles.find? (fun profile => profile.variant == variantIndex)).map
+        (fun profile => uninhabitedVariantContainer mode definition.id.index descriptor profile variant.fields)
+    | _ => none
+  | none => none
+
+private theorem directVariantResult_property (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (property : Summary → Prop)
+    (safe : ∀ descriptor, definition.layout = some descriptor → ∀ profile output,
+      uninhabitedVariantContainer mode definition.id.index descriptor profile variant.fields = .ok output → property output)
+    (result : Result Summary) (selected : directVariantResult index facts mode definition variantIndex variant = some result)
+    (output : Summary) (run : result = .ok output) : property output := by
+  cases layout : definition.layout with
+  | none => simp [directVariantResult, layout] at selected
+  | some descriptor =>
+    cases encoding : descriptor.encoding <;>
+      try simp [directVariantResult, layout, encoding] at selected
+    case directWithUninhabited offset profiles =>
+      by_cases invalid : directVariantInvalid index facts profiles variantIndex variant = true
+      · simp [directVariantResult, layout, encoding, invalid] at selected
+        cases selected
+        cases run
+      · cases found : profiles.find? (fun profile => profile.variant == variantIndex) with
+        | none => simp [directVariantResult, layout, encoding, invalid, found] at selected
+        | some profile =>
+          simp [directVariantResult, layout, encoding, invalid, found] at selected
+          cases selected
+          exact safe descriptor layout profile output run
+
+/-- The fallback is the existing physical-selection equation, unchanged. -/
+def directVariantEquation (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation) : Equation :=
+  (directVariantResult index facts mode definition variantIndex variant).elim fallback Equation.done
+
+private theorem directVariantEquation_lift (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (post : Summary → Prop) (property : Equation → Prop)
+    (safe : ∀ descriptor, definition.layout = some descriptor → ∀ profile output,
+      uninhabitedVariantContainer mode definition.id.index descriptor profile variant.fields = .ok output → post output)
+    (done : ∀ result, (∀ output, result = .ok output → post output) → property (Equation.done result))
+    (old : property fallback) :
+    property (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  unfold directVariantEquation
+  cases selected : directVariantResult index facts mode definition variantIndex variant with
+  | none => exact old
+  | some result =>
+    apply done result
+    intro output run
+    exact directVariantResult_property index facts mode definition variantIndex variant post safe result selected output run
+
+
+private theorem directVariantEquation_word (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.WordGuarded) fallback) :
+    (Equation.WordGuarded) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (WordBounds 1) (Equation.WordGuarded)
+  · intro descriptor authored profile output run
+    exact uninhabitedVariantContainer_word mode definition.id.index descriptor profile variant.fields output run
+  · intro result valid
+    exact Equation.WordGuarded.done result valid
+  · exact old
+
+private theorem directVariantEquation_mode (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.ModeGuarded mode) fallback) :
+    (Equation.ModeGuarded mode) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (FinishBounds mode) (Equation.ModeGuarded mode)
+  · intro descriptor authored profile output run
+    exact uninhabitedVariantContainer_mode mode definition.id.index descriptor profile variant.fields output run
+  · intro result valid
+    exact Equation.ModeGuarded.done mode result valid
+  · exact old
+
+private theorem directVariantEquation_storage (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.StorageGuarded) fallback) :
+    (Equation.StorageGuarded) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (StorageGeometry) (Equation.StorageGuarded)
+  · intro descriptor authored profile output run
+    exact (uninhabitedVariantContainer_storage mode definition.id.index descriptor profile variant.fields output run).1
+  · intro result valid
+    exact Equation.StorageGuarded.done result valid
+  · exact old
+
+private theorem directVariantEquation_fields (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.FieldAlignmentGuarded) fallback) :
+    (Equation.FieldAlignmentGuarded) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (FieldAlignmentSummary) (Equation.FieldAlignmentGuarded)
+  · intro descriptor authored profile output run
+    exact (uninhabitedVariantContainer_fields mode definition.id.index descriptor profile variant.fields output run).1
+  · intro result valid
+    exact Equation.FieldAlignmentGuarded.done result valid
+  · exact old
+
+private theorem directVariantEquation_encoding (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.EncodingGuarded) fallback) :
+    (Equation.EncodingGuarded) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (EnumEncodingGeometry) (Equation.EncodingGuarded)
+  · intro descriptor authored profile output run
+    exact EnumEncodingGeometry.no_enum (uninhabitedVariantContainer_no_enum mode definition.id.index descriptor profile variant.fields output run)
+  · intro result valid
+    exact Equation.EncodingGuarded.done result valid
+  · exact old
+
+private theorem directVariantEquation_metadata (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.MetadataGuarded) fallback) :
+    (Equation.MetadataGuarded) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (EnumMetadata) (Equation.MetadataGuarded)
+  · intro descriptor authored profile output run
+    exact EnumMetadata.no_enum (uninhabitedVariantContainer_no_enum mode definition.id.index descriptor profile variant.fields output run)
+  · intro result valid
+    exact Equation.MetadataGuarded.done result valid
+  · exact old
+
+private theorem directVariantEquation_power (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : (Equation.PowerAlignmentRule 0) fallback) :
+    (Equation.PowerAlignmentRule 0) (directVariantEquation index facts mode definition variantIndex variant fallback) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback (BoundedAlignment) (Equation.PowerAlignmentRule 0)
+  · intro descriptor authored profile output run
+    exact ⟨uninhabitedVariantContainer_word mode definition.id.index descriptor profile variant.fields output run,
+      uninhabitedVariantContainer_power mode definition.id.index descriptor profile variant.fields output run⟩
+  · intro result valid
+    exact Equation.PowerAlignmentRule.done 0 result valid
+  · exact old
+
+private theorem directVariantEquation_parent (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (descriptor : EnumLayoutDescriptor) (authored : definition.layout = some descriptor)
+    (old : fallback.ParentFieldGuarded descriptor.size) :
+    (directVariantEquation index facts mode definition variantIndex variant fallback).ParentFieldGuarded descriptor.size := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback
+    (fun output => FieldsSeparated output.fields ∧ FieldsContained descriptor.size output.fields)
+    (Equation.ParentFieldGuarded descriptor.size)
+  · intro actual layout profile output run
+    have same : actual = descriptor := Option.some.inj (layout.symm.trans authored)
+    subst actual
+    exact (uninhabitedVariantContainer_storage mode definition.id.index descriptor profile variant.fields output run).2
+  · intro result valid
+    exact Equation.ParentFieldGuarded.done descriptor.size result valid
+  · exact old
+
+private theorem directVariantEquation_row_alignment (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : fallback.VariantAlignmentGuarded (definition.layout.map (·.align))) :
+    (directVariantEquation index facts mode definition variantIndex variant fallback).VariantAlignmentGuarded
+      (definition.layout.map (·.align)) := by
+  apply directVariantEquation_lift index facts mode definition variantIndex variant fallback
+    (VariantAligned (definition.layout.map (·.align)))
+    (Equation.VariantAlignmentGuarded (definition.layout.map (·.align)))
+  · intro descriptor authored profile output run
+    simpa only [authored, Option.map] using
+      (uninhabitedVariantContainer_fields mode definition.id.index descriptor profile variant.fields output run).2
+  · intro result valid graph powers output run
+    rcases run with ⟨first, last, initial, steps, finished⟩
+    cases steps
+    exact valid output (initial.trans finished)
+  · exact old
+
+private theorem directVariantEquation_references {region : Nat → Prop} (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
+    (definition : EnumDef) (variantIndex : Nat) (variant : EnumVariantDef) (fallback : Equation)
+    (old : StepsIn region fallback.steps) :
+    StepsIn region (directVariantEquation index facts mode definition variantIndex variant fallback).steps := by
+  unfold directVariantEquation
+  cases selected : directVariantResult index facts mode definition variantIndex variant with
+  | none => exact old
+  | some result => exact Equation.references_done region result
+
+
+/-- Both physical omission profiles require all declared payload references.
+This does not query dead storage or change Single physical selection. -/
+private def directEnumReferencesValid (index : Index) (definition : EnumDef) : Bool :=
+  match definition.layout with
+  | some descriptor => match descriptor.encoding with
+    | .directWithUninhabited _ _ | .singleInhabited _ =>
+      definition.variants.all (fun variant =>
+        fieldsHaveReferences index (directReferenceFacts index) variant.fields)
+    | _ => true
+  | none => true
+
+/-- The initial root refuses missing source references before the solver
+requests any child row. The library enum equation's existing rules remain. -/
+def directEnumEquation (index : Index) (definition : EnumDef) (equation : Equation) : Equation :=
+  if directEnumReferencesValid index definition then equation
+  else .done (.error (.incoherent "enum" definition.id.index))
+
+private theorem directEnumEquation_lift (index : Index) (definition : EnumDef) (equation : Equation)
+    (property : Equation → Prop)
+    (failed : ∀ error, property (.done (.error error))) (valid : property equation) :
+    property (directEnumEquation index definition equation) := by
+  unfold directEnumEquation
+  split
+  · exact valid
+  · exact failed _
+
 private def add (equation : Equation) : Build Nat := do
   let graph ← get
   let node := graph.count
@@ -264,6 +779,11 @@ mutual
       reserved original source positions; they never recursively expand here. -/
   private def compileTy (index : Index) (mode : Mode) (ty : Ty) : Build Nat := do
     let source := index.source
+    -- Nominal item storage is target-independent, but never header-free.
+    if let .FnItem id := ty then
+      match index.functionItem id with
+      | .error error => return ← failed error
+      | .ok _ => return ← addScalar (.ok { size := 0, align := some 1 })
     if mode == .execution && !source.canonicalScalars then return ← failed .scalarTarget
     match scalar mode source ty with
     | some result => addScalar result
@@ -334,27 +854,28 @@ mutual
     all_goals simp only [pure_bind, bind_pure]
     case Vector count element =>
       repeat first
-        | exact failed_preserves _
-        | (apply PreservesGraph.bind (compileTy_preserves index mode element)
+        | with_reducible exact failed_preserves _
+        | (with_reducible apply PreservesGraph.bind (compileTy_preserves index mode element)
            intro child
            exact add_preserves _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     case Tuple fields =>
       repeat first
-        | exact failed_preserves _
-        | exact add_preserves _
-        | (apply PreservesGraph.bind (compileTypes_preserves index mode fields)
+        | with_reducible exact failed_preserves _
+        | with_reducible exact add_preserves _
+        | (with_reducible apply PreservesGraph.bind (compileTypes_preserves index mode fields)
            intro children
            exact add_preserves _)
-        | (apply PreservesGraph.bind (compileTypes_preserves index .shape fields)
+        | (with_reducible apply PreservesGraph.bind (compileTypes_preserves index .shape fields)
            intro children
            exact add_preserves _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     all_goals repeat first
-      | exact addScalar_preserves _
-      | exact add_preserves _
-      | exact PreservesGraph.pure _
-      | split
+      | with_reducible exact failed_preserves _
+      | with_reducible exact addScalar_preserves _
+      | with_reducible exact add_preserves _
+      | with_reducible exact PreservesGraph.pure _
+      | (split <;> try simp only [pure_bind, bind_pure])
   termination_by sizeOf ty
   private theorem compileTypes_preserves (index : Index) (mode : Mode) (types : List Ty) :
       PreservesGraph (compileTypes index mode types) := by
@@ -369,6 +890,38 @@ mutual
       exact PreservesGraph.pure _
   termination_by sizeOf types
 end
+
+/-- Exact nominal-item clause. The actual duplicate-aware source lookup is
+    retained; neither a target layout nor a synthetic function row is used. -/
+theorem compileTy_fnItem (index : Index) (mode : Mode) (id : FuncId) :
+    compileTy index mode (.FnItem id) =
+      (match index.functionItem id with
+      | .error error => failed error
+      | .ok _ => addScalar (.ok { size := 0, align := some 1 })) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta compileTy compileTy._mutual
+      rw [WellFounded.fix_eq]
+    dsimp only
+    cases checked : index.functionItem id <;> simp only [checked] <;> rfl
+  } {
+    rfl
+  }
+
+/-- Exact scalar clause, independent of the source's other declarations. -/
+theorem compileTy_u8 (index : Index) (mode : Mode)
+    (canonical : index.source.canonicalScalars = true) :
+    compileTy index mode .U8 = addScalar (.ok { size := 1, align := some 1 }) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta compileTy compileTy._mutual
+      rw [WellFounded.fix_eq]
+    cases mode <;> simp only [scalar, canonical] <;> rfl
+  } {
+    cases mode <;> simp only [compileTy, scalar, canonical] <;> rfl
+  }
 
 /-- Query-time compilation cannot fill or change a pre-reserved slot. -/
 private def KeepsPrefix {α : Type} (lower : Nat) (action : Build α) : Prop :=
@@ -429,7 +982,7 @@ mutual
              (compileTy_keeps_prefix lower index mode element)
            intro child
            exact KeepsPrefix.add lower _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     case Tuple fields =>
       repeat first
         | exact KeepsPrefix.add lower _
@@ -441,12 +994,12 @@ mutual
              (compileTypes_keeps_prefix lower index .shape fields)
            intro children
            exact KeepsPrefix.add lower _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     all_goals repeat first
       | exact KeepsPrefix.scalar lower _
       | exact KeepsPrefix.add lower _
       | exact fun _ _ _ _ _ => rfl
-      | split
+      | (split <;> try simp only [pure_bind, bind_pure])
     termination_by sizeOf ty
   private theorem compileTypes_keeps_prefix (lower : Nat) (index : Index) (mode : Mode) (types : List Ty) :
       KeepsPrefix lower (compileTypes index mode types) := by
@@ -488,33 +1041,46 @@ mutual
       PreservesState Graph.WordInvariant (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_word _
-    · split
-      · rename_i result found
-        exact addScalar_word result (fun value success => scalar_word mode index.source ty result value found success)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact failed_word _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_word error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_word
+        intro value success
+        cases success
+        exact WordBounds.unit
+    · rename_i originalTy notItem
+      split
+      · exact failed_word _
+      · split
+        · rename_i result found
+          exact addScalar_word result (fun value success => scalar_word mode index.source ty result value found success)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact failed_word _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_word _
+              | (apply PreservesState.bind (compileTy_word index mode element)
+                 intro child
+                 exact add_word _ (Equation.WordGuarded.scaled mode count child).rule)
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_word index mode fields
+              (compileTypes_word index mode fields) (compileTypes_word index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_word _
-            | (apply PreservesState.bind (compileTy_word index mode element)
-               intro child
-               exact add_word _ (Equation.WordGuarded.scaled mode count child).rule)
+            | exact add_word _ (Equation.WordGuarded.scaled _ _ _).rule
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_word index mode fields
-            (compileTypes_word index mode fields) (compileTypes_word index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_word _
-          | exact add_word _ (Equation.WordGuarded.scaled _ _ _).rule
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_word (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState Graph.WordInvariant (compileTypes index mode types) := by
@@ -549,33 +1115,46 @@ mutual
       PreservesState (ScalarState lower index.source.model.pointerBytes) (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact add_scalar_state _ _ _
-    · split
-      · rename_i result found
-        exact addScalar_scalar_state lower _ result (fun value success =>
-          scalar_admissible mode index.source ty result value found success)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact add_scalar_state _ _ _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact add_scalar_state _ _ _
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_scalar_state
+        intro value success
+        cases success
+        exact ScalarSummary.unit
+    · rename_i originalTy notItem
+      split
+      · exact add_scalar_state _ _ _
+      · split
+        · rename_i result found
+          exact addScalar_scalar_state lower _ result (fun value success =>
+            scalar_admissible mode index.source ty result value found success)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact add_scalar_state _ _ _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact add_scalar_state _ _ _
+              | (apply PreservesState.bind (compileTy_scalar_state lower index mode element)
+                 intro child
+                 exact add_scalar_state _ _ _)
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_scalar_state lower index mode fields
+              (compileTypes_scalar_state lower index mode fields) (compileTypes_scalar_state lower index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact add_scalar_state _ _ _
-            | (apply PreservesState.bind (compileTy_scalar_state lower index mode element)
-               intro child
-               exact add_scalar_state _ _ _)
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_scalar_state lower index mode fields
-            (compileTypes_scalar_state lower index mode fields) (compileTypes_scalar_state lower index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact add_scalar_state _ _ _
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_scalar_state (lower : Nat) (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState (ScalarState lower index.source.model.pointerBytes) (compileTypes index mode types) := by
@@ -590,6 +1169,26 @@ mutual
       exact PreservesState.pure _ _
     termination_by sizeOf types
 end
+
+/-- Expose the exact array clause without reducing the recursive compiler's
+    termination rank at the literal array length. -/
+theorem compileTy_array (index : Index) (mode : Mode) (element : TyId) (count : Nat)
+    (canonical : index.source.canonicalScalars = true) :
+    compileTy index mode (.Array element count) =
+      (if !(trustIrArrayGet? index.typeRows element.index).isSome then failed (.missingType element.index)
+       else if count > word64Max then failed .sizeOverflow
+       else add (scaled mode count (index.node mode element.index))) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta compileTy compileTy._mutual
+      rw [WellFounded.fix_eq]
+    cases mode <;> simp only [scalar, canonical] <;> rfl
+  } {
+    cases mode <;> simp only [compileTy, scalar, canonical] <;> rfl
+  }
+
+
 
 private def structEquation (index : Index) (mode : Mode) (definition : StructDef) : Build Equation := do
   let id := definition.id.index
@@ -1053,7 +1652,7 @@ private theorem enumRoot_word (index : Index) (mode : Mode) (definition : EnumDe
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
       Equation.done (.error Error.scalarTarget)
-    else enumEquation mode definition uninhabited variants).WordGuarded := by
+    else directEnumEquation index definition (enumEquation mode definition uninhabited variants)).WordGuarded := by
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
       (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
@@ -1061,7 +1660,8 @@ private theorem enumRoot_word (index : Index) (mode : Mode) (definition : EnumDe
   }
   split
   · exact Equation.WordGuarded.failed _
-  · exact Equation.WordGuarded.enumeration _ _ _ _
+  · exact directEnumEquation_lift index definition _ Equation.WordGuarded
+      Equation.WordGuarded.failed (Equation.WordGuarded.enumeration _ _ _ _)
 
 private theorem variantEquation_mode (mode : Mode) (definition : EnumDef)
     (children : List (Ty × Nat)) (variantIndex : Nat) :
@@ -1085,7 +1685,7 @@ private theorem enumRoot_mode (index : Index) (mode : Mode) (definition : EnumDe
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
       Equation.done (.error Error.scalarTarget)
-    else enumEquation mode definition uninhabited variants).ModeGuarded mode := by
+    else directEnumEquation index definition (enumEquation mode definition uninhabited variants)).ModeGuarded mode := by
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
       (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
@@ -1093,7 +1693,8 @@ private theorem enumRoot_mode (index : Index) (mode : Mode) (definition : EnumDe
   }
   split
   · exact Equation.ModeGuarded.failed mode _
-  · exact Equation.ModeGuarded.enumeration _ _ _ _
+  · exact directEnumEquation_lift index definition _ (Equation.ModeGuarded mode)
+      (Equation.ModeGuarded.failed mode) (Equation.ModeGuarded.enumeration _ _ _ _)
 
 private structure IndexReady (index : Index) : Prop where
   types : index.typeRows.size = index.source.types.length
@@ -1462,115 +2063,128 @@ mutual
       PairsNode index (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact PairsNode.failed index _
-    · split
-      · rename_i result found
-        exact PairsNode.scalar index result (fun value success =>
-          scalar_admissible mode index.source ty result value found success)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind,bind_pure]
-        case Vector =>
-          rename_i count element scalarNone
-          repeat first
-            | exact PairsNode.failed index _
-            | (apply PairsNode.from_child index _ _ (compileTy_scalar_state _ index mode element)
-                 (compileTy_related index ready mode element)
-               intro relation original a b related
-               exact Equation.Corresponds.scaled mode count related)
-            | split
-        case Tuple =>
-          rename_i fields scalarNone
-          repeat first
-            | exact PairsNode.failed index _
-            | exact PairsNode.tuple_failed index mode _
-            | (apply PairsNode.from_types index _ _ (compileTypes_scalar_state _ index mode fields)
-                 (compileTypes_related index ready mode fields)
-               intro relation original a b related
-               exact tuple_sequence_corresponds index mode original
-                 (Equation.Corresponds.canonicalZip mode "tuple" 0 fields related))
-            | (apply PairsNode.from_types index _ _ (compileTypes_scalar_state _ index .shape fields)
-                 (compileTypes_related index ready .shape fields)
-               intro relation original a b related
-               exact tuple_sequence_corresponds index mode original
-                 (Equation.Corresponds.declaredMapZip mode "tuple" _ _ _ word64Max false fields _ related))
-            | (simp only [pure_bind,bind_pure])
-            | split
-        case Array =>
-          rename_i id count scalarNone
-          repeat first
-            | exact PairsNode.failed index _
-            | split
-          apply PairsNode.original_scaled
-          have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-            cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-          have inside := array_present_bound index.typeRows id.index present
-          unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-          split <;> omega
-        all_goals repeat first
-          | exact PairsNode.failed index _
-          | split
-        all_goals try exact PairsNode.failed index _
-        trustIrCompilerProof {
-          case Struct.h_1 =>
-            rename_i position found
-            have inside := ready.structs mode _ position found
-            apply PairsNode.original
-            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-            split <;> omega
-          case Enum.h_1 =>
-            rename_i position found
-            have inside := ready.enums mode _ position found
-            apply PairsNode.original
-            unfold Index.node Index.count Index.closureBase Index.enumBase
-            split <;> omega
-          case Closure.inr.inr =>
-            rename_i id scalarNone shape accepted
-            have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
-              cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
-            have inside := array_present_bound index.closureRows id.index present
-            apply PairsNode.original
-            unfold Index.node Index.count
-            split <;> omega
-          case Refine.inr.inr =>
-            rename_i id predicate scalarNone shape accepted
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact PairsNode.failed index error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply PairsNode.scalar
+        intro value success
+        cases success
+        exact ScalarSummary.unit
+    · rename_i originalTy notItem
+      split
+      · exact PairsNode.failed index _
+      · split
+        · rename_i result found
+          exact PairsNode.scalar index result (fun value success =>
+            scalar_admissible mode index.source ty result value found success)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind,bind_pure]
+          case Vector =>
+            rename_i count element scalarNone
+            repeat first
+              | exact PairsNode.failed index _
+              | (apply PairsNode.from_child index _ _ (compileTy_scalar_state _ index mode element)
+                   (compileTy_related index ready mode element)
+                 intro relation original a b related
+                 exact Equation.Corresponds.scaled mode count related)
+              | split
+          case Tuple =>
+            rename_i fields scalarNone
+            repeat first
+              | exact PairsNode.failed index _
+              | exact PairsNode.tuple_failed index mode _
+              | (apply PairsNode.from_types index _ _ (compileTypes_scalar_state _ index mode fields)
+                   (compileTypes_related index ready mode fields)
+                 intro relation original a b related
+                 exact tuple_sequence_corresponds index mode original
+                   (Equation.Corresponds.canonicalZip mode "tuple" 0 fields related))
+              | (apply PairsNode.from_types index _ _ (compileTypes_scalar_state _ index .shape fields)
+                   (compileTypes_related index ready .shape fields)
+                 intro relation original a b related
+                 exact tuple_sequence_corresponds index mode original
+                   (Equation.Corresponds.declaredMapZip mode "tuple" _ _ _ word64Max false fields _ related))
+              | (simp only [pure_bind,bind_pure])
+              | split
+          case Array =>
+            rename_i id count scalarNone
+            repeat first
+              | exact PairsNode.failed index _
+              | split
+            apply PairsNode.original_scaled
             have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
               cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
             have inside := array_present_bound index.typeRows id.index present
-            apply PairsNode.original
             unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
             split <;> omega
-        } {
-          case h_1 =>
-            rename_i position found
-            have inside := ready.structs mode _ position found
-            apply PairsNode.original
-            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-            split <;> omega
-          case h_1 =>
-            rename_i position found
-            have inside := ready.enums mode _ position found
-            apply PairsNode.original
-            unfold Index.node Index.count Index.closureBase Index.enumBase
-            split <;> omega
-          case h_2.Closure.isFalse.isFalse =>
-            rename_i id scalarNone shape accepted
-            have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
-              cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
-            have inside := array_present_bound index.closureRows id.index present
-            apply PairsNode.original
-            unfold Index.node Index.count
-            split <;> omega
-          case h_2.Refine.isFalse.isFalse =>
-            rename_i id predicate scalarNone shape accepted
-            have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-              cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-            have inside := array_present_bound index.typeRows id.index present
-            apply PairsNode.original
-            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-            split <;> omega
-        }
+          all_goals repeat first
+            | exact PairsNode.failed index _
+            | split
+          all_goals try exact PairsNode.failed index _
+          trustIrCompilerProof {
+            case Struct.h_1 =>
+              rename_i position found
+              have inside := ready.structs mode _ position found
+              apply PairsNode.original
+              unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+              split <;> omega
+            case Enum.h_1 =>
+              rename_i position found
+              have inside := ready.enums mode _ position found
+              apply PairsNode.original
+              unfold Index.node Index.count Index.closureBase Index.enumBase
+              split <;> omega
+            case Closure.inr.inr =>
+              rename_i id scalarNone shape accepted
+              have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
+                cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
+              have inside := array_present_bound index.closureRows id.index present
+              apply PairsNode.original
+              unfold Index.node Index.count
+              split <;> omega
+            case Refine.inr.inr =>
+              rename_i id predicate scalarNone shape accepted
+              have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+                cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+              have inside := array_present_bound index.typeRows id.index present
+              apply PairsNode.original
+              unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+              split <;> omega
+          } {
+            case h_1 =>
+              rename_i position found
+              have inside := ready.structs mode _ position found
+              apply PairsNode.original
+              unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+              split <;> omega
+            case h_1 =>
+              rename_i position found
+              have inside := ready.enums mode _ position found
+              apply PairsNode.original
+              unfold Index.node Index.count Index.closureBase Index.enumBase
+              split <;> omega
+            case h_2.Closure.isFalse.isFalse =>
+              rename_i id scalarNone shape accepted
+              have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
+                cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
+              have inside := array_present_bound index.closureRows id.index present
+              apply PairsNode.original
+              unfold Index.node Index.count
+              split <;> omega
+            case h_2.Refine.isFalse.isFalse =>
+              rename_i id predicate scalarNone shape accepted
+              have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+                cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+              have inside := array_present_bound index.typeRows id.index present
+              apply PairsNode.original
+              unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+              split <;> omega
+          }
 
   private theorem compileTypes_related (index : Index) (ready : RootReady index) (mode : Mode) (types : List Ty) :
       PairsTypes index (compileTypes index mode types) := by
@@ -1627,82 +2241,96 @@ private theorem compileTy_root_bound (index : Index) (ready : RootReady index) (
     BuildsRootBound index (compileTy index mode ty) := by
   rw [compileTy.eq_def]
   dsimp only
-  split
-  · exact BuildsRootBound.failed index _
-  · split
-    · rename_i result found
-      exact BuildsRootBound.scalar index result (fun value success =>
-        scalar_admissible mode index.source ty result value found success)
-    · cases ty
-      all_goals dsimp only
-      all_goals simp only [pure_bind,bind_pure]
-      all_goals repeat first
-        | exact BuildsRootBound.failed index _
-        | exact BuildsRootBound.add index _
-        | (apply BuildsRootBound.bind index _ (compileTy_scalar_state _ index mode _); intro child)
-        | (apply BuildsRootBound.bind index _ (compileTypes_scalar_state _ index mode _); intro children)
-        | (apply BuildsRootBound.bind index _ (compileTypes_scalar_state _ index .shape _); intro children)
-        | split
-      all_goals try exact BuildsRootBound.failed index _
-      trustIrCompilerProof {
-        case Struct.h_1 =>
-          rename_i position found
-          have inside := ready.structs mode _ position found
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-          split <;> omega
-        case Enum.h_1 =>
-          rename_i position found
-          have inside := ready.enums mode _ position found
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count Index.closureBase Index.enumBase
-          split <;> omega
-        case Closure.inr.inr =>
-          rename_i id scalarNone shape accepted
-          have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
-            cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
-          have inside := array_present_bound index.closureRows id.index present
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count
-          split <;> omega
-        case Refine.inr.inr =>
-          rename_i id predicate scalarNone shape accepted
-          have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-            cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-          have inside := array_present_bound index.typeRows id.index present
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-          split <;> omega
-      } {
-        case h_1 =>
-          rename_i position found
-          have inside := ready.structs mode _ position found
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-          split <;> omega
-        case h_1 =>
-          rename_i position found
-          have inside := ready.enums mode _ position found
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count Index.closureBase Index.enumBase
-          split <;> omega
-        case h_2.Closure.isFalse.isFalse =>
-          rename_i id scalarNone shape accepted
-          have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
-            cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
-          have inside := array_present_bound index.closureRows id.index present
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count
-          split <;> omega
-        case h_2.Refine.isFalse.isFalse =>
-          rename_i id predicate scalarNone shape accepted
-          have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-            cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-          have inside := array_present_bound index.typeRows id.index present
-          apply BuildsRootBound.reserved
-          unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
-          split <;> omega
-      }
+  split <;> try simp only [pure_bind, bind_pure]
+  · rename_i originalTy id
+    cases checked : index.functionItem id with
+    | error error =>
+      try simp only [checked, bind_pure]
+      exact BuildsRootBound.failed index error
+    | ok header =>
+      try simp only [checked, bind_pure]
+      apply BuildsRootBound.scalar
+      intro value success
+      cases success
+      exact ScalarSummary.unit
+  · rename_i originalTy notItem
+    split
+    · exact BuildsRootBound.failed index _
+    · split
+      · rename_i result found
+        exact BuildsRootBound.scalar index result (fun value success =>
+          scalar_admissible mode index.source ty result value found success)
+      · cases ty
+        all_goals dsimp only
+        all_goals try simp only [pure_bind,bind_pure]
+        all_goals repeat first
+          | exact BuildsRootBound.failed index _
+          | exact BuildsRootBound.add index _
+          | (apply BuildsRootBound.bind index _ (compileTy_scalar_state _ index mode _); intro child)
+          | (apply BuildsRootBound.bind index _ (compileTypes_scalar_state _ index mode _); intro children)
+          | (apply BuildsRootBound.bind index _ (compileTypes_scalar_state _ index .shape _); intro children)
+          | split
+        all_goals try exact BuildsRootBound.failed index _
+        trustIrCompilerProof {
+          case Struct.h_1 =>
+            rename_i position found
+            have inside := ready.structs mode _ position found
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+            split <;> omega
+          case Enum.h_1 =>
+            rename_i position found
+            have inside := ready.enums mode _ position found
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count Index.closureBase Index.enumBase
+            split <;> omega
+          case Closure.inr.inr =>
+            rename_i id scalarNone shape accepted
+            have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
+              cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
+            have inside := array_present_bound index.closureRows id.index present
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count
+            split <;> omega
+          case Refine.inr.inr =>
+            rename_i id predicate scalarNone shape accepted
+            have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+              cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+            have inside := array_present_bound index.typeRows id.index present
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+            split <;> omega
+        } {
+          case h_1 =>
+            rename_i position found
+            have inside := ready.structs mode _ position found
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+            split <;> omega
+          case h_1 =>
+            rename_i position found
+            have inside := ready.enums mode _ position found
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count Index.closureBase Index.enumBase
+            split <;> omega
+          case h_2.Closure.isFalse.isFalse =>
+            rename_i id scalarNone shape accepted
+            have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
+              cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
+            have inside := array_present_bound index.closureRows id.index present
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count
+            split <;> omega
+          case h_2.Refine.isFalse.isFalse =>
+            rename_i id predicate scalarNone shape accepted
+            have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+              cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+            have inside := array_present_bound index.typeRows id.index present
+            apply BuildsRootBound.reserved
+            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase
+            split <;> omega
+        }
+
 
 private theorem compileTypes_roots_bound (index : Index) (ready : RootReady index) (mode : Mode) (types : List Ty) :
     ∀ graph, ScalarState (2 * index.count + 2) index.source.model.pointerBytes graph →
@@ -1843,47 +2471,60 @@ mutual
       PreservesState (ReferenceState index) (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_reference_state index _
-    · split
-      · rename_i result found
-        exact addScalar_reference_state index result (fun value success =>
-          scalar_admissible mode index.source ty result value found success)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind,bind_pure]
-        all_goals try exact failed_reference_state index _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_reference_state index error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_reference_state
+        intro value success
+        cases success
+        exact ScalarSummary.unit
+    · rename_i originalTy notItem
+      split
+      · exact failed_reference_state index _
+      · split
+        · rename_i result found
+          exact addScalar_reference_state index result (fun value success =>
+            scalar_admissible mode index.source ty result value found success)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind,bind_pure]
+          all_goals try exact failed_reference_state index _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_reference_state index _
+              | (apply bind_ty_references index ready mode element _ (compileTy_reference_state index ready mode element)
+                 intro graph child bounded valid
+                 exact add_reference_state index _ graph valid
+                   (Equation.references_scaled mode count child (Nat.lt_succ_of_lt bounded)))
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_reference_state index ready mode fields
+              (compileTypes_reference_state index ready mode fields) (compileTypes_reference_state index ready .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true,ite_false,pure_bind,bind_pure]
+          case Array id count scalarNone =>
+            repeat first
+              | exact failed_reference_state index _
+              | split
+            intro graph valid
+            have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+              cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+            have inside := array_present_bound index.typeRows id.index present
+            apply add_reference_state index _ graph valid
+            apply Equation.references_scaled
+            have frontier := valid.1.2.1
+            unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase at *
+            split <;> omega
+          all_goals repeat first
             | exact failed_reference_state index _
-            | (apply bind_ty_references index ready mode element _ (compileTy_reference_state index ready mode element)
-               intro graph child bounded valid
-               exact add_reference_state index _ graph valid
-                 (Equation.references_scaled mode count child (Nat.lt_succ_of_lt bounded)))
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_reference_state index ready mode fields
-            (compileTypes_reference_state index ready mode fields) (compileTypes_reference_state index ready .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true,ite_false,pure_bind,bind_pure]
-        case Array id count scalarNone =>
-          repeat first
-            | exact failed_reference_state index _
-            | split
-          intro graph valid
-          have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-            cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-          have inside := array_present_bound index.typeRows id.index present
-          apply add_reference_state index _ graph valid
-          apply Equation.references_scaled
-          have frontier := valid.1.2.1
-          unfold Index.node Index.count Index.closureBase Index.enumBase Index.structBase at *
-          split <;> omega
-        all_goals repeat first
-          | exact failed_reference_state index _
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_reference_state (index : Index) (ready : RootReady index) (mode : Mode) (types : List Ty) :
       PreservesState (ReferenceState index) (compileTypes index mode types) := by
@@ -2056,27 +2697,28 @@ mutual
     all_goals simp only [pure_bind, bind_pure]
     case Vector count element =>
       repeat first
-        | exact failed_covers _
-        | (apply CoversGraph.bind (compileTy_covers index mode element)
+        | with_reducible exact failed_covers _
+        | (with_reducible apply CoversGraph.bind (compileTy_covers index mode element)
            intro child
            exact add_covers _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     case Tuple fields =>
       repeat first
-        | exact failed_covers _
-        | exact add_covers _
-        | (apply CoversGraph.bind (compileTypes_covers index mode fields)
+        | with_reducible exact failed_covers _
+        | with_reducible exact add_covers _
+        | (with_reducible apply CoversGraph.bind (compileTypes_covers index mode fields)
            intro children
            exact add_covers _)
-        | (apply CoversGraph.bind (compileTypes_covers index .shape fields)
+        | (with_reducible apply CoversGraph.bind (compileTypes_covers index .shape fields)
            intro children
            exact add_covers _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     all_goals repeat first
-      | exact addScalar_covers _
-      | exact add_covers _
-      | exact CoversGraph.pure _
-      | split
+      | with_reducible exact failed_covers _
+      | with_reducible exact addScalar_covers _
+      | with_reducible exact add_covers _
+      | with_reducible exact CoversGraph.pure _
+      | (split <;> try simp only [pure_bind, bind_pure])
   termination_by sizeOf ty
   private theorem compileTypes_covers (index : Index) (mode : Mode) (types : List Ty) :
       CoversGraph (compileTypes index mode types) := by
@@ -2182,101 +2824,115 @@ private theorem compileTy_shape_root (lower : Nat) (index : Index) (ready : Shap
     BuildsShapeRoot lower index (compileTy index .shape ty) := by
   rw [compileTy.eq_def]
   dsimp only
-  simp only [show (Mode.shape == Mode.execution) = false from rfl,
-    Bool.false_and, Bool.false_eq_true, ite_false]
-  split
-  · rename_i result found
-    exact BuildsShapeRoot.scalar lower index result (fun value success =>
-      scalar_admissible .shape index.source ty result value found success)
-  · cases ty
-    all_goals dsimp only
-    all_goals simp only [pure_bind, bind_pure]
-    all_goals repeat first
-      | exact BuildsShapeRoot.failed lower index _
-      | (apply BuildsShapeRoot.add; exact Equation.ModeGuarded.scaled _ _ _)
-      | (apply BuildsShapeRoot.bind lower index _ (compileTy_scalar_state lower index .shape _); intro child)
-      | (apply BuildsShapeRoot.bind lower index _ (compileTypes_scalar_state lower index .shape _); intro children)
-      | (apply BuildsShapeRoot.add
-         repeat first
-           | exact Equation.ModeGuarded.failed _ _
-           | exact Equation.ModeGuarded.canonicalFields _ _ _ _
-           | exact Equation.ModeGuarded.declaredFields _ _ _ _ _ _ _ _
-           | apply Equation.ModeGuarded.sequence
-           | split)
-      | split
+  split <;> try simp only [pure_bind, bind_pure]
+  · rename_i originalTy id
+    cases checked : index.functionItem id with
+    | error error =>
+      try simp only [checked, bind_pure]
+      exact BuildsShapeRoot.failed lower index error
+    | ok header =>
+      try simp only [checked, bind_pure]
+      apply BuildsShapeRoot.scalar
+      intro value success
+      cases success
+      exact ScalarSummary.unit
+  · rename_i originalTy notItem
+    simp only [show (Mode.shape == Mode.execution) = false from rfl,
+      Bool.false_and, Bool.false_eq_true, ite_false]
+    split
+    · rename_i result found
+      exact BuildsShapeRoot.scalar lower index result (fun value success =>
+        scalar_admissible .shape index.source ty result value found success)
+    · cases ty
+      all_goals dsimp only
+      all_goals try simp only [pure_bind, bind_pure]
+      all_goals repeat first
+        | exact BuildsShapeRoot.failed lower index _
+        | (apply BuildsShapeRoot.add; exact Equation.ModeGuarded.scaled _ _ _)
+        | (apply BuildsShapeRoot.bind lower index _ (compileTy_scalar_state lower index .shape _); intro child)
+        | (apply BuildsShapeRoot.bind lower index _ (compileTypes_scalar_state lower index .shape _); intro children)
+        | (apply BuildsShapeRoot.add
+           repeat first
+             | exact Equation.ModeGuarded.failed _ _
+             | exact Equation.ModeGuarded.canonicalFields _ _ _ _
+             | exact Equation.ModeGuarded.declaredFields _ _ _ _ _ _ _ _
+             | apply Equation.ModeGuarded.sequence
+             | split)
+        | split
 
-    all_goals try exact BuildsShapeRoot.failed lower index _
-    trustIrCompilerProof {
-      case Struct.h_1 =>
-        rename_i position found
-        have inside := ready.structs _ position (by
-          simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count Index.closureBase Index.enumBase
-        omega
-      case Enum.h_1 =>
-        rename_i position found
-        have inside := ready.enums _ position (by
-          simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count Index.closureBase
-        omega
-      case Closure.inr =>
-        rename_i id scalarNone accepted
-        have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
-          cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
-        have inside := array_present_bound index.closureRows id.index present
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count
-        omega
-      case Refine.inr =>
-        rename_i id predicate scalarNone accepted
-        have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-          cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-        have inside := array_present_bound index.typeRows id.index present
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count Index.closureBase Index.enumBase Index.structBase
-        omega
-    } {
-      case h_1 =>
-        rename_i position found
-        have inside := ready.structs _ position (by
-          simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count Index.closureBase Index.enumBase
-        omega
-      case h_1 =>
-        rename_i position found
-        have inside := ready.enums _ position (by
-          simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count Index.closureBase
-        omega
-      case h_2.Closure.isFalse =>
-        rename_i id scalarNone accepted
-        have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
-          cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
-        have inside := array_present_bound index.closureRows id.index present
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count
-        omega
-      case h_2.Refine.isFalse =>
-        rename_i id predicate scalarNone accepted
-        have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
-          cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
-        have inside := array_present_bound index.typeRows id.index present
-        apply BuildsShapeRoot.reserved
-        simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
-        unfold Index.count Index.closureBase Index.enumBase Index.structBase
-        omega
-    }
+      all_goals try exact BuildsShapeRoot.failed lower index _
+      trustIrCompilerProof {
+        case Struct.h_1 =>
+          rename_i position found
+          have inside := ready.structs _ position (by
+            simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count Index.closureBase Index.enumBase
+          omega
+        case Enum.h_1 =>
+          rename_i position found
+          have inside := ready.enums _ position (by
+            simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count Index.closureBase
+          omega
+        case Closure.inr =>
+          rename_i id scalarNone accepted
+          have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
+            cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
+          have inside := array_present_bound index.closureRows id.index present
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count
+          omega
+        case Refine.inr =>
+          rename_i id predicate scalarNone accepted
+          have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+            cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+          have inside := array_present_bound index.typeRows id.index present
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count Index.closureBase Index.enumBase Index.structBase
+          omega
+      } {
+        case h_1 =>
+          rename_i position found
+          have inside := ready.structs _ position (by
+            simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count Index.closureBase Index.enumBase
+          omega
+        case h_1 =>
+          rename_i position found
+          have inside := ready.enums _ position (by
+            simpa only [show (Mode.shape == Mode.shape) = true from rfl, ite_true] using found)
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count Index.closureBase
+          omega
+        case h_2.Closure.isFalse =>
+          rename_i id scalarNone accepted
+          have present : ((trustIrArrayGet? index.closureRows id.index)).isSome = true := by
+            cases h : ((trustIrArrayGet? index.closureRows id.index)).isSome <;> simp_all
+          have inside := array_present_bound index.closureRows id.index present
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count
+          omega
+        case h_2.Refine.isFalse =>
+          rename_i id predicate scalarNone accepted
+          have present : ((trustIrArrayGet? index.typeRows id.index)).isSome = true := by
+            cases h : ((trustIrArrayGet? index.typeRows id.index)).isSome <;> simp_all
+          have inside := array_present_bound index.typeRows id.index present
+          apply BuildsShapeRoot.reserved
+          simp only [Index.node, show (Mode.shape == Mode.shape) = true from rfl, ite_true, Nat.zero_add]
+          unfold Index.count Index.closureBase Index.enumBase Index.structBase
+          omega
+      }
+
 
 private def ModeState (index : Index) (graph : Graph) : Prop :=
   ScalarState (2 * index.count + 2) index.source.model.pointerBytes graph ∧
@@ -2364,33 +3020,46 @@ mutual
       PreservesState (ModeState index) (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_mode_state index _
-    · split
-      · rename_i result found
-        exact addScalar_mode_state index result (fun value success =>
-          scalar_admissible mode index.source ty result value found success)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_mode_state index error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_mode_state
+        intro value success
+        cases success
+        exact ScalarSummary.unit
+    · rename_i originalTy notItem
+      split
+      · exact failed_mode_state index _
+      · split
+        · rename_i result found
+          exact addScalar_mode_state index result (fun value success =>
+            scalar_admissible mode index.source ty result value found success)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_mode_state index _
+              | (apply PreservesState.bind (compileTy_mode_state index mode element)
+                 intro child
+                 exact add_mode_state index _ (Equation.ModeGuarded.scaled mode _ _).execution)
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_mode_state index mode fields
+              (compileTypes_mode_state index mode fields) (compileTypes_mode_state index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_mode_state index _
-            | (apply PreservesState.bind (compileTy_mode_state index mode element)
-               intro child
-               exact add_mode_state index _ (Equation.ModeGuarded.scaled mode _ _).execution)
+            | exact add_mode_state index _ (Equation.ModeGuarded.scaled mode _ _).execution
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_mode_state index mode fields
-            (compileTypes_mode_state index mode fields) (compileTypes_mode_state index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_mode_state index _
-          | exact add_mode_state index _ (Equation.ModeGuarded.scaled mode _ _).execution
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_mode_state (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState (ModeState index) (compileTypes index mode types) := by
@@ -2723,18 +3392,20 @@ private def buildProgram (index : Index) (facts : NatIndexTree Unit) : Build Uni
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -2806,18 +3477,20 @@ private theorem buildProgram_history (index : Index) (facts : NatIndexTree Unit)
     let selected := enumPhysicalSelection definition uninhabited
     let mut variants := []
     for (variant, variantIndex) in numbered definition.variants do
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
-    let equation := enumEquation mode definition uninhabited variants.reverse
+    let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
     let equation := if mode == .shape && !index.source.canonicalScalars &&
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
           Equation.done (.error Error.scalarTarget) else equation
@@ -3138,7 +3811,7 @@ private theorem buildProgram_history (index : Index) (facts : NatIndexTree Unit)
 private def build (index : Index) (facts : NatIndexTree Unit) : Graph :=
   (buildProgram index facts { count := globalClosures index + 1 }).2
 
-private theorem build_eq_original (index : Index) (facts : NatIndexTree Unit) :
+theorem build_eq_original (index : Index) (facts : NatIndexTree Unit) :
     build index facts = Id.run do
   let initial : Graph := { count := globalClosures index + 1 }
   let program : Build Unit := do
@@ -3168,18 +3841,20 @@ private theorem build_eq_original (index : Index) (facts : NatIndexTree Unit) :
         for (variant, variantIndex) in numbered definition.variants do
           -- Skip physical children only after checking the actual structural
           -- facts and all inactive offset rows. Logical rows retain their IDs.
-          let children ← if selected.any (fun active => variantIndex != active) then pure []
+          let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
             else enumNodes index mode definition.layout.isSome variant.fields
-          let equation := match definition.layout with
+          let equation := directVariantEquation index facts mode definition variantIndex variant
+            (match definition.layout with
             | none => canonicalFields mode "enum" definition.id.index children
             | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
               | none => Equation.done (.error (.incoherent "enum" definition.id.index))
               | some offsets =>
                 if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
                 else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                  (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                  (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
           variants := (← add equation) :: variants
-        let equation := enumEquation mode definition uninhabited variants.reverse
+        let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
         let equation := if mode == .shape && !index.source.canonicalScalars &&
             (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
               Equation.done (.error Error.scalarTarget) else equation
@@ -3422,7 +4097,7 @@ private theorem build_word (index : Index) (facts : NatIndexTree Unit) :
                 | exact PreservesState.pure _ _
                 | (apply PreservesState.bind (enumNodes_word _ _ _ _); intro children)
                 | (apply PreservesState.bind
-                     (add_word _ (variantEquation_word mode definition _ variantIndex).rule); intro node)
+                     (add_word _ ((directVariantEquation_word index facts mode definition variantIndex variant _ (variantEquation_word mode definition _ variantIndex))).rule); intro node)
                 | (simp only [pure_bind])
                 | split
             · intro variants
@@ -3499,7 +4174,7 @@ private theorem build_modes (index : Index) (facts : NatIndexTree Unit)
                 | exact PreservesState.pure _ _
                 | (apply PreservesState.bind (enumNodes_mode_state index mode _ _); intro children)
                 | (apply PreservesState.bind
-                     (add_mode_state index _ (variantEquation_mode mode definition _ variantIndex).execution); intro node)
+                     (add_mode_state index _ ((directVariantEquation_mode index facts mode definition variantIndex variant _ (variantEquation_mode mode definition _ variantIndex))).execution); intro node)
                 | (simp only [pure_bind])
                 | split
             · intro variants
@@ -4364,34 +5039,48 @@ mutual
       PreservesState (StorageState lower) (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_storage lower _
-    · split
-      · rename_i result found
-        exact addScalar_storage lower result (fun value success =>
-          (scalar_admissible mode index.source ty result value found success).storage_geometry)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact failed_storage lower _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_storage lower error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_storage
+        intro value success
+        cases success
+        have zero : ScalarSummary index.source.model.pointerBytes { size := 0, align := some 1 } := .unit
+        exact zero.storage_geometry
+    · rename_i originalTy notItem
+      split
+      · exact failed_storage lower _
+      · split
+        · rename_i result found
+          exact addScalar_storage lower result (fun value success =>
+            (scalar_admissible mode index.source ty result value found success).storage_geometry)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact failed_storage lower _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_storage lower _
+              | (apply PreservesState.bind (compileTy_storage lower index mode element)
+                 intro child
+                 exact add_storage_guarded lower _ (Equation.StorageGuarded.scaled mode count child))
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_storage lower index mode fields
+              (compileTypes_storage lower index mode fields) (compileTypes_storage lower index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_storage lower _
-            | (apply PreservesState.bind (compileTy_storage lower index mode element)
-               intro child
-               exact add_storage_guarded lower _ (Equation.StorageGuarded.scaled mode count child))
+            | exact add_storage_guarded lower _ (Equation.StorageGuarded.scaled _ _ _)
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_storage lower index mode fields
-            (compileTypes_storage lower index mode fields) (compileTypes_storage lower index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_storage lower _
-          | exact add_storage_guarded lower _ (Equation.StorageGuarded.scaled _ _ _)
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_storage (lower : Nat) (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState (StorageState lower) (compileTypes index mode types) := by
@@ -4582,23 +5271,25 @@ private theorem variantStep_storage (lower : Nat) (definition : EnumDef)
   | head => exact state.2.1
   | tail _ member => exact old.2 child member
 
-private theorem enumVariants_storage (lower : Nat) (index : Index) (mode : Mode)
+private theorem enumVariants_storage (lower : Nat) (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
     (definition : EnumDef) (selected : Option Nat) (rows : List (EnumVariantDef × Nat))
     (nodes : List Nat) (graph : Graph)
     (valid : StorageState lower graph ∧ VariantCertificates lower definition nodes graph) :
     let result := (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) graph
     StorageState lower result.2 ∧ VariantCertificates lower definition result.1 result.2 := by
@@ -4607,23 +5298,24 @@ private theorem enumVariants_storage (lower : Nat) (index : Index) (mode : Mode)
   intro row member acc before state
   rcases row with ⟨variant, variantIndex⟩
   dsimp only
-  by_cases skipped : selected.any (fun active => variantIndex != active) = true
+  by_cases skipped : ((directVariantResult index facts mode definition variantIndex variant).isSome ||
+      selected.any (fun active => variantIndex != active)) = true
   all_goals simp only [skipped, ite_true, ite_false]
   · apply variantStep_storage lower definition _ _
     · exact PreservesState.pure _ _
     · exact PreservesGraph.pure _
     · intro children
-      exact variantEquation_storage mode definition children variantIndex
+      exact (directVariantEquation_storage index facts mode definition variantIndex variant _ (variantEquation_storage mode definition children variantIndex))
     · intro descriptor authored children
-      exact variantEquation_parent_storage mode definition children variantIndex descriptor authored
+      exact directVariantEquation_parent index facts mode definition variantIndex variant _ descriptor authored (variantEquation_parent_storage mode definition children variantIndex descriptor authored)
     · exact state
   · apply variantStep_storage lower definition _ _
     · exact enumNodes_storage lower index mode definition.layout.isSome variant.fields
     · exact enumNodes_preserves index mode definition.layout.isSome variant.fields
     · intro children
-      exact variantEquation_storage mode definition children variantIndex
+      exact (directVariantEquation_storage index facts mode definition variantIndex variant _ (variantEquation_storage mode definition children variantIndex))
     · intro descriptor authored children
-      exact variantEquation_parent_storage mode definition children variantIndex descriptor authored
+      exact directVariantEquation_parent index facts mode definition variantIndex variant _ descriptor authored (variantEquation_parent_storage mode definition children variantIndex descriptor authored)
     · exact state
 
 
@@ -4653,18 +5345,20 @@ private theorem enumEquation_storage (lower : Nat) (index : Index) (mode : Mode)
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -4682,26 +5376,28 @@ private theorem enumEquation_storage (lower : Nat) (index : Index) (mode : Mode)
     for (variant, variantIndex) in numbered definition.variants do
       -- Skip physical children only after checking the actual structural
       -- facts and all inactive offset rows. Logical rows retain their IDs.
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
     pure variants
-  have built := enumVariants_storage lower index mode definition selected
+  have built := enumVariants_storage lower index facts mode definition selected
     (numbered definition.variants) [] graph ⟨valid, VariantCertificates.empty lower definition graph⟩
   change StorageState lower (variantsAction graph).2 ∧
     (if mode == .shape && !index.source.canonicalScalars &&
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true)
       then Equation.done (.error Error.scalarTarget)
-      else enumEquation mode definition uninhabited (variantsAction graph).1.reverse).StorageRule lower (variantsAction graph).2
+      else directEnumEquation index definition (enumEquation mode definition uninhabited (variantsAction graph).1.reverse)).StorageRule lower (variantsAction graph).2
   refine ⟨built.1, ?_⟩
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
@@ -4710,14 +5406,17 @@ private theorem enumEquation_storage (lower : Nat) (index : Index) (mode : Mode)
   }
   split
   · exact (Equation.StorageGuarded.failed _).rule _ _
-  · cases authored : definition.layout with
-    | none => exact Equation.StorageRule.canonicalEnum lower _ mode definition uninhabited _ authored
-    | some descriptor =>
-      have certificates := built.2 descriptor authored
-      apply Equation.StorageRule.descriptorEnum lower _ mode definition uninhabited _ descriptor authored
-        certificates.1.reverse
-      intro child member
-      exact certificates.2 child ((storage_member_reverse child (variantsAction graph).1).mp member)
+  · apply directEnumEquation_lift index definition _ (fun equation => equation.StorageRule lower (variantsAction graph).2)
+    · intro error
+      exact (Equation.StorageGuarded.failed error).rule _ _
+    · cases authored : definition.layout with
+      | none => exact Equation.StorageRule.canonicalEnum lower _ mode definition uninhabited _ authored
+      | some descriptor =>
+        have certificates := built.2 descriptor authored
+        apply Equation.StorageRule.descriptorEnum lower _ mode definition uninhabited _ descriptor authored
+          certificates.1.reverse
+        intro child member
+        exact certificates.2 child ((storage_member_reverse child (variantsAction graph).1).mp member)
 
 private def VariantReferenceState (index : Index) (nodes : List Nat) (graph : Graph) : Prop :=
   ReferenceState index graph ∧ ∀ node ∈ nodes, node < graph.count
@@ -4748,22 +5447,24 @@ private theorem variantStep_reference (index : Index)
   | head => exact Nat.lt_succ_self _
   | tail _ member => exact Nat.lt_of_lt_of_le (valid.2 node member) (Nat.le_trans growth.count_mono (Nat.le_succ _))
 
-private theorem enumVariants_reference (index : Index) (ready : RootReady index) (mode : Mode)
+private theorem enumVariants_reference (index : Index) (ready : RootReady index) (facts : NatIndexTree Unit) (mode : Mode)
     (definition : EnumDef) (selected : Option Nat) (rows : List (EnumVariantDef × Nat))
     (nodes : List Nat) (graph : Graph) (valid : VariantReferenceState index nodes graph) :
     let result := (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) graph
     VariantReferenceState index result.1 result.2 := by
@@ -4771,20 +5472,21 @@ private theorem enumVariants_reference (index : Index) (ready : RootReady index)
   intro row member acc before state
   rcases row with ⟨variant,variantIndex⟩
   dsimp only
-  by_cases skipped : selected.any (fun active => variantIndex != active) = true
+  by_cases skipped : ((directVariantResult index facts mode definition variantIndex variant).isSome ||
+      selected.any (fun active => variantIndex != active)) = true
   all_goals simp only [skipped,ite_true,ite_false]
   · apply variantStep_reference index _ _
     · intro graph valid
       exact ⟨valid,fun child member => by cases member⟩
     · exact PreservesGraph.pure _
     · intro bound children safe
-      exact variantEquation_reference mode definition children variantIndex safe
+      exact directVariantEquation_references index facts mode definition variantIndex variant _ (variantEquation_reference mode definition children variantIndex safe)
     · exact state
   · apply variantStep_reference index _ _
     · exact enumNodes_reference index ready mode definition.layout.isSome variant.fields
     · exact enumNodes_preserves index mode definition.layout.isSome variant.fields
     · intro bound children safe
-      exact variantEquation_reference mode definition children variantIndex safe
+      exact directVariantEquation_references index facts mode definition variantIndex variant _ (variantEquation_reference mode definition children variantIndex safe)
     · exact state
 
 private theorem enumEquation_reference (index : Index) (ready : RootReady index) (mode : Mode)
@@ -4801,18 +5503,20 @@ private theorem enumEquation_reference (index : Index) (ready : RootReady index)
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -4830,19 +5534,21 @@ private theorem enumEquation_reference (index : Index) (ready : RootReady index)
     for (variant, variantIndex) in numbered definition.variants do
       -- Skip physical children only after checking the actual structural
       -- facts and all inactive offset rows. Logical rows retain their IDs.
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
     pure variants
-  have built := enumVariants_reference index ready mode definition selected
+  have built := enumVariants_reference index ready facts mode definition selected
     (numbered definition.variants) [] graph ⟨valid,fun node member => by cases member⟩
   change ReferenceState index (variantsAction graph).2 ∧
     StepsIn (fun child => child < (variantsAction graph).2.count)
@@ -4850,16 +5556,20 @@ private theorem enumEquation_reference (index : Index) (ready : RootReady index)
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
           | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true)
         then Equation.done (.error Error.scalarTarget)
-        else enumEquation mode definition uninhabited (variantsAction graph).1.reverse).steps
+        else directEnumEquation index definition (enumEquation mode definition uninhabited (variantsAction graph).1.reverse)).steps
   refine ⟨built.1,?_⟩
   by_cases refused : (mode == .shape && !index.source.canonicalScalars &&
       (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
       | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true)) = true
   · rw [if_pos refused]; exact True.intro
   · rw [if_neg refused]
-    apply Equation.references_enum
-    intro node member
-    exact built.2 node ((storage_member_reverse node (variantsAction graph).1).mp member)
+    apply directEnumEquation_lift index definition _ (fun equation =>
+      StepsIn (fun child => child < (variantsAction graph).2.count) equation.steps)
+    · intro error
+      exact Equation.references_done _ (.error error)
+    · apply Equation.references_enum
+      intro node member
+      exact built.2 node ((storage_member_reverse node (variantsAction graph).1).mp member)
 
 private theorem BuildsReferenceEquation.install_yield (index : Index) (node : Nat)
     (reserved : node < 2 * index.count + 2) (action : Build Equation)
@@ -5080,18 +5790,20 @@ private theorem build_rows_present (index : Index) (facts : NatIndexTree Unit) (
     let selected := enumPhysicalSelection definition uninhabited
     let mut variants := []
     for (variant, variantIndex) in numbered definition.variants do
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
-    let equation := enumEquation mode definition uninhabited variants.reverse
+    let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
     let equation := if mode == .shape && !index.source.canonicalScalars &&
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
           Equation.done (.error Error.scalarTarget) else equation
@@ -5653,34 +6365,48 @@ mutual
       PreservesState Graph.PowerAlignmentInvariant (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_power_alignment _
-    · split
-      · rename_i result found
-        exact addScalar_power_alignment result (fun value success => ⟨scalar_word mode index.source ty result value found success,
-          (scalar_admissible mode index.source ty result value found success).power_alignment index.source.model⟩)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact failed_power_alignment _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_power_alignment error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_power_alignment
+        intro value success
+        cases success
+        have zero : ScalarSummary index.source.model.pointerBytes { size := 0, align := some 1 } := .unit
+        exact ⟨WordBounds.unit, zero.power_alignment index.source.model⟩
+    · rename_i originalTy notItem
+      split
+      · exact failed_power_alignment _
+      · split
+        · rename_i result found
+          exact addScalar_power_alignment result (fun value success => ⟨scalar_word mode index.source ty result value found success,
+            (scalar_admissible mode index.source ty result value found success).power_alignment index.source.model⟩)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact failed_power_alignment _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_power_alignment _
+              | (apply PreservesState.bind (compileTy_power_alignment index mode element)
+                 intro child
+                 exact add_power_alignment _ (Equation.PowerAlignmentRule.scaled 0 mode count child))
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_power_alignment index mode fields
+              (compileTypes_power_alignment index mode fields) (compileTypes_power_alignment index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_power_alignment _
-            | (apply PreservesState.bind (compileTy_power_alignment index mode element)
-               intro child
-               exact add_power_alignment _ (Equation.PowerAlignmentRule.scaled 0 mode count child))
+            | exact add_power_alignment _ (Equation.PowerAlignmentRule.scaled 0 _ _ _)
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_power_alignment index mode fields
-            (compileTypes_power_alignment index mode fields) (compileTypes_power_alignment index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_power_alignment _
-          | exact add_power_alignment _ (Equation.PowerAlignmentRule.scaled 0 _ _ _)
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_power_alignment (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState Graph.PowerAlignmentInvariant (compileTypes index mode types) := by
@@ -5792,7 +6518,7 @@ private theorem enumRoot_power_alignment (index : Index) (mode : Mode) (definiti
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
       Equation.done (.error Error.scalarTarget)
-    else enumEquation mode definition uninhabited variants).PowerAlignmentRule 0 := by
+    else directEnumEquation index definition (enumEquation mode definition uninhabited variants)).PowerAlignmentRule 0 := by
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
       (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
@@ -5800,7 +6526,8 @@ private theorem enumRoot_power_alignment (index : Index) (mode : Mode) (definiti
   }
   split
   · exact Equation.PowerAlignmentRule.failed 0 _
-  · exact Equation.PowerAlignmentRule.enumeration 0 _ _ _ _
+  · exact directEnumEquation_lift index definition _ (Equation.PowerAlignmentRule 0)
+      (Equation.PowerAlignmentRule.failed 0) (Equation.PowerAlignmentRule.enumeration 0 _ _ _ _)
 
 private theorem build_power_alignment (index : Index) (facts : NatIndexTree Unit) :
     (build index facts).PowerAlignmentInvariant := by
@@ -5844,7 +6571,7 @@ private theorem build_power_alignment (index : Index) (facts : NatIndexTree Unit
                 | exact PreservesState.pure _ _
                 | (apply PreservesState.bind (enumNodes_power_alignment _ _ _ _); intro children)
                 | (apply PreservesState.bind
-                     (add_power_alignment _ (variantEquation_power_alignment mode definition _ variantIndex)); intro node)
+                     (add_power_alignment _ ((directVariantEquation_power index facts mode definition variantIndex variant _ (variantEquation_power_alignment mode definition _ variantIndex)))); intro node)
                 | (simp only [pure_bind])
                 | split
             · intro variants
@@ -5973,34 +6700,48 @@ mutual
       PreservesState (FieldAlignmentState lower) (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_field_alignment lower _
-    · split
-      · rename_i result found
-        exact addScalar_field_alignment lower result (fun value success =>
-          (scalar_admissible mode index.source ty result value found success).field_alignment index.source.model)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact failed_field_alignment lower _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_field_alignment lower error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_field_alignment
+        intro value success
+        cases success
+        have zero : ScalarSummary index.source.model.pointerBytes { size := 0, align := some 1 } := .unit
+        exact zero.field_alignment index.source.model
+    · rename_i originalTy notItem
+      split
+      · exact failed_field_alignment lower _
+      · split
+        · rename_i result found
+          exact addScalar_field_alignment lower result (fun value success =>
+            (scalar_admissible mode index.source ty result value found success).field_alignment index.source.model)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact failed_field_alignment lower _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_field_alignment lower _
+              | (apply PreservesState.bind (compileTy_field_alignment lower index mode element)
+                 intro child
+                 exact add_field_alignment_guarded lower _ (Equation.FieldAlignmentGuarded.scaled mode count child))
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_field_alignment lower index mode fields
+              (compileTypes_field_alignment lower index mode fields) (compileTypes_field_alignment lower index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_field_alignment lower _
-            | (apply PreservesState.bind (compileTy_field_alignment lower index mode element)
-               intro child
-               exact add_field_alignment_guarded lower _ (Equation.FieldAlignmentGuarded.scaled mode count child))
+            | exact add_field_alignment_guarded lower _ (Equation.FieldAlignmentGuarded.scaled _ _ _)
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_field_alignment lower index mode fields
-            (compileTypes_field_alignment lower index mode fields) (compileTypes_field_alignment lower index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_field_alignment lower _
-          | exact add_field_alignment_guarded lower _ (Equation.FieldAlignmentGuarded.scaled _ _ _)
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_field_alignment (lower : Nat) (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState (FieldAlignmentState lower) (compileTypes index mode types) := by
@@ -6174,23 +6915,25 @@ private theorem variantStep_field_alignment (lower : Nat) (definition : EnumDef)
   | tail _ member => exact certificates.2 child member
 
 
-private theorem enumVariants_field_alignment (lower : Nat) (index : Index) (mode : Mode)
+private theorem enumVariants_field_alignment (lower : Nat) (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
     (definition : EnumDef) (selected : Option Nat) (rows : List (EnumVariantDef × Nat))
     (nodes : List Nat) (graph : Graph)
     (valid : FieldAlignmentState lower graph ∧ RowAlignmentCertificates lower definition nodes graph) :
     let result := (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) graph
     FieldAlignmentState lower result.2 ∧ RowAlignmentCertificates lower definition result.1 result.2 := by
@@ -6199,23 +6942,24 @@ private theorem enumVariants_field_alignment (lower : Nat) (index : Index) (mode
   intro row member acc before state
   rcases row with ⟨variant, variantIndex⟩
   dsimp only
-  by_cases skipped : selected.any (fun active => variantIndex != active) = true
+  by_cases skipped : ((directVariantResult index facts mode definition variantIndex variant).isSome ||
+      selected.any (fun active => variantIndex != active)) = true
   all_goals simp only [skipped, ite_true, ite_false]
   · apply variantStep_field_alignment lower definition _ _
     · exact PreservesState.pure _ _
     · exact PreservesGraph.pure _
     · intro children
-      exact variantEquation_field_alignment mode definition children variantIndex
+      exact (directVariantEquation_fields index facts mode definition variantIndex variant _ (variantEquation_field_alignment mode definition children variantIndex))
     · intro children
-      exact variantEquation_row_alignment mode definition children variantIndex
+      exact (directVariantEquation_row_alignment index facts mode definition variantIndex variant _ (variantEquation_row_alignment mode definition children variantIndex))
     · exact state
   · apply variantStep_field_alignment lower definition _ _
     · exact enumNodes_field_alignment lower index mode definition.layout.isSome variant.fields
     · exact enumNodes_preserves index mode definition.layout.isSome variant.fields
     · intro children
-      exact variantEquation_field_alignment mode definition children variantIndex
+      exact (directVariantEquation_fields index facts mode definition variantIndex variant _ (variantEquation_field_alignment mode definition children variantIndex))
     · intro children
-      exact variantEquation_row_alignment mode definition children variantIndex
+      exact (directVariantEquation_row_alignment index facts mode definition variantIndex variant _ (variantEquation_row_alignment mode definition children variantIndex))
     · exact state
 
 
@@ -6234,18 +6978,20 @@ private theorem enumEquation_field_alignment (lower : Nat) (index : Index) (mode
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -6263,26 +7009,28 @@ private theorem enumEquation_field_alignment (lower : Nat) (index : Index) (mode
     for (variant, variantIndex) in numbered definition.variants do
       -- Skip physical children only after checking the actual structural
       -- facts and all inactive offset rows. Logical rows retain their IDs.
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
     pure variants
-  have built := enumVariants_field_alignment lower index mode definition selected
+  have built := enumVariants_field_alignment lower index facts mode definition selected
     (numbered definition.variants) [] graph ⟨valid, RowAlignmentCertificates.empty lower definition graph⟩
   change FieldAlignmentState lower (variantsAction graph).2 ∧
     (if mode == .shape && !index.source.canonicalScalars &&
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true)
       then Equation.done (.error Error.scalarTarget)
-      else enumEquation mode definition uninhabited (variantsAction graph).1.reverse).FieldAlignmentRule lower (variantsAction graph).2
+      else directEnumEquation index definition (enumEquation mode definition uninhabited (variantsAction graph).1.reverse)).FieldAlignmentRule lower (variantsAction graph).2
   refine ⟨built.1, ?_⟩
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
@@ -6291,9 +7039,12 @@ private theorem enumEquation_field_alignment (lower : Nat) (index : Index) (mode
   }
   split
   · exact (Equation.FieldAlignmentGuarded.failed _).rule _ _
-  · apply Equation.FieldAlignmentRule.enumeration lower _ mode definition uninhabited _ built.2.1.reverse
-    intro child member
-    exact built.2.2 child ((storage_member_reverse child (variantsAction graph).1).mp member)
+  · apply directEnumEquation_lift index definition _ (fun equation => equation.FieldAlignmentRule lower (variantsAction graph).2)
+    · intro error
+      exact (Equation.FieldAlignmentGuarded.failed error).rule _ _
+    · apply Equation.FieldAlignmentRule.enumeration lower _ mode definition uninhabited _ built.2.1.reverse
+      intro child member
+      exact built.2.2 child ((storage_member_reverse child (variantsAction graph).1).mp member)
 
 private theorem build_field_alignment (index : Index) (facts : NatIndexTree Unit) (ready : IndexReady index) :
     FieldAlignmentState (globalClosures index + 1) (build index facts) := by
@@ -6461,33 +7212,47 @@ mutual
       PreservesState Graph.EncodingInvariant (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_encoding _
-    · split
-      · rename_i result found
-        exact addScalar_encoding result (fun value success => (scalar_admissible mode index.source ty result value found success).enum_encoding_geometry)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact failed_encoding _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_encoding error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_encoding
+        intro value success
+        cases success
+        have zero : ScalarSummary index.source.model.pointerBytes { size := 0, align := some 1 } := .unit
+        exact zero.enum_encoding_geometry
+    · rename_i originalTy notItem
+      split
+      · exact failed_encoding _
+      · split
+        · rename_i result found
+          exact addScalar_encoding result (fun value success => (scalar_admissible mode index.source ty result value found success).enum_encoding_geometry)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact failed_encoding _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_encoding _
+              | (apply PreservesState.bind (compileTy_encoding index mode element)
+                 intro child
+                 exact add_encoding _ (Equation.EncodingGuarded.scaled mode count child).rule)
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_encoding index mode fields
+              (compileTypes_encoding index mode fields) (compileTypes_encoding index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_encoding _
-            | (apply PreservesState.bind (compileTy_encoding index mode element)
-               intro child
-               exact add_encoding _ (Equation.EncodingGuarded.scaled mode count child).rule)
+            | exact add_encoding _ (Equation.EncodingGuarded.scaled _ _ _).rule
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_encoding index mode fields
-            (compileTypes_encoding index mode fields) (compileTypes_encoding index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_encoding _
-          | exact add_encoding _ (Equation.EncodingGuarded.scaled _ _ _).rule
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_encoding (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState Graph.EncodingInvariant (compileTypes index mode types) := by
@@ -6599,7 +7364,7 @@ private theorem enumRoot_encoding (index : Index) (mode : Mode) (definition : En
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
       Equation.done (.error Error.scalarTarget)
-    else enumEquation mode definition uninhabited variants).EncodingGuarded := by
+    else directEnumEquation index definition (enumEquation mode definition uninhabited variants)).EncodingGuarded := by
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
       (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
@@ -6607,7 +7372,8 @@ private theorem enumRoot_encoding (index : Index) (mode : Mode) (definition : En
   }
   split
   · exact Equation.EncodingGuarded.failed _
-  · exact Equation.EncodingGuarded.enumeration _ _ _ _
+  · exact directEnumEquation_lift index definition _ Equation.EncodingGuarded
+      Equation.EncodingGuarded.failed (Equation.EncodingGuarded.enumeration _ _ _ _)
 
 
 private theorem build_encoding (index : Index) (facts : NatIndexTree Unit) :
@@ -6652,7 +7418,7 @@ private theorem build_encoding (index : Index) (facts : NatIndexTree Unit) :
                 | exact PreservesState.pure _ _
                 | (apply PreservesState.bind (enumNodes_encoding _ _ _ _); intro children)
                 | (apply PreservesState.bind
-                     (add_encoding _ (variantEquation_encoding mode definition _ variantIndex).rule); intro node)
+                     (add_encoding _ ((directVariantEquation_encoding index facts mode definition variantIndex variant _ (variantEquation_encoding mode definition _ variantIndex))).rule); intro node)
                 | (simp only [pure_bind])
                 | split
             · intro variants
@@ -6771,33 +7537,47 @@ mutual
       PreservesState Graph.MetadataInvariant (compileTy index mode ty) := by
     rw [compileTy.eq_def]
     dsimp only
-    split
-    · exact failed_metadata _
-    · split
-      · rename_i result found
-        exact addScalar_metadata result (fun value success => (scalar_admissible mode index.source ty result value found success).enum_metadata)
-      · cases ty
-        all_goals dsimp only
-        all_goals simp only [pure_bind, bind_pure]
-        all_goals try exact failed_metadata _
-        case Vector count element scalarNone =>
-          repeat first
+    split <;> try simp only [pure_bind, bind_pure]
+    · rename_i originalTy id
+      cases checked : index.functionItem id with
+      | error error =>
+        try simp only [checked, bind_pure]
+        exact failed_metadata error
+      | ok header =>
+        try simp only [checked, bind_pure]
+        apply addScalar_metadata
+        intro value success
+        cases success
+        have zero : ScalarSummary index.source.model.pointerBytes { size := 0, align := some 1 } := .unit
+        exact zero.enum_metadata
+    · rename_i originalTy notItem
+      split
+      · exact failed_metadata _
+      · split
+        · rename_i result found
+          exact addScalar_metadata result (fun value success => (scalar_admissible mode index.source ty result value found success).enum_metadata)
+        · cases ty
+          all_goals dsimp only
+          all_goals try simp only [pure_bind, bind_pure]
+          all_goals try exact failed_metadata _
+          case Vector count element scalarNone =>
+            repeat first
+              | exact failed_metadata _
+              | (apply PreservesState.bind (compileTy_metadata index mode element)
+                 intro child
+                 exact add_metadata _ (Equation.MetadataGuarded.scaled mode count child).rule)
+              | split
+          case Tuple fields scalarNone =>
+            have safe := compileTuple_metadata index mode fields
+              (compileTypes_metadata index mode fields) (compileTypes_metadata index .shape fields)
+            rw [compileTy.eq_def] at safe
+            dsimp only [scalar] at safe
+            simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
+          all_goals repeat first
             | exact failed_metadata _
-            | (apply PreservesState.bind (compileTy_metadata index mode element)
-               intro child
-               exact add_metadata _ (Equation.MetadataGuarded.scaled mode count child).rule)
+            | exact add_metadata _ (Equation.MetadataGuarded.scaled _ _ _).rule
+            | exact PreservesState.pure _ _
             | split
-        case Tuple fields scalarNone =>
-          have safe := compileTuple_metadata index mode fields
-            (compileTypes_metadata index mode fields) (compileTypes_metadata index .shape fields)
-          rw [compileTy.eq_def] at safe
-          dsimp only [scalar] at safe
-          simp_all only [Bool.false_eq_true, ite_false, pure_bind, bind_pure]
-        all_goals repeat first
-          | exact failed_metadata _
-          | exact add_metadata _ (Equation.MetadataGuarded.scaled _ _ _).rule
-          | exact PreservesState.pure _ _
-          | split
     termination_by sizeOf ty
   private theorem compileTypes_metadata (index : Index) (mode : Mode) (types : List Ty) :
       PreservesState Graph.MetadataInvariant (compileTypes index mode types) := by
@@ -6923,22 +7703,24 @@ private theorem forIn_metadata_length {α : Type} (rows : List α) (initial : Li
         omega
       simpa only [Bind.bind, StateT.bind, outcome] using exactLength
 
-private theorem enumVariants_metadata_length (index : Index) (mode : Mode)
+private theorem enumVariants_metadata_length (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
     (definition : EnumDef) (selected : Option Nat) (rows : List (EnumVariantDef × Nat))
     (nodes : List Nat) (graph : Graph) :
     let result := (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) graph
     result.1.length = nodes.length + rows.length := by
@@ -6946,25 +7728,28 @@ private theorem enumVariants_metadata_length (index : Index) (mode : Mode)
   intro row member acc before
   rcases row with ⟨variant, variantIndex⟩
   dsimp only
-  by_cases skipped : selected.any (fun active => variantIndex != active) = true
+  by_cases skipped : ((directVariantResult index facts mode definition variantIndex variant).isSome ||
+      selected.any (fun active => variantIndex != active)) = true
   all_goals simp only [skipped, ite_true, ite_false]
   all_goals exact ⟨_, rfl, rfl⟩
 
-private theorem enumVariants_metadata_preserves (index : Index) (mode : Mode)
+private theorem enumVariants_metadata_preserves (index : Index) (facts : NatIndexTree Unit) (mode : Mode)
     (definition : EnumDef) (selected : Option Nat) (rows : List (EnumVariantDef × Nat)) (nodes : List Nat) :
     PreservesState Graph.MetadataInvariant (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) := by
   apply PreservesState.forIn
@@ -6974,7 +7759,7 @@ private theorem enumVariants_metadata_preserves (index : Index) (mode : Mode)
   repeat first
     | exact PreservesState.pure _ _
     | (apply PreservesState.bind (enumNodes_metadata _ _ _ _); intro children)
-    | (apply PreservesState.bind (add_metadata _ (variantEquation_metadata mode definition _ variantIndex).rule); intro node)
+    | (apply PreservesState.bind (add_metadata _ ((directVariantEquation_metadata index facts mode definition variantIndex variant _ (variantEquation_metadata mode definition _ variantIndex))).rule); intro node)
     | (simp only [pure_bind])
     | split
 
@@ -6992,18 +7777,20 @@ private theorem enumEquation_metadata (index : Index) (mode : Mode)
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -7021,26 +7808,28 @@ private theorem enumEquation_metadata (index : Index) (mode : Mode)
     for (variant, variantIndex) in numbered definition.variants do
       -- Skip physical children only after checking the actual structural
       -- facts and all inactive offset rows. Logical rows retain their IDs.
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
     pure variants
-  have preserved := enumVariants_metadata_preserves index mode definition selected (numbered definition.variants) []
-  have count := enumVariants_metadata_length index mode definition selected (numbered definition.variants) [] graph
+  have preserved := enumVariants_metadata_preserves index facts mode definition selected (numbered definition.variants) []
+  have count := enumVariants_metadata_length index facts mode definition selected (numbered definition.variants) [] graph
   change (variantsAction graph).2.MetadataInvariant ∧
     (if mode == .shape && !index.source.canonicalScalars &&
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true)
       then Equation.done (.error Error.scalarTarget)
-      else enumEquation mode definition uninhabited (variantsAction graph).1.reverse).InvariantRule EnumMetadata
+      else directEnumEquation index definition (enumEquation mode definition uninhabited (variantsAction graph).1.reverse)).InvariantRule EnumMetadata
   refine ⟨preserved graph valid, ?_⟩
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
@@ -7049,10 +7838,13 @@ private theorem enumEquation_metadata (index : Index) (mode : Mode)
   }
   split
   · exact (Equation.MetadataGuarded.failed _).rule
-  · apply Equation.MetadataGuarded.rule
-    apply Equation.MetadataGuarded.enumeration
-    · simpa only [List.length_reverse, List.length_nil, Nat.zero_add, numbered_metadata_length] using count
-    · simp only [uninhabited, List.length_map]
+  · apply directEnumEquation_lift index definition _ (fun equation => equation.InvariantRule EnumMetadata)
+    · intro error
+      exact (Equation.MetadataGuarded.failed error).rule
+    · apply Equation.MetadataGuarded.rule
+      apply Equation.MetadataGuarded.enumeration
+      · simpa only [List.length_reverse, List.length_nil, Nat.zero_add, numbered_metadata_length] using count
+      · simp only [uninhabited, List.length_map]
 
 private theorem build_metadata (index : Index) (facts : NatIndexTree Unit) :
     (build index facts).MetadataInvariant := by
@@ -7196,27 +7988,28 @@ mutual
     all_goals simp only [pure_bind, bind_pure]
     case Vector count element =>
       repeat first
-        | exact failed_reserved lower property outside _
-        | (apply PreservesState.bind (compileTy_reserved lower property outside index mode element)
+        | with_reducible exact failed_reserved lower property outside _
+        | (with_reducible apply PreservesState.bind (compileTy_reserved lower property outside index mode element)
            intro child
            exact add_reserved lower property outside _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     case Tuple fields =>
       repeat first
-        | exact failed_reserved lower property outside _
-        | exact add_reserved lower property outside _
-        | (apply PreservesState.bind (compileTypes_reserved lower property outside index mode fields)
+        | with_reducible exact failed_reserved lower property outside _
+        | with_reducible exact add_reserved lower property outside _
+        | (with_reducible apply PreservesState.bind (compileTypes_reserved lower property outside index mode fields)
            intro children
            exact add_reserved lower property outside _)
-        | (apply PreservesState.bind (compileTypes_reserved lower property outside index .shape fields)
+        | (with_reducible apply PreservesState.bind (compileTypes_reserved lower property outside index .shape fields)
            intro children
            exact add_reserved lower property outside _)
-        | split
+        | (split <;> try simp only [pure_bind, bind_pure])
     all_goals repeat first
-      | exact addScalar_reserved lower property outside _
-      | exact add_reserved lower property outside _
-      | exact PreservesState.pure _ _
-      | split
+      | with_reducible exact failed_reserved lower property outside _
+      | with_reducible exact addScalar_reserved lower property outside _
+      | with_reducible exact add_reserved lower property outside _
+      | with_reducible exact PreservesState.pure _ _
+      | (split <;> try simp only [pure_bind, bind_pure])
   termination_by sizeOf ty
   private theorem compileTypes_reserved (lower : Nat) (property : Nat → Summary → Prop)
     (outside : ∀ node value, lower ≤ node → property node value) (index : Index) (mode : Mode) (types : List Ty) :
@@ -7312,21 +8105,23 @@ private theorem enumNodes_reserved_state (index : Index) (lower : Nat) (property
       | split
 
 private theorem enumVariants_reserved_preserves (index : Index) (lower : Nat) (property : Nat → Summary → Prop)
-    (outside : ∀ node value, lower ≤ node → property node value) (mode : Mode)
+    (outside : ∀ node value, lower ≤ node → property node value) (facts : NatIndexTree Unit) (mode : Mode)
     (definition : EnumDef) (selected : Option Nat) (rows : List (EnumVariantDef × Nat)) (nodes : List Nat) :
     PreservesState (ReservedState lower property) (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) := by
   apply PreservesState.forIn
@@ -7358,19 +8153,21 @@ private theorem enumVariants_origin_preserves (index : Index) (facts : NatIndexT
     PreservesState (OriginState index facts) (forIn rows nodes fun (row : EnumVariantDef × Nat) (variants : List Nat) => do
       let variant := row.1
       let variantIndex := row.2
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       let node ← add equation
       pure (ForInStep.yield (node :: variants))) :=
-  enumVariants_reserved_preserves index _ _ (origin_outside index facts) mode definition selected rows nodes
+  enumVariants_reserved_preserves index _ _ (origin_outside index facts) facts mode definition selected rows nodes
 
 private theorem enumEquation_origin (index : Index) (mode : Mode)
     (definition : EnumDef) (facts : NatIndexTree Unit) (position : Nat)
@@ -7388,18 +8185,20 @@ private theorem enumEquation_origin (index : Index) (mode : Mode)
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -7417,16 +8216,18 @@ private theorem enumEquation_origin (index : Index) (mode : Mode)
     for (variant, variantIndex) in numbered definition.variants do
       -- Skip physical children only after checking the actual structural
       -- facts and all inactive offset rows. Logical rows retain their IDs.
-      let children ← if selected.any (fun active => variantIndex != active) then pure []
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
         else enumNodes index mode definition.layout.isSome variant.fields
-      let equation := match definition.layout with
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
         | none => canonicalFields mode "enum" definition.id.index children
         | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
           | none => Equation.done (.error (.incoherent "enum" definition.id.index))
           | some offsets =>
             if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
             else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
       variants := (← add equation) :: variants
     pure variants
   have preserved := enumVariants_origin_preserves index facts mode definition selected (numbered definition.variants) []
@@ -7435,7 +8236,7 @@ private theorem enumEquation_origin (index : Index) (mode : Mode)
         (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with
         | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true)
       then Equation.done (.error Error.scalarTarget)
-      else enumEquation mode definition uninhabited (variantsAction graph).1.reverse).IndexedRule (EnumSourceAt index facts) (index.node mode (index.enumBase + position))
+      else directEnumEquation index definition (enumEquation mode definition uninhabited (variantsAction graph).1.reverse)).IndexedRule (EnumSourceAt index facts) (index.node mode (index.enumBase + position))
   refine ⟨preserved graph valid, ?_⟩
   trustIrCompilerProof { skip } {
     generalize selection : (mode == .shape && !index.source.canonicalScalars &&
@@ -7444,7 +8245,10 @@ private theorem enumEquation_origin (index : Index) (mode : Mode)
   }
   split
   · exact Equation.IndexedRule.done _ (.error Error.scalarTarget) (by intro value impossible; cases impossible)
-  · exact Equation.IndexedRule.enum_origin index facts mode definition position bound row _
+  · exact directEnumEquation_lift index definition _
+      (fun equation => equation.IndexedRule (EnumSourceAt index facts) (index.node mode (index.enumBase + position)))
+      (fun error => Equation.IndexedRule.done _ (.error error) (by intro value impossible; cases impossible))
+      (Equation.IndexedRule.enum_origin index facts mode definition position bound row _)
 
 
 private theorem put_type_origin (index : Index) (facts : NatIndexTree Unit) (ready : IndexReady index)
@@ -7814,18 +8618,20 @@ private theorem enum_build_struct_origin (index : Index) (mode : Mode)
       for (variant, variantIndex) in numbered definition.variants do
         -- Skip physical children only after checking the actual structural
         -- facts and all inactive offset rows. Logical rows retain their IDs.
-        let children ← if selected.any (fun active => variantIndex != active) then pure []
+        let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
           else enumNodes index mode definition.layout.isSome variant.fields
-        let equation := match definition.layout with
+        let equation := directVariantEquation index facts mode definition variantIndex variant
+          (match definition.layout with
           | none => canonicalFields mode "enum" definition.id.index children
           | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
             | none => Equation.done (.error (.incoherent "enum" definition.id.index))
             | some offsets =>
               if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
               else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
-                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child)))
+                (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
         variants := (← add equation) :: variants
-      let equation := enumEquation mode definition uninhabited variants.reverse
+      let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
       let equation := if mode == .shape && !index.source.canonicalScalars &&
           (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
             Equation.done (.error Error.scalarTarget) else equation
@@ -7833,7 +8639,7 @@ private theorem enum_build_struct_origin (index : Index) (mode : Mode)
   dsimp only
   simp only [pure_bind, bind_pure]
   apply PreservesState.bind
-  · exact enumVariants_reserved_preserves index _ _ (struct_origin_outside index) mode definition _ _ _
+  · exact enumVariants_reserved_preserves index _ _ (struct_origin_outside index) facts mode definition _ _ _
   · intro variants
     exact put_enum_struct_origin index ready mode definition position member _
 private theorem build_struct_origin (index : Index) (facts : NatIndexTree Unit) (ready : IndexReady index) :
@@ -7932,5 +8738,264 @@ theorem Session.query_preserves_struct_origin (session : Session) (mode : Mode) 
   cases chosen with
   | cached hit => exact safe
   | compiled graph compiled => exact compiled.preserves_struct_origin valid.1.2 safe
+
+end TrustIr.SourceLayout
+
+namespace TrustIr.SourceLayout
+
+private theorem forIn_congr_source {α β : Type} {m : Type → Type} [Monad m] (rows : List α) :
+    ∀ (initial : β) (f g : α → β → m (ForInStep β)),
+      (∀ a, a ∈ rows → ∀ b, f a b = g a b) →
+      forIn rows initial f = forIn rows initial g := by
+  induction rows with
+  | nil => intro initial f g same; rfl
+  | cons head tail ih =>
+    intro initial f g same
+    simp only [List.forIn_cons]
+    rewrite [same head (by simp) initial]
+    apply congrArg (fun k => Bind.bind (g head initial) k)
+    funext step
+    cases step with
+    | done b => rfl
+    | yield b =>
+      exact ih b f g (fun a member b => same a (List.mem_cons_of_mem head member) b)
+
+private theorem enum_data_zip_left {α β : Type} (left : List α) (right : List β)
+    (a : α) (b : β) (member : (a,b) ∈ left.zip right) : a ∈ left := by
+  induction left generalizing right with
+  | nil => cases member
+  | cons first rest ih =>
+    cases right with
+    | nil => cases member
+    | cons second right =>
+      cases member with
+      | head => exact .head _
+      | tail _ member => exact .tail _ (ih right member)
+
+
+/-- Replace only checked pure enum compiler data in the exact original program.
+Every source row and every fallback equation retain their original meaning. -/
+theorem build_eq_original_of_enum_data (index : Index) (facts : NatIndexTree Unit)
+    (flags : EnumDef → List Bool) (rootEquation : EnumDef → Equation → Equation)
+    (flags_exact : ∀ definition, definition ∈ index.source.enums →
+      definition.variants.map (fun variant => variantUninhabited index facts variant.fields) = flags definition)
+    (roots_exact : ∀ definition, definition ∈ index.source.enums → ∀ fallback,
+      directEnumEquation index definition fallback = rootEquation definition fallback) :
+    build index facts = Id.run do
+  let initial : Graph := { count := globalClosures index + 1 }
+  let program : Build Unit := do
+    for mode in [Mode.shape, Mode.execution] do
+      for (entry, position) in numbered index.source.types do
+        let equation ← match entry with
+          | none => pure (.done (.error (.missingType position)))
+          | some ty => do
+            let child ← compileTy index mode ty
+            let graph ← get
+            -- Copy a compiled root equation rather than adding an alias
+            -- frame for each type-table link. Forward nominal references
+            -- remain aliases until their actual source rows are compiled.
+            pure ((graph.nodes.find child).getD (alias child))
+        put (index.node mode position) equation
+      for (definition, position) in numbered index.source.structs do
+        put (index.node mode (index.structBase + position)) (← structEquation index mode definition)
+      for (definition, position) in numbered index.source.enums do
+        let uninhabited := flags definition
+        let selected := match definition.layout with
+          | some descriptor => match descriptor.encoding with
+            | .singleInhabited selected =>
+              if singleInhabitedValid definition descriptor uninhabited selected then some selected else none
+            | _ => none
+          | none => none
+        let mut variants := []
+        for (variant, variantIndex) in numbered definition.variants do
+          -- Skip physical children only after checking the actual structural
+          -- facts and all inactive offset rows. Logical rows retain their IDs.
+          let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
+            else enumNodes index mode definition.layout.isSome variant.fields
+          let equation := directVariantEquation index facts mode definition variantIndex variant
+            (match definition.layout with
+            | none => canonicalFields mode "enum" definition.id.index children
+            | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
+              | none => Equation.done (.error (.incoherent "enum" definition.id.index))
+              | some offsets =>
+                if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
+                else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
+                  (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
+          variants := (← add equation) :: variants
+        let equation := rootEquation definition (enumEquation mode definition uninhabited variants.reverse)
+        let equation := if mode == .shape && !index.source.canonicalScalars &&
+            (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
+              Equation.done (.error Error.scalarTarget) else equation
+        put (index.node mode (index.enumBase + position)) equation
+      for (definition, position) in numbered index.source.closures do
+        let equation ← if mode == .shape then closureEquation index position definition
+          else pure (Equation.done (.error (.unsupported (.Closure ⟨position⟩))))
+        put (index.node mode (index.closureBase + position)) equation
+    let tupleSteps : List (Step Unit) := index.source.tupleLayouts.map (fun row =>
+      match ((trustIrArrayGet? index.typeRows row.tupleType.index)).join with
+      | none => .check fun _ => .error (.missingType row.tupleType.index)
+      | some (.Tuple _) => .child (index.node .shape row.tupleType.index) fun _ state => .ok state
+      | some _ => .check fun _ => .error (.incoherent "tuple" row.tupleType.index))
+    put (globalTuples index) { kind := .unit, initial := .ok (), steps := tupleSteps, finish := fun _ => .ok { size := 0, align := some 1 } }
+    let closureSteps : List (Step Unit) := index.source.closureLayouts.map (fun row =>
+      if !((trustIrArrayGet? index.closureRows row.closure.index)).isSome then
+        .check fun _ => .error (.incoherent "closure" row.closure.index)
+      else .child (index.node .shape (index.closureBase + row.closure.index)) fun _ state => .ok state)
+    put (globalClosures index) { kind := .unit, initial := .ok (), steps := closureSteps, finish := fun _ => .ok { size := 0, align := some 1 } }
+  let (_, graph) := program initial
+  return graph := by
+  let typeBody (mode : Mode) (row : Option Ty × Nat) (_ : Unit) : Build (ForInStep Unit) := do
+    let (entry, position) := row
+    let equation ← match entry with
+      | none => pure (.done (.error (.missingType position)))
+      | some ty => do
+        let child ← compileTy index mode ty
+        let graph ← get
+        pure ((graph.nodes.find child).getD (alias child))
+    put (index.node mode position) equation
+    pure (.yield ())
+  let structBody (mode : Mode) (row : StructDef × Nat) (_ : Unit) : Build (ForInStep Unit) := do
+    let (definition, position) := row
+    put (index.node mode (index.structBase + position)) (← structEquation index mode definition)
+    pure (.yield ())
+  let enumBody (mode : Mode) (row : EnumDef × Nat) (_ : Unit) : Build (ForInStep Unit) := do
+    let (definition, position) := row
+    let uninhabited := definition.variants.map (fun variant => variantUninhabited index facts variant.fields)
+    let selected := enumPhysicalSelection definition uninhabited
+    let mut variants := []
+    for (variant, variantIndex) in numbered definition.variants do
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
+        else enumNodes index mode definition.layout.isSome variant.fields
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
+        | none => canonicalFields mode "enum" definition.id.index children
+        | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
+          | none => Equation.done (.error (.incoherent "enum" definition.id.index))
+          | some offsets =>
+            if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
+            else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
+      variants := (← add equation) :: variants
+    let equation := directEnumEquation index definition (enumEquation mode definition uninhabited variants.reverse)
+    let equation := if mode == .shape && !index.source.canonicalScalars &&
+        (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
+          Equation.done (.error Error.scalarTarget) else equation
+    put (index.node mode (index.enumBase + position)) equation
+    pure (.yield ())
+  let closureBody (mode : Mode) (row : ClosureTy × Nat) (_ : Unit) : Build (ForInStep Unit) := do
+    let (definition, position) := row
+    let equation ← if mode == .shape then closureEquation index position definition
+      else pure (Equation.done (.error (.unsupported (.Closure ⟨position⟩))))
+    put (index.node mode (index.closureBase + position)) equation
+    pure (.yield ())
+  let modeBody (mode : Mode) (_ : Unit) : Build (ForInStep Unit) := do
+    forIn (numbered index.source.types) () (typeBody mode)
+    forIn (numbered index.source.structs) () (structBody mode)
+    forIn (numbered index.source.enums) () (enumBody mode)
+    forIn (numbered index.source.closures) () (closureBody mode)
+    pure (.yield ())
+  let enumBodyNew (mode : Mode) (row : EnumDef × Nat) (_ : Unit) : Build (ForInStep Unit) := do
+    let (definition, position) := row
+    let uninhabited := flags definition
+    let selected := enumPhysicalSelection definition uninhabited
+    let mut variants := []
+    for (variant, variantIndex) in numbered definition.variants do
+      let children ← if (directVariantResult index facts mode definition variantIndex variant).isSome ||
+          selected.any (fun active => variantIndex != active) then pure []
+        else enumNodes index mode definition.layout.isSome variant.fields
+      let equation := directVariantEquation index facts mode definition variantIndex variant
+        (match definition.layout with
+        | none => canonicalFields mode "enum" definition.id.index children
+        | some descriptor => match (trustIrListGet? descriptor.variantFieldOffsets variantIndex) with
+          | none => Equation.done (.error (.incoherent "enum" definition.id.index))
+          | some offsets =>
+            if offsets.length != children.length then .done (.error (.incoherent "enum" definition.id.index))
+            else declaredFields mode "enum" definition.id.index descriptor.size descriptor.align word64Max false
+              (children.zip offsets |>.map (fun ((ty, child), offset) => (ty, some offset, child))))
+      variants := (← add equation) :: variants
+    let equation := rootEquation definition (enumEquation mode definition uninhabited variants.reverse)
+    let equation := if mode == .shape && !index.source.canonicalScalars &&
+        (match definition.layout.map (fun (descriptor : EnumLayoutDescriptor) => descriptor.encoding) with | some EnumTagEncoding.untagged | some (.singleInhabited _) => false | _ => true) then
+          Equation.done (.error Error.scalarTarget) else equation
+    put (index.node mode (index.enumBase + position)) equation
+    pure (.yield ())
+  let modeBodyNew (mode : Mode) (_ : Unit) : Build (ForInStep Unit) := do
+    forIn (numbered index.source.types) () (typeBody mode)
+    forIn (numbered index.source.structs) () (structBody mode)
+    forIn (numbered index.source.enums) () (enumBodyNew mode)
+    forIn (numbered index.source.closures) () (closureBody mode)
+    pure (.yield ())
+
+  have enums_equal (mode : Mode) :
+      forIn (numbered index.source.enums) () (enumBody mode) =
+      forIn (numbered index.source.enums) () (enumBodyNew mode) := by
+    apply forIn_congr_source
+    intro row member unit
+    rcases row with ⟨definition, position⟩
+    have present : definition ∈ index.source.enums :=
+      enum_data_zip_left _ _ _ _ member
+    dsimp only [enumBody,enumBodyNew]
+    rewrite [flags_exact definition present]
+    simp only [roots_exact definition present]
+  have modes_equal : forIn [Mode.shape, Mode.execution] () modeBody =
+      forIn [Mode.shape, Mode.execution] () modeBodyNew := by
+    apply forIn_congr_source
+    intro mode member unit
+    dsimp only [modeBody,modeBodyNew]
+    rewrite [enums_equal mode]
+    rfl
+  let initial : Graph := { count := globalClosures index + 1 }
+  let tail : Build Unit := do
+    let tupleSteps : List (Step Unit) := index.source.tupleLayouts.map (fun row =>
+      match ((trustIrArrayGet? index.typeRows row.tupleType.index)).join with
+      | none => .check fun _ => .error (.missingType row.tupleType.index)
+      | some (.Tuple _) => .child (index.node .shape row.tupleType.index) fun _ state => .ok state
+      | some _ => .check fun _ => .error (.incoherent "tuple" row.tupleType.index))
+    put (globalTuples index) { kind := .unit, initial := .ok (), steps := tupleSteps, finish := fun _ => .ok { size := 0, align := some 1 } }
+    let closureSteps : List (Step Unit) := index.source.closureLayouts.map (fun row =>
+      if !((trustIrArrayGet? index.closureRows row.closure.index)).isSome then
+        .check fun _ => .error (.incoherent "closure" row.closure.index)
+      else .child (index.node .shape (index.closureBase + row.closure.index)) fun _ state => .ok state)
+    put (globalClosures index) { kind := .unit, initial := .ok (), steps := closureSteps, finish := fun _ => .ok { size := 0, align := some 1 } }
+
+  rewrite [build_eq_original]
+  change ((do forIn [Mode.shape,Mode.execution] () modeBody; tail) initial).2 =
+    ((do forIn [Mode.shape,Mode.execution] () modeBodyNew; tail) initial).2
+  rewrite [modes_equal]
+  rfl
+
+/-- An actual root compilation and continuation-parametric computation of
+its stored equation produce the exact uncached production query result.
+The equation lookup, available root and computation are explicit evidence. -/
+theorem Session.query_of_uncached_compilation_computes
+    (session : Session) (mode : Mode) (ty : Ty) (root : Nat) (graph : Graph)
+    (equation : Equation) (remaining : NatIndexTree Unit)
+    (value : Summary) (finalMemo : Memo)
+    (rootMiss : ((session.roots.find (rootBucket mode ty)).getD []).find?
+      (fun (original, originalMode, _) =>
+        mode == originalMode && closureTyEq original ty) = none)
+    (compiled : RootCompilation session.index mode ty session.graph root graph)
+    (memoMiss : session.memo.find root = none)
+    (present : (Available.domain graph.nodes).find root = some ())
+    (found : graph.nodes.find root = some equation)
+    (computed : equation.Computes graph
+      (Available.erase (Available.domain graph.nodes) root) root session.memo
+      value finalMemo remaining) :
+    session.query mode ty = .ok (value,
+      { session with graph := graph, memo := finalMemo, roots := session.roots.insert (rootBucket mode ty) ((ty,mode,root) :: (session.roots.find (rootBucket mode ty)).getD []) }) := by
+  have compileRun : compileTy session.index mode ty session.graph = (root,graph) := compiled
+  have selected : ((session.roots.find
+      (2 * typeBucket ty + (if mode == .shape then 0 else 1))).getD []).find?
+      (fun (original, originalMode, _) =>
+        mode == originalMode && closureTyEq original ty) = none := rootMiss
+  have solved : solve graph (Available.domain graph.nodes) root session.memo =
+      .ok (value,finalMemo) :=
+    solve_of_computes graph (Available.domain graph.nodes) remaining root equation
+      session.memo finalMemo value memoMiss present found computed
+  simp only [Session.query, selected, compileRun, memoMiss, solved, rootBucket,
+    Bind.bind, Except.bind, Pure.pure, Except.pure]
+  all_goals rfl
 
 end TrustIr.SourceLayout

@@ -181,6 +181,7 @@ fn build<'a, O: ExecutionObserver>(
         | Inst::DialectOp(_)
         | Inst::MakeAggregate { .. }
         | Inst::MakeClosure { .. }
+        | Inst::BoxDeref { .. }
         | Inst::ArraySplat { .. }
         | Inst::TensorContract { .. }
         | Inst::TensorMap { .. }

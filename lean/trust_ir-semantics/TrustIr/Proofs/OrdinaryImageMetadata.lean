@@ -66,6 +66,14 @@ theorem encode_ordinary_unwritten_empty (model : ByteModel) (order : FunctionAdd
     (run : encode model order plan value false = .ok image) : image.unwritten = [] := by
   cases plan with
   | leaf ty layout => exact encode_leaf_unwritten_empty model order ty layout value image run
+  | fnItem target layout =>
+    rw [encode_fnItem] at run
+    cases value <;> simp only [Value.isUninit, Value.isPoison,
+      Bind.bind, Except.bind, Pure.pure, Except.pure, Bool.false_eq_true, if_false, if_true] at run
+    all_goals repeat' first
+      | (solve | cases run; rfl)
+      | (solve | contradiction)
+      | split at run
   | fields ty layout fields =>
     obtain ⟨values,rfl,encoded⟩ := encode_fields_steps model order ty layout fields value image run
     apply encoded.unwritten_preserved
@@ -124,7 +132,12 @@ theorem encode_uninit_exact (model : ByteModel) (order : FunctionAddressOrder)
       if allowUnwritten then
         .ok { bytes := ByteImage.fill plan.layout.size none, unwritten := [(0,plan.layout.size)] }
       else .error (.ub "memory image: inspecting an unwritten lane") := by
-  cases plan <;> cases allowUnwritten <;> rw [encode] <;> rfl
+  trustIrCompilerProof {
+    cases plan <;> cases allowUnwritten <;> rw [encode] <;> rfl
+  } {
+    rw [encode.eq_def]
+    cases allowUnwritten <;> rfl
+  }
 
 /-- Ordinary successful images cannot register an unwritten lane at any
     destination allocation/address. Existing memory records are retained by

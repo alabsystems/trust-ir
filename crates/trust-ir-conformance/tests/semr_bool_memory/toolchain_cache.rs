@@ -65,6 +65,8 @@ fn run_oracle(legacy: &Path) {
         "native oracle request",
     );
     let reply: serde_json::Value = serde_json::from_str(&reply).expect("typed oracle response");
+    // The canonical observation protocol is the lossless v2 value graph.
+    // Retain both exact 32-bit subtraction results across both compiler builds.
     assert_eq!(
         reply,
         json!([[

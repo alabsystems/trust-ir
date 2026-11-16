@@ -27,7 +27,7 @@ trust-ir = { path = "../trust-ir" }
 # pin in seven declarations, so this rev must equal Clean's. Bumping AY past
 # Clean is refused by scripts/bump-dep-pin.sh — use the `clean-ay` form once
 # Clean has moved.
-ay = { version = "0.28.0", git = "https://github.com/alabsystems/ay.git", rev = "9dfa20b5790b03c8ffe57fbbe67316ece665c5be" }
+ay = { version = "0.28.2", git = "https://github.com/alabsystems/ay.git", rev = "8bbc43108643d475a81a89b2b4f262e817ee1724" }
 
 # The BIT-BLAST proof route (`bvblast`). A DIRECT dependency because the `ay`
 # facade does NOT re-export it: `ay::proof_emission` publishes only the
@@ -44,7 +44,7 @@ ay = { version = "0.28.0", git = "https://github.com/alabsystems/ay.git", rev = 
 # catch; that guard inventories this line too. Adds no new transitive
 # dependency: ay-core / ay-sat / num-* / serde / thiserror are already resolved
 # through `ay`.
-ay-proof = { version = "0.28.0", git = "https://github.com/alabsystems/ay.git", rev = "9dfa20b5790b03c8ffe57fbbe67316ece665c5be" }
+ay-proof = { version = "0.28.2", git = "https://github.com/alabsystems/ay.git", rev = "8bbc43108643d475a81a89b2b4f262e817ee1724" }
 
 # Serializes ay's `SerializableProofBundle` — the offline-replayable UNSAT
 # payload captured by `vc::SmtReplayEvidence`. Already in the graph via ay

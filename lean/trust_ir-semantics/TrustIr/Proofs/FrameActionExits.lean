@@ -234,7 +234,7 @@ theorem close_frame_action (frame : ValueId) :
   intro state after unit valid run
   cases unit
   refine ⟨valid.close_success state after frame run,True.intro,?_⟩
-  obtain ⟨lineage,slots,_,_,rfl⟩ := close_success_state state after frame run
+  obtain ⟨_,lineage,slots,_,_,rfl⟩ := close_success_state state after frame run
   exact history_close state lineage
 
 /-- Ordered argument transport supplies a useful result postcondition for

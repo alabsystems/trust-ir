@@ -85,6 +85,26 @@ theorem KeepsHistory.extends {α : Type} {action : Sem α} (keep : KeepsHistory 
   exact ⟨by change state.nextFrameLineage ≤ final.nextFrameLineage; rw [counter]; exact Nat.le_refl _,
     fun _ _ closed => by change final.openFrameLineages.contains _ = false; rw [table]; exact closed⟩
 
+/-- Safety of a selected branch is exactly safety of each possible branch
+under its actual selection condition. No selection success is assumed. -/
+theorem conditional_property_iff {α : Type} (property : α → Prop)
+    (condition : Prop) [Decidable condition] (yes no : α) :
+    property (if condition then yes else no) ↔
+      (condition → property yes) ∧ (¬condition → property no) := by
+  constructor
+  · intro safe
+    constructor
+    · intro selected
+      rw [if_pos selected] at safe
+      exact safe
+    · intro selected
+      rw [if_neg selected] at safe
+      exact safe
+  · intro branches
+    cases (inferInstance : Decidable condition) with
+    | isTrue selected => rw [if_pos selected]; exact branches.1 selected
+    | isFalse selected => rw [if_neg selected]; exact branches.2 selected
+
 theorem ite_history {α : Type} (condition : Prop) [Decidable condition]
     (yes no : Sem α) (yesHistory : KeepsHistory yes) (noHistory : KeepsHistory no) :
     KeepsHistory (if condition then yes else no) := by
@@ -609,11 +629,20 @@ private theorem bare_splat_history (ty : Ty) (operand : ValueId) (model : ByteMo
     KeepsHistory (stepInst (.ArraySplat ty operand) model) :=
   bind_history _ _ (semArraySplat_history ty operand) (fun _ => pure_history _)
 
+/-- A lifted pure result retains both history fields on every success,
+regardless of the refusal class on the unsuccessful path. -/
+theorem fromMemoryExcept_history {α : Type} (checked : Except SemError α) :
+    KeepsHistory (Sem.fromMemoryExcept checked) := by
+  cases checked <;> first | exact pure_history _ | exact throw_history _
+
 local macro "context_history_leaves" : tactic =>
   `(tactic| with_reducible (repeat' (first
     | exact bare_extract_history _ _ _ _
     | exact bare_insert_history _ _ _ _ _
     | exact bare_splat_history _ _ _
+    | exact fromMemoryExcept_history _
+    | exact get_history
+    | exact frameHandle_history _ _
     | exact lookupLanes_history _
     | exact bindFresh_history _
     | exact pure_history _
@@ -659,5 +688,200 @@ theorem contextual_select_history (ctx : EvalContext) (ty : Ty) (condition yes n
   rw [select_step_eq]
   unfold selectTransport
   history_leaves
+
+private theorem run_bind {α β : Type} (action : Sem α) (next : α → Sem β) (state : MachineState) :
+    Sem.run (action >>= next) state =
+      (Sem.run action state >>= fun pair => Sem.run (next pair.1) pair.2) := rfl
+
+private theorem split_bind_success {α β : Type} (action : Sem α) (next : α → Sem β)
+    (s final : MachineState) (result : β)
+    (run : Sem.run (action >>= next) s = .ok (result, final)) :
+    ∃ value middle, Sem.run action s = .ok (value, middle) ∧
+      Sem.run (next value) middle = .ok (result, final) := by
+  rw [run_bind] at run
+  cases step : Sem.run action s with
+  | error error => simp [step, bind, Except.bind] at run
+  | ok pair => exact ⟨pair.1, pair.2, rfl, by simpa [step] using run⟩
+
+private theorem lookup_success (s final : MachineState) (id : ValueId) (value : Value)
+    (run : Sem.run (Sem.lookupValue id) s = .ok (value, final)) :
+    s.lookupValue id = some value ∧ final = s := by
+  cases lookup : s.lookupValue id with
+  | none =>
+    simp [Sem.lookupValue, Sem.run, Sem.getState, Sem.throwTypeError, lookup,
+      StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift, bind, pure,
+      Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
+  | some held =>
+    simp [Sem.lookupValue, Sem.run, Sem.getState, lookup, StateT.run,
+      StateT.bind, StateT.get, StateT.pure, bind, pure, Except.bind, Except.pure] at run
+    rcases run with ⟨rfl, rfl⟩
+    exact ⟨rfl, rfl⟩
+
+theorem contextual_open_history (ctx : EvalContext) (declaration : BindingFrameDef)
+    (state final : MachineState) (result : InstrResult)
+    (run : Sem.run (stepInstWithContext ctx (.OpenFrame declaration)) state = .ok (result, final)) :
+    HistoryExtends state final := by
+  cases origin : ctx.currentFunction with
+  | none =>
+    simp only [stepInstWithContext, origin] at run
+    obtain ⟨id, middle, executed, finished⟩ := split_bind_success _ _ state final result run
+    have history := open_success_history state middle declaration id executed
+    change Except.ok (.value (some id), middle) = Except.ok (result, final) at finished
+    cases finished
+    exact history.1
+  | some function =>
+    cases found : ctx.valueSource.bindingFrame function declaration.id with
+    | none =>
+      simp [stepInstWithContext, origin, found, Sem.throwTypeError, Sem.run, StateT.run,
+        StateT.bind, StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure,
+        throw, throwThe, MonadExceptOf.throw] at run
+    | some original =>
+      cases same : bindingFrameDeclarationEq original declaration with
+      | false =>
+        simp [stepInstWithContext, origin, found, same, Sem.throwTypeError, Sem.run, StateT.run,
+          StateT.bind, StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure,
+          throw, throwThe, MonadExceptOf.throw] at run
+      | true =>
+        by_cases room : state.nextFrameLineage < 2 ^ 64 - 1
+        · have executed : Sem.run (stepInstWithContext ctx (.OpenFrame declaration)) state =
+              .ok (.value (some ⟨state.nextValueId⟩), afterSourceOpen state function original) := by
+            simp [stepInstWithContext, origin, found, same, room, afterSourceOpen,
+              Sem.run, Sem.getState, Sem.setState, Sem.setFrameState, Sem.bindFresh,
+              MachineState.bindValue, StateT.run, StateT.bind, StateT.get, StateT.set,
+              StateT.pure, StateT.lift, bind, pure, Except.bind, Except.pure]
+          rw [executed] at run
+          cases run
+          exact source_open_history state function original
+        · simp [stepInstWithContext, origin, found, same, room, Sem.run, Sem.getState,
+            Sem.throwUB, StateT.run, StateT.bind, StateT.get, StateT.pure, StateT.lift,
+            bind, pure, Except.bind, Except.pure, throw, throwThe, MonadExceptOf.throw] at run
+
+private theorem contextual_close_finish_history (frame : ValueId)
+    (state final : MachineState) (result : InstrResult)
+    (run : Sem.run (do semCloseFrame frame; pure (.value none)) state = .ok (result, final)) :
+    HistoryExtends state final := by
+  obtain ⟨unit, middle, closed, finished⟩ := split_bind_success _ _ state final result run
+  cases unit
+  obtain ⟨_, lineage, _, _, _, rfl⟩ := close_success_state state middle frame closed
+  change Except.ok (.value none, _) = Except.ok (result, final) at finished
+  cases finished
+  exact history_close state lineage
+
+/-- Authentication does not alter history; the actual close removes the
+lineage with the original closed-alias preservation law. -/
+theorem contextual_close_history (ctx : EvalContext) (frame : ValueId)
+    (state final : MachineState) (result : InstrResult)
+    (run : Sem.run (stepInstWithContext ctx (.CloseFrame frame)) state = .ok (result, final)) :
+    HistoryExtends state final := by
+  simp only [stepInstWithContext] at run
+  obtain ⟨held, middle, looked, tail⟩ := split_bind_success _ _ state final result run
+  obtain ⟨_, same⟩ := lookup_success state middle frame held looked
+  subst middle
+  cases held
+  case sourceFrame lineage function declaration slots =>
+    obtain ⟨types, middle, checked, tail⟩ := split_bind_success _ _ state final result tail
+    have same := memory_check_success_state _ state middle types checked
+    subst middle
+    exact contextual_close_finish_history frame state final result tail
+  all_goals exact contextual_close_finish_history frame state final result tail
+
+theorem contextual_bind_history (ctx : EvalContext) (frame : ValueId) (slot : Nat) (value : ValueId) :
+    KeepsHistory (stepInstWithContext ctx (.BindSlot frame slot value)) := by
+  unfold stepInstWithContext
+  context_history_leaves
+
+theorem contextual_load_history (ctx : EvalContext) (frame : ValueId) (slot : Nat) (ty : Ty) :
+    KeepsHistory (stepInstWithContext ctx (.LoadSlot frame slot ty)) := by
+  unfold stepInstWithContext
+  context_history_leaves
+
+private theorem context_reify_item_history (ctx : EvalContext) (source : FuncId)
+    (signature : FuncTyId) (operand : ValueId) :
+    KeepsHistory (α := InstrResult) (do
+      let value ← Sem.lookupValue operand
+      Sem.rejectPartial value "ReifyFnPointer"
+      match value with
+      | .fnItem held =>
+        if held != source then Sem.throwTypeError "ReifyFnPointer: item identity differs from source type"
+        let declaration ← Sem.fromMemoryExcept (functionItemDeclaration ctx source)
+        if declaration.signatureId != signature then
+          Sem.throwTypeError "ReifyFnPointer: destination signature differs from item declaration"
+        pure (.value (some (← Sem.bindFresh (.fnDef signature source))))
+      | _ => Sem.throwTypeError "ReifyFnPointer: source is not a nominal function item") := by
+  refine bind_history _ _ (lookup_history operand) (fun value => ?_)
+  refine bind_history _ _ (rejectPartial_history value _) (fun _ => ?_)
+  split
+  · split
+    · exact throwTypeError_history "ReifyFnPointer: item identity differs from source type"
+    · try simp only [pure_bind]
+      refine bind_history _ _ (fromMemoryExcept_history _) (fun declaration => ?_)
+      split
+      · exact throwTypeError_history "ReifyFnPointer: destination signature differs from item declaration"
+      · try simp only [pure_bind]
+        exact bind_history _ _ (bindFresh_history _) (fun _ => pure_history _)
+  · exact throwTypeError_history "ReifyFnPointer: source is not a nominal function item"
+
+/-- Source layout queries and byte encoding/decoding are pure computations.
+    This leaf preserves the complete image and every refusal without reducing
+    any source plan or recursive codec inside the freshness proof. -/
+private theorem context_item_byte_cast_history (ctx : EvalContext) (source destination : Ty)
+    (operand : ValueId) :
+    KeepsHistory (α := InstrResult) (do
+      let service ← match ctx.memoryService with
+        | some service => pure service
+        | none => Sem.throwTypeError "FnItem cast: original source layouts are absent"
+      if service.model != ctx.byteModel then
+        Sem.throwTypeError "FnItem cast: source layout target differs from evaluator target"
+      let sourcePlan ← Sem.fromMemoryExcept (service.query source)
+      let destinationPlan ← Sem.fromMemoryExcept (service.query destination)
+      if sourcePlan.layout.size != destinationPlan.layout.size then
+        Sem.throwTypeError "FnItem cast: byte extents differ"
+      let value ← Sem.lookupValue operand
+      Sem.rejectPartial value "FnItem cast"
+      let image ← Sem.fromMemoryExcept
+        (AggregateMemory.encode ctx.byteModel ctx.functionOrder sourcePlan value false)
+      let state ← Sem.getState
+      let result ← Sem.fromMemoryExcept
+        (AggregateMemory.decode ctx.byteModel ctx.functionOrder state.memory destinationPlan image.bytes)
+      pure (.value (some (← Sem.bindFresh result)))) := by
+  cases servicePresent : ctx.memoryService with
+  | none => exact throwTypeError_history "FnItem cast: original source layouts are absent"
+  | some service =>
+    simp only [servicePresent, pure_bind]
+    split
+    · exact throwTypeError_history "FnItem cast: source layout target differs from evaluator target"
+    · try simp only [pure_bind]
+      refine bind_history _ _ (fromMemoryExcept_history _) (fun sourcePlan => ?_)
+      refine bind_history _ _ (fromMemoryExcept_history _) (fun destinationPlan => ?_)
+      split
+      · exact throwTypeError_history "FnItem cast: byte extents differ"
+      · try simp only [pure_bind]
+        refine bind_history _ _ (lookup_history operand) (fun value => ?_)
+        refine bind_history _ _ (rejectPartial_history value _) (fun _ => ?_)
+        refine bind_history _ _ (fromMemoryExcept_history _) (fun image => ?_)
+        refine bind_history _ _ get_history (fun state => ?_)
+        refine bind_history _ _ (fromMemoryExcept_history _) (fun result => ?_)
+        exact bind_history _ _ (bindFresh_history result) (fun _ => pure_history _)
+
+theorem contextual_cast_history (ctx : EvalContext) (op : CastOp) (srcTy dstTy : Ty) (operand : ValueId) :
+    KeepsHistory (stepInstWithContext ctx (.Cast op srcTy dstTy operand)) := by
+  cases op
+  case ReifyFnPointer =>
+    cases srcTy
+    case FnItem source =>
+      cases dstTy
+      case Func signature => exact context_reify_item_history ctx source signature operand
+      all_goals
+        simp only [stepInstWithContext]
+        exact ite_history _ _ _ (context_item_byte_cast_history ctx _ _ operand)
+          (bind_history _ _ (semCast_history _ _ _ _ _) (fun _ => pure_history _))
+    all_goals
+      simp only [stepInstWithContext]
+      exact ite_history _ _ _ (context_item_byte_cast_history ctx _ _ operand)
+        (bind_history _ _ (semCast_history _ _ _ _ _) (fun _ => pure_history _))
+  all_goals
+    simp only [stepInstWithContext]
+    exact ite_history _ _ _ (context_item_byte_cast_history ctx _ _ operand)
+      (bind_history _ _ (semCast_history _ _ _ _ _) (fun _ => pure_history _))
 
 end TrustIr.FrameLifetime.HistoryEffects

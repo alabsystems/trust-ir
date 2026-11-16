@@ -68,6 +68,10 @@ impl<'a> State<'a> {
                 self.id("Enum(EnumId(", id.index(), work)?;
                 work.text("))", &mut self.detail)
             }
+            Ty::FnItem(id) => {
+                self.id("FnItem(FuncId(", id.index(), work)?;
+                work.text("))", &mut self.detail)
+            }
             Ty::Func(id) => {
                 self.id("Func(FuncTyId(", id.index(), work)?;
                 work.text("))", &mut self.detail)

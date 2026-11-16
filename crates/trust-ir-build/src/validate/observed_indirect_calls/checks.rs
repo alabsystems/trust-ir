@@ -115,8 +115,109 @@ impl State {
             block.id,
             work,
         )?;
+        self.function_item(context, &edge, values, block.id, work)?;
         self.closure(context, &edge, signature, values, block.id, work)?;
         self.pointer(context, &edge, signature, block.id, index, work)
+    }
+    fn function_item<O: ExecutionObserver>(
+        &mut self,
+        context: &mut ObservedIndirectCalls<'_, '_>,
+        edge: &Edge<'_>,
+        values: &ObservedValueTypes,
+        block: BlockId,
+        work: &mut Work<'_, '_, O>,
+    ) -> R {
+        work.admit(12, size_of::<Option<FuncId>>() + size_of::<bool>())?;
+        let ty = values.get_observed(edge.callee, work.session, work.site)?;
+        let id = match ty {
+            Some(Ty::FnItem(id)) => Some(*id),
+            Some(Ty::Func(_)) if context.has_item_origins(work)? => context
+                .pointers
+                .as_mut()
+                .ok_or(ObservedValueError::InvalidRange)?
+                .resolve_item_for_rejection_observed(edge.callee, work.session, work.site)?,
+            _ => None,
+        };
+        let Some(id) = id else {
+            return Ok(());
+        };
+        let target = context
+            .catalog
+            .unique_observed(id, work.session, work.site)?;
+        let valid = match target {
+            Some(target) => work
+                .at(
+                    &context.catalog.source_module().func_types,
+                    target.ty.as_usize(),
+                )?
+                .is_some(),
+            None => false,
+        };
+        if !valid {
+            // The ordinary reified-pointer branch only adds rejection when a
+            // nominal source header resolves. Its typed constant/reference
+            // rules diagnose malformed origins separately.
+            if matches!(ty, Some(Ty::Func(_))) {
+                return Ok(());
+            }
+            self.ready(work)?;
+            work.text("function '", &mut self.detail)?;
+            work.text(&context.function.name, &mut self.detail)?;
+            work.text("' bb", &mut self.detail)?;
+            work.number(block.index() as usize, &mut self.detail)?;
+            work.text(" indirect callee", &mut self.detail)?;
+            work.text("a unique nominal function item", &mut self.expected)?;
+            if let Some(target) = target {
+                work.text("function item func.", &mut self.actual)?;
+                work.number(id.index() as usize, &mut self.actual)?;
+                work.text(" has missing signature functy.", &mut self.actual)?;
+                work.number(target.ty.index() as usize, &mut self.actual)?;
+            } else {
+                work.text("missing or ambiguous function item func.", &mut self.actual)?;
+                work.number(id.index() as usize, &mut self.actual)?;
+            }
+            work.reserve(&mut self.errors)?;
+            work.admit(1, size_of::<ValidationError>())?;
+            self.errors.push(ValidationError::ConstTypeMismatch {
+                location: take(&mut self.detail),
+                expected: take(&mut self.expected),
+                actual: take(&mut self.actual),
+            });
+            return Ok(());
+        }
+        let target = target.ok_or(ObservedValueError::InvalidRange)?;
+        if target.ty != edge.sig {
+            self.ready(work)?;
+            work.text(&target.name, &mut self.name)?;
+            work.text("functy.", &mut self.expected)?;
+            work.number(edge.sig.index() as usize, &mut self.expected)?;
+            work.text("functy.", &mut self.actual)?;
+            work.number(target.ty.index() as usize, &mut self.actual)?;
+            work.reserve(&mut self.errors)?;
+            work.admit(1, size_of::<ValidationError>())?;
+            self.errors
+                .push(ValidationError::CallEdgeSignatureMismatch {
+                    block: block.index(),
+                    callee: take(&mut self.name),
+                    declared: take(&mut self.expected),
+                    actual: take(&mut self.actual),
+                });
+        }
+        if target.calling_conv != edge.conv {
+            self.ready(work)?;
+            work.text(&target.name, &mut self.name)?;
+            render::convention(edge.conv, &mut self.expected, work)?;
+            render::convention(target.calling_conv, &mut self.actual, work)?;
+            work.reserve(&mut self.errors)?;
+            work.admit(1, size_of::<ValidationError>())?;
+            self.errors.push(ValidationError::CallEdgeConvMismatch {
+                block: block.index(),
+                callee: take(&mut self.name),
+                declared: take(&mut self.expected),
+                actual: take(&mut self.actual),
+            });
+        }
+        Ok(())
     }
     fn arguments<O: ExecutionObserver>(
         &mut self,

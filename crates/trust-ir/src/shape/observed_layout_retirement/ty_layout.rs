@@ -43,7 +43,7 @@ pub(super) fn consume<O: ExecutionObserver>(shape: TyLayoutShape, work: &mut Wor
             work.fixed(lanes);
             work.fixed(lane_bits);
         }
-        TyLayoutKind::Unit => work.fixed(()),
+        TyLayoutKind::Unit | TyLayoutKind::FnItem => work.fixed(()),
         TyLayoutKind::Never => work.fixed(()),
         TyLayoutKind::Tuple { fields } => consume_fields(fields, work),
         TyLayoutKind::Closure { id, captures } => {

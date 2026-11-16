@@ -60,7 +60,10 @@ fn mixed() -> Constant {
             "closure".into(),
             Constant::Closure {
                 func: FuncId::new(2),
-                captures: vec![Constant::FnDef(FuncId::new(4))],
+                captures: vec![
+                    Constant::FnDef(FuncId::new(4)),
+                    Constant::FnItem(FuncId::new(4)),
+                ],
             },
         ),
     ])
@@ -73,6 +76,7 @@ fn every_nonfloat_carrier_matches_actual_ordinary_display_spelling() {
         Constant::Int(0),
         Constant::U128(0),
         Constant::U128(u128::MAX),
+        Constant::FnItem(FuncId::new(u32::MAX)),
         Constant::Bool(false),
         Constant::Bytes {
             data: vec![0, 1, 15, 16, 255],

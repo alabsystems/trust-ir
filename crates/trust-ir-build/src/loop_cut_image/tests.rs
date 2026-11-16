@@ -1017,10 +1017,9 @@ fn parameterized_edge_graph(swap: bool) -> Graph {
             then_args,
             ..
         } = &mut block.body.last_mut().unwrap().inst
+            && *then_target == g.back
         {
-            if *then_target == g.back {
-                *then_args = arguments.clone();
-            }
+            *then_args = arguments.clone();
         }
     }
     g

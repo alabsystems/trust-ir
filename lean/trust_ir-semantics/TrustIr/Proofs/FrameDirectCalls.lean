@@ -118,9 +118,12 @@ theorem WellMintedState.call_results_success (ctx : EvalContext) (inst : Inst)
 theorem call_results_history (ctx : EvalContext) (inst : Inst) (dests : List ValueId) (values : List Value) :
     KeepsHistory (ctx.bindCallResults inst dests values) := by
   unfold EvalContext.bindCallResults
-  split
-  · exact result_dests_history _ _
-  · exact bind_history _ _ (result_checks_history _ _ _ _) (fun _ => result_dests_history _ _)
+  rw [HistoryEffects.conditional_property_iff HistoryEffects.KeepsHistory]
+  constructor
+  · intro selected
+    exact result_dests_history _ _
+  · intro selected
+    exact bind_history _ _ (result_checks_history _ _ _ _) (fun _ => result_dests_history _ _)
 
 /-- The actual caller reset, checked returns and restoration consume the
 recursive execution summary; no independent return-check success is assumed. -/
@@ -246,6 +249,10 @@ theorem direct_frame_layer_success (recurse : Recurse) (ctx : EvalContext) (dept
   | some block =>
     obtain ⟨sites,⟨control⟩⟩ := grammar pc block found
     simp only [evalLayer,found] at run
+    obtain ⟨unit, checkedState, checked, run⟩ := split_bind_success _ _ s final values run
+    have same := memory_check_success_state _ s checkedState unit checked
+    subst checkedState
+    cases unit
     obtain ⟨unit,bound,params,tail⟩ := split_bind_success _ _ s final values run
     cases unit
     have boundValid := valid.checked_params_success _ args s bound incoming params
@@ -262,8 +269,10 @@ theorem direct_frame_layer_success (recurse : Recurse) (ctx : EvalContext) (dept
       obtain ⟨afterValid,returned,nextHistory⟩ := recursive ctx cfg depth next nextArgs afterBody final values grammar program bodyValid transported tail
       exact ⟨afterValid,returned,paramsHistory.trans (bodyHistory.trans nextHistory)⟩
     | Ret returned =>
-      change Except.ok (returned,afterBody) = Except.ok (values,final) at tail
-      cases tail
+      change Sem.run (GenericCoro.checkedReturn ctx returned) afterBody = .ok (values,final) at tail
+      obtain ⟨same, equal⟩ := checked_return_success ctx returned values afterBody final tail
+      subst final
+      subst values
       exact ⟨bodyValid,transported,paramsHistory.trans bodyHistory⟩
     | Stuck =>
       change Except.error (SemError.ub "reached unreachable") = Except.ok (values,final) at tail

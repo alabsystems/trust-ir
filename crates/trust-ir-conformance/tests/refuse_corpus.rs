@@ -62,7 +62,7 @@ use trust_ir::inst::Inst;
 use trust_ir::proof::{ProofAnnotation, ProofStatus, RejectingModuleProofAuthority};
 use trust_ir::ty::Ty;
 use trust_ir_build::validate::{
-    CodegenAdmission, ValidationConfig, ValidationError, validate_module,
+    BoxDerefValidationRule, CodegenAdmission, ValidationConfig, ValidationError, validate_module,
     validate_module_as_decoded, validate_module_complete, validate_module_for_codegen,
     validate_module_for_codegen_with, validate_module_with_authority, validate_module_with_config,
 };
@@ -84,6 +84,138 @@ enum Build {
 }
 
 const ROWS: &[(&str, Build)] = &[
+    (
+        "box_deref_premise_tier",
+        Build::Module(generate::build_refuse_box_deref_premise_tier),
+    ),
+    (
+        "box_deref_assumed_root_tier",
+        Build::Module(generate::build_refuse_box_deref_assumed_root_tier),
+    ),
+    (
+        "box_deref_operand_not_ptr",
+        Build::Module(generate::build_refuse_box_deref_operand_not_ptr),
+    ),
+    (
+        "box_deref_pointee_zero_sized",
+        Build::Module(generate::build_refuse_box_deref_pointee_zero_sized),
+    ),
+    (
+        "box_deref_pointee_uninhabited",
+        Build::Module(generate::build_refuse_box_deref_pointee_uninhabited),
+    ),
+    (
+        "box_deref_conjunct_missing",
+        Build::Module(generate::build_refuse_box_deref_conjunct_missing),
+    ),
+    (
+        "box_deref_conjunct_duplicated",
+        Build::Module(generate::build_refuse_box_deref_conjunct_duplicated),
+    ),
+    (
+        "box_deref_conjunct_misordered",
+        Build::Module(generate::build_refuse_box_deref_conjunct_misordered),
+    ),
+    (
+        "box_deref_metadata_valid_on_sized",
+        Build::Module(generate::build_refuse_box_deref_metadata_valid_on_sized),
+    ),
+    (
+        "box_deref_premise_standing_dropped",
+        Build::Module(generate::build_refuse_box_deref_premise_standing_dropped),
+    ),
+    (
+        "box_deref_session_fallback",
+        Build::Module(generate::build_refuse_box_deref_session_fallback),
+    ),
+    (
+        "box_deref_session_not_proof",
+        Build::Module(generate::build_refuse_box_deref_session_not_proof),
+    ),
+    (
+        "box_deref_check_pinned_shape",
+        Build::Module(generate::build_refuse_box_deref_check_pinned_shape),
+    ),
+    (
+        "box_deref_check_address_round_trip",
+        Build::Module(generate::build_refuse_box_deref_check_address_round_trip),
+    ),
+    (
+        "box_deref_check_for_dereferenceable",
+        Build::Module(generate::build_refuse_box_deref_check_for_dereferenceable),
+    ),
+    (
+        "box_deref_check_wrong_alignment",
+        Build::Module(generate::build_refuse_box_deref_check_wrong_alignment),
+    ),
+    (
+        "box_deref_check_absent",
+        Build::Module(generate::build_refuse_box_deref_check_absent),
+    ),
+    (
+        "box_deref_check_not_dominating",
+        Build::Module(generate::build_refuse_box_deref_check_not_dominating),
+    ),
+    (
+        "box_deref_check_on_operand",
+        Build::Module(generate::build_refuse_box_deref_check_on_operand),
+    ),
+    (
+        "box_deref_obligation_missing",
+        Build::Module(generate::build_refuse_box_deref_obligation_missing),
+    ),
+    (
+        "box_deref_obligation_wrong_kind",
+        Build::Module(generate::build_refuse_box_deref_obligation_wrong_kind),
+    ),
+    (
+        "box_deref_obligation_wrong_function",
+        Build::Module(generate::build_refuse_box_deref_obligation_wrong_function),
+    ),
+    (
+        "box_deref_obligation_wrong_site",
+        Build::Module(generate::build_refuse_box_deref_obligation_wrong_site),
+    ),
+    (
+        "box_deref_obligation_not_replayed",
+        Build::Module(generate::build_refuse_box_deref_obligation_not_replayed),
+    ),
+    (
+        "box_deref_non_claim_dropped",
+        Build::Module(generate::build_refuse_box_deref_non_claim_dropped),
+    ),
+    (
+        "box_deref_premise_null_operand",
+        Build::Module(generate::build_refuse_box_deref_premise_null_operand),
+    ),
+    (
+        "box_deref_premise_inttoptr_operand",
+        Build::Module(generate::build_refuse_box_deref_premise_inttoptr_operand),
+    ),
+    (
+        "box_deref_premise_param_root_without_parameter",
+        Build::Module(generate::build_refuse_box_deref_premise_param_root_without_parameter),
+    ),
+    (
+        "box_deref_premise_alloc_root_without_allocation",
+        Build::Module(generate::build_refuse_box_deref_premise_alloc_root_without_allocation),
+    ),
+    (
+        "box_deref_premise_freed_operand",
+        Build::Module(generate::build_refuse_box_deref_premise_freed_operand),
+    ),
+    (
+        "box_deref_premise_mixed_roots",
+        Build::Module(generate::build_refuse_box_deref_premise_mixed_roots),
+    ),
+    (
+        "blob_box_deref_below_its_version",
+        Build::Bytes(generate::build_refuse_bytes_blob_box_deref_below_its_version),
+    ),
+    (
+        "blob_box_deref_premise_root_unknown",
+        Build::Bytes(generate::build_refuse_bytes_blob_box_deref_premise_root_unknown),
+    ),
     (
         "make_closure_capture_count",
         Build::Module(generate::build_refuse_make_closure_capture_count),
@@ -888,6 +1020,18 @@ fn run_entry_point(entry: &str, row: &Row) -> Measured {
             let admission = CodegenAdmission::pinned().with_require_assert_panic_kinds(true);
             names(validate_module_for_codegen_with(module(), &admission))
         }
+        "validate_module_for_codegen:requiring_box_validity_above_assumed_root" => {
+            let admission = CodegenAdmission::pinned().with_require_box_validity_evidence(Some(
+                trust_ir::box_validity::BoxValidityTier::NamedPremise,
+            ));
+            names(validate_module_for_codegen_with(module(), &admission))
+        }
+        "validate_module_for_codegen:requiring_box_validity_above_premise" => {
+            let admission = CodegenAdmission::pinned().with_require_box_validity_evidence(Some(
+                trust_ir::box_validity::BoxValidityTier::ConsumerRederived,
+            ));
+            names(validate_module_for_codegen_with(module(), &admission))
+        }
         "validate_module_for_codegen:requiring_assert_panic_sites" => {
             let admission = CodegenAdmission::pinned().with_require_assert_panic_sites(true);
             names(validate_module_for_codegen_with(module(), &admission))
@@ -1275,6 +1419,97 @@ fn every_variant_is_exhibited_by_a_row_or_allowlisted_exactly() {
             );
         }
     }
+}
+
+/// The `ValidationError` variant paired with one exhaustive Box rule. This
+/// match intentionally has no wildcard: adding a public rule makes this test
+/// fail to compile until its source and corpus names are assigned.
+fn box_error_variant(rule: BoxDerefValidationRule) -> &'static str {
+    match rule {
+        BoxDerefValidationRule::TypeMismatch => "BoxDerefTypeMismatch",
+        BoxDerefValidationRule::PointeeOutOfScope => "BoxDerefPointeeOutOfScope",
+        BoxDerefValidationRule::ConjunctCover => "BoxDerefConjunctCover",
+        BoxDerefValidationRule::PremiseNotPinned => "BoxDerefPremiseNotPinned",
+        BoxDerefValidationRule::SessionRefused => "BoxDerefSessionRefused",
+        BoxDerefValidationRule::DominatingCheckInvalid => "BoxDerefDominatingCheckInvalid",
+        BoxDerefValidationRule::ObligationUnbound => "BoxDerefObligationUnbound",
+        BoxDerefValidationRule::NonClaimsNotPinned => "BoxDerefNonClaimsNotPinned",
+        BoxDerefValidationRule::PremiseContradicted => "BoxDerefPremiseContradicted",
+        BoxDerefValidationRule::EvidenceBelowFloor => "BoxValidityEvidenceBelowFloor",
+    }
+}
+
+/// The Box-validation entry points named by the v74 corpus. Kept separate
+/// from `run_entry_point` because this test needs the typed errors, not only
+/// their diagnostic variant names.
+fn box_validation_errors(entry: &str, row: &Row) -> Vec<ValidationError> {
+    let module = row.module().expect("a Box validation row carries a module");
+    match entry {
+        "validate_module" => validate_module(module),
+        "validate_module_for_codegen:requiring_box_validity_above_assumed_root" => {
+            let admission = CodegenAdmission::pinned().with_require_box_validity_evidence(Some(
+                trust_ir::box_validity::BoxValidityTier::NamedPremise,
+            ));
+            validate_module_for_codegen_with(module, &admission)
+        }
+        "validate_module_for_codegen:requiring_box_validity_above_premise" => {
+            let admission = CodegenAdmission::pinned().with_require_box_validity_evidence(Some(
+                trust_ir::box_validity::BoxValidityTier::ConsumerRederived,
+            ));
+            validate_module_for_codegen_with(module, &admission)
+        }
+        other => panic!(
+            "{}: unexpected Box validation entry point `{other}`",
+            row.id()
+        ),
+    }
+}
+
+#[test]
+fn box_validation_classifier_covers_the_exact_source_and_decoded_corpus() {
+    let (validation, _) = all_variants();
+    let source: BTreeSet<String> = validation
+        .into_iter()
+        .filter(|name| name.starts_with("BoxDeref") || name.starts_with("BoxValidity"))
+        .collect();
+    let classified_names: BTreeSet<String> = BoxDerefValidationRule::ALL
+        .into_iter()
+        .map(box_error_variant)
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        source, classified_names,
+        "every Box ValidationError variant must enter the authoritative typed classifier"
+    );
+
+    let rows = corpus().expect("the must-refuse corpus loads");
+    let mut observed = BTreeSet::new();
+    for row in rows.iter().filter(|row| row.id().starts_with("box_deref_")) {
+        for expectation in &row.manifest.expectations {
+            let Verdict::Validation(expected) = &expectation.verdict else {
+                continue;
+            };
+            let errors = box_validation_errors(&expectation.entry_point, row);
+            assert!(!errors.is_empty(), "{}: decoded row was accepted", row.id());
+            for error in errors {
+                let rule = error
+                    .box_deref_rule()
+                    .unwrap_or_else(|| panic!("{}: unclassified Box refusal: {error:?}", row.id()));
+                assert_eq!(
+                    box_error_variant(rule),
+                    expected.as_str(),
+                    "{}: {error:?}",
+                    row.id()
+                );
+                observed.insert(rule);
+            }
+        }
+    }
+    assert_eq!(
+        observed,
+        BoxDerefValidationRule::ALL.into_iter().collect(),
+        "the decoded v74 corpus must exercise every typed Box validation rule"
+    );
 }
 
 /// The variants `new` lists that `old` did not: the growth the shrink rule

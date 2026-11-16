@@ -1,0 +1,2297 @@
+[
+  {
+    "label": "constant-global-direct",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": "__RAW_BOUNDARY_VALUE__",
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-direct",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": "__RAW_BOUNDARY_VALUE__"
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-direct",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": "__RAW_BOUNDARY_VALUE__",
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Aggregate",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Aggregate": [
+              "__RAW_BOUNDARY_VALUE__"
+            ]
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Aggregate",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Aggregate": [
+                          "__RAW_BOUNDARY_VALUE__"
+                        ]
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Aggregate",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Aggregate": [
+                              "__RAW_BOUNDARY_VALUE__"
+                            ]
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Array",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Array": [
+              "__RAW_BOUNDARY_VALUE__"
+            ]
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Array",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Array": [
+                          "__RAW_BOUNDARY_VALUE__"
+                        ]
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Array",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Array": [
+                              "__RAW_BOUNDARY_VALUE__"
+                            ]
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Vector",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Vector": [
+              "__RAW_BOUNDARY_VALUE__"
+            ]
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Vector",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Vector": [
+                          "__RAW_BOUNDARY_VALUE__"
+                        ]
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Vector",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Vector": [
+                              "__RAW_BOUNDARY_VALUE__"
+                            ]
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Sequence",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Sequence": [
+              "__RAW_BOUNDARY_VALUE__"
+            ]
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Sequence",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Sequence": [
+                          "__RAW_BOUNDARY_VALUE__"
+                        ]
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Sequence",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Sequence": [
+                              "__RAW_BOUNDARY_VALUE__"
+                            ]
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Set",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Set": [
+              "__RAW_BOUNDARY_VALUE__"
+            ]
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Set",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Set": [
+                          "__RAW_BOUNDARY_VALUE__"
+                        ]
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Set",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Set": [
+                              "__RAW_BOUNDARY_VALUE__"
+                            ]
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Splat",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Splat": {
+              "elem": "__RAW_BOUNDARY_VALUE__",
+              "len": 2
+            }
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Splat",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Splat": {
+                          "elem": "__RAW_BOUNDARY_VALUE__",
+                          "len": 2
+                        }
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Splat",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Splat": {
+                              "elem": "__RAW_BOUNDARY_VALUE__",
+                              "len": 2
+                            }
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Record",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Record": [
+              [
+                "field",
+                "__RAW_BOUNDARY_VALUE__"
+              ]
+            ]
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Record",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Record": [
+                          [
+                            "field",
+                            "__RAW_BOUNDARY_VALUE__"
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Record",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Record": [
+                              [
+                                "field",
+                                "__RAW_BOUNDARY_VALUE__"
+                              ]
+                            ]
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-global-Closure",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [
+        {
+          "name": "raw_global",
+          "ty": "Unit",
+          "mutable": false,
+          "initializer": {
+            "Closure": {
+              "func": 0,
+              "captures": [
+                "__RAW_BOUNDARY_VALUE__"
+              ]
+            }
+          },
+          "linkage": "External",
+          "tls": null,
+          "align": null,
+          "section": null,
+          "visibility": "Default",
+          "retained": false
+        }
+      ],
+      "func_types": [],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-inst-Closure",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Const": {
+                      "ty": "Unit",
+                      "value": {
+                        "Closure": {
+                          "func": 0,
+                          "captures": [
+                            "__RAW_BOUNDARY_VALUE__"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  },
+  {
+    "label": "constant-switch-Closure",
+    "module": {
+      "name": "mixed_producer_module",
+      "functions": [
+        {
+          "id": 0,
+          "name": "clean_double",
+          "ty": 0,
+          "entry": 0,
+          "blocks": [
+            {
+              "id": 0,
+              "params": [],
+              "body": [
+                {
+                  "inst": {
+                    "Switch": {
+                      "value": 5,
+                      "default": 6,
+                      "default_args": [],
+                      "cases": [
+                        {
+                          "value": {
+                            "Closure": {
+                              "func": 0,
+                              "captures": [
+                                "__RAW_BOUNDARY_VALUE__"
+                              ]
+                            }
+                          },
+                          "target": 4,
+                          "args": []
+                        },
+                        {
+                          "value": {
+                            "Int": 1
+                          },
+                          "target": 5,
+                          "args": []
+                        }
+                      ],
+                      "exhaustive_enum_unreachable": false
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                },
+                {
+                  "inst": {
+                    "Return": {
+                      "values": []
+                    }
+                  },
+                  "results": [],
+                  "proofs": [],
+                  "span": null,
+                  "proof_context": null
+                }
+              ]
+            }
+          ],
+          "proofs": [],
+          "calling_conv": "C",
+          "linkage": "External",
+          "attrs": {
+            "readonly": false,
+            "readnone": false,
+            "inlinehint": false,
+            "cold": false,
+            "params": [],
+            "naked": false,
+            "target_features": []
+          },
+          "summary": null,
+          "producer": "Clean",
+          "value_names": null,
+          "scopes": null,
+          "source_provenance": null,
+          "body_gate": null,
+          "display_path": null,
+          "section": null,
+          "visibility": "Default"
+        }
+      ],
+      "structs": [],
+      "enums": [],
+      "records": [],
+      "closure_types": [],
+      "globals": [],
+      "func_types": [
+        {
+          "params": [],
+          "returns": [],
+          "is_vararg": false,
+          "abi": null
+        }
+      ],
+      "types": [],
+      "proof_obligations": [],
+      "proof_certificates": [],
+      "target_info": null,
+      "files": [],
+      "obligation_diagnostics": [],
+      "spec_modules": [],
+      "universes": [],
+      "predicates": [],
+      "global_asm": [],
+      "imports": [],
+      "tuple_layouts": [],
+      "completeness": null,
+      "drop_glue": []
+    }
+  }
+]

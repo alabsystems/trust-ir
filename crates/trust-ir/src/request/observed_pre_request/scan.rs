@@ -23,7 +23,10 @@ impl State {
             if source.is_zero() {
                 self.fixed(
                     || E::EmptyDigest {
-                        field: "input.rust_mir.body_digest",
+                        field: match b.input {
+                            NativeAdapterInput::RustThir { .. } => "input.rust_thir.source_digest",
+                            _ => "input.rust_mir.body_digest",
+                        },
                     },
                     w,
                 )?;

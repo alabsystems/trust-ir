@@ -3116,13 +3116,27 @@ def verdict_lines(output: str) -> List[str]:
 
 
 def toolchain_identity(targo: str) -> str:
-    trustc = Path(targo).with_name("trustc")
-    cand = str(trustc) if trustc.exists() else (shutil.which("trustc") or "")
-    if not cand:
-        return "(trustc not found beside targo)"
-    proc = subprocess.run([cand, "-vV"], capture_output=True, text=True, check=False)
+    """Describe only the selected Targo's sibling compiler. This diagnostic
+    is not a compiler/SDK attestation or a verification verdict."""
+    trustc = Path(targo).absolute().with_name("trustc")
+    unavailable = f"trustc identity unavailable from {trustc}"
+    try:
+        if not trustc.is_file() or not os.access(trustc, os.X_OK):
+            return f"({unavailable}: no executable sibling)"
+        proc = subprocess.run(
+            [str(trustc), "-vV"], capture_output=True, text=True, encoding="utf-8", check=False, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return f"({unavailable}: probe timed out)"
+    except UnicodeError:
+        return f"({unavailable}: probe output is not UTF-8)"
+    except OSError as error:
+        return f"({unavailable}: {error})"
+    if proc.returncode:
+        return f"({unavailable}: probe exit {proc.returncode})"
     keep = [l for l in proc.stdout.splitlines() if l.startswith(("rustc ", "commit-hash", "trust:", "host"))]
-    return " | ".join(keep) if keep else proc.stdout.strip()[:200]
+    identity = " | ".join(keep) if keep else proc.stdout.strip()[:200]
+    return f"{trustc}: {identity}" if identity else f"({unavailable}: empty probe output)"
 
 
 def memory_evidence(data: dict, run: LaneRun) -> str:

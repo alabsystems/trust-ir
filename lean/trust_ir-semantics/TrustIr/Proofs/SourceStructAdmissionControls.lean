@@ -33,7 +33,8 @@ private def array : Plan := .array (.Array ⟨0⟩ 2) ⟨8,1⟩ 2 canonicalPlan
 private def rootTy : Ty := .Tuple [.Struct ⟨17⟩,.Array ⟨0⟩ 2]
 private def rootFields : List (Nat × Plan) := [(0,canonicalPlan),(4,array)]
 private def root : Plan := .fields rootTy ⟨12,1⟩ rootFields
-private def context (base : EvalContext) : EvalContext := { base with byteModel := .le64, types := fun id => if id.index == 0 then some (.Struct ⟨17⟩) else none, structs := fun id => if id.index == 1 then some packed else if id.index == 17 then some canonical else none }
+private def context (base : EvalContext) : EvalContext :=
+  { base with byteModel := .le64, valueSource := FunctionItemPresence.prepare { base.valueSource.source with types := [some (.Struct ⟨17⟩)], structs := [packed, canonical] } }
 private def packedInput : Value := .aggregate [.int 8 7,.int 16 513]
 private def canonicalInput : Value := .aggregate [packedInput,.bool true]
 private def input : Value := .aggregate [canonicalInput,.array (.uniform 2 canonicalInput)]
@@ -114,7 +115,8 @@ theorem nested_structs_admitted_from_real_checker_and_store (base : EvalContext)
   (rootShape base).admit order Memory.empty (prepared_plan_origin source [] rootTy root prepared).own
     6 input (stored order) (checkedAt base) (encoded order)
 
-private def wrongContext (base : EvalContext) : EvalContext := { context base with structs := fun _ => some first }
+private def wrongContext (base : EvalContext) : EvalContext :=
+  { context base with valueSource := FunctionItemPresence.prepare { (context base).valueSource.source with structs := [first] } }
 theorem duplicate_context_disagreement_refused (base : EvalContext) : ¬ StructContextAgreement source (wrongContext base) ⟨1⟩ := by
   intro agreement
   have same := agreement 1 packed rfl rfl

@@ -340,6 +340,9 @@ inductive Ty where
   | Handle    : String -> String -> Ty
   /-- Addressable possibly-uninitialized geometry; excluded from by-value lowering. -/
   | Storage : Nat -> Nat -> Ty
+  /-- A nominal zero-byte function item. The source function header supplies
+      its unique identity and signature; this is not a function pointer. -/
+  | FnItem : FuncId -> Ty
   deriving Repr, BEq
 
 /-- One exhaustive width policy for fixed scalars, pointer words and vectors.
@@ -370,6 +373,7 @@ exactly ByteModel.le32/le64. -/
   | .Struct _ => none
   | .Array _ _ => none
   | .Func _ => none
+  | .FnItem _ => none
   | .Unit => none
   | .Never => none
   | .Tuple _ => none
@@ -720,6 +724,18 @@ structure FuncTyDef where
   abi : Option SignatureAbi := none
   deriving BEq, Repr
 
+/-- Original signature and calling convention, independent of whether a
+    function has an executable body. No CFG or synthetic body is stored. -/
+structure FunctionHeader where
+  signature : FuncTyDef
+  callingConv : CallingConv
+
+/-- An original nominal item declaration, retaining its actual signature id.
+    A duplicate source row cannot authenticate an item identity. -/
+structure FunctionItemHeader where
+  signatureId : FuncTyId
+  header : FunctionHeader
+
 /-- Struct field definition. Mirrors Rust trust_ir::FieldDef. -/
 structure FieldDef where
   name   : String
@@ -773,8 +789,24 @@ inductive EnumTagRepr where
   | i128 : EnumTagRepr
   deriving BEq, Repr
 
+/-- Physical storage of an impossible source field; this is not its value layout. -/
+structure FieldStorageLayout where
+  size : Nat
+  align : Nat
+  deriving BEq, Repr
+
+/-- Full physical extent of a proved-dead variant, in source-field order.
+    Offsets remain solely in `EnumLayoutDescriptor.variantFieldOffsets`. -/
+structure UninhabitedVariantLayout where
+  variant : Nat
+  size : Nat
+  align : Nat
+  fields : List FieldStorageLayout
+  deriving BEq, Repr
+
 /-- How an enum's discriminant is represented in memory. Mirrors Rust
-    trust_ir::EnumTagEncoding (wire v31; `untagged` in v37, `singleInhabited` in v65). -/
+    trust_ir::EnumTagEncoding (wire v31; `untagged` in v37,
+    `singleInhabited` in v65, `directWithUninhabited` in v67). -/
 inductive EnumTagEncoding where
   | direct (tagOffset : Nat)
   | niche (untaggedVariant nicheVariantsStart nicheVariantsEnd : Nat)
@@ -785,6 +817,9 @@ inductive EnumTagEncoding where
   /-- No stored tag, retaining every logical variant. Only the selected variant
       is inhabited; all others require a finite structural uninhabitedness fact. -/
   | singleInhabited (variant : Nat) : EnumTagEncoding
+  /-- A real tag and checked physical extents for the proved-dead declarations.
+      These source fields retain their identity without acquiring value codecs. -/
+  | directWithUninhabited (tagOffset : Nat) (variants : List UninhabitedVariantLayout)
   deriving BEq, Repr
 
 /-- Producer-supplied concrete enum layout. It is normative when present.
@@ -860,6 +895,36 @@ def bare (f : FuncTyId) : ClosureTy := { func := f, captures := [] }
 def captureCount (c : ClosureTy) : Nat := c.captures.length
 
 end ClosureTy
+
+/-- A single typed slot in a binding frame. Mirrors Rust
+    trust_ir::inst::BindingSlot from crates/trust_ir/src/inst.rs.
+
+    Each slot has a name (diagnostics / text format) and a declared Ty.
+    The position in BindingFrameDef.slots is the slot index used by
+    Inst.BindSlot and Inst.LoadSlot. -/
+structure BindingSlot where
+  name : String
+  ty   : Ty
+  deriving Repr
+
+/-- Declaration of a binding frame's slot layout. Inline in
+    Inst.OpenFrame, matching Rust trust_ir::inst::BindingFrameDef
+    (crates/trust_ir/src/inst.rs).
+
+    The id is unique within a function. Source-bound execution retains the
+    entire declaration and rejects absent, ambiguous or changed originals. -/
+structure BindingFrameDef where
+  id    : BindingFrameId
+  name  : String
+  slots : List BindingSlot
+  deriving Repr
+
+namespace BindingFrameDef
+
+/-- Number of declared slots. -/
+def slotCount (d : BindingFrameDef) : Nat := d.slots.length
+
+end BindingFrameDef
 
 end TrustIr
 

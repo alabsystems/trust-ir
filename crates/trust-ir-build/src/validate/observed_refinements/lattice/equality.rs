@@ -154,7 +154,7 @@ fn constant<O: ExecutionObserver>(
                             }
                             work.push(&mut stack, Pair::Values(x, y))?
                         }
-                        (FnDef(a), FnDef(b)) => {
+                        (FnDef(a), FnDef(b)) | (FnItem(a), FnItem(b)) => {
                             if a != b {
                                 return Ok(false);
                             }

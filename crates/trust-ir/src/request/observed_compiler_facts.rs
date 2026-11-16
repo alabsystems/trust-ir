@@ -244,6 +244,10 @@ impl Work {
                     return self.invalid(reference, "ty.enum_id", session, site);
                 };
                 admit(session, site, 1, 0)?;
+                if definition.variants.is_empty() {
+                    return self.invalid(reference, "layout", session, site);
+                }
+                admit(session, site, 1, 0)?;
                 if *variants != definition.variants.len() {
                     self.invalid(reference, "layout.kind.variants", session, site)?;
                 }
@@ -258,6 +262,26 @@ impl Work {
                 admit(session, site, 1, 0)?;
                 if layout.variants.len() != definition.variants.len() {
                     self.invalid(reference, "enum_layout.variants", session, site)?;
+                }
+                admit(session, site, 1, 0)?;
+                if matches!(
+                    definition.layout.as_ref().map(|layout| &layout.encoding),
+                    Some(
+                        crate::EnumTagEncoding::SingleInhabited { .. }
+                            | crate::EnumTagEncoding::DirectWithUninhabited { .. }
+                    )
+                ) {
+                    match layouts.ty_layout_observed(&fact.ty, session, site)? {
+                        Ok(logical) => self.layout = Some(logical),
+                        Err(error) => self.layout_error = Some(error),
+                    }
+                    admit(session, site, 3, 0)?;
+                    if self.layout.as_ref().is_none_or(|logical| {
+                        logical.size_bits != fact.layout.size_bits
+                            || logical.align_bits != fact.layout.align_bits
+                    }) {
+                        self.invalid(reference, "layout", session, site)?;
+                    }
                 }
                 self.native_enum(fact, layout, definition, session, site)?;
             }

@@ -42,6 +42,8 @@ theorem constValueAtChecked_eq (ty : Ty) (c : Constant) (model : ByteModel)
   | .F64, .float value => pure (.float value)
   | .Unit, .phantomData => pure (.aggregate [])
   | .Func signature, .fnDef target => pure (.fnDef signature target)
+  | .FnItem _, .fnItem _ =>
+    throw (.typeError "FnItem: constant requires an original source function declaration")
   | .Tuple tys, .aggregate cs =>
     if tys.length != cs.length then
       throw (.typeError "tuple constant field count does not match its declared type")
@@ -162,7 +164,9 @@ theorem constValueAtWithDefsIn_int_eq (ctx : ConstantEvalContext) (ty : Ty) (val
     constValueAtWithDefsIn ctx ty (.int value) allowUninitFields = (do
       if !constPointerFormsSupported ty (.int value) then
         throw (.typeError "constant requires null pointer spellings and matching inline field census")
-      constValueAtChecked ty (.int value) ctx.byteModel allowUninitFields) := by
+      match ty with
+      | .FnItem _ => throw (.typeError "FnItem: constant and nominal type must have the same identity")
+      | _ => constValueAtChecked ty (.int value) ctx.byteModel allowUninitFields) := by
   trustIrCompilerProof {
   conv =>
     lhs

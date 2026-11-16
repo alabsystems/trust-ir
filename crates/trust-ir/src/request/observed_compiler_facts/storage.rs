@@ -148,6 +148,7 @@ pub(super) fn layout_equal<O: ExecutionObserver>(
         (TyLayoutKind::Scalar(a), TyLayoutKind::Scalar(b)) => Ok(a == b),
         (TyLayoutKind::ThinPointer, TyLayoutKind::ThinPointer)
         | (TyLayoutKind::Unit, TyLayoutKind::Unit)
+        | (TyLayoutKind::FnItem, TyLayoutKind::FnItem)
         | (TyLayoutKind::Never, TyLayoutKind::Never) => Ok(true),
         (TyLayoutKind::FatPointer(a), TyLayoutKind::FatPointer(b)) => Ok(a == b),
         (TyLayoutKind::Enum { id: a, variants: n }, TyLayoutKind::Enum { id: b, variants: m }) => {

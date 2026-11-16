@@ -36,6 +36,9 @@ use trust_ir::{
     StructDef, StructRepr, TemplateRef, Ty, TyG, TyId, Visibility,
 };
 
+mod retained;
+pub use retained::{RetainedInstantiation, instantiate_retained};
+
 use crate::validate::{ValidationError, validate_module};
 
 // ---------------------------------------------------------------------------
@@ -94,7 +97,7 @@ pub fn validate_template(template: &Template) -> Vec<TemplateViolation> {
 /// (unresolved, which `validate_module` admits) and no tuple-layout question.
 pub fn skolem_instance(template: &Template) -> Result<Module, InstantiateError> {
     let mut host = SkolemHost::new(template);
-    let (module, _) = run(template, &mut host, Mode::Skolem)?;
+    let (module, _, _) = run(template, &mut host, Mode::Skolem)?;
     Ok(module)
 }
 
@@ -284,11 +287,18 @@ pub fn instantiate(
     template: &Template,
     host: &mut dyn InstantiationHost,
 ) -> Result<Instantiated, InstantiateError> {
+    instantiate_mapped(template, host).map(|(instance, _)| instance)
+}
+
+fn instantiate_mapped(
+    template: &Template,
+    host: &mut dyn InstantiationHost,
+) -> Result<(Instantiated, BTreeMap<FuncId, FuncId>), InstantiateError> {
     let violations = validate_template(template);
     if !violations.is_empty() {
         return Err(InstantiateError::TemplateInvalid(violations));
     }
-    let (module, answers) = run(template, host, Mode::Real)?;
+    let (module, answers, functions) = run(template, host, Mode::Real)?;
     let errors = validate_module(&module);
     if !errors.is_empty() {
         return Err(InstantiateError::OutputInvalid(errors));
@@ -306,12 +316,15 @@ pub fn instantiate(
         InstantiateError::TemplateInvalid(vec![TemplateViolation::Structure(error)])
     })?;
     let instance_digest = instance_digest(&template_digest, &module);
-    Ok(Instantiated {
-        module,
-        template_digest,
-        instance_digest,
-        answers,
-    })
+    Ok((
+        Instantiated {
+            module,
+            template_digest,
+            instance_digest,
+            answers,
+        },
+        functions,
+    ))
 }
 
 /// `trust_ir.template.instance.v1` over (template digest, output digest).
@@ -406,7 +419,7 @@ fn run(
     template: &Template,
     host: &mut dyn InstantiationHost,
     mode: Mode,
-) -> Result<(Module, AnswerLog), InstantiateError> {
+) -> Result<(Module, AnswerLog, BTreeMap<FuncId, FuncId>), InstantiateError> {
     let t = &template.module;
     let rows = GenericRows::of(t);
     let mut log = AnswerLog::default();
@@ -709,7 +722,7 @@ fn run(
     };
 
     // Step 7: one row per symbol.
-    merge_by_symbol(&mut out)?;
+    let functions = merge_by_symbol(&mut out)?;
 
     // Step 8: the drop rewrite (review R1, R2).
     if mode == Mode::Real {
@@ -721,7 +734,7 @@ fn run(
         declare_new_tuples(created, &mut out, host, &mut log)?;
     }
 
-    Ok((out, log))
+    Ok((out, log, functions))
 }
 
 /// Ask the host one question and check its edits were appends only.
@@ -1101,7 +1114,7 @@ fn check_header(header: &InstanceHeader, sig: &FuncTy) -> Result<(), Instantiate
 }
 
 /// Step 7: rows sharing a symbol become one (review R8).
-fn merge_by_symbol(out: &mut Module) -> Result<(), InstantiateError> {
+fn merge_by_symbol(out: &mut Module) -> Result<BTreeMap<FuncId, FuncId>, InstantiateError> {
     let conflict = |why: String| InstantiateError::AnswerConflict { why };
     // Functions.
     let mut by_symbol: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -1112,6 +1125,7 @@ fn merge_by_symbol(out: &mut Module) -> Result<(), InstantiateError> {
             .push(index);
     }
     let mut redirect: BTreeMap<FuncId, FuncId> = BTreeMap::new();
+    let original_functions: Vec<_> = out.functions.iter().map(|function| function.id).collect();
     let mut drop_rows: BTreeSet<usize> = BTreeSet::new();
     for (symbol, indices) in &by_symbol {
         if indices.len() < 2 {
@@ -1216,12 +1230,15 @@ fn merge_by_symbol(out: &mut Module) -> Result<(), InstantiateError> {
         });
         remap_global_ids(out, &map);
     }
-    Ok(())
+    Ok(original_functions
+        .into_iter()
+        .map(|id| (id, redirect.get(&id).copied().unwrap_or(id)))
+        .collect())
 }
 
 fn remap_constant_funcs(c: &mut Constant, redirect: &BTreeMap<FuncId, FuncId>) {
     match c {
-        Constant::FnDef(func) => {
+        Constant::FnDef(func) | Constant::FnItem(func) => {
             if let Some(to) = redirect.get(func) {
                 *func = *to;
             }
@@ -1265,10 +1282,84 @@ fn remap_func_ids(out: &mut Module, redirect: &BTreeMap<FuncId, FuncId>) {
             *id = *target;
         }
     };
+    // Function-item identity is also part of a type, including unused source
+    // rows and nested aggregate fields. Relocate every stored spelling before
+    // rewriting the value/edge that uses it.
+    for ty in &mut out.types {
+        remap_ty_funcs(ty, redirect);
+    }
+    for signature in &mut out.func_types {
+        for ty in signature.params.iter_mut().chain(&mut signature.returns) {
+            remap_ty_funcs(ty, redirect);
+        }
+    }
+    for row in &mut out.structs {
+        for field in &mut row.fields {
+            remap_ty_funcs(&mut field.ty, redirect);
+        }
+    }
+    for row in &mut out.records {
+        for field in &mut row.fields {
+            remap_ty_funcs(&mut field.ty, redirect);
+        }
+    }
+    for row in &mut out.enums {
+        for variant in &mut row.variants {
+            for ty in &mut variant.fields {
+                remap_ty_funcs(ty, redirect);
+            }
+        }
+    }
+    for row in &mut out.closure_types {
+        for ty in &mut row.captures {
+            remap_ty_funcs(ty, redirect);
+        }
+    }
+    for row in &mut out.globals {
+        remap_ty_funcs(&mut row.ty, redirect);
+    }
+    for row in &mut out.drop_glue {
+        remap_ty_funcs(&mut row.ty, redirect);
+    }
     for function in &mut out.functions {
         for block in &mut function.blocks {
+            for (_, ty) in &mut block.params {
+                remap_ty_funcs(ty, redirect);
+            }
             for node in &mut block.body {
+                let mut has_item = false;
+                node.inst.for_each_ty(|ty| {
+                    ty.visit_types(|child| {
+                        has_item |= matches!(child, Ty::FnItem(_));
+                    })
+                });
+                if has_item {
+                    let mapped = node.inst.try_map_level(
+                        &mut |ty| {
+                            let mut mapped = ty.clone();
+                            remap_ty_funcs(&mut mapped, redirect);
+                            Ok::<_, core::convert::Infallible>(mapped)
+                        },
+                        &mut |value, _| Ok(value.clone()),
+                    );
+                    node.inst = mapped.unwrap_or_else(|never| match never {});
+                }
                 match &mut node.inst {
+                    Inst::OpenFrame { def } => {
+                        for slot in &mut def.slots {
+                            remap_ty_funcs(&mut slot.ty, redirect);
+                        }
+                    }
+                    Inst::DialectOp(op) => {
+                        for ty in &mut op.result_tys {
+                            remap_ty_funcs(ty, redirect);
+                        }
+                        for attr in &mut op.attrs {
+                            if let trust_ir::dialect::AttrValue::Ty(ty) = &mut attr.value {
+                                remap_ty_funcs(ty, redirect);
+                            }
+                        }
+                    }
                     Inst::Call { callee, .. }
                     | Inst::CallCannotUnwind { callee, .. }
                     | Inst::Invoke { callee, .. } => to(callee),
@@ -1295,6 +1386,27 @@ fn remap_func_ids(out: &mut Module, redirect: &BTreeMap<FuncId, FuncId>) {
         to(&mut entry.glue);
     }
     out.drop_glue.sort_by_key(|entry| entry.glue.index());
+}
+
+fn remap_ty_funcs(root: &mut Ty, redirect: &BTreeMap<FuncId, FuncId>) {
+    let mut pending = vec![root];
+    while let Some(ty) = pending.pop() {
+        match ty {
+            Ty::FnItem(id) => {
+                if let Some(mapped) = redirect.get(id) {
+                    *id = *mapped;
+                }
+            }
+            Ty::Tuple(fields) => pending.extend(fields.iter_mut()),
+            Ty::Vector(inner, _)
+            | Ty::Ref(inner)
+            | Ty::RefMut(inner)
+            | Ty::PtrConst(inner)
+            | Ty::PtrMut(inner)
+            | Ty::Rc(inner) => pending.push(inner),
+            _ => {}
+        }
+    }
 }
 
 /// Every `GlobalId` a module names, through `map`.

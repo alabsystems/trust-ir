@@ -7,6 +7,7 @@ import TrustIr.Proofs.FrameUnaryValidity
 import TrustIr.Proofs.FrameBinaryValidity
 import TrustIr.Proofs.FrameComparisonValidity
 import TrustIr.Proofs.FrameCastValidity
+import TrustIr.Proofs.FrameContextualControls
 import TrustIr.Proofs.FrameAggregateValidity
 import TrustIr.Proofs.FrameConstructionValidity
 import TrustIr.Proofs.FrameFieldValidity
@@ -84,19 +85,21 @@ theorem WellMintedState.frame_step_success (ctx : EvalContext) (inst : Inst)
     BodyValueResult result ∧ WellMintedState final := by
   cases site with
   | «open» definition =>
-    exact mapped_step_success (semOpenFrame definition) some s final result
-      (fun id after executed => WellMintedState.open_success s after definition id valid executed) run
+    obtain ⟨id, shape, preserved, _⟩ := contextual_open_success ctx definition s final result valid run
+    rw [shape]
+    exact ⟨True.intro, preserved⟩
   | bind frame slot value =>
-    exact mapped_step_success (semBindSlot frame slot value) some s final result
-      (fun id after executed => WellMintedState.bind_success s after frame value id slot valid executed) run
+    obtain ⟨id, shape, preserved, _⟩ := contextual_bind_success ctx frame value slot s final result valid run
+    rw [shape]
+    exact ⟨True.intro, preserved⟩
   | load frame slot ty =>
-    exact mapped_step_success (semLoadSlot frame slot ty) some s final result
-      (fun id after executed => WellMintedState.load_success s after frame id slot ty valid executed) run
+    obtain ⟨id, shape, preserved, _⟩ := contextual_load_success ctx frame slot ty s final result valid run
+    rw [shape]
+    exact ⟨True.intro, preserved⟩
   | close frame =>
-    apply mapped_step_success (semCloseFrame frame) (fun _ => none) s final result ?_ run
-    intro unit after executed
-    cases unit
-    exact WellMintedState.close_success s after frame valid executed
+    obtain ⟨shape, preserved, _⟩ := contextual_close_success ctx frame s final result valid run
+    rw [shape]
+    exact ⟨True.intro, preserved⟩
   | copy ty operand =>
     obtain ⟨id, shape, preserved⟩ := WellMintedState.copy_step_success ctx ty operand s final result valid run
     rw [shape]
@@ -119,8 +122,9 @@ theorem WellMintedState.frame_step_success (ctx : EvalContext) (inst : Inst)
     exact mapped_step_success (semFCmpInst op ty left right) some s final result
       (fun id after executed => valid.float_compare_success s after op ty left right id executed) run
   | cast op srcTy dstTy operand =>
-    exact mapped_step_success (semCast op srcTy dstTy operand ctx.byteModel) some s final result
-      (fun id after executed => valid.cast_success s after op srcTy dstTy operand id ctx.byteModel executed) run
+    obtain ⟨id, shape, preserved⟩ := valid.contextual_cast_success ctx s final op srcTy dstTy operand result run
+    rw [shape]
+    exact ⟨True.intro, preserved⟩
   | extractElement ty array index =>
     exact mapped_step_success (semExtractElementUsing (ctx.elementIndex index) ty array index) some s final result
       (fun id after executed => valid.extract_element_success (ctx.elementIndex index)

@@ -108,6 +108,64 @@ impl<'f> ObservedStaticFunctionPointerAnalysis<'f> {
             }
         }
     }
+    /// Observed counterpart of the rejection-only item-origin query. This
+    /// authenticates neither a use site nor dominance and must never authorize
+    /// a transformation or a pointer certificate.
+    pub fn resolve_item_for_rejection_observed<O: ExecutionObserver>(
+        &mut self,
+        value: ValueId,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) -> R<Option<FuncId>> {
+        let mut work = Work { session, site };
+        let result = (|| {
+            if !self.state.definitions_built {
+                self.state.build_definitions(self.function, &mut work)?;
+            }
+            let mut current = value;
+            for _ in 0..=self.state.definitions.len() {
+                let Some(definition) = work.read(&self.state.definitions, current.index())? else {
+                    return Ok(None);
+                };
+                work.admit(8, size_of::<Option<FuncId>>())?;
+                match definition {
+                    DefinitionState::Unique {
+                        instruction:
+                            Some(Inst::Const {
+                                ty: Ty::FnItem(expected),
+                                value: Constant::FnItem(actual),
+                            }),
+                        ..
+                    } if expected == actual => return Ok(Some(*expected)),
+                    DefinitionState::Unique {
+                        instruction: Some(Inst::Copy { operand, .. }),
+                        ..
+                    }
+                    | DefinitionState::Unique {
+                        instruction:
+                            Some(Inst::Cast {
+                                op: CastOp::ReifyFnPointer,
+                                operand,
+                                ..
+                            }),
+                        ..
+                    } => current = *operand,
+                    _ => return Ok(None),
+                }
+            }
+            Ok(None)
+        })();
+        match result.and_then(|answer| {
+            work.publication(size_of::<Option<FuncId>>())?;
+            Ok(answer)
+        }) {
+            Ok(answer) => Ok(answer),
+            Err(error) => {
+                self.state.retire(&mut work);
+                Err(work.terminal(error))
+            }
+        }
+    }
     /// Consume every retained cache/buffer, including stopped sessions.
     pub fn retire_observed<O: ExecutionObserver>(
         self,

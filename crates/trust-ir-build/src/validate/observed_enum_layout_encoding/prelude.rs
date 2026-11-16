@@ -9,10 +9,18 @@ impl<'m> State<'m> {
         layout: &EnumLayoutDescriptor,
         work: &mut Work<'_, '_, O>,
     ) -> R<Option<u64>> {
+        work.admit(1, 0)?;
+        if matches!(
+            &layout.encoding,
+            EnumTagEncoding::DirectWithUninhabited { .. }
+        ) {
+            // Its complete checked layout is owned by the field stage.
+            return Ok(None);
+        }
         self.table = Some(LayoutTable::new_observed(module, work.session, work.site)?);
         work.admit(1, size_of::<Option<EnumTagRepr>>())?;
         let repr = match &layout.encoding {
-            EnumTagEncoding::Direct { .. } => {
+            EnumTagEncoding::Direct { .. } | EnumTagEncoding::DirectWithUninhabited { .. } => {
                 enm.canonical_tag_repr_observed(work.session, work.site)?
             }
             EnumTagEncoding::Niche { niche_ty, .. } => Some(*niche_ty),

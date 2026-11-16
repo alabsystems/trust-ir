@@ -9,50 +9,25 @@ namespace TrustIrEval.Observation
 open Lean (Json)
 open TrustIr
 
--- Select only the native map API supplied by the two admitted compiler pins.
-macro "trustIrObservationCompilerCommand " "{" legacyCommand:command "}" "{" modernCommand:command "}" : command => do
-  if Lean.versionString == "4.8.0" then pure legacyCommand
-  else if Lean.versionString == "4.30.0-rc2" then pure modernCommand
-  else Lean.Macro.throwError "unsupported compiler for Observation map API"
-
-trustIrObservationCompilerCommand {
 /-- Canonical output interning is independent of source sharing. -/
 structure GraphState where
   nodes : Array Json := #[]
-  canonical : Lean.HashMap String Nat := Lean.mkHashMap
-} {
-/-- Canonical output interning is independent of source sharing. -/
-structure GraphState where
-  nodes : Array Json := #[]
-  canonical : Std.HashMap String Nat := Std.HashMap.emptyWithCapacity
-}
+  canonical : trustIrHashMap String Nat := {}
 
 private def tag (name : String) (fields : List Json := []) : Json :=
   .arr ((Json.str name :: fields).toArray)
 
 private def ref (index : Nat) : Json := .num index
 
-trustIrObservationCompilerCommand {
 private def intern (node : Json) : StateM GraphState Nat := do
   let state ← get
   let key := node.compress
-  match state.canonical.find? key with
+  match trustIrHashMapFind? state.canonical key with
   | some index => pure index
   | none =>
     let index := state.nodes.size
     set ({ nodes := state.nodes.push node, canonical := state.canonical.insert key index } : GraphState)
     pure index
-} {
-private def intern (node : Json) : StateM GraphState Nat := do
-  let state ← get
-  let key := node.compress
-  match state.canonical.get? key with
-  | some index => pure index
-  | none =>
-    let index := state.nodes.size
-    set ({ nodes := state.nodes.push node, canonical := state.canonical.insert key index } : GraphState)
-    pure index
-}
 
 /-- Typed retained source objects. The wrappers are not identity keys: the
     runtime cache keys the original object inside each wrapper. -/
@@ -101,6 +76,8 @@ private def view : Input → Shape
     ⟨"closure", [literal (ref func.index), child (.values captures)], none⟩
   | .value (.fnDef signature func) =>
     ⟨"function", [literal (ref signature.index), literal (ref func.index)], none⟩
+  | .value (.fnItem func) => ⟨"fnitem", [literal (ref func.index)], none⟩
+  | .value (.sourceFrame _ _ _ slots) => ⟨"frame", [literal (ref slots.length)], none⟩
   | .value (.frame _ slots) => ⟨"frame", [literal (ref slots.length)], none⟩
   | .value (.partial _) | .value (.undef _) => ⟨"poison", [], none⟩
   | .value .uninit => ⟨"uninit", [], none⟩
@@ -175,21 +152,12 @@ structure MemoStats where
 
 private abbrev MemoKey := (Nat × Nat × USize) × Nat × Nat
 
-trustIrObservationCompilerCommand {
 private structure RuntimeState where
   graph : GraphState := {}
   -- Keeping the complete typed input alive prevents address reuse while a key
   -- is present. Domains and dependent extents are part of the exact key.
-  memo : Lean.HashMap MemoKey (Nat × Input) := Lean.mkHashMap
+  memo : trustIrHashMap MemoKey (Nat × Input) := {}
   stats : MemoStats := {}
-} {
-private structure RuntimeState where
-  graph : GraphState := {}
-  -- Keeping the complete typed input alive prevents address reuse while a key
-  -- is present. Domains and dependent extents are part of the exact key.
-  memo : Std.HashMap MemoKey (Nat × Input) := Std.HashMap.emptyWithCapacity
-  stats : MemoStats := {}
-}
 
 private unsafe def inputKey (input : Input) : MemoKey :=
   let address := ptrAddrUnsafe input
@@ -202,11 +170,10 @@ private unsafe def inputKey (input : Input) : MemoKey :=
   | .repeat (size := size) tree copies => ((5, size, ptrAddrUnsafe tree), 0, copies)
   | .concat _ _ => ((6, 0, address), 0, 0)
 
-trustIrObservationCompilerCommand {
 private unsafe def runtimeNode (input : Input) : StateM RuntimeState Nat := do
   let key := inputKey input
   let state ← get
-  match state.memo.find? key with
+  match trustIrHashMapFind? state.memo key with
   | some (index, _) =>
     modify fun state => { state with stats := { state.stats with hits := state.stats.hits + 1 } }
     return index
@@ -229,34 +196,6 @@ private unsafe def runtimeNode (input : Input) : StateM RuntimeState Nat := do
       pure index
   modify fun state => { state with memo := state.memo.insert key (index, input) }
   return index
-} {
-private unsafe def runtimeNode (input : Input) : StateM RuntimeState Nat := do
-  let key := inputKey input
-  let state ← get
-  match state.memo.get? key with
-  | some (index, _) =>
-    modify fun state => { state with stats := { state.stats with hits := state.stats.hits + 1 } }
-    return index
-  | none => pure ()
-  -- Lookup precedes decomposition, allocation of child wrappers, and descent.
-  modify fun state => { state with stats := { state.stats with
-    visits := state.stats.visits + 1
-    treeVisits := state.stats.treeVisits + (if key.1.1 == 3 then 1 else 0)
-    valueVisits := state.stats.valueVisits + (if key.1.1 == 0 then 1 else 0) } }
-  let shape := view input
-  let index ← match shape.alias with
-    | some target => runtimeNode target
-    | none => do
-      let fields ← shape.fields.mapM fun field => match field with
-        | .inl value => pure value
-        | .inr input => ref <$> runtimeNode input
-      let state ← get
-      let (index, graph) := (intern (tag shape.name fields)).run state.graph
-      set { state with graph }
-      pure index
-  modify fun state => { state with memo := state.memo.insert key (index, input) }
-  return index
-}
 
 /-- Native-only diagnostic entry. Its unsafe boundary is pointer identity;
     cache entries retain their sources, and the cache dies after this batch.

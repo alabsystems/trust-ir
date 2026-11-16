@@ -358,6 +358,42 @@ impl<'function> StaticFunctionPointerAnalysis<'function> {
             .get_or_init(|| compute_dominator_tree(self.function, census))
     }
 
+    /// Find a nominal-item origin for rejection-only module checks. This
+    /// does not authenticate SSA dominance, a use site, signature or source
+    /// binding and MUST NOT authorize a transformation or pointer certificate.
+    /// Reinterpret casts stop the walk: zero-byte casts select their destination.
+    pub fn resolve_item_for_rejection(&self, value: ValueId) -> Option<FuncId> {
+        let definitions = &self.definitions().entries;
+        let mut current = value;
+        for _ in 0..=definitions.len() {
+            match definitions.get(&current.index())? {
+                DefinitionState::Unique {
+                    instruction:
+                        Some(Inst::Const {
+                            ty: Ty::FnItem(expected),
+                            value: Constant::FnItem(actual),
+                        }),
+                    ..
+                } if expected == actual => return Some(*expected),
+                DefinitionState::Unique {
+                    instruction: Some(Inst::Copy { operand, .. }),
+                    ..
+                }
+                | DefinitionState::Unique {
+                    instruction:
+                        Some(Inst::Cast {
+                            op: CastOp::ReifyFnPointer,
+                            operand,
+                            ..
+                        }),
+                    ..
+                } => current = *operand,
+                _ => return None,
+            }
+        }
+        None
+    }
+
     /// Resolve `value` to an exact module-local [`FuncId`] when its provenance
     /// is entirely within the checkable subset described on this type.
     ///
@@ -1654,6 +1690,8 @@ pub enum PoolKey {
     },
     /// DynDropPool: `drop_in_place::<dyn principal>`.
     DynDrop(PrincipalKey),
+    /// Exact module-local nominal function-item identity, never an address pool.
+    FnItem(FuncId),
 }
 
 impl PoolKey {
@@ -1661,7 +1699,7 @@ impl PoolKey {
     #[must_use]
     pub fn principal(&self) -> Option<PrincipalKey> {
         match self {
-            PoolKey::Fn(_) => None,
+            PoolKey::Fn(_) | PoolKey::FnItem(_) => None,
             PoolKey::DynMethod { principal, .. } | PoolKey::DynDrop(principal) => Some(*principal),
         }
     }
@@ -1669,6 +1707,7 @@ impl PoolKey {
     fn with_principal(&self, principal: PrincipalKey) -> PoolKey {
         match self {
             PoolKey::Fn(shape) => PoolKey::Fn(shape.clone()),
+            PoolKey::FnItem(id) => PoolKey::FnItem(*id),
             PoolKey::DynMethod { method, .. } => PoolKey::DynMethod {
                 principal,
                 method: *method,
@@ -1732,7 +1771,7 @@ impl CarriedKey {
     /// shape (it [admits](ClosedPools::admits) some FnPool key).
     fn may_be_fn(&self) -> bool {
         match self {
-            CarriedKey::Key(PoolKey::Fn(_))
+            CarriedKey::Key(PoolKey::Fn(_) | PoolKey::FnItem(_))
             | CarriedKey::AnyFn
             | CarriedKey::Any
             | CarriedKey::Untyped => true,
@@ -2052,7 +2091,7 @@ impl ClosedPools {
     pub(crate) fn admits(&self, carried: &CarriedKey, key: &PoolKey) -> bool {
         match (carried, key) {
             (CarriedKey::Any | CarriedKey::Untyped, _)
-            | (CarriedKey::AnyFn, PoolKey::Fn(_))
+            | (CarriedKey::AnyFn, PoolKey::Fn(_) | PoolKey::FnItem(_))
             | (CarriedKey::AnyDyn, PoolKey::DynMethod { .. } | PoolKey::DynDrop(_)) => true,
             // Data holds what the LAUNDERs' keys admit. A fn key is admitted
             // when some laundered key admits any fn key: shape matching is
@@ -2066,11 +2105,15 @@ impl ClosedPools {
             (CarriedKey::Laundered, key) => {
                 self.laundered.keys().any(|held| self.admits(held, key))
             }
-            (CarriedKey::AnyFn, _) | (CarriedKey::AnyDyn, PoolKey::Fn(_)) => false,
+            (CarriedKey::AnyFn, _) | (CarriedKey::AnyDyn, PoolKey::Fn(_) | PoolKey::FnItem(_)) => {
+                false
+            }
             // Called at another shape it is not ABI-compatible with: UB (R4),
             // as for an invoke ([`Self::pool`]).
             (CarriedKey::Key(PoolKey::Fn(held)), PoolKey::Fn(called)) => held.matches(called),
             (CarriedKey::Key(PoolKey::Fn(_)), _) => false,
+            (CarriedKey::Key(PoolKey::FnItem(held)), PoolKey::FnItem(called)) => held == called,
+            (CarriedKey::Key(PoolKey::FnItem(_)), _) => false,
             (CarriedKey::Principal(held), key) => key
                 .principal()
                 .is_some_and(|called| self.principal_reaches(*held, called)),
@@ -2250,7 +2293,11 @@ impl InvokedKeySummaries {
 
 /// The FnPool shape of a trust-ir signature. It states no ABI class (see
 /// [`FnShape::abi`]). A missing signature is unclassified.
-pub(crate) fn fn_pool_shape(module: &Module, signature: FuncTyId) -> FnShape {
+pub(crate) fn fn_pool_shape(
+    functions: &crate::ModuleFunctionCatalog<'_>,
+    signature: FuncTyId,
+) -> FnShape {
+    let module = functions.source_module();
     let Some(signature) = module.func_types.get(signature.as_usize()) else {
         return FnShape::unclassified();
     };
@@ -2261,7 +2308,7 @@ pub(crate) fn fn_pool_shape(module: &Module, signature: FuncTyId) -> FnShape {
             signature
                 .params
                 .iter()
-                .map(|ty| arg_class(module, ty, 0))
+                .map(|ty| arg_class(functions, ty, 0))
                 .collect(),
         ),
     }
@@ -2280,18 +2327,19 @@ fn depth_bound(module: &Module) -> usize {
 
 /// One argument's class, syntactically and without layouts. `depth` bounds
 /// a malformed module's cyclic transparent or refinement chain.
-fn arg_class(module: &Module, ty: &Ty, depth: usize) -> ArgClass {
+fn arg_class(functions: &crate::ModuleFunctionCatalog<'_>, ty: &Ty, depth: usize) -> ArgClass {
+    let module = functions.source_module();
     if depth > depth_bound(module) {
         return ArgClass::Unclassified;
     }
     // Any two zero-sized, 1-aligned types are ABI-compatible (std `fn` docs),
     // so only a type proved not zero-sized gets a class of its own.
-    let exact = || match zero_sized(module, ty, depth) {
+    let exact = || match zero_sized(functions, ty, depth) {
         Some(false) => ArgClass::Exact(fingerprint(ty)),
         Some(true) | None => ArgClass::Unclassified,
     };
     match ty {
-        Ty::Storage(_) => ArgClass::Unclassified,
+        Ty::Storage(_) | Ty::FnItem(_) => ArgClass::Unclassified,
         Ty::I8 | Ty::U8 | Ty::Bool => ArgClass::Int(8),
         Ty::I16 | Ty::U16 => ArgClass::Int(16),
         Ty::I32 | Ty::U32 | Ty::Char => ArgClass::Int(32),
@@ -2323,7 +2371,7 @@ fn arg_class(module: &Module, ty: &Ty, depth: usize) -> ArgClass {
             .types
             .get(base.as_usize())
             .map_or(ArgClass::Unclassified, |base| {
-                arg_class(module, base, depth + 1)
+                arg_class(functions, base, depth + 1)
             }),
         Ty::Struct(id) => {
             let mut definitions = module.structs.iter().filter(|def| def.id == *id);
@@ -2336,9 +2384,9 @@ fn arg_class(module: &Module, ty: &Ty, depth: usize) -> ArgClass {
             let mut payload = definition
                 .fields
                 .iter()
-                .filter(|field| zero_sized(module, &field.ty, depth + 1) != Some(true));
+                .filter(|field| zero_sized(functions, &field.ty, depth + 1) != Some(true));
             match (payload.next(), payload.next()) {
-                (Some(field), None) => arg_class(module, &field.ty, depth + 1),
+                (Some(field), None) => arg_class(functions, &field.ty, depth + 1),
                 _ => ArgClass::Unclassified,
             }
         }
@@ -2357,19 +2405,20 @@ fn arg_class(module: &Module, ty: &Ty, depth: usize) -> ArgClass {
 
 /// Whether `ty` is zero-sized, by its spelling or its declared size: `None`
 /// when neither decides it (never read as "not zero-sized").
-fn zero_sized(module: &Module, ty: &Ty, depth: usize) -> Option<bool> {
+fn zero_sized(functions: &crate::ModuleFunctionCatalog<'_>, ty: &Ty, depth: usize) -> Option<bool> {
+    let module = functions.source_module();
     if depth > depth_bound(module) {
         return None;
     }
     // Zero-sized when every part is; not when any part is not.
     fn all<'a>(
-        module: &Module,
+        functions: &crate::ModuleFunctionCatalog<'_>,
         parts: impl IntoIterator<Item = &'a Ty>,
         depth: usize,
     ) -> Option<bool> {
         let mut decided = Some(true);
         for part in parts {
-            match zero_sized(module, part, depth + 1) {
+            match zero_sized(functions, part, depth + 1) {
                 Some(true) => {}
                 Some(false) => return Some(false),
                 None => decided = None,
@@ -2408,20 +2457,21 @@ fn zero_sized(module: &Module, ty: &Ty, depth: usize) -> Option<bool> {
         | Ty::Func(_)
         | Ty::Handle(_)
         | Ty::FatPtr(_) => Some(false),
+        Ty::FnItem(id) => functions.function_item(*id).ok().map(|_| true),
         Ty::Vector(_, lanes) => (*lanes > 0).then_some(false),
         Ty::Array(_, 0) => Some(true),
         Ty::Array(element, _) | Ty::Refine(element, _) => module
             .types
             .get(element.as_usize())
-            .and_then(|element| zero_sized(module, element, depth + 1)),
-        Ty::Tuple(fields) => all(module, fields, depth),
+            .and_then(|element| zero_sized(functions, element, depth + 1)),
+        Ty::Tuple(fields) => all(functions, fields, depth),
         Ty::Struct(id) => {
             let mut definitions = module.structs.iter().filter(|def| def.id == *id);
             match (definitions.next(), definitions.next()) {
                 (Some(definition), None) => match definition.size {
                     Some(size) => Some(size == 0),
                     None => all(
-                        module,
+                        functions,
                         definition.fields.iter().map(|field| &field.ty),
                         depth,
                     ),
@@ -2433,7 +2483,7 @@ fn zero_sized(module: &Module, ty: &Ty, depth: usize) -> Option<bool> {
             let mut definitions = module.records.iter().filter(|def| def.id == *id);
             match (definitions.next(), definitions.next()) {
                 (Some(definition), None) => all(
-                    module,
+                    functions,
                     definition.fields.iter().map(|field| &field.ty),
                     depth,
                 ),
@@ -2455,24 +2505,34 @@ fn zero_sized(module: &Module, ty: &Ty, depth: usize) -> Option<bool> {
 /// The rule H operand keys of a trust-ir type: what a value of it may carry.
 /// Any value with data may also hold a laundered callable
 /// ([`CarriedKey::Laundered`]). `defs` is the pass's all-definitions index
-/// over `module` ([`Module::callable_carriers`]).
+/// over the catalog's module ([`Module::callable_carriers`]).
 pub(crate) fn carried_keys(
-    module: &Module,
+    functions: &crate::ModuleFunctionCatalog<'_>,
     defs: &mut crate::reach::DefIndex,
     ty: &Ty,
 ) -> Vec<CarriedKey> {
-    let carriers = module.callable_carriers_in(defs, ty);
+    let module = functions.source_module();
+    let carriers = functions.callable_carriers_in(defs, ty);
     if carriers.opaque {
         return vec![CarriedKey::Any];
     }
     let mut keys: Vec<CarriedKey> = carriers
         .fn_types
         .iter()
-        .map(|signature| CarriedKey::Key(PoolKey::Fn(fn_pool_shape(module, *signature))))
+        .map(|signature| CarriedKey::Key(PoolKey::Fn(fn_pool_shape(functions, *signature))))
         .collect();
+    // A zero-byte item carries exactly its nominal code identity. It is not
+    // filed under the ABI-compatible function-pointer shape pool.
+    keys.extend(
+        carriers
+            .fn_items
+            .iter()
+            .copied()
+            .map(|id| CarriedKey::Key(PoolKey::FnItem(id))),
+    );
     for closure in &carriers.closures {
         keys.push(match module.closure_types.get(closure.as_usize()) {
-            Some(closure) => CarriedKey::Key(PoolKey::Fn(fn_pool_shape(module, closure.func))),
+            Some(closure) => CarriedKey::Key(PoolKey::Fn(fn_pool_shape(functions, closure.func))),
             None => CarriedKey::AnyFn,
         });
     }
@@ -2485,7 +2545,7 @@ pub(crate) fn carried_keys(
     if carriers.erased_dyn {
         keys.push(CarriedKey::AnyDyn);
     }
-    if zero_sized(module, ty, 0) != Some(true) {
+    if zero_sized(functions, ty, 0) != Some(true) {
         keys.push(CarriedKey::Laundered);
     }
     keys
@@ -3579,12 +3639,18 @@ mod tests {
             returns: Vec::new(),
             is_vararg: true,
         });
-        let shape = fn_pool_shape(&module, FuncTyId::new(0));
+        let shape = fn_pool_shape(
+            &crate::ModuleFunctionCatalog::new(&module),
+            FuncTyId::new(0),
+        );
         assert_eq!(shape.abi, None);
         assert_eq!(shape.variadic, Some(true));
         assert_eq!(shape.params, Some(vec![ArgClass::Int(32)]));
         assert_eq!(
-            fn_pool_shape(&module, FuncTyId::new(9)),
+            fn_pool_shape(
+                &crate::ModuleFunctionCatalog::new(&module),
+                FuncTyId::new(9)
+            ),
             FnShape::unclassified()
         );
     }
@@ -3627,7 +3693,8 @@ mod tests {
             structure(3, StructRepr::Rust, vec![field(Ty::U64)]),
         ];
         module.types = vec![Ty::U32];
-        let class = |module: &Module, ty: Ty| arg_class(module, &ty, 0);
+        let class =
+            |module: &Module, ty: Ty| arg_class(&crate::ModuleFunctionCatalog::new(module), &ty, 0);
         for thin in [
             Ty::Ptr,
             Ty::Ref(Box::new(Ty::U8)),

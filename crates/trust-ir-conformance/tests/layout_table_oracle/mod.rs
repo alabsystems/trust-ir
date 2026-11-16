@@ -21,6 +21,9 @@
 //! guard is a thread-local stack ([`CLOSURE_VISITING`]), so no line of the
 //! verbatim recursion moves, and the `Ty::Closure` arm is the arm that
 //! recursion carried, with the tuple arm's checks over CAPTURE order.
+//!
+//! The v68 nominal item leaf independently scans actual function declarations
+//! and signature rows before granting its zero-byte layout.
 #![allow(clippy::all)]
 
 use std::cell::RefCell;
@@ -192,6 +195,19 @@ fn ty_layout_shape_inner(
             align_bits: Some(u64::from(pointer_bits)),
             kind: TyLayoutKind::ThinPointer,
         }),
+        Ty::FnItem(id) => {
+            let bad = || LayoutError::UnsupportedTyShape(TyShape::FnItem);
+            let mut matching = m.functions.iter().filter(|function| function.id == *id);
+            let function = matching.next().ok_or_else(bad)?;
+            if matching.next().is_some() || m.func_types.get(function.ty.as_usize()).is_none() {
+                return Err(bad());
+            }
+            Ok(TyLayoutShape {
+                size_bits: 0,
+                align_bits: Some(8),
+                kind: TyLayoutKind::FnItem,
+            })
+        }
         Ty::FatPtr(kind) => {
             let ptr = PointerLayoutShape::fat(pointer_bits, kind.metadata_shape());
             let size_bits = u64::from(ptr.total_bits().ok_or(LayoutError::SizeOverflow)?);
@@ -673,7 +689,9 @@ fn enum_layout_shape_inner(
     // `TargetScalarLayoutUnavailable`: the layout is unjudgeable, not
     // admissible.
     let lane_align_bits = match ed.layout.as_ref().map(|desc| &desc.encoding) {
-        None | Some(trust_ir::ty::EnumTagEncoding::Direct { .. }) => {
+        None
+        | Some(trust_ir::ty::EnumTagEncoding::Direct { .. })
+        | Some(trust_ir::ty::EnumTagEncoding::DirectWithUninhabited { .. }) => {
             Some(enum_tag_repr_align(m, tag)? * 8)
         }
         Some(trust_ir::ty::EnumTagEncoding::Niche { niche_ty, .. }) => {
@@ -694,9 +712,120 @@ fn enum_layout_shape_inner(
         let mut variant_field_sizes = Vec::with_capacity(ed.variants.len());
         let mut variant_field_aligns = Vec::with_capacity(ed.variants.len());
         let mut never_field = false;
+        let profiles = match ed.layout.as_ref().map(|d| &d.encoding) {
+            Some(trust_ir::ty::EnumTagEncoding::DirectWithUninhabited {
+                tag_offset,
+                variants,
+            }) => {
+                let desc = ed.layout.as_ref().unwrap();
+                let dead = least_fixpoint(m);
+                let expected: Vec<_> = ed
+                    .variants
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| dead.variant_is_uninhabited(row))
+                    .map(|(i, _)| i)
+                    .collect();
+                if !source_references_exist(m, ed.variants.iter().flat_map(|v| &v.fields))
+                    || expected.len() != variants.len()
+                    || variants
+                        .iter()
+                        .zip(expected)
+                        .any(|(row, i)| row.variant as usize != i)
+                    || desc.align == 0
+                    || !desc.align.is_power_of_two()
+                    || !desc.size.is_multiple_of(desc.align)
+                    || desc.variant_field_offsets.len() != ed.variants.len()
+                {
+                    return Err(LayoutError::EnumLayoutUnavailable(id));
+                }
+                let tag_size = tag_size_bits / 8;
+                let tag_align = lane_align_bits.unwrap() / 8;
+                for row in variants {
+                    let source = &ed.variants[row.variant as usize];
+                    let offsets = &desc.variant_field_offsets[row.variant as usize];
+                    if row.align == 0
+                        || !row.align.is_power_of_two()
+                        || !row.size.is_multiple_of(row.align)
+                        || row.size > desc.size
+                        || row.align > desc.align
+                        || row.fields.len() != source.fields.len()
+                        || offsets.len() != source.fields.len()
+                        || tag_align > row.align
+                        || !tag_offset.is_multiple_of(tag_align)
+                        || tag_offset
+                            .checked_add(tag_size)
+                            .is_none_or(|end| end > row.size)
+                    {
+                        return Err(LayoutError::EnumLayoutUnavailable(id));
+                    }
+                    for (i, (field, offset)) in row.fields.iter().zip(offsets).enumerate() {
+                        if field.align == 0
+                            || !field.align.is_power_of_two()
+                            || !field.size.is_multiple_of(field.align)
+                            || field.align > row.align
+                            || !offset.is_multiple_of(field.align)
+                            || offset
+                                .checked_add(field.size)
+                                .is_none_or(|end| end > row.size)
+                            || byte_ranges_overlap(*tag_offset, tag_size, *offset, field.size)
+                            || row.fields[..i]
+                                .iter()
+                                .zip(&offsets[..i])
+                                .any(|(prior, pos)| {
+                                    byte_ranges_overlap(*pos, prior.size, *offset, field.size)
+                                })
+                        {
+                            return Err(LayoutError::EnumLayoutUnavailable(id));
+                        }
+                    }
+                }
+                variants.as_slice()
+            }
+            _ => &[],
+        };
+        // Dead payload storage can be omitted only after checking the whole
+        // declared reference graph and the independently computed least fixpoint.
+        let single =
+            match ed.layout.as_ref().map(|d| &d.encoding) {
+                Some(trust_ir::ty::EnumTagEncoding::SingleInhabited { variant }) => {
+                    let selected = usize::try_from(*variant)
+                        .map_err(|_| LayoutError::EnumLayoutUnavailable(id))?;
+                    let dead = least_fixpoint(m);
+                    if selected >= ed.variants.len()
+                        || !source_references_exist(m, ed.variants.iter().flat_map(|v| &v.fields))
+                        || ed.variants.iter().enumerate().any(|(index, row)| {
+                            dead.variant_is_uninhabited(row) != (index != selected)
+                        })
+                    {
+                        return Err(LayoutError::EnumLayoutUnavailable(id));
+                    }
+                    Some(selected)
+                }
+                _ => None,
+            };
         for (index, variant) in ed.variants.iter().enumerate() {
-            if matches!(ed.layout.as_ref().map(|desc| &desc.encoding), Some(trust_ir::ty::EnumTagEncoding::SingleInhabited { variant }) if *variant as usize != index)
-            {
+            if let Some(profile) = profiles.iter().find(|row| row.variant as usize == index) {
+                let mut end = 0;
+                let mut align = 8;
+                for field in &profile.fields {
+                    let field_align = field
+                        .align
+                        .checked_mul(8)
+                        .ok_or(LayoutError::SizeOverflow)?;
+                    let field_size = field.size.checked_mul(8).ok_or(LayoutError::SizeOverflow)?;
+                    end = align_up_bits(end, field_align)?
+                        .checked_add(field_size)
+                        .ok_or(LayoutError::SizeOverflow)?;
+                    align = align.max(field_align);
+                }
+                payload_size_bits = payload_size_bits.max(align_up_bits(end, align)?);
+                payload_align_bits = payload_align_bits.max(align);
+                variant_field_sizes.push(profile.fields.iter().map(|f| f.size).collect());
+                variant_field_aligns.push(profile.fields.iter().map(|f| f.align).collect());
+                continue;
+            }
+            if single.is_some_and(|selected| index != selected) {
                 variant_field_sizes.push(Vec::new());
                 variant_field_aligns.push(Vec::new());
                 continue;
@@ -814,19 +943,9 @@ fn enum_layout_shape_inner(
                         return Err(LayoutError::EnumLayoutUnavailable(id));
                     }
                 }
-                trust_ir::ty::EnumTagEncoding::SingleInhabited { variant } => {
-                    let selected = *variant as usize;
-                    if selected >= ed.variants.len()
-                        || ed
-                            .variants
-                            .iter()
-                            .enumerate()
-                            .any(|(index, v)| m.variant_is_uninhabited(v) == (index == selected))
-                    {
-                        return Err(LayoutError::EnumLayoutUnavailable(id));
-                    }
-                }
-                trust_ir::ty::EnumTagEncoding::Direct { tag_offset } => {
+                trust_ir::ty::EnumTagEncoding::SingleInhabited { .. } => {}
+                trust_ir::ty::EnumTagEncoding::Direct { tag_offset }
+                | trust_ir::ty::EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
                     let tag_size = tag_size_bits / 8;
                     // WS2.22: the tag's PLACEMENT is judged against the
                     // target's alignment for the tag type (asked of the
@@ -1165,6 +1284,78 @@ pub enum INode {
 pub struct LeastFixpoint<'m> {
     m: &'m Module,
     uninhabited: BTreeMap<INode, bool>,
+}
+
+fn source_references_exist<'a>(m: &'a Module, fields: impl Iterator<Item = &'a Ty>) -> bool {
+    let mut pending: Vec<&Ty> = fields.collect();
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        match ty {
+            Ty::FnItem(id) => {
+                let mut matching = m.functions.iter().filter(|function| function.id == *id);
+                let Some(function) = matching.next() else {
+                    return false;
+                };
+                if matching.next().is_some() || m.func_types.get(function.ty.as_usize()).is_none() {
+                    return false;
+                }
+            }
+            Ty::Array(id, _)
+            | Ty::Set(id, _)
+            | Ty::Sequence(id)
+            | Ty::Refine(id, _)
+            | Ty::FatPtr(trust_ir::ty::FatPtrKind::Slice(id)) => {
+                let Some(base) = m.types.get(id.as_usize()) else {
+                    return false;
+                };
+                if visited.insert((0u8, id.as_usize())) {
+                    pending.push(base);
+                }
+            }
+            Ty::Struct(id) => {
+                let Some(def) = m.structs.iter().find(|d| d.id == *id) else {
+                    return false;
+                };
+                if visited.insert((1, id.as_usize())) {
+                    pending.extend(def.fields.iter().map(|f| &f.ty));
+                }
+            }
+            Ty::Enum(id) => {
+                let Some(def) = m.enums.iter().find(|d| d.id == *id) else {
+                    return false;
+                };
+                if visited.insert((2, id.as_usize())) {
+                    pending.extend(def.variants.iter().flat_map(|v| &v.fields));
+                }
+            }
+            Ty::Record(id) => {
+                let Some(def) = m.records.iter().find(|d| d.id == *id) else {
+                    return false;
+                };
+                if visited.insert((3, id.as_usize())) {
+                    pending.extend(def.fields.iter().map(|f| &f.ty));
+                }
+            }
+            Ty::Closure(id) => {
+                let Some(def) = m.closure_types.get(id.as_usize()) else {
+                    return false;
+                };
+                if visited.insert((4, id.as_usize())) {
+                    pending.extend(&def.captures);
+                }
+            }
+            Ty::Tuple(items) => pending.extend(items),
+            Ty::Vector(elem, _)
+            | Ty::Ref(elem)
+            | Ty::RefMut(elem)
+            | Ty::PtrConst(elem)
+            | Ty::PtrMut(elem)
+            | Ty::Rc(elem) => pending.push(elem),
+            Ty::Error => return false,
+            _ => {}
+        }
+    }
+    true
 }
 
 pub fn least_fixpoint(m: &Module) -> LeastFixpoint<'_> {

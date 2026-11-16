@@ -8,6 +8,7 @@ pub(super) enum Kind {
     Record,
     Closure,
     Func,
+    FnItem,
     TyId,
     Pred,
 }
@@ -41,6 +42,8 @@ pub(super) enum Task<'a> {
     ConstantFields(&'a [(String, Constant)], &'a [(String, Constant)]),
 }
 pub(super) struct State<'a> {
+    pub functions_a: Option<crate::ModuleFunctionCatalog<'a>>,
+    pub functions_b: Option<crate::ModuleFunctionCatalog<'a>>,
     pub tasks: Vec<Task<'a>>,
     pub active: Vec<Key>,
     pub last: bool,
@@ -54,6 +57,8 @@ pub(super) struct State<'a> {
 impl<'a> State<'a> {
     pub fn new() -> Self {
         Self {
+            functions_a: None,
+            functions_b: None,
             tasks: Vec::new(),
             active: Vec::new(),
             last: true,
@@ -153,6 +158,12 @@ impl<'a> State<'a> {
         Ok(())
     }
     pub fn scratch<O: ExecutionObserver>(&mut self, w: &mut Work<'_, '_, O>) {
+        if let Some(catalog) = self.functions_a.take() {
+            let _ = catalog.retire_observed(w.session, w.site);
+        }
+        if let Some(catalog) = self.functions_b.take() {
+            let _ = catalog.retire_observed(w.session, w.site);
+        }
         w.retire_rows(&mut self.tasks);
         w.retire_rows(&mut self.active);
         self.discriminants(w);

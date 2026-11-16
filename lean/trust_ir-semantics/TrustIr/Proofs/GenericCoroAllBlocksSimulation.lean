@@ -52,14 +52,14 @@ theorem lowerRows_runCallEquivalent (header : EvalFunction) (blocks : Rows)
   let sourceFunction : EvalFunction := {header with cfg := cfgOf blocks, localTypes := some sourceTypes}
   let targetFunction : EvalFunction :=
     {header with cfg := cfgOf (planAllBlocks blocks).rows, localTypes := some targetTypes}
-  apply runCallEquivalent_of_selectedEffects sourceFunction targetFunction rfl
+  apply runCallEquivalent_of_selectedEffects sourceFunction targetFunction rfl rfl
   intro ctx selected fuel
   have simulated := AllBlocksInduction.evaluator_simulation ctx selected sourceFunction targetFunction
-    rfl rfl rfl ?_ fuel
+    rfl rfl rfl rfl ?_ fuel
   · exact AllBlocksInduction.selected_of_paired (evaluatorAt fuel) (evaluatorAt fuel) ctx
       _ _ sourceFunction targetFunction rfl simulated.2
-  · intro sourceRecurse targetRecurse effects paired depth pc args strategy state fresh
-    exact lowerRows_layer_effect sourceRecurse targetRecurse ctx
+  · intro metadata sourceRecurse targetRecurse effects paired depth pc args strategy state fresh
+    exact lowerRows_layer_effect sourceRecurse targetRecurse (callerContext ctx metadata)
       (withFunction ctx selected sourceFunction).functions
       (withFunction ctx selected targetFunction).functions
       (headerAgreement_withFunction ctx selected sourceFunction targetFunction rfl rfl) effects

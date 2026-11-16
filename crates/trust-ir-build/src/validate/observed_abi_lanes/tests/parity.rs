@@ -1,6 +1,151 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 use super::*;
+
+#[test]
+fn uninhabited_direct_live_pair_and_full_reserved_storage_match() {
+    let ty = Ty::Enum(EnumId::new(0));
+    for (live, size, align) in [(Ty::U32, 4, 4), (Ty::U128, 16, 16)] {
+        let m = direct_storage_fixture(live, size, align);
+        assert_eq!(run(&m, &ty).0, Some(2));
+    }
+    let mut narrow = direct_storage_fixture(Ty::U64, 8, 8);
+    let target = narrow.target_info.as_mut().unwrap();
+    target.triple = "wasm32-unknown-unknown".into();
+    target.pointer_size = 4;
+    assert_eq!(
+        run(&narrow, &ty).0,
+        Some(2),
+        "not a fixed two-pointer-word ceiling"
+    );
+    narrow.target_info.as_mut().unwrap().triple = "i686-unknown-linux-gnu".into();
+    assert_eq!(
+        run(&narrow, &ty).0,
+        None,
+        "missing scalar-layout authority still refuses"
+    );
+
+    for change in 0..6 {
+        let mut m = direct_storage_fixture(Ty::U32, 4, 4);
+        match change {
+            0 => m.enums[0].variants[0].fields = vec![Ty::U8],
+            1 => m.enums[0].variants[0].fields = vec![Ty::Tuple(vec![Ty::Never, s(999)])],
+            _ => {
+                let desc = m.enums[0].layout.as_mut().unwrap();
+                let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut desc.encoding
+                else {
+                    unreachable!()
+                };
+                match change {
+                    2 => variants.clear(),
+                    3 => {
+                        desc.size = 65552;
+                        desc.align = 16;
+                        variants[0].size = 65552;
+                        variants[0].align = 16;
+                    }
+                    4 => {
+                        desc.size = 16;
+                        variants[0].size = 16;
+                        desc.variant_field_offsets[1][0] = 12;
+                    }
+                    5 => {
+                        desc.size = 16;
+                        desc.align = 16;
+                        variants[0].size = 16;
+                        variants[0].align = 16;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        if change >= 3 {
+            assert!(m.layout_table().enum_layout(EnumId::new(0)).is_ok());
+        }
+        assert_eq!(run(&m, &ty).0, None, "case {change}");
+    }
+}
+
+#[test]
+fn uninhabited_direct_ignores_zero_extent_ranges_but_keeps_their_alignment() {
+    let mut m = direct_storage_fixture(Ty::U32, 4, 4);
+    let mut zst = strukt(0, vec![]);
+    zst.size = Some(0);
+    zst.align = Some(16);
+    zst.repr = StructRepr::Rust;
+    m.structs.push(zst);
+    m.enums[0].variants[1].fields.push(s(0));
+    let desc = m.enums[0].layout.as_mut().unwrap();
+    desc.size = 16;
+    desc.align = 16;
+    desc.variant_field_offsets[1].push(16);
+    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut desc.encoding else {
+        unreachable!()
+    };
+    variants[0].size = 16;
+    variants[0].align = 16;
+    assert!(m.layout_table().enum_layout(EnumId::new(0)).is_ok());
+    assert_eq!(run(&m, &Ty::Enum(EnumId::new(0))).0, Some(2));
+}
+
+#[test]
+fn uninhabited_direct_nested_dead_source_keeps_memory_passing() {
+    let mut m = direct_storage_fixture(Ty::U32, 4, 4);
+    m.types.push(Ty::U128);
+    m.enums
+        .push(EnumDef::new(EnumId::new(9), "Infallible", vec![]));
+    m.enums[0].variants[0].fields = vec![Ty::Tuple(vec![
+        Ty::Enum(EnumId::new(9)),
+        Ty::Array(TyId::new(0), 4096),
+    ])];
+    let desc = m.enums[0].layout.as_mut().unwrap();
+    desc.size = 65552;
+    desc.align = 16;
+    desc.variant_field_offsets[0][0] = 16;
+    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut desc.encoding else {
+        unreachable!()
+    };
+    variants[0].size = 65552;
+    variants[0].align = 16;
+    variants[0].fields[0] = trust_ir::ty::FieldStorageLayout {
+        size: 65536,
+        align: 16,
+    };
+    assert!(m.layout_table().enum_layout(EnumId::new(0)).is_ok());
+    assert!(
+        m.layout_table()
+            .ty_layout(&Ty::Enum(EnumId::new(9)))
+            .is_err()
+    );
+    assert_eq!(run(&m, &Ty::Enum(EnumId::new(0))).0, None);
+}
+
+#[test]
+fn uninhabited_direct_all_dead_physical_image_has_no_abi_value() {
+    let mut m = direct_storage_fixture(Ty::U32, 4, 4);
+    m.enums[0].variants[1].fields = vec![Ty::Never];
+    let desc = m.enums[0].layout.as_mut().unwrap();
+    let EnumTagEncoding::DirectWithUninhabited { variants, .. } = &mut desc.encoding else {
+        unreachable!()
+    };
+    let mut second = variants[0].clone();
+    second.variant = 1;
+    variants.push(second);
+    assert!(m.layout_table().enum_layout(EnumId::new(0)).is_ok());
+    assert_eq!(
+        run(&m, &Ty::Enum(EnumId::new(0))).0,
+        None,
+        "a valid physical tag image does not create an inhabited source value"
+    );
+    m.enums
+        .push(EnumDef::new(EnumId::new(9), "Infallible", vec![]));
+    assert!(
+        m.layout_table()
+            .ty_layout(&Ty::Enum(EnumId::new(9)))
+            .is_err()
+    );
+}
+
 #[test]
 fn every_closed_scalar_unit_and_thin_or_fat_pointer_family_matches_original_raw_count() {
     let m = module();

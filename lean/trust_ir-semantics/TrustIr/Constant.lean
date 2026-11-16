@@ -141,6 +141,9 @@ inductive Constant where
   /-- `len` copies of one element (Rust `Constant::Splat { elem, len }`,
       wire v50): the constant-size uniform array, mirrors `Ty.Array _ len`. -/
   | splat     : Constant → Nat → Constant
+  /-- The singleton of an exact `Ty.FnItem` identity. Its declaration is
+      checked against the source module independently of executable bodies. -/
+  | fnItem    : FuncId → Constant
   deriving Repr
 
 mutual
@@ -168,6 +171,7 @@ def Constant.hasSymbolAddr : Constant → Bool
   | .u128 _         => false
   | .bytes _ _      => false
   | .fnDef _        => false
+  | .fnItem _       => false
   | .phantomData    => false
   | .uninit         => false
 

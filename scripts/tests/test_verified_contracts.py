@@ -1333,12 +1333,12 @@ class CurrentDeterminism(unittest.TestCase):
         certified = [ob for ob in rows if ob["outcome"].get("strength", {}).get("assurance") == "Certified"]
         self.assertTrue(all(ob["outcome"]["strength"]["grade"]["validation"] == "KernelRechecked" for ob in certified))
         laws = vc.law_functions(ROOT)
-        self.assertEqual(len(laws), 410)
+        self.assertEqual(len(laws), 412)
         results = vc.parse_report_data(self.data)
         # Preserve the frozen report, including every original unknown/weak
         # row. It cannot certify the later MakeClosure and tensor-region
         # (TensorContract, TensorMap, TensorReduce, TensorView, TensorGather,
-        # TensorScatter) table cells either.
+        # TensorScatter) table cells or BoxDeref either.
         added = {
             "terminator_make_closure",
             "borrow_permission_make_closure",
@@ -1354,6 +1354,8 @@ class CurrentDeterminism(unittest.TestCase):
             "borrow_permission_tensor_gather",
             "terminator_tensor_scatter",
             "borrow_permission_tensor_scatter",
+            "terminator_box_deref",
+            "borrow_permission_box_deref",
         }
         historical = set(laws) - added
         self.assertEqual(len(historical), 396)
@@ -2080,6 +2082,111 @@ class RootManifest(unittest.TestCase):
         ]
         for retired in ("function_budget_ms", "timeout_ms"):
             self.assertNotIn(retired, keys)
+
+
+class ToolchainIdentity(unittest.TestCase):
+    """The diagnostic must not describe an unrelated PATH compiler as the
+    compiler belonging to an explicitly selected SDK."""
+
+    @staticmethod
+    def fake_trustc(directory: Path, label: str, *, code: int = 0) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        compiler = directory / "trustc"
+        marker = directory / "identity-probed"
+        compiler.write_text(
+            "#!/bin/sh\n"
+            f"printf probed > {shlex.quote(str(marker))}\n"
+            f"printf '%s\\n' {shlex.quote('rustc ' + label)}\n"
+            f"exit {code}\n",
+            encoding="utf-8",
+        )
+        compiler.chmod(0o755)
+        return compiler
+
+    def test_missing_sdk_compiler_never_borrows_the_path_compiler(self):
+        with tempfile.TemporaryDirectory(prefix="identity with spaces ") as tmp:
+            root = Path(tmp)
+            unrelated = self.fake_trustc(root / "unrelated", "unrelated")
+            with mock.patch.dict(os.environ, {"PATH": str(unrelated.parent)}):
+                identity = vc.toolchain_identity(str(root / "selected" / "targo"))
+            self.assertIn("unavailable", identity)
+            self.assertNotIn("rustc unrelated", identity)
+            self.assertFalse((unrelated.parent / "identity-probed").exists())
+
+    def test_identity_names_and_probes_only_the_selected_sibling(self):
+        with tempfile.TemporaryDirectory(prefix="identity with spaces ") as tmp:
+            root = Path(tmp)
+            selected = self.fake_trustc(root / "selected", "selected")
+            unrelated = self.fake_trustc(root / "unrelated", "unrelated")
+            with mock.patch.dict(os.environ, {"PATH": str(unrelated.parent)}):
+                identity = vc.toolchain_identity(str(selected.with_name("targo")))
+            self.assertIn(str(selected), identity)
+            self.assertIn("rustc selected", identity)
+            self.assertNotIn("rustc unrelated", identity)
+            self.assertTrue((selected.parent / "identity-probed").exists())
+            self.assertFalse((unrelated.parent / "identity-probed").exists())
+
+    def test_relative_targo_selection_never_turns_the_sibling_into_a_path_lookup(self):
+        with tempfile.TemporaryDirectory(prefix="relative identity ") as tmp:
+            root = Path(tmp)
+            selected = self.fake_trustc(root / "selected", "selected")
+            unrelated = self.fake_trustc(root / "unrelated", "unrelated")
+            targo = selected.with_name("targo")
+            targo.write_text("#!/bin/sh\necho targo 0.0.0\n", encoding="utf-8")
+            targo.chmod(0o755)
+            previous = Path.cwd()
+            try:
+                os.chdir(selected.parent)
+                with mock.patch.dict(
+                    os.environ, {"PATH": str(unrelated.parent), "TRUST_TARGO_BIN": "./targo"}
+                ):
+                    identity = vc.toolchain_identity(vc.resolve_targo())
+            finally:
+                os.chdir(previous)
+            self.assertIn(str(selected), identity)
+            self.assertIn("rustc selected", identity)
+            self.assertNotIn("rustc unrelated", identity)
+            self.assertTrue((selected.parent / "identity-probed").exists())
+            self.assertFalse((unrelated.parent / "identity-probed").exists())
+
+    def test_failed_probe_cannot_publish_its_version_shaped_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            selected = self.fake_trustc(Path(tmp), "unearned identity", code=7)
+            identity = vc.toolchain_identity(str(selected.with_name("targo")))
+            self.assertIn("unavailable", identity)
+            self.assertIn("exit 7", identity)
+            self.assertNotIn("rustc unearned identity", identity)
+
+    def test_a_nonexecutable_or_directory_sibling_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compiler = Path(tmp) / "trustc"
+            compiler.mkdir()
+            self.assertIn("unavailable", vc.toolchain_identity(str(compiler.with_name("targo"))))
+            compiler.rmdir()
+            compiler.write_text("rustc never executed\n", encoding="utf-8")
+            compiler.chmod(0o644)
+            self.assertIn("unavailable", vc.toolchain_identity(str(compiler.with_name("targo"))))
+            compiler.chmod(0o755)
+            self.assertIn("unavailable", vc.toolchain_identity(str(compiler.with_name("targo"))))
+
+    def test_non_utf8_probe_output_is_unavailable_on_either_stream(self):
+        for redirection in (">&1", ">&2"):
+            with self.subTest(stream=redirection), tempfile.TemporaryDirectory() as tmp:
+                compiler = self.fake_trustc(Path(tmp), "selected")
+                compiler.write_text(
+                    "#!/bin/sh\n" + r"printf '\377' " + redirection + "\nexit 7\n",
+                    encoding="utf-8",
+                )
+                self.assertIn("unavailable", vc.toolchain_identity(str(compiler.with_name("targo"))))
+
+    def test_a_timed_out_probe_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compiler = self.fake_trustc(Path(tmp), "selected")
+            with mock.patch.object(
+                vc.subprocess, "run", side_effect=vc.subprocess.TimeoutExpired([str(compiler), "-vV"], 30)
+            ):
+                identity = vc.toolchain_identity(str(compiler.with_name("targo")))
+            self.assertIn("unavailable", identity)
 
 
 class TargoResolution(unittest.TestCase):

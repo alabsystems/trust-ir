@@ -73,7 +73,7 @@ theorem entry_observe_eq (source target : EvalContext) (related : EntryEffects s
       cases headers with
       | present _ _ body _ =>
         apply EntryObservation.entry_observe_eq_of_steps source target requested sourceFunction targetFunction
-          sourceFound targetFound body args fuel strategy (callerWorld world)
+          sourceFound targetFound body related.itemChecks args fuel strategy (callerWorld world)
         rw [← related.maxDepth]
         exact related.effects requested sourceFunction targetFunction sourceFound targetFound
           fuel source.maxCallDepth args strategy world

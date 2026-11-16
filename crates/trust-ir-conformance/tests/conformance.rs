@@ -259,6 +259,13 @@ fn corpus() -> Vec<Fixture> {
             text_supported: true,
             text_skip_reason: "",
         },
+        // v74: a Box deref carrying its validity fact.
+        Fixture {
+            name: "box_deref",
+            build: generate::build_box_deref,
+            text_supported: true,
+            text_skip_reason: "",
+        },
         // v63 runtime captures, distinct from the older static-closure golden.
         Fixture {
             name: "make_closure",
@@ -1172,6 +1179,7 @@ fn stable_interpret_value(value: &InterpretValue) -> String {
             stable_interpret_value(metadata)
         ),
         InterpretValueKind::FnDef(func) => format!("fn:{}", func.index()),
+        InterpretValueKind::FnItem(func) => format!("fnitem:{}", func.index()),
         InterpretValueKind::PhantomData => "phantom_data".to_string(),
         InterpretValueKind::NullPtr => "null".to_string(),
         InterpretValueKind::Unit => "unit".to_string(),
@@ -4528,6 +4536,8 @@ fn coverage() {
         "ArraySplat",
         // v63: runtime capture construction, not a static closure constant.
         "MakeClosure",
+        // v74: carried by the `box_deref` golden.
+        "BoxDeref",
         // v51: carried by the `inst_wire_batch` golden.
         "MakeAggregate",
         "MemCopy",
@@ -4717,6 +4727,9 @@ fn tag_ty(ty: &trust_ir::ty::Ty, out: &mut std::collections::HashSet<&'static st
         Func(_) => {
             out.insert("Func");
         }
+        FnItem(_) => {
+            out.insert("FnItem");
+        }
         Sequence(_) => {
             out.insert("Sequence");
         }
@@ -4833,6 +4846,9 @@ fn tag_inst(inst: &trust_ir::inst::Inst, out: &mut std::collections::HashSet<&'s
         // `tensor_gather_scatter` golden.
         TensorGather { .. } => "TensorGather",
         TensorScatter { .. } => "TensorScatter",
+        // Box dereference validity facts (wire v74): carried by the
+        // `box_deref` golden.
+        BoxDeref { .. } => "BoxDeref",
         ExtractElement { .. } => "ExtractElement",
         InsertElement { .. } => "InsertElement",
         Const { .. } => "Const",
@@ -5149,12 +5165,13 @@ fn published_v41_module_serde_inputs_keep_their_meanings() {
 /// The published v41 bundle was minted when `Module::stable_digest` was the
 /// V2 identity and the bundle schema was 7. WS4.10 made the digest the
 /// portable V3 identity; WS4.16 (F-080) made the bundle STATE its language
-/// set at schema 8. So the bundle the generator mints today differs from the
+/// set at schema 8; concrete THIR input advanced the schema to 9. The RustMir
+/// bundle the generator mints today differs from the
 /// published one in EXACTLY this ledger, and nothing else:
 ///
 /// 1. the module digest (`trust_ir_module_digest`, the lineage node's
 ///    `target_module`, every evidence bundle's copy), V2 there and V3 here;
-/// 2. `schema_version` and `serialization.schema_version`, 7 there, 8 here;
+/// 2. `schema_version` and `serialization.schema_version`, 7 there, 9 here;
 /// 3. `provenance.source_languages`, ABSENT there (which decodes to the
 ///    empty set — never a wildcard) and `{Rust}` here;
 /// 4. the fixture function's v23 producer stamp, `null` there (the golden
@@ -5165,13 +5182,17 @@ fn published_v41_module_serde_inputs_keep_their_meanings() {
 /// decodes, its digest is its OWN module's V2 identity (so it is the same
 /// bundle, re-minted), and validation refuses it closed on every one of the
 /// four rows above — the V2 digest, the schema, and the empty language set —
-/// rather than reading a v7 bundle as a v8 one.
+/// rather than admitting a v7 bundle as the current schema.
 #[test]
 fn published_v41_native_bundle_serde_inputs_keep_their_meanings() {
+    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 9);
     let dir = fixtures_dir().join("v41-reader-compat");
     let expected = generate::build_trust_native_request_bundle()
         .expect("the fixture builds")
         .bundle;
+    expected
+        .validate()
+        .expect("current schema9 producer positive");
     let json = fs::read(dir.join("native_request_trust_bundle.json")).unwrap();
     let msgpack = fs::read(dir.join("native_request_trust_bundle.msgpack")).unwrap();
     let from_json = serde_json::from_slice::<NativeVerificationBundle>(&json).unwrap();
@@ -5216,8 +5237,9 @@ fn published_v41_native_bundle_serde_inputs_keep_their_meanings() {
         &serde_json::to_value(v2).unwrap(),
         &serde_json::to_value(v3).unwrap(),
     );
-    legacy["schema_version"] = serde_json::json!(8);
-    legacy["serialization"]["schema_version"] = serde_json::json!(8);
+    legacy["schema_version"] = serde_json::json!(NativeVerificationBundle::SCHEMA_VERSION);
+    legacy["serialization"]["schema_version"] =
+        serde_json::json!(NativeVerificationBundle::SCHEMA_VERSION);
     legacy["provenance"]["source_languages"] = serde_json::json!(["Rust"]);
     legacy["module"]["functions"][0]["producer"] = serde_json::json!("Trust");
     assert_eq!(
@@ -5259,6 +5281,55 @@ fn published_v41_native_bundle_serde_inputs_keep_their_meanings() {
         },
     ] {
         assert!(refused.iter().any(expected_refusal), "{refused:?}");
+    }
+}
+
+/// Preserve the complete former current-schema8 population beside the current
+/// producer positive. Decoding preserves old metadata; admission refuses it.
+#[test]
+fn pre_thir_schema8_native_bundle_keeps_every_field_and_refuses_admission() {
+    assert_eq!(NativeVerificationBundle::SCHEMA_VERSION, 9);
+    let expected = generate::build_trust_native_request_bundle()
+        .expect("the original RustMir fixture builds")
+        .bundle;
+    expected
+        .validate()
+        .expect("current schema9 producer positive");
+    let current_json =
+        serde_json::from_slice::<NativeVerificationBundle>(&serde_json::to_vec(&expected).unwrap())
+            .unwrap();
+    let current_msgpack = rmp_serde::from_slice::<NativeVerificationBundle>(
+        &rmp_serde::to_vec_named(&expected).unwrap(),
+    )
+    .unwrap();
+    for current in [&current_json, &current_msgpack] {
+        assert_eq!(current, &expected);
+        current.validate().expect("current reader positive");
+    }
+
+    let dir = fixtures_dir().join("compat");
+    let json = fs::read(dir.join("pre_thir_native_request_trust_bundle.json")).unwrap();
+    let msgpack = fs::read(dir.join("pre_thir_native_request_trust_bundle.msgpack")).unwrap();
+    let from_json = serde_json::from_slice::<NativeVerificationBundle>(&json).unwrap();
+    let from_msgpack = rmp_serde::from_slice::<NativeVerificationBundle>(&msgpack).unwrap();
+    assert_eq!(from_json, from_msgpack);
+    let mut historical_expected = expected.clone();
+    historical_expected.schema_version = 8;
+    historical_expected.serialization.schema_version = 8;
+    assert_eq!(
+        from_json, historical_expected,
+        "only the two schema fields change"
+    );
+    for old in [&from_json, &from_msgpack] {
+        let refused = old
+            .validate()
+            .expect_err("schema8 admission remains unsupported");
+        assert!(
+            refused.contains(&trust_ir::NativeVerificationBundleError::UnsupportedSchemaVersion(8))
+        );
+        assert!(refused.contains(
+            &trust_ir::NativeVerificationBundleError::UnsupportedSerializationSchemaVersion(8)
+        ));
     }
 }
 
@@ -6619,6 +6690,76 @@ fn bundle_check_refuses_no_permission_borrow_outside_the_rust_stamp() {
 }
 
 #[test]
+fn box_deref_golden_is_valid_executes_and_refuses_an_older_header() {
+    let expected = generate::build_box_deref().expect("Box deref fixture");
+    let bytes = fs::read(fixtures_dir().join("box_deref.tmbc")).expect("committed v74 fixture");
+    let (decoded, version) = trust_ir::binary::deserialize_module_with_wire_version(&bytes)
+        .expect("decode a Box deref and its validity fact");
+    assert_eq!(
+        version.get(),
+        trust_ir::binary::BOX_DEREF_VALIDITY_FORMAT_VERSION
+    );
+    assert_eq!(decoded, expected);
+    assert_eq!(trust_ir_build::validate_module(&decoded), vec![]);
+    // The default codegen gate sets no evidence floor: the only refusal is
+    // the lowering subset's, never a fact rule.
+    let floor = trust_ir_build::CodegenAdmission::pinned().with_require_box_validity_evidence(
+        Some(trust_ir::box_validity::BoxValidityTier::ConsumerRederived),
+    );
+    let below: Vec<_> = trust_ir_build::validate_module_for_codegen_with(&decoded, &floor)
+        .into_iter()
+        .filter(|error| {
+            matches!(
+                error,
+                trust_ir_build::ValidationError::BoxValidityEvidenceBelowFloor { .. }
+            )
+        })
+        .collect();
+    // `fresh` and `checked` each premise all three conjuncts.
+    assert_eq!(below.len(), 6, "{below:?}");
+    // Both roots are in the named-premise class, so a floor there admits
+    // the golden.
+    let named = trust_ir_build::CodegenAdmission::pinned().with_require_box_validity_evidence(
+        Some(trust_ir::box_validity::BoxValidityTier::NamedPremise),
+    );
+    assert!(
+        !trust_ir_build::validate_module_for_codegen_with(&decoded, &named)
+            .iter()
+            .any(|error| matches!(
+                error,
+                trust_ir_build::ValidationError::BoxValidityEvidenceBelowFloor { .. }
+            ))
+    );
+    for (function, expected) in [(0, 24), (2, 42)] {
+        let actual = trust_ir::interpret::Interpreter::with_module(&decoded)
+            .execute_func(FuncId::new(function), [])
+            .expect("a valid Box deref is the identity on its pointer");
+        assert_eq!(actual.returns.len(), 1);
+        assert_eq!(actual.returns[0].as_int().unwrap().as_signed(), expected);
+    }
+    for body in [
+        trust_ir::binary::ModuleBinaryBody::RawV38,
+        trust_ir::binary::ModuleBinaryBody::CanonicalV38,
+    ] {
+        let options = trust_ir::binary::ModuleBinaryOptions {
+            body,
+            ..Default::default()
+        };
+        assert!(matches!(
+            trust_ir::binary::ProjectedModuleBinaryPlan::try_new(&decoded, options),
+            Err(trust_ir::binary::BinaryProjectionError::BoxDerefRequiresV74)
+        ));
+    }
+    let mut old_header = bytes;
+    old_header[8..12]
+        .copy_from_slice(&(trust_ir::binary::BOX_DEREF_VALIDITY_FORMAT_VERSION - 1).to_le_bytes());
+    assert!(matches!(
+        trust_ir::binary::deserialize_module(&old_header),
+        Err(trust_ir::binary::BinaryError::InvalidTag(77))
+    ));
+}
+
+#[test]
 fn make_closure_golden_is_valid_executes_and_refuses_an_older_header() {
     let expected = generate::build_make_closure().expect("runtime closure fixture");
     let bytes = fs::read(fixtures_dir().join("make_closure.tmbc")).expect("committed v63 fixture");
@@ -7007,8 +7148,23 @@ fn tensor_gather_scatter_golden_is_valid_executes_and_refuses_an_older_header() 
 fn storage_only_golden_has_exact_parent_geometry_and_no_value_authority() {
     let name = "storage_only";
     let module = generate::build_storage_only().expect("storage geometry fixture");
+    let root = module
+        .functions
+        .iter()
+        .find(|function| function.id == FuncId::new(0))
+        .expect("storage fixture root");
+    assert_eq!(root.body_gate, Some(trust_ir::BodyGate::Ungated));
     let dir = fixtures_dir();
     let bytes = roundtrip_binary(name, &module);
+    assert_eq!(
+        module.functions[0].body_gate,
+        Some(trust_ir::BodyGate::Ungated)
+    );
+    assert!(module.proof_obligations.is_empty());
+    assert!(module.proof_certificates.is_empty());
+    let (decoded, wire_version) =
+        trust_ir::binary::deserialize_module_with_wire_version(&bytes).unwrap();
+    assert!(trust_ir_build::validate::decoded_provenance_errors(&decoded, wire_version).is_empty());
     assert_or_update_bytes(&dir.join("storage_only.tmbc"), &bytes);
     assert_or_update_text(
         &dir.join("storage_only.trust_ir"),

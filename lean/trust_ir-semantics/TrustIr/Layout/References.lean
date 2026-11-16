@@ -287,9 +287,14 @@ theorem Graph.ReferenceBounds.insert {graph : Graph} (valid : graph.ReferenceBou
   intro query actual found
   change (graph.nodes.insert node equation).find query = some actual at found
   rw [NatIndexTree.find_insert] at found
-  split at found
-  · cases found; exact safe
-  · exact (valid query actual found).mono (fun _ inside => Nat.lt_of_lt_of_le inside growth)
+  cases Nat.decEq query node with
+  | isTrue same =>
+    simp only [if_pos same] at found
+    cases found
+    exact safe
+  | isFalse different =>
+    simp only [if_neg different] at found
+    exact (valid query actual found).mono (fun _ inside => Nat.lt_of_lt_of_le inside growth)
 
 /-- Bounds plus installation, rather than either condition alone, establish
 closure of the complete prepared prefix. -/

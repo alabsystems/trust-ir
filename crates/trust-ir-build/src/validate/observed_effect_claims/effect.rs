@@ -72,6 +72,9 @@ impl State<'_, '_> {
             | Inst::CloseFrame { .. }
             | Inst::LandingPad { .. }
             | Inst::Resume { .. } => Effect::None,
+            Inst::BoxDeref { .. } => Effect::Refused {
+                reason: "point-in-time Box validity is not covered by an effect claim",
+            },
             Inst::Load { ptr, .. } => Effect::Read { address: *ptr },
             Inst::AtomicLoad { ptr, ordering, .. } => {
                 if is_relaxed(*ordering) {

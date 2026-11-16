@@ -1,11 +1,38 @@
 {
-  "producer_source": "5b8de1228598ac3fe06e43bdafbc8187362b6360",
-  "producer_tree": "ff290521230098f1fdf573b7703ba7b83d658c7b",
-  "Cargo_lock_sha256": "652a4520f9a7bd45acbfc5e2c2de79dd4e5c449ad863d8136bf2ca42c410818f",
-  "qualification_result": "$HOME/.cache/trust-cg-bitvec-cohort-20261110/producer-qualification.json",
-  "qualification_result_sha256": "da4408eba88b462661c7c342e611ab7e3e19df139886b3cd1d86f7ce5c3fdc6e",
-  "actual_selected_tests_passed": 5,
+  "schema": "clean-source-equation-producer-data.v2",
+  "producer_source": "7722f8495bc4a4fa60ccf79fd78723f5b18ea949",
+  "producer_tree": "985d1dcca1bd404d2aa1e543b400a1f3858e7e98",
+  "producer_kernel_tree": "745506db210b307ec2f6d9e4dfa93a4f78f91aa7",
+  "producer_trust_ir_pin": "bd313b4fbfae2c2826bade463e23224f1df9a61a",
+  "producer_trust_cg_pin": "af577ca17a0946b19631ffb15863057d2fb8d174",
+  "producer_ay_pin": "91d6b45ab17373b5381d6cdf4e6a97ee4e84dbcc",
+  "Cargo_lock_sha256": "b7115fe293cfa1da6b8f4f1b3405d9c1ae9fc901bb99148552d9279de230e613",
+  "exporter_sha256": "712d372c53eb152fad27e80ab44777d2611ebe56cfbe13634bf4522a5afa0ebb",
+  "producer_features": "trust-ir-backend,clean-kernel/farkas-constructive,clean-kernel/math-overlays,clean-kernel/proof-import,clean-kernel/test-utils",
+  "actual_producer_kernel_features": [
+    "farkas-constructive",
+    "math-overlays",
+    "proof-import",
+    "test-fixtures",
+    "test-utils"
+  ],
+  "intended_consumer_kernel_features": [
+    "farkas-constructive",
+    "math-overlays",
+    "proof-import",
+    "test-utils"
+  ],
+  "actual_selected_tests_passed": 3,
+  "other_tests_filtered_per_invocation": 5122,
   "source_inputs_unchanged": true,
+  "producer_result": "reports/2026-11-15-source-equation-fixtures-7722/producer-runs.json",
+  "producer_result_sha256": "3fab6cf31125d6e3998a4012ac0f09974d44a554dffd81e942094b6d436bb7e3",
+  "producer_manifest_sha256": "a76d9294c3418f2b4a590d295c414d6d106938d0d5c688ea89b52df2eda66180",
+  "previous_producer_source": "550ad0858df6a00c61a7cdabc7f37fa0bc975258",
+  "previous_complete_data": "stale-clean550/",
+  "typed_data_comparison": "All 24 Module fields were independently compared: 23 are equal; only proof_certificates differ. Function/signature inventories are identical: 72 functions, 73 signatures, source FuncId 70. The three original modules differ only in environment binding and lineage; conditionals additionally change their source-closure binding. Definition and theorem name/type/value and DATA payload bytes are identical; conditional source/equation closure digests were regenerated.",
+  "scope": "DATA ONLY. Genuine existing unverified producer exports complete modules and checked source Definition/Theorem carriers. Separate consumer supplies its source/environment, reconstructs goals and rechecks proofs. No ABI/NoUB/native/SDK/performance or completion authority.",
+  "consumer_qualification": "Independent current-kernel replay: source_value_equation_producer 10/10 PASS unfiltered; source_value_equation 7/7 PASS unfiltered; complete contextual module 1/1 PASS (3979 other trust-ir-build library cases filtered). All bookends are valid, with no ignored cases. Original source/proof/IR/helper/stale/wrong-trace controls are unchanged. These results do not qualify the separate frozen Trust-stage context.",
   "files": {
     "boundActualEquation/DATA.txt": {
       "bytes": 187,
@@ -29,7 +56,7 @@
     },
     "boundActualEquation/module.bin": {
       "bytes": 5742,
-      "sha256": "9097ac44c889ce97a1009497afcc22ca3bca5e01953bfa72014749f3405ce7e8"
+      "sha256": "e5bec484af0bd2a2f9a5c7f9fc2d405b8113c93efca7a07373924f0a9a6a039b"
     },
     "boundActualEquation/source-closure-digest.bin": {
       "bytes": 32,
@@ -81,7 +108,7 @@
     },
     "boundField/module.bin": {
       "bytes": 5494,
-      "sha256": "a6426bc98e514ac971a9ab3e8e987ca7d2bcae7a1dd203ef56c885c0f495e420"
+      "sha256": "60e4ed76c28c4373080449e1f4c53ca974513ac413d7688aca9e3f2c9a77e6f7"
     },
     "boundField/source-closure-digest.bin": {
       "bytes": 32,
@@ -121,7 +148,7 @@
     },
     "boundMask/module.bin": {
       "bytes": 5377,
-      "sha256": "9abe07eaa9613393926433db906a791a450c5f55afa40832a57e9b338e8ed8b1"
+      "sha256": "65d12e368d0627b332a393718f572b21d14f281b2e179ad15cd29914a57d06c5"
     },
     "boundMask/source-closure-digest.bin": {
       "bytes": 32,
@@ -140,8 +167,6 @@
       "sha256": "88770435cb631abe7aecb726b95b644e601188ae4c868d80af9a3f775a9590f0"
     }
   },
-  "scope": "Actual producer DATA from canonical source pipelines; separate consumer chooses authoritative source/environment, rederives full goal and audits proof. This package carries no proof grade/license/SDK/release/completion authority. Separate independent source-equation consumer has not yet qualified this data.",
-  "previous_producer_source": "bfd472616bd5fcc2f9f12a30a14d5faf942e3137",
-  "consumer_qualification": "Seven separate read-only IR producer-data tests passed with Clean 5b8de1228; no body/runtime/ABI/NoUB/machine-code license or completeness claim",
-  "consumer_log_sha256": "36d38d708301dddd66c93809f1d1d8d96bccbf7ad5b6fcc0990e79113be3a766"
+  "consumer_results": "reports/2026-11-15-source-equation-fixtures-7722/consumer-results.json",
+  "checker_result": "reports/2026-11-15-source-equation-fixtures-7722/checker-result.json"
 }

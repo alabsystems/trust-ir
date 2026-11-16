@@ -55,7 +55,8 @@ fn observed_unused_signature_abi_scan_can_stop_before_first_instruction() {
 }
 
 #[test]
-fn observed_typed_abi_presence_refuses_instead_of_using_legacy_dispatch() {
+fn observed_malformed_unused_typed_abi_refuses_before_legacy_dispatch() {
+    super::typed_abi::matching_entry_positive();
     use crate::signature_abi::*;
     let mut module = module(vec![], vec![], vec![void(Inst::Return { values: vec![] })]);
     let mut unused = FuncTy::unrecorded(vec![], vec![], false);
@@ -91,7 +92,7 @@ fn observed_typed_abi_presence_refuses_instead_of_using_legacy_dispatch() {
     module.func_types.push(unused);
     let report = run(&module, vec![], &mut Observer::default());
     assert!(
-        matches!(report.exit(),ObservedExit::EntryRejected(error) if error.code == InterpretErrorCode::UnsupportedCall)
+        matches!(report.exit(),ObservedExit::EntryRejected(error) if error.code == InterpretErrorCode::SignatureMismatch)
     );
     assert_eq!(report.steps(), 0);
 }
@@ -326,6 +327,7 @@ fn observed_unique_nested_frames_are_rejected_and_drained_without_new_grant() {
             ty: Ty::Ptr,
             kind: InterpretValueKind::Frame {
                 lineage: index,
+                origin: None,
                 slots: Arc::from(vec![Some(value)]),
             },
         };

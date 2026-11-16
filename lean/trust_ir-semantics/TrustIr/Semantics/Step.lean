@@ -125,6 +125,7 @@ def constValueAt (ty : Ty) (c : Constant) (model : ByteModel := .le64) : Value :
     match ty with
     | .Func sig => .fnDef sig fn
     | _ => Value.ofConstant c
+  | .fnItem fn => .fnItem fn
   | .int i =>
     match ty with
     | .Ptr => if i == 0 then .nullPtr else Value.intAt model.pointerBits i
@@ -292,6 +293,8 @@ def constValueAtChecked (ty : Ty) (c : Constant) (model : ByteModel := .le64)
   | .F64, .float value => pure (.float value)
   | .Unit, .phantomData => pure (.aggregate [])
   | .Func signature, .fnDef target => pure (.fnDef signature target)
+  | .FnItem _, .fnItem _ =>
+    throw (.typeError "FnItem: constant requires an original source function declaration")
   | .Tuple tys, .aggregate cs =>
     if tys.length != cs.length then
       throw (.typeError "tuple constant field count does not match its declared type")
@@ -448,6 +451,53 @@ def semAssertFail {α : Type} (kind : AssertKind) (site : Option PanicSite) : Se
     let loc ← resolvePanicLocation site.location
     Sem.throwPanic msg (some ⟨site.entry, loc⟩)
 
+/-- The rule of `Inst.BoxDeref`, the interpreter's `check_box_validity`: the
+    operand pointer is bound UNCHANGED (address and provenance), and the step
+    is undefined behaviour unless the pointer is valid as a `Box` of the
+    pointee at this state:
+
+    * `NonNull`: the address is not 0;
+    * `Aligned`: the address is a multiple of the pointee's natural alignment
+      (`Sem.accessAlign`), at the byte model's widths;
+    * `Dereferenceable`: for a pointee of positive size, the pointer carries
+      provenance and `Sem.checkedAccess` admits a pointee-sized access through
+      it (the allocation is known and live, the access is in bounds).
+
+    A zero-size pointee is exempt from the allocation requirement. The
+    pointee's size and alignment are computed first, so a pointee with no
+    canonical byte layout is `unsupported.layout` whatever the operand is;
+    inspecting a poison operand is undefined behaviour; a non-pointer is a
+    type error. The carried fact is not an argument: no evidence changes
+    which executions are defined. -/
+def semBoxDeref (pointee : BoxPointee) (v : Value) (model : ByteModel := .le64) :
+    Sem InstrResult :=
+  match pointee with
+  | .sized ty =>
+    match ty.byteSizeFor model with
+    | none => Sem.throwUnsupported .layout "BoxDeref: the pointee has no byte size"
+    | some size => do
+      let align ← Sem.accessAlign "BoxDeref" ty none model
+      Sem.rejectPartial v "BoxDeref"
+      match v with
+      | .nullPtr => Sem.throwUB "BoxDeref: NonNull is false: the box pointer is null"
+      | .ptr addr prov =>
+        if addr == 0 then
+          Sem.throwUB "BoxDeref: NonNull is false: the box pointer is null"
+        else if addr % align != 0 then
+          Sem.throwUB s!"BoxDeref: Aligned is false: address {addr} is not a multiple of {align}"
+        else if size == 0 then do
+          let vid ← Sem.bindFresh (.ptr addr prov)
+          pure (.value (some vid))
+        else
+          match prov with
+          | none =>
+            Sem.throwUB s!"BoxDeref: Dereferenceable is false: pointer value {addr} has no allocation provenance"
+          | some id => do
+            let _ ← Sem.checkedAccess "BoxDeref: Dereferenceable is false" addr id size align model
+            let vid ← Sem.bindFresh (.ptr addr prov)
+            pure (.value (some vid))
+      | _ => Sem.throwTypeError "BoxDeref: the operand is not a pointer"
+
 /-- Step a single TrustIr instruction.
     Routes to the appropriate per-category semantic function. -/
 def stepInst (inst : Inst) (model : ByteModel := .le64) : Sem InstrResult := do
@@ -512,6 +562,14 @@ def stepInst (inst : Inst) (model : ByteModel := .le64) : Sem InstrResult := do
     let v ← Sem.lookupValue operand
     let vid ← Sem.bindFresh v
     pure (.value (some vid))
+
+  -- A `Box` deref (wire v74) is the identity on a pointer that is valid as
+  -- a `Box` of the pointee here, and undefined behaviour otherwise
+  -- (`semBoxDeref`). The carried fact is not read: it is evidence about
+  -- this step, never an input to it.
+  | .BoxDeref _ptrTy pointee operand _fact => do
+    let v ← Sem.lookupValue operand
+    semBoxDeref pointee v model
 
   | .Select ty cond thenVal elseVal => do
     -- Scalar Bool gates the whole value. A same-lane `<N x Bool>` mask selects

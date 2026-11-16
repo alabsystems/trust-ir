@@ -40,12 +40,14 @@ def stableValueAtomString : Value → String
   | .array values => s!"array({values.size})"
   | .aggregate values => s!"aggregate({values.length})"
   | .vector lanes => s!"vector({lanes.length})"
+  | .sourceFrame _ _ _ values => s!"sourceFrame({values.length})"
   | .frame _ values => s!"frame({values.length})"
   | .set values => s!"set({values.length})"
   | .sequence values => s!"sequence({values.length})"
   | .record fields => s!"record({fields.length})"
   | .closure func captures => s!"closure:{func.index}:{captures.length}"
   | .fnDef sig func => s!"fnDef:{sig.index}:{func.index}"
+  | .fnItem func => s!"fnItem:{func.index}"
   | .typedClosure ty func captures => s!"typedClosure:{ty.index}:{func.index}:{captures.length}"
   | .fatPtr data _ metadata => s!"fatptr:{data}:" ++ stableValueAtomString metadata
   | .partial image => s!"partial({image.length})"
@@ -793,12 +795,7 @@ theorem const_u128_binds_at_width_128_stable :
 
 def byteArrayConstantContext (model : ByteModel) : ConstantEvalContext :=
   { byteModel := model
-    closures := fun _ => none
-    enums := fun _ => none
-    structs := fun _ => none
-    records := fun _ => none
-    types := fun tid =>
-      if tid.index == 0 then some .U8 else if tid.index == 1 then some .I8 else none }
+    valueSource := FunctionItemPresence.prepare { types := [some .U8, some .I8] } }
 
 def byteArrayConstantOutcome (model : ByteModel) (ty : Ty) (c : Constant) : String :=
   match constValueAtWithDefsIn (byteArrayConstantContext model) ty c with
@@ -929,11 +926,7 @@ def checkedConstantStableOutcome : Except SemError Value → String
 
 def nullPointerConstantContext (model : ByteModel) : ConstantEvalContext :=
   { byteModel := model
-    closures := fun _ => none
-    enums := fun _ => none
-    structs := fun _ => none
-    records := fun _ => none
-    types := fun tid => if tid.index == 0 then some .Ptr else none }
+    valueSource := FunctionItemPresence.prepare { types := [some .Ptr] } }
 
 /-- Named element types reach the same checked leaf converter. -/
 theorem const_contextual_null_sequence_preserves_pointers_stable :
@@ -4456,9 +4449,8 @@ def ws219Tables (f : EvalFunction) : EvalContext :=
     funcTys := funcTyMap []
     maxCallDepth := 4
     globalsTable := fun _ => none
-    enums := fun e => if e.index == 0 then some ws219Enum else none
-    structs := fun s => if s.index == 0 then some ws219Struct else none
-    types := fun t => if t.index == 0 then some .I16 else none }
+    valueSource := FunctionItemPresence.prepare
+      { enums := [ws219Enum], structs := [ws219Struct], types := [some .I16] } }
 
 /-- The same context WITHOUT any definition table. -/
 def ws219NoTables (f : EvalFunction) : EvalContext :=
@@ -4620,17 +4612,10 @@ theorem typed_array_splat_retains_link_time_refusal :
     check the existing internal refusal rather than changing its policy. -/
 def captureBoundaryContext : EvalContext :=
   { EvalContext.empty with
-    types := (fun id => if id.index == 0 then some .I8 else none)
-    records := (fun id => if id.index == 7 then
-      some { id := ⟨7⟩, name := "R", fields := [{ name := "a", ty := .I8, offset := none }] }
-      else none)
-    enums := (fun id => if id.index == 0 then
-      some { id := ⟨0⟩
-             name := "E"
-             variants := [{ name := "Data", fields := [.I8] }, { name := "Empty", fields := [] }]
-             discriminants := [some (-1), some 42]
-             tagRepr := some .i8 }
-      else none) }
+    valueSource := FunctionItemPresence.prepare
+      { types := [some .I8]
+        records := [(⟨7⟩, some { id := ⟨7⟩, name := "R", fields := [{ name := "a", ty := .I8, offset := none }] })]
+        enums := [{ id := ⟨0⟩, name := "E", variants := [{ name := "Data", fields := [.I8] }, { name := "Empty", fields := [] }], discriminants := [some (-1), some 42], tagRepr := some .i8 }] } }
 
 def captureBoundaryCode (result : Except SemError Unit) : String :=
   match result with
@@ -5184,7 +5169,7 @@ def residueOrdTables (f : EvalFunction) : EvalContext :=
     funcTys := funcTyMap []
     maxCallDepth := 4
     globalsTable := fun _ => none
-    enums := fun e => if e.index == 0 then some residueOrdEnum else none }
+    valueSource := FunctionItemPresence.prepare { enums := [residueOrdEnum] } }
 
 /-- The tag lane of `const Ord::Less` is the `i8` residue of `-1`. -/
 theorem enum_negative_tag_is_residue :
@@ -5637,12 +5622,8 @@ def exactFieldContext (aggregateTy insertedTy : Ty) : EvalContext :=
     localTypes := some (fun id =>
       if id.index == 0 then some aggregateTy
       else if id.index == 1 then some insertedTy else none)
-    enums := fun id => if id.index == 0 then some
-      { id := EnumId.mk 0, name := "SignedOrUnsigned"
-        variants := [{ name := "Signed", fields := [.I32] },
-                     { name := "Unsigned", fields := [.U32] }]
-        discriminants := [some (-1), some 7], tagRepr := some .i8 }
-      else none }
+    valueSource := FunctionItemPresence.prepare
+      { enums := [{ id := EnumId.mk 0, name := "SignedOrUnsigned", variants := [{ name := "Signed", fields := [.I32] }, { name := "Unsigned", fields := [.U32] }], discriminants := [some (-1), some 7], tagRepr := some .i8 }] } }
 
 def exactFieldOutcome (ctx : EvalContext) (inst : Inst) (held inserted : Value) : String :=
   match Sem.run (stepInstWithContext ctx inst)
@@ -5706,7 +5687,8 @@ theorem exact_insert_aggregate_type_precedes_bounds_stable :
 
 def splatTypedContext (elementTy sourceTy : Ty) : EvalContext :=
   { exactFieldContext .Unit sourceTy with
-    types := fun id => if id.index == 0 then some elementTy else none }
+    valueSource := FunctionItemPresence.prepare
+      { (exactFieldContext .Unit sourceTy).valueSource.source with types := [some elementTy] } }
 
 /-- Even an empty replication inspects the original operand's exact type. -/
 theorem contextual_splat_rejects_same_width_wrong_element_type :
@@ -5733,7 +5715,9 @@ theorem contextual_splat_requires_original_operand_declaration :
       (.aggregate []) (.int 32 9) = "error:unsupported.ssa_type_table" := by native_decide
 
 theorem contextual_splat_requires_original_element_declaration :
-    exactFieldOutcome { splatTypedContext .I32 .I32 with types := fun _ => none }
+    exactFieldOutcome { splatTypedContext .I32 .I32 with
+        valueSource := FunctionItemPresence.prepare
+          { (splatTypedContext .I32 .I32).valueSource.source with types := [] } }
       (.ArraySplat (.Array (TyId.mk 0) 3) v1)
       (.aggregate []) (.int 32 9) = "error:unsupported.enum_def_table" := by native_decide
 
@@ -5837,11 +5821,8 @@ theorem ssa_char_source_poison_binding_transports_stable :
 /-- Transport checks do not read unwritten tuple/struct fields. -/
 def closureUnwrittenContext : EvalContext :=
   { EvalContext.empty with
-    structs := fun sid => if sid.index == 0 then some
-      { id := ⟨0⟩, name := "Pair", size := none, align := none
-        fields := [{name := "first", ty := .U32, offset := none},
-          {name := "second", ty := .U32, offset := none}] }
-      else none }
+    valueSource := FunctionItemPresence.prepare
+      { structs := [{ id := ⟨0⟩, name := "Pair", size := none, align := none, fields := [{name := "first", ty := .U32, offset := none}, {name := "second", ty := .U32, offset := none}] }] } }
 
 def closureTransportCode (ty : Ty) (value : Value) : String :=
   match checkClosureValue closureUnwrittenContext ty value with

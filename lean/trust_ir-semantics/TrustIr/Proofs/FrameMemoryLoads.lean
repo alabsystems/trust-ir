@@ -73,6 +73,33 @@ theorem checked_access_frame_action (operation : String) (address : Addr) (alloc
   unfold Sem.checkedAccess Sem.checkTargetRange
   observe_guards
 
+/-- The three access guards neither change the state nor raise: a caller can
+carry a fact about the state it ran them in across each of them. -/
+theorem reject_partial_observed (value : Value) (operation : String) :
+    CallCheckReadOnly (Sem.rejectPartial value operation) ∧
+      CallCheckNoUnwind (Sem.rejectPartial value operation) := by
+  have observed : Observes (Sem.rejectPartial value operation) := by
+    unfold Sem.rejectPartial
+    observe_guards
+  exact observed
+
+theorem access_align_observed (operation : String) (ty : Ty) (align : Option Nat) (model : ByteModel) :
+    CallCheckReadOnly (Sem.accessAlign operation ty align model) ∧
+      CallCheckNoUnwind (Sem.accessAlign operation ty align model) := by
+  have observed : Observes (Sem.accessAlign operation ty align model) := by
+    unfold Sem.accessAlign Sem.declaredOrNaturalAlign
+    observe_guards
+  exact observed
+
+theorem checked_access_observed (operation : String) (address : Addr) (allocation : AllocId)
+    (size align : Nat) (model : ByteModel) :
+    CallCheckReadOnly (Sem.checkedAccess operation address allocation size align model) ∧
+      CallCheckNoUnwind (Sem.checkedAccess operation address allocation size align model) := by
+  have observed : Observes (Sem.checkedAccess operation address allocation size align model) := by
+    unfold Sem.checkedAccess Sem.checkTargetRange
+    observe_guards
+  exact observed
+
 /-- Original held-value load with a proved decoder. All pointer/layout/alignment,
 provenance/liveness/bounds and partial-image checks retain their original order.
 No memory validity premise is needed: invalid accesses take their actual errors. -/

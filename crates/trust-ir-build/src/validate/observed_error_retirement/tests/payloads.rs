@@ -3,9 +3,9 @@
 use super::*;
 
 #[test]
-fn all_259_current_variant_shapes_retire_every_owned_header_separately() {
+fn all_269_current_variant_shapes_retire_every_owned_header_separately() {
     let cases = witnesses::all();
-    assert_eq!(cases.len(), 259);
+    assert_eq!(cases.len(), 269);
     for (error, count) in cases {
         one(error, count);
     }

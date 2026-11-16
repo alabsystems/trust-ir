@@ -5,6 +5,7 @@ import TrustIr.Proofs.FrameAggregateStores
 import TrustIr.Proofs.FrameAtomicExits
 import TrustIr.Proofs.FrameAllocationExits
 import TrustIr.Proofs.FrameOwnershipExits
+import TrustIr.Proofs.FrameBoxDerefExits
 
 namespace TrustIr.FrameLifetime
 open GenericCoro GenericCoro.Prefix
@@ -26,6 +27,8 @@ inductive MemoryFrameInstruction : Inst → Prop where
       MemoryFrameInstruction (.GEP ty base indices inbounds)
   | bulk {inst : Inst} (site : BulkFrameInst inst) : MemoryFrameInstruction inst
   | ownership {inst : Inst} (site : OwnershipFrameInst inst) : MemoryFrameInstruction inst
+  | boxDeref (ptrTy : Ty) (pointee : BoxPointee) (operand : ValueId) (fact : BoxValidityFact) :
+      MemoryFrameInstruction (.BoxDeref ptrTy pointee operand fact)
 
 theorem MemoryFrameInstruction.body_frame_exit {inst : Inst} (site : MemoryFrameInstruction inst)
     (recurse : Recurse) (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
@@ -41,6 +44,8 @@ theorem MemoryFrameInstruction.body_frame_exit {inst : Inst} (site : MemoryFrame
   | gep ty base indices inbounds => exact gep_body_frame_exit recurse ctx memory depth strategy ty base indices inbounds dests
   | bulk site => exact bulk_body_frame_exit recurse ctx depth strategy _ site dests
   | ownership site => exact ownership_body_frame_exit recurse ctx depth strategy _ site dests
+  | boxDeref ptrTy pointee operand fact =>
+    exact box_deref_body_frame_exit recurse ctx depth strategy ptrTy pointee operand fact dests
 
 theorem memory_frame_body_list_exit (recurse : Recurse) (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
     (memory : MemoryContextErrors ctx) (depth : Nat) (strategy : PanicStrategy) (rows : List (Inst × List ValueId))
@@ -86,6 +91,10 @@ theorem memory_frame_layer_exit (recurse : Recurse) (ctx : EvalContext) (safe : 
   | some block =>
     obtain ⟨sites,⟨control⟩⟩ := grammar pc block found
     simp only [found]
+    apply FrameActionExit.bind (fun bound _ => MintedArgs bound args) MintedArgs _ _ state
+      (function_item_checks_frame_exit ctx ((ctx.resolveBlock block).params.map (·.snd)) args state valid incoming)
+    intro unit state valid incoming
+    cases unit
     apply FrameActionExit.bind (fun _ _ => True) MintedArgs _ _ state
       (checked_params_frame_exit (ctx.resolveBlock block).params args state valid incoming)
     intro unit bound boundValid _

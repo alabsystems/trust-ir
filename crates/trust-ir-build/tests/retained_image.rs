@@ -174,3 +174,120 @@ fn fileless_inputs_do_not_gain_origin_from_placeholder_rows() {
         })
     ));
 }
+
+#[test]
+fn actual_function_placements_follow_source_destination_and_repeated_merge_receipts() {
+    let source = retained("source");
+    let id = FuncId::new(0);
+    assert_eq!(source.function_from(&source.clone(), id).unwrap(), id);
+    let (once, first) = retained("host").merge(&source, &POLICY).unwrap();
+    let first_id = first.func(id).unwrap();
+    assert_ne!(first_id, id, "the source must actually relocate");
+    assert_eq!(once.function_from(&source, id).unwrap(), first_id);
+    let (outer, second) = retained("outer").merge(&once, &POLICY).unwrap();
+    let outer_id = second.func(first_id).unwrap();
+    assert_eq!(outer.function_from(&source, id).unwrap(), outer_id);
+    assert_eq!(outer.function_from(&once, first_id).unwrap(), outer_id);
+    let (repeated, third) = outer.merge(&once, &POLICY).unwrap();
+    assert_eq!(third.func(first_id), Some(outer_id));
+    assert_eq!(repeated.function_from(&once, first_id).unwrap(), outer_id);
+    assert_eq!(repeated.function_from(&source, id).unwrap(), outer_id);
+}
+
+#[test]
+fn copied_modules_and_foreign_function_remaps_cannot_restore_actual_placement() {
+    let source = retained("source");
+    let (placed, actual) = retained("host").merge(&source, &POLICY).unwrap();
+    let id = FuncId::new(0);
+    assert_eq!(
+        placed.function_from(&source, id).unwrap(),
+        actual.func(id).unwrap()
+    );
+    let independent = RetainedImage::new(source.module().clone()).unwrap();
+    assert!(placed.function_from(&independent, id).is_err());
+    let (foreign, copied_shape) = retained("host").merge(&independent, &POLICY).unwrap();
+    assert_eq!(
+        copied_shape.func(id),
+        actual.func(id),
+        "equal copied remap numbers do not prove origin"
+    );
+    assert!(foreign.function_from(&source, id).is_err());
+    assert!(
+        source
+            .function_from(&placed, actual.func(id).unwrap())
+            .is_err()
+    );
+    assert!(placed.function_from(&source, FuncId::new(99)).is_err());
+    let mut changed = source.module().clone();
+    changed.functions[0].id = FuncId::new(7);
+    let changed = RetainedImage::new(changed).unwrap();
+    assert!(placed.function_from(&changed, FuncId::new(7)).is_err());
+}
+
+#[test]
+fn intermediate_actual_images_survive_complete_original_input_deduplication() {
+    let a = retained("a");
+    let id = FuncId::new(0);
+    let (b, _) = a.merge(&a, &POLICY).unwrap();
+    let (c, _) = b.merge(&b, &POLICY).unwrap();
+    // Matching controls establish the intermediate source and both direct
+    // ancestors before the original failing destination-first composition.
+    assert_eq!(c.function_from(&b, id).unwrap(), id);
+    let (reversed, _) = c.merge(&a, &POLICY).unwrap();
+    assert_eq!(reversed.function_from(&b, id).unwrap(), id);
+    let (out, _) = a.merge(&c, &POLICY).unwrap();
+    assert_eq!(out.function_from(&a, id).unwrap(), id);
+    assert_eq!(out.function_from(&c, id).unwrap(), id);
+    assert_eq!(out.function_from(&b, id).unwrap(), id);
+    assert_eq!(out.module().files, a.module().files);
+    assert_eq!(out.module().functions, a.module().functions);
+
+    // Repeated genuine joins must agree along every preserved route, without
+    // acquiring origin from an independent equal intermediate image.
+    let (again, _) = out.merge(&reversed, &POLICY).unwrap();
+    for actual in [&a, &b, &c, &out, &reversed] {
+        assert_eq!(again.function_from(actual, id).unwrap(), id);
+    }
+    let independent = RetainedImage::new(b.module().clone()).unwrap();
+    assert!(again.function_from(&independent, id).is_err());
+}
+
+#[test]
+fn contradictory_actual_routes_refuse_even_for_malformed_data_only_images() {
+    // RetainedImage is intentionally data custody, not full IR validation.
+    // A malformed duplicate-name destination can retain its row 1 while the
+    // canonical source map sends that same actual row to the first row 0.
+    let mut module = Module::new("duplicate-declarations");
+    let ty = module
+        .add_func_type(FuncTy::unrecorded(vec![], vec![], false))
+        .unwrap();
+    for id in [FuncId::new(0), FuncId::new(1)] {
+        let mut declaration = Function::new(id, "f", ty, BlockId::new(0));
+        declaration.linkage = trust_ir::Linkage::External;
+        module.functions.push(declaration);
+    }
+    let input = RetainedImage::new(module).unwrap();
+    assert_eq!(
+        input.function_from(&input, FuncId::new(1)).unwrap(),
+        FuncId::new(1)
+    );
+    for policy in [
+        MergePolicy::EXECUTION_IMAGE,
+        MergePolicy::VERIFICATION_IMAGE,
+    ] {
+        let (output, remap) = input.merge(&input, &policy).unwrap();
+        assert_eq!(remap.func(FuncId::new(0)), Some(FuncId::new(0)));
+        assert_eq!(remap.func(FuncId::new(1)), Some(FuncId::new(0)));
+        assert_eq!(
+            output.function_from(&input, FuncId::new(0)).unwrap(),
+            FuncId::new(0)
+        );
+        assert!(matches!(
+            output.function_from(&input, FuncId::new(1)),
+            Err(MergeError::Malformed {
+                table: "retained function placement",
+                ..
+            })
+        ));
+    }
+}

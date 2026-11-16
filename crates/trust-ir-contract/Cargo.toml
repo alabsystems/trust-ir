@@ -7,7 +7,7 @@
 # compiler is unchanged; backends (e.g. clean) depend on this leaf crate via
 # the universal-IR sibling path instead of reaching into the Trust repo.
 #
-# Leaf by construction: depends only on serde + rustc-hash. It must never
+# Leaf by construction: serde + rustc-hash, with an opt-in JSON codec. It must never
 # depend on trust-types/trust-verifier-api (that would re-create the cycle
 # this crate exists to remove).
 #
@@ -22,9 +22,15 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# Shared proof-bearing wire grammar; parsing budgets remain with consumers.
+proof-json = ["dep:serde_json"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 rustc-hash = "2"
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["unbounded_depth"] }

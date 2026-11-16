@@ -30,7 +30,7 @@ open TrustIr
       | none => .error (.typeError s!"undefined SSA value: {repr id}") := by
   cases found : state.lookupValue id <;>
     simp [Sem.lookupValue, Sem.run_bind, Except.bind, found, Sem.run_pure,
-      Sem.throwTypeError]
+      Sem.throwTypeError] <;> rfl
 
 @[simp] private theorem run_bind_fresh (state : MachineState) (value : Value) :
     Sem.run (Sem.bindFresh value) state = .ok (state.bindValue value) := rfl

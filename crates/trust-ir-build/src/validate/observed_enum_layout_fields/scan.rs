@@ -14,6 +14,42 @@ impl<'m> State<'m> {
             return Err(ObservedValueError::InvalidRange);
         }
         self.table = Some(LayoutTable::new_observed(module, work.session, work.site)?);
+        if matches!(
+            &layout.encoding,
+            trust_ir::EnumTagEncoding::DirectWithUninhabited { .. }
+        ) {
+            // This private whole-pass branch borrows the exact module row;
+            // a different supplied descriptor must not be checked by querying
+            // the module's otherwise-valid row under the same numeric ID.
+            let mut bound = false;
+            for row in &module.enums {
+                work.admit(1, 0)?;
+                if row.id == enm.id {
+                    bound = core::ptr::eq(row, enm)
+                        && row
+                            .layout
+                            .as_ref()
+                            .is_some_and(|actual| core::ptr::eq(actual, layout));
+                    break;
+                }
+            }
+            let valid = if bound {
+                self.query(&Ty::Enum(enm.id), work)?.known
+            } else {
+                false
+            };
+            if !valid {
+                self.begin(work)?;
+                work.text(
+                    "a valid Direct storage profile for exactly the uninhabited variants",
+                    &mut self.expected,
+                )?;
+                work.text("invalid Direct uninhabited storage", &mut self.actual)?;
+                self.push(enm, work)?;
+            }
+            self.retire_query(work);
+            return Ok(());
+        }
         work.admit(2, 2 * size_of::<usize>())?;
         if layout.variant_field_offsets.len() != enm.variants.len() {
             self.begin(work)?;

@@ -54,12 +54,15 @@
 //! explicit alignment operands and natural scalar/vector alignment are checked.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 mod array_value;
 mod byte_image;
 mod observation_word;
 mod observed;
+mod provenance;
+mod typed_abi;
+use provenance::Packet;
 #[cfg(test)]
 mod reconciled_execution;
 pub(crate) use observed::btree as observed_btree;
@@ -923,6 +926,8 @@ pub enum InterpretValueKind {
         metadata: Box<InterpretValue>,
     },
     FnDef(FuncId),
+    /// Nominal singleton, never an address-bearing function pointer.
+    FnItem(FuncId),
     PhantomData,
     NullPtr,
     Unit,
@@ -937,6 +942,8 @@ pub enum InterpretValueKind {
     /// it is never encoded to or decoded from memory.
     Frame {
         lineage: u64,
+        /// Minted only by the actual OpenFrame instruction; retained by snapshots.
+        origin: Option<Arc<InterpretBindingFrameOrigin>>,
         /// `Arc`, not `Rc`: an `InterpretOutcome` / `InterpretError` must stay
         /// `Send` (the `trust-ir run` CLI executes on a worker thread).
         slots: Arc<[Option<InterpretValue>]>,
@@ -1068,9 +1075,10 @@ impl InterpretValue {
 }
 
 /// Deterministic interpreter for the bounded core subset.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Interpreter<'m> {
     module: Option<&'m Module>,
+    functions: Option<Arc<OnceLock<crate::function_item::FunctionItemIndex>>>,
     /// Borrowed only from an `InterpreterModule` for this exact immutable module.
     module_preflight: Option<&'m std::sync::OnceLock<ModulePreflight>>,
     options: InterpretOptions,
@@ -1100,6 +1108,7 @@ impl<'m> Interpreter<'m> {
     pub fn new() -> Self {
         Self {
             module: None,
+            functions: None,
             module_preflight: None,
             options: InterpretOptions::default(),
             host: None,
@@ -1110,6 +1119,7 @@ impl<'m> Interpreter<'m> {
     pub fn with_module(module: &'m Module) -> Self {
         Self {
             module: Some(module),
+            functions: Some(Arc::new(OnceLock::new())),
             module_preflight: None,
             options: InterpretOptions::default(),
             host: None,
@@ -1203,11 +1213,338 @@ impl<'m> Interpreter<'m> {
         }
     }
 
-    /// A fat pointer is two pointer words at the executable target's width.
-    /// Every width the executable layout admits (32/64-bit little-endian, see
-    /// [`Self::require_reference_execution_layout`]) is a fat-pointer width,
-    /// so this is that gate — kept as a named hook so every fat-pointer site
-    /// states the dependency.
+    /// Authenticate a nominal singleton through one lazily shared catalog.
+    /// Legacy setup and execution never scan the function table for this cache.
+    fn function_item(
+        &self,
+        id: FuncId,
+        block: BlockId,
+    ) -> InterpretResult<(&'m Function, &'m crate::FuncTy)> {
+        let module = self.module.ok_or_else(|| {
+            type_error(
+                block,
+                "function item requires actual module function headers",
+            )
+        })?;
+        self.functions
+            .as_ref()
+            .ok_or_else(|| {
+                type_error(
+                    block,
+                    "function item requires actual module function headers",
+                )
+            })?
+            .get_or_init(|| crate::function_item::FunctionItemIndex::new(module))
+            .function_item(module, id)
+            .map_err(|error| type_error(block, error.to_string()))
+    }
+
+    // This predicate follows only value-bearing source fields, never a
+    // function signature or pointer pointee. Cycles are visited once.
+    fn type_has_function_items(&self, root: &Ty) -> bool {
+        let mut pending = vec![root];
+        let mut seen = BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            match ty {
+                Ty::FnItem(_) => return true,
+                Ty::Tuple(fields) => pending.extend(fields),
+                Ty::Vector(element, _) => pending.push(element),
+                Ty::Array(id, _) | Ty::Sequence(id) | Ty::Set(id, _) | Ty::Refine(id, _)
+                    if seen.insert((0, id.index())) =>
+                {
+                    if let Some(ty) = self.module.and_then(|m| m.ty(*id)) {
+                        pending.push(ty);
+                    }
+                }
+                Ty::Struct(id) if seen.insert((1, id.index())) => {
+                    if let Some(def) = self.module.and_then(|m| m.struct_def(*id)) {
+                        pending.extend(def.fields.iter().map(|field| &field.ty));
+                    }
+                }
+                Ty::Enum(id) if seen.insert((2, id.index())) => {
+                    if let Some(def) = self.module.and_then(|m| m.enum_def(*id)) {
+                        pending.extend(
+                            def.variants
+                                .iter()
+                                .flat_map(|variant| variant.fields.iter()),
+                        );
+                    }
+                }
+                Ty::Record(id) if seen.insert((3, id.index())) => {
+                    if let Some(def) = self.module.and_then(|m| m.record_def(*id)) {
+                        pending.extend(def.fields.iter().map(|field| &field.ty));
+                    }
+                }
+                Ty::Closure(id) if seen.insert((4, id.index())) => {
+                    if let Some(def) = self.module.and_then(|m| m.closure_type(*id)) {
+                        pending.extend(&def.captures);
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn validate_function_items(
+        &self,
+        root: &InterpretValue,
+        block: BlockId,
+    ) -> InterpretResult<()> {
+        let mut pending = vec![(root, &root.ty)];
+        while let Some((value, expected)) = pending.pop() {
+            check_fn_item_carrier(value, block)?;
+            if let InterpretValueKind::FnItem(id) = value.kind
+                && *expected != Ty::FnItem(id)
+            {
+                return Err(type_error(
+                    block,
+                    "function item hidden in a non-item source field",
+                ));
+            }
+            // An unwritten aggregate lane remains transportable. Its actual
+            // extraction/use is still rejected by the existing poison rules.
+            if matches!(value.kind, InterpretValueKind::Uninit) {
+                continue;
+            }
+            if let Ty::FnItem(id) = expected {
+                expect_ty(value, expected, block)?;
+                self.function_item(*id, block)?;
+                continue;
+            }
+            let relevant = self.type_has_function_items(expected);
+            if relevant && value.ty != *expected {
+                return Err(type_error(
+                    block,
+                    "function-item container field type mismatch",
+                ));
+            }
+            match (expected, &value.kind) {
+                (
+                    Ty::Array(id, _) | Ty::Sequence(id) | Ty::Set(id, _),
+                    InterpretValueKind::Array(values)
+                    | InterpretValueKind::Sequence(values)
+                    | InterpretValueKind::Set(values),
+                ) => {
+                    if relevant {
+                        let matching_kind = matches!(
+                            (expected, &value.kind),
+                            (Ty::Array(..), InterpretValueKind::Array(_))
+                                | (Ty::Sequence(_), InterpretValueKind::Sequence(_))
+                                | (Ty::Set(..), InterpretValueKind::Set(_))
+                        );
+                        if !matching_kind {
+                            return Err(type_error(
+                                block,
+                                "function-item collection has wrong runtime kind",
+                            ));
+                        }
+                        if let Ty::Array(_, count) = expected
+                            && values.len() != *count
+                        {
+                            return Err(type_error(block, "function-item array length mismatch"));
+                        }
+                    }
+                    let element = self.module.and_then(|m| m.ty(*id));
+                    let _: core::ops::ControlFlow<()> = values.try_for_each_stored(|value| {
+                        pending.push((value, element.unwrap_or(expected)));
+                        core::ops::ControlFlow::Continue(())
+                    });
+                }
+                (Ty::Vector(element, lanes), InterpretValueKind::Vector(values)) => {
+                    if relevant && values.len() != u64::from(*lanes) {
+                        return Err(type_error(
+                            block,
+                            "function-item vector lane count mismatch",
+                        ));
+                    }
+                    let _: core::ops::ControlFlow<()> = values.try_for_each_stored(|value| {
+                        pending.push((value, element));
+                        core::ops::ControlFlow::Continue(())
+                    });
+                }
+                (Ty::Tuple(fields), InterpretValueKind::Aggregate(values)) => {
+                    if relevant && fields.len() != values.len() {
+                        return Err(type_error(block, "function-item tuple arity mismatch"));
+                    }
+                    pending.extend(
+                        values
+                            .iter()
+                            .enumerate()
+                            .map(|(i, value)| (value, fields.get(i).unwrap_or(expected))),
+                    );
+                }
+                (Ty::Struct(id), InterpretValueKind::Aggregate(values)) => {
+                    let fields = self
+                        .module
+                        .and_then(|m| m.struct_def(*id))
+                        .map(|def| def.fields.as_slice());
+                    if relevant && fields.is_none_or(|fields| fields.len() != values.len()) {
+                        return Err(type_error(block, "function-item struct arity mismatch"));
+                    }
+                    pending.extend(values.iter().enumerate().map(|(i, value)| {
+                        (
+                            value,
+                            fields
+                                .and_then(|fields| fields.get(i))
+                                .map_or(expected, |field| &field.ty),
+                        )
+                    }));
+                }
+                (Ty::Enum(_), InterpretValueKind::Aggregate(values)) if relevant => {
+                    let (_, fields) = self.enum_active_variant(expected, values, block)?;
+                    if fields.len() + 1 != values.len() {
+                        return Err(type_error(block, "function-item enum arity mismatch"));
+                    }
+                    pending.extend(values[1..].iter().zip(fields));
+                }
+                (Ty::Closure(id), InterpretValueKind::Closure { captures, .. }) => {
+                    let fields = self
+                        .module
+                        .and_then(|m| m.closure_type(*id))
+                        .map(|def| def.captures.as_slice());
+                    if relevant && fields.is_none_or(|fields| fields.len() != captures.len()) {
+                        return Err(type_error(block, "function-item closure arity mismatch"));
+                    }
+                    pending.extend(captures.iter().enumerate().map(|(i, value)| {
+                        (
+                            value,
+                            fields.and_then(|fields| fields.get(i)).unwrap_or(expected),
+                        )
+                    }));
+                }
+                (Ty::Record(id), InterpretValueKind::Record(values)) => {
+                    let fields = self
+                        .module
+                        .and_then(|m| m.record_def(*id))
+                        .map(|def| def.fields.as_slice());
+                    if relevant && fields.is_none_or(|fields| fields.len() != values.len()) {
+                        return Err(type_error(block, "function-item record arity mismatch"));
+                    }
+                    if relevant {
+                        let mut declared_names = BTreeSet::new();
+                        if fields
+                            .into_iter()
+                            .flatten()
+                            .any(|field| !declared_names.insert(field.name.as_str()))
+                        {
+                            return Err(type_error(
+                                block,
+                                "function-item record declaration has duplicate field names",
+                            ));
+                        }
+                        let mut supplied_names = BTreeSet::new();
+                        if values
+                            .iter()
+                            .any(|(name, _)| !supplied_names.insert(name.as_str()))
+                        {
+                            return Err(type_error(
+                                block,
+                                "function-item record value has duplicate field names",
+                            ));
+                        }
+                    }
+                    for (name, value) in values {
+                        let field = fields
+                            .and_then(|fields| fields.iter().find(|field| field.name == *name));
+                        if relevant && field.is_none() {
+                            return Err(type_error(block, "function-item record field missing"));
+                        }
+                        pending.push((value, field.map_or(expected, |field| &field.ty)));
+                    }
+                }
+                (
+                    _,
+                    InterpretValueKind::Aggregate(values)
+                    | InterpretValueKind::Closure {
+                        captures: values, ..
+                    },
+                ) if !relevant => pending.extend(values.iter().map(|value| (value, expected))),
+                (_, InterpretValueKind::Record(fields)) if !relevant => {
+                    pending.extend(fields.iter().map(|(_, value)| (value, expected)))
+                }
+                (_, InterpretValueKind::FatPtr { data, metadata }) => {
+                    pending.push((data, expected));
+                    pending.push((metadata, expected));
+                }
+                (
+                    Ty::Ptr,
+                    InterpretValueKind::Frame {
+                        origin: Some(origin),
+                        slots,
+                        ..
+                    },
+                ) => {
+                    let declaration = self.frame_declaration(origin, block)?;
+                    if declaration.slots.len() != slots.len() {
+                        return Err(type_error(
+                            block,
+                            "binding frame slot census differs from source declaration",
+                        ));
+                    }
+                    pending.extend(
+                        slots
+                            .iter()
+                            .zip(&declaration.slots)
+                            .filter_map(|(held, field)| {
+                                held.as_ref().map(|value| (value, &field.ty))
+                            }),
+                    );
+                }
+                (_, InterpretValueKind::Frame { .. }) => {
+                    return Err(type_error(
+                        block,
+                        "binding frame lacks its authentic source declaration or Ptr type",
+                    ));
+                }
+                _ if relevant => {
+                    return Err(type_error(
+                        block,
+                        "function-item container has wrong runtime kind",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn frame_declaration<'a>(
+        &self,
+        origin: &'a InterpretBindingFrameOrigin,
+        block: BlockId,
+    ) -> InterpretResult<&'a crate::inst::BindingFrameDef> {
+        // The private origin fields are minted from the actual instruction.
+        // Module-backed execution additionally binds them to the unique source row.
+        if let Some(module) = self.module {
+            let mut functions = module.functions.iter().filter(|f| f.id == origin.function);
+            let function = functions
+                .next()
+                .ok_or_else(|| type_error(block, "binding frame source function is absent"))?;
+            if functions.next().is_some() {
+                return Err(type_error(
+                    block,
+                    "binding frame source function is ambiguous",
+                ));
+            }
+            let mut declarations = function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.body)
+                .filter_map(|node| match &node.inst {
+                    Inst::OpenFrame { def } if def.id == origin.declaration.id => Some(def),
+                    _ => None,
+                });
+            if declarations.next() != Some(&origin.declaration) || declarations.next().is_some() {
+                return Err(type_error(
+                    block,
+                    "binding frame source declaration is absent, changed, or ambiguous",
+                ));
+            }
+        }
+        Ok(&origin.declaration)
+    }
+
     fn require_fat_pointer_layout(&self, block: BlockId) -> InterpretResult<()> {
         self.require_reference_execution_layout(block)
     }
@@ -1308,24 +1645,25 @@ impl<'m> Interpreter<'m> {
         function: &Function,
         args: impl IntoIterator<Item = InterpretValue>,
     ) -> InterpretResult<InterpretOutcome> {
-        // Typed ABI records describe transport that this value interpreter
-        // does not implement yet (fresh by-value copies, extension and hidden
-        // results). Refuse the entire module before executing any body or host
-        // callback, including unused/FnPtr-only typed signatures.
+        // Cache only policy facts tied to this immutable module borrow.
+        // Typed descriptors still need the complete current-option/supplied-body
+        // preflight, including unused and FnPtr-only signatures, on every run.
         let preflight = self.module.map_or(ModulePreflight::Ready, |module| {
             self.module_preflight.map_or_else(
                 || ModulePreflight::inspect(module),
                 |owner| *owner.get_or_init(|| ModulePreflight::inspect(module)),
             )
         });
-        if matches!(preflight, ModulePreflight::UnsupportedAbi) {
-            return Err(err(
-                InterpretErrorCode::UnsupportedCall,
-                function.entry,
-                "typed signature ABI transport is not implemented by the reference interpreter",
-            ));
-        }
-        if matches!(preflight, ModulePreflight::InvalidStorage) {
+        let invalid_storage = match preflight {
+            ModulePreflight::NeedsTypedAbiPreflight => {
+                self.preflight_typed_abi(function)?;
+                self.module
+                    .is_some_and(|module| module.first_storage_violation().is_some())
+            }
+            ModulePreflight::InvalidStorage => true,
+            ModulePreflight::Ready => false,
+        };
+        if invalid_storage {
             return Err(type_error(
                 function.entry,
                 "storage-only geometry cannot be a typed value or malformed layout",
@@ -1364,6 +1702,7 @@ impl<'m> Interpreter<'m> {
         let memory = self.initial_memory(function.entry)?;
         let mut state = ExecState {
             values: BTreeMap::new(),
+            provenance: provenance::State::default(),
             memory,
             globals: BTreeMap::new(),
             frames: BTreeSet::new(),
@@ -1427,15 +1766,13 @@ impl<'m> Interpreter<'m> {
                 ),
             ));
         }
-        let returns = if function.is_declaration() {
-            // A bodyless ENTRY is a host call too: it has no block 0 to enter,
-            // so reporting `MissingBlock` for it would be a structural code on
-            // well-formed IR.
-            self.check_function_args(function, &args, function.entry)?;
-            self.execute_host_call(function.entry, function, args, &mut state)?
-        } else {
-            self.execute_function_inner(function, args, &mut state, self.options.max_call_depth)?
-        };
+        let returns = self.execute_function_boundary(
+            function.entry,
+            function,
+            args,
+            &mut state,
+            self.options.max_call_depth,
+        )?;
 
         Ok(InterpretOutcome {
             returns,
@@ -1447,10 +1784,10 @@ impl<'m> Interpreter<'m> {
     fn execute_function_inner(
         &self,
         function: &Function,
-        args: Vec<InterpretValue>,
+        args: Packet,
         state: &mut ExecState,
         call_depth: u64,
-    ) -> InterpretResult<Vec<InterpretValue>> {
+    ) -> InterpretResult<Packet> {
         self.check_function_args(function, &args, function.entry)?;
         let mut current = function.entry;
         let mut incoming = args;
@@ -1469,7 +1806,7 @@ impl<'m> Interpreter<'m> {
             let mut jumped = false;
             for node in &block.body {
                 state.tick(block.id)?;
-                match self.execute_node(block.id, node, state, call_depth)? {
+                match self.execute_node(function, block.id, node, state, call_depth)? {
                     Step::Continue => {}
                     Step::Jump { target, args } => {
                         current = target;
@@ -1502,6 +1839,28 @@ impl<'m> Interpreter<'m> {
 
     fn execute_node(
         &self,
+        function: &Function,
+        block: BlockId,
+        node: &InstrNode,
+        state: &mut ExecState,
+        call_depth: u64,
+    ) -> InterpretResult<Step> {
+        let plan = self.provenance_before_node(block, node, state)?;
+        let previous = state.provenance.swap_decode(plan.decode.clone());
+        let result = self.execute_call_node(function, block, node, state, call_depth);
+        state.provenance.restore_decode(previous);
+        let step = result?;
+        plan.commit(state, node, block)?;
+        Ok(step)
+    }
+
+    /// Keep recursive calls outside the large scalar-dispatch frame. The
+    /// provenance wrapper still runs once around each actual instruction;
+    /// operand, ABI, result and unwind ordering are unchanged. Ordinary
+    /// execution remains bounded recursion, while observed calls are iterative.
+    fn execute_call_node(
+        &self,
+        function: &Function,
         block: BlockId,
         node: &InstrNode,
         state: &mut ExecState,
@@ -1522,9 +1881,9 @@ impl<'m> Interpreter<'m> {
             // deallocates makes a second drop UB through the existing rules).
             Inst::Drop { ty, ptr } => {
                 let glue = resolve_drop_glue(state, block, "Drop", ty)?;
-                let args = eval_args(state, block, std::slice::from_ref(ptr))?;
+                let args = eval_packet(state, block, std::slice::from_ref(ptr))?;
                 let returns = self.execute_direct_call(block, glue, args, state, call_depth)?;
-                bind_results(state, block, node, returns)?;
+                bind_packet_results(state, block, node, returns)?;
                 Ok(Step::Continue)
             }
             // The unwinding twin, exactly as `Invoke` (below): the glue runs as
@@ -1539,16 +1898,235 @@ impl<'m> Interpreter<'m> {
                 unwind_dest,
             } => {
                 let glue = resolve_drop_glue(state, block, "DropInvoke", ty)?;
-                let args = eval_args(state, block, std::slice::from_ref(ptr))?;
+                let args = eval_packet(state, block, std::slice::from_ref(ptr))?;
                 let returns = match self.execute_direct_call(block, glue, args, state, call_depth) {
                     Ok(returns) => returns,
                     Err(error) => return self.catch_unwinding(state, error, *unwind_dest),
                 };
-                bind_results(state, block, node, returns)?;
+                bind_packet_results(state, block, node, returns)?;
                 Ok(Step::Jump {
                     target: *normal_dest,
-                    args: eval_args(state, block, normal_args)?,
+                    args: eval_packet(state, block, normal_args)?,
                 })
+            }
+            Inst::SeqMap { ty, seq, fwd } => {
+                // General element-op loopFwd: apply the element function
+                // `fwd : fn(&mut elem)` to every element via the CALL MACHINERY.
+                // Each element round-trips through a fresh per-element memory
+                // cell (alloca -> store -> call fwd(&mut cell) -> load back).
+                // ONE call-depth level bounds the WHOLE map: per-element calls
+                // are sequential, so depth bounds NESTING, not sequence length
+                // (mirrors the Lean SeqMapReq runner in Semantics/Eval.lean).
+                let seq_val = state.value(block, *seq)?.clone();
+                let elems = match &seq_val.kind {
+                    InterpretValueKind::Sequence(elems) => elems.clone(),
+                    _ => {
+                        return Err(type_error(
+                            block,
+                            format!("seq_map requires a sequence, got {}", seq_val.ty),
+                        ));
+                    }
+                };
+                ensure_call_depth(block, call_depth)?;
+                let module = self.module_context(block, "seq_map")?;
+                let callee = module.function_by_id(*fwd).ok_or_else(|| {
+                    err(
+                        InterpretErrorCode::MissingFunction,
+                        block,
+                        format!("seq_map: undefined element function {fwd}"),
+                    )
+                })?;
+                // The element function must be the single-&mut form
+                // `fn(&mut elem)` with no returns (Aeneas forward view:
+                // elem -> elem).
+                let sig = self
+                    .function_signature(callee, block)?
+                    .expect("module-backed seq_map has function type context");
+                let elem_ty = match (sig.params.as_slice(), sig.returns.as_slice()) {
+                    ([Ty::RefMut(elem)], []) if !sig.is_vararg => (**elem).clone(),
+                    _ => {
+                        return Err(type_error(
+                            block,
+                            format!(
+                                "seq_map: element function {} must have signature fn(&mut elem)",
+                                callee.name
+                            ),
+                        ));
+                    }
+                };
+                // One call PER ELEMENT, in order: the element function is
+                // arbitrary code (it allocates, consumes fuel, may fault), so
+                // unlike the fixed maps above it is not mapped once per
+                // stored value. Each result lands in the new sequence as it
+                // is produced.
+                let mapped = ArrayValue::try_from_elements(elems.iter().map(|elem| {
+                    // Type guard (fail-closed): the element value must match
+                    // the element function's pointee type.
+                    if elem.ty != elem_ty {
+                        return Err(type_error(
+                            block,
+                            format!(
+                                "seq_map: element of type {} does not match the element \
+                                 function's pointee type {elem_ty}",
+                                elem.ty
+                            ),
+                        ));
+                    }
+                    // Per-element cell: alloc, write the element in. Internal
+                    // scratch — exact-size (no heap slack).
+                    let cell = self.eval_alloca(&elem_ty, None, None, state, block, false)?;
+                    self.eval_store(&elem_ty, &cell, elem, None, state, block, false)?;
+                    // Call fwd(&mut cell) through the standard call machinery
+                    // (argument typed as &mut elem so the signature check holds).
+                    let arg = InterpretValue {
+                        ty: Ty::RefMut(Box::new(elem_ty.clone())),
+                        kind: cell.kind.clone(),
+                    };
+                    self.execute_direct_call(
+                        block,
+                        *fwd,
+                        Packet::plain(vec![arg]),
+                        state,
+                        call_depth,
+                    )?;
+                    // Read the mutated element back out of the cell.
+                    self.eval_load(&elem_ty, &cell, None, state, block, false)
+                }))?;
+                bind_results(
+                    state,
+                    block,
+                    node,
+                    [InterpretValue {
+                        ty: ty.clone(),
+                        kind: InterpretValueKind::Sequence(mapped),
+                    }],
+                )?;
+                Ok(Step::Continue)
+            }
+            Inst::Call { callee, args } => {
+                let args = eval_packet(state, block, args)?;
+                let returns = self.execute_direct_call(block, *callee, args, state, call_depth)?;
+                bind_packet_results(state, block, node, returns)?;
+                Ok(Step::Continue)
+            }
+            Inst::Invoke {
+                callee,
+                args,
+                normal_dest,
+                normal_args,
+                unwind_dest,
+            } => {
+                // An invoke runs the call exactly like `Inst::Call`: the
+                // callee's return values bind the invoke's own `node.results`,
+                // and control jumps to `normal_dest` passing `normal_args`.
+                // Under `PanicStrategy::Abort` (the default; the panic=abort
+                // projection, `docs/ub-numerics-policy.md` §4 "Unwinding") the
+                // unwind edge is NEVER taken: a callee that traps (a failed
+                // `Assert`, a reached `Unreachable`, any interpreter error)
+                // propagates that trap straight out, and that propagation IS
+                // the panic=abort semantics. Under `PanicStrategy::Unwind`
+                // (§21) an UNWINDING out of the callee, and only that, is
+                // caught below and enters `unwind_dest`; every other error
+                // propagates as before. A verdict computed under `Abort`
+                // covers panic=abort only; `ModuleValidationReport::
+                // unwind_surface` names the functions a panic=unwind consumer
+                // must not rely on it for.
+                let call_args = eval_packet(state, block, args)?;
+                let returns =
+                    match self.execute_direct_call(block, *callee, call_args, state, call_depth) {
+                        Ok(returns) => returns,
+                        // §21 rule 4: under `Unwind` an unwinding out of the
+                        // callee is caught here; no result binds and the
+                        // normal-edge arguments are not evaluated.
+                        Err(error) => return self.catch_unwinding(state, error, *unwind_dest),
+                    };
+                bind_packet_results(state, block, node, returns)?;
+                let edge_args = eval_packet(state, block, normal_args)?;
+                Ok(Step::Jump {
+                    target: *normal_dest,
+                    args: edge_args,
+                })
+            }
+            Inst::CallIndirect {
+                callee,
+                sig,
+                args,
+                calling_conv,
+            } => {
+                let callee = state.value(block, *callee)?.clone();
+                let args = eval_packet(state, block, args)?;
+                let returns = self.execute_indirect_call(
+                    block,
+                    &callee,
+                    IndirectCallSignature {
+                        id: *sig,
+                        calling_conv: *calling_conv,
+                    },
+                    args,
+                    state,
+                    call_depth,
+                )?;
+                bind_packet_results(state, block, node, returns)?;
+                Ok(Step::Continue)
+            }
+            // Amendment D, Part 2 (wire v56): `CallIndirect`'s unwinding twin,
+            // exactly as `Invoke` (above): the call runs as `CallIndirect`'s,
+            // its returns bind this node's results, then control takes the
+            // normal edge. Under `PanicStrategy::Abort` `unwind_dest` is never
+            // taken; under `Unwind` an unwinding out of the callee enters it.
+            Inst::InvokeIndirect {
+                callee,
+                sig,
+                args,
+                normal_dest,
+                normal_args,
+                unwind_dest,
+                calling_conv,
+            } => {
+                let callee = state.value(block, *callee)?.clone();
+                let args = eval_packet(state, block, args)?;
+                let returns = match self.execute_indirect_call(
+                    block,
+                    &callee,
+                    IndirectCallSignature {
+                        id: *sig,
+                        calling_conv: *calling_conv,
+                    },
+                    args,
+                    state,
+                    call_depth,
+                ) {
+                    Ok(returns) => returns,
+                    Err(error) => return self.catch_unwinding(state, error, *unwind_dest),
+                };
+                bind_packet_results(state, block, node, returns)?;
+                Ok(Step::Jump {
+                    target: *normal_dest,
+                    args: eval_packet(state, block, normal_args)?,
+                })
+            }
+            _ => self.execute_node_inner(function, block, node, state, call_depth),
+        }
+    }
+
+    #[inline(never)]
+    fn execute_node_inner(
+        &self,
+        function: &Function,
+        block: BlockId,
+        node: &InstrNode,
+        state: &mut ExecState,
+        call_depth: u64,
+    ) -> InterpretResult<Step> {
+        match &node.inst {
+            Inst::Drop { .. }
+            | Inst::DropInvoke { .. }
+            | Inst::SeqMap { .. }
+            | Inst::Call { .. }
+            | Inst::Invoke { .. }
+            | Inst::CallIndirect { .. }
+            | Inst::InvokeIndirect { .. } => {
+                self.execute_call_node(function, block, node, state, call_depth)
             }
             Inst::Const { ty, value } => {
                 // Crystal lane (E3b): the validator's placement rule, re-checked fail-closed here
@@ -1664,6 +2242,25 @@ impl<'m> Interpreter<'m> {
                     lanes.push(state.value(block, *field)?.clone());
                 }
                 let result = self.eval_make_aggregate(ty, *variant, lanes, block)?;
+                bind_results(state, block, node, [result])?;
+                Ok(Step::Continue)
+            }
+            // The result IS the operand (bits and provenance). The
+            // instruction is undefined behaviour unless the pointer is valid
+            // as a `Box` of the pointee here; all three conjuncts are
+            // checkable in this memory model and are checked. The carried
+            // fact is evidence ABOUT those conjuncts and is not read: no
+            // evidence changes which executions are defined.
+            Inst::BoxDeref {
+                ptr_ty,
+                pointee,
+                operand,
+                fact: _,
+            } => {
+                let operand = state.value(block, *operand)?;
+                expect_ty(operand, ptr_ty, block)?;
+                self.check_box_validity(pointee, operand, state, block)?;
+                let result = operand.clone();
                 bind_results(state, block, node, [result])?;
                 Ok(Step::Continue)
             }
@@ -1897,94 +2494,6 @@ impl<'m> Interpreter<'m> {
                 )?;
                 Ok(Step::Continue)
             }
-            Inst::SeqMap { ty, seq, fwd } => {
-                // General element-op loopFwd: apply the element function
-                // `fwd : fn(&mut elem)` to every element via the CALL MACHINERY.
-                // Each element round-trips through a fresh per-element memory
-                // cell (alloca -> store -> call fwd(&mut cell) -> load back).
-                // ONE call-depth level bounds the WHOLE map: per-element calls
-                // are sequential, so depth bounds NESTING, not sequence length
-                // (mirrors the Lean SeqMapReq runner in Semantics/Eval.lean).
-                let seq_val = state.value(block, *seq)?.clone();
-                let elems = match &seq_val.kind {
-                    InterpretValueKind::Sequence(elems) => elems.clone(),
-                    _ => {
-                        return Err(type_error(
-                            block,
-                            format!("seq_map requires a sequence, got {}", seq_val.ty),
-                        ));
-                    }
-                };
-                ensure_call_depth(block, call_depth)?;
-                let module = self.module_context(block, "seq_map")?;
-                let callee = module.function_by_id(*fwd).ok_or_else(|| {
-                    err(
-                        InterpretErrorCode::MissingFunction,
-                        block,
-                        format!("seq_map: undefined element function {fwd}"),
-                    )
-                })?;
-                // The element function must be the single-&mut form
-                // `fn(&mut elem)` with no returns (Aeneas forward view:
-                // elem -> elem).
-                let sig = self
-                    .function_signature(callee, block)?
-                    .expect("module-backed seq_map has function type context");
-                let elem_ty = match (sig.params.as_slice(), sig.returns.as_slice()) {
-                    ([Ty::RefMut(elem)], []) if !sig.is_vararg => (**elem).clone(),
-                    _ => {
-                        return Err(type_error(
-                            block,
-                            format!(
-                                "seq_map: element function {} must have signature fn(&mut elem)",
-                                callee.name
-                            ),
-                        ));
-                    }
-                };
-                // One call PER ELEMENT, in order: the element function is
-                // arbitrary code (it allocates, consumes fuel, may fault), so
-                // unlike the fixed maps above it is not mapped once per
-                // stored value. Each result lands in the new sequence as it
-                // is produced.
-                let mapped = ArrayValue::try_from_elements(elems.iter().map(|elem| {
-                    // Type guard (fail-closed): the element value must match
-                    // the element function's pointee type.
-                    if elem.ty != elem_ty {
-                        return Err(type_error(
-                            block,
-                            format!(
-                                "seq_map: element of type {} does not match the element \
-                                 function's pointee type {elem_ty}",
-                                elem.ty
-                            ),
-                        ));
-                    }
-                    // Per-element cell: alloc, write the element in. Internal
-                    // scratch — exact-size (no heap slack).
-                    let cell = self.eval_alloca(&elem_ty, None, None, state, block, false)?;
-                    self.eval_store(&elem_ty, &cell, elem, None, state, block, false)?;
-                    // Call fwd(&mut cell) through the standard call machinery
-                    // (argument typed as &mut elem so the signature check holds).
-                    let arg = InterpretValue {
-                        ty: Ty::RefMut(Box::new(elem_ty.clone())),
-                        kind: cell.kind.clone(),
-                    };
-                    self.execute_direct_call(block, *fwd, vec![arg], state, call_depth)?;
-                    // Read the mutated element back out of the cell.
-                    self.eval_load(&elem_ty, &cell, None, state, block, false)
-                }))?;
-                bind_results(
-                    state,
-                    block,
-                    node,
-                    [InterpretValue {
-                        ty: ty.clone(),
-                        kind: InterpretValueKind::Sequence(mapped),
-                    }],
-                )?;
-                Ok(Step::Continue)
-            }
             Inst::Assume { cond } => {
                 let cond = state.value(block, *cond)?;
                 reject_partial(cond, block, "assume")?;
@@ -2028,7 +2537,7 @@ impl<'m> Interpreter<'m> {
             }
             Inst::Br { target, args } => Ok(Step::Jump {
                 target: *target,
-                args: eval_args(state, block, args)?,
+                args: eval_packet(state, block, args)?,
             }),
             Inst::CondBr {
                 cond,
@@ -2042,11 +2551,11 @@ impl<'m> Interpreter<'m> {
                 match cond.as_bool() {
                     Some(true) => Ok(Step::Jump {
                         target: *then_target,
-                        args: eval_args(state, block, then_args)?,
+                        args: eval_packet(state, block, then_args)?,
                     }),
                     Some(false) => Ok(Step::Jump {
                         target: *else_target,
-                        args: eval_args(state, block, else_args)?,
+                        args: eval_packet(state, block, else_args)?,
                     }),
                     None => Err(type_error(
                         block,
@@ -2068,16 +2577,16 @@ impl<'m> Interpreter<'m> {
                     if &case_value == value {
                         return Ok(Step::Jump {
                             target: case.target,
-                            args: eval_args(state, block, &case.args)?,
+                            args: eval_packet(state, block, &case.args)?,
                         });
                     }
                 }
                 Ok(Step::Jump {
                     target: *default,
-                    args: eval_args(state, block, default_args)?,
+                    args: eval_packet(state, block, default_args)?,
                 })
             }
-            Inst::Return { values } => Ok(Step::Return(eval_args(state, block, values)?)),
+            Inst::Return { values } => Ok(Step::Return(eval_packet(state, block, values)?)),
             Inst::CoroSuspend {
                 frame,
                 state_slot,
@@ -2102,60 +2611,16 @@ impl<'m> Interpreter<'m> {
                     .map_err(|e| e.with_block(block))?;
                 self.eval_store(&Ty::I64, &slot_ptr, &next, None, state, block, false)?;
                 let yielded = state.value(block, *value)?.clone();
-                Ok(Step::Return(vec![yielded]))
+                Ok(Step::Return(Packet::plain(vec![yielded])))
             }
             Inst::Unreachable => Err(err(
                 InterpretErrorCode::UndefinedBehavior,
                 block,
                 "executed unreachable",
             )),
-            Inst::Call { callee, args } => {
-                let args = eval_args(state, block, args)?;
-                let returns = self.execute_direct_call(block, *callee, args, state, call_depth)?;
-                bind_results(state, block, node, returns)?;
-                Ok(Step::Continue)
-            }
             Inst::CallCannotUnwind { .. } | Inst::CallIndirectCannotUnwind { .. } => {
                 Err(InterpretError::new(InterpretErrorCode::UnsupportedInstruction,
                     "Inst::CallCannotUnwind/CallIndirectCannotUnwind: no host-unwind boundary model").with_block(block))
-            }
-            Inst::Invoke {
-                callee,
-                args,
-                normal_dest,
-                normal_args,
-                unwind_dest,
-            } => {
-                // An invoke runs the call exactly like `Inst::Call`: the
-                // callee's return values bind the invoke's own `node.results`,
-                // and control jumps to `normal_dest` passing `normal_args`.
-                // Under `PanicStrategy::Abort` (the default; the panic=abort
-                // projection, `docs/ub-numerics-policy.md` §4 "Unwinding") the
-                // unwind edge is NEVER taken: a callee that traps (a failed
-                // `Assert`, a reached `Unreachable`, any interpreter error)
-                // propagates that trap straight out, and that propagation IS
-                // the panic=abort semantics. Under `PanicStrategy::Unwind`
-                // (§21) an UNWINDING out of the callee, and only that, is
-                // caught below and enters `unwind_dest`; every other error
-                // propagates as before. A verdict computed under `Abort`
-                // covers panic=abort only; `ModuleValidationReport::
-                // unwind_surface` names the functions a panic=unwind consumer
-                // must not rely on it for.
-                let call_args = eval_args(state, block, args)?;
-                let returns =
-                    match self.execute_direct_call(block, *callee, call_args, state, call_depth) {
-                        Ok(returns) => returns,
-                        // §21 rule 4: under `Unwind` an unwinding out of the
-                        // callee is caught here; no result binds and the
-                        // normal-edge arguments are not evaluated.
-                        Err(error) => return self.catch_unwinding(state, error, *unwind_dest),
-                    };
-                bind_results(state, block, node, returns)?;
-                let edge_args = eval_args(state, block, normal_args)?;
-                Ok(Step::Jump {
-                    target: *normal_dest,
-                    args: edge_args,
-                })
             }
             // Amendment P (wire v54): a sited check with an unwind edge. A
             // passing check jumps to `normal_dest(normal_args)`. Under
@@ -2176,7 +2641,7 @@ impl<'m> Interpreter<'m> {
                 match cond.as_bool() {
                     Some(true) => Ok(Step::Jump {
                         target: *normal_dest,
-                        args: eval_args(state, block, normal_args)?,
+                        args: eval_packet(state, block, normal_args)?,
                     }),
                     // §21 rules 3-4: under `Unwind` a failing check raises
                     // and is caught by its own unwind edge, in this frame.
@@ -2273,44 +2738,6 @@ impl<'m> Interpreter<'m> {
                     block,
                     "resume: the interpreter does not model in-flight host exceptions",
                 ))
-            }
-            Inst::CallIndirect {
-                callee, sig, args, ..
-            } => {
-                let callee = state.value(block, *callee)?.clone();
-                let args = eval_args(state, block, args)?;
-                let returns =
-                    self.execute_indirect_call(block, &callee, *sig, args, state, call_depth)?;
-                bind_results(state, block, node, returns)?;
-                Ok(Step::Continue)
-            }
-            // Amendment D, Part 2 (wire v56): `CallIndirect`'s unwinding twin,
-            // exactly as `Invoke` (above): the call runs as `CallIndirect`'s,
-            // its returns bind this node's results, then control takes the
-            // normal edge. Under `PanicStrategy::Abort` `unwind_dest` is never
-            // taken; under `Unwind` an unwinding out of the callee enters it.
-            Inst::InvokeIndirect {
-                callee,
-                sig,
-                args,
-                normal_dest,
-                normal_args,
-                unwind_dest,
-                ..
-            } => {
-                let callee = state.value(block, *callee)?.clone();
-                let args = eval_args(state, block, args)?;
-                let returns =
-                    match self.execute_indirect_call(block, &callee, *sig, args, state, call_depth)
-                    {
-                        Ok(returns) => returns,
-                        Err(error) => return self.catch_unwinding(state, error, *unwind_dest),
-                    };
-                bind_results(state, block, node, returns)?;
-                Ok(Step::Jump {
-                    target: *normal_dest,
-                    args: eval_args(state, block, normal_args)?,
-                })
             }
             Inst::Load {
                 ty,
@@ -2642,7 +3069,12 @@ impl<'m> Interpreter<'m> {
                     .ok_or_else(|| ub(block, "OpenFrame: frame id overflow"))?;
                 state.frames.insert(lineage);
                 let slots: Arc<[Option<InterpretValue>]> = vec![None; def.slots.len()].into();
-                bind_results(state, block, node, [frame_handle(lineage, slots)])?;
+                let origin = Arc::new(InterpretBindingFrameOrigin {
+                    function: function.id,
+                    declaration: def.clone(),
+                });
+                self.frame_declaration(&origin, block)?;
+                bind_results(state, block, node, [frame_handle(lineage, origin, slots)])?;
                 Ok(Step::Continue)
             }
             Inst::BindSlot {
@@ -2660,7 +3092,11 @@ impl<'m> Interpreter<'m> {
                 // disagreement (a validated, in-subset module could not
                 // execute). The new handle stays in the input's LINEAGE, so
                 // closing either closes both.
-                let (lineage, slots) = expect_open_frame(state, block, *frame, "BindSlot")?;
+                let (lineage, origin, slots) = expect_open_frame(state, block, *frame, "BindSlot")?;
+                let declaration = self.frame_declaration(&origin, block)?;
+                if declaration.slots.len() != slots.len() {
+                    return Err(type_error(block, "binding frame slot census differs from source declaration"));
+                }
                 let value = state.value(block, *value)?.clone();
                 // WS2.12: a frame slot is not in the handle transport set; a
                 // bound handle would ride inside a `Frame` value exactly as
@@ -2673,15 +3109,25 @@ impl<'m> Interpreter<'m> {
                         format!("BindSlot: slot {slot} out of range for frame of {} slots", slots.len()),
                     ));
                 }
+                if !matches!(value.kind, InterpretValueKind::Uninit) {
+                    expect_ty(&value, &declaration.slots[slot_idx].ty, block)?;
+                }
                 let mut next = slots.to_vec();
                 next[slot_idx] = Some(value);
-                bind_results(state, block, node, [frame_handle(lineage, next.into())])?;
+                bind_results(state, block, node, [frame_handle(lineage, origin, next.into())])?;
                 Ok(Step::Continue)
             }
             Inst::LoadSlot { frame, slot, ty } => {
                 // Reads the HANDLE'S OWN snapshot: an older handle sees the
                 // slots it had, never a later bind made through another one.
-                let (_, slots) = expect_open_frame(state, block, *frame, "LoadSlot")?;
+                let (_, origin, slots) = expect_open_frame(state, block, *frame, "LoadSlot")?;
+                let declaration = self.frame_declaration(&origin, block)?;
+                if declaration.slots.len() != slots.len() {
+                    return Err(type_error(block, "binding frame slot census differs from source declaration"));
+                }
+                if declaration.slots.get(*slot as usize).is_some_and(|field| field.ty != *ty) {
+                    return Err(type_error(block, "LoadSlot: requested type differs from source slot"));
+                }
                 let slot_idx = *slot as usize;
                 let value = slots
                     .get(slot_idx)
@@ -2710,7 +3156,7 @@ impl<'m> Interpreter<'m> {
             Inst::CloseFrame { frame } => {
                 // Closes the LINEAGE: every handle descending from the same
                 // `OpenFrame` is dead afterwards, whichever one was named.
-                let (lineage, _) = expect_frame(state.value(block, *frame)?, block)?;
+                let (lineage, _, _) = expect_frame(state.value(block, *frame)?, block)?;
                 if !state.frames.remove(&lineage) {
                     return Err(ub(block, "CloseFrame: frame is not open (double close)"));
                 }
@@ -2812,10 +3258,10 @@ impl<'m> Interpreter<'m> {
         &self,
         block: BlockId,
         callee: FuncId,
-        args: Vec<InterpretValue>,
+        args: Packet,
         state: &mut ExecState,
         call_depth: u64,
-    ) -> InterpretResult<Vec<InterpretValue>> {
+    ) -> InterpretResult<Packet> {
         ensure_call_depth(block, call_depth)?;
         let module = self.module_context(block, "direct call")?;
         let callee_function = module.function_by_id(callee).ok_or_else(|| {
@@ -2925,11 +3371,15 @@ impl<'m> Interpreter<'m> {
         &self,
         block: BlockId,
         callee: &InterpretValue,
-        sig: FuncTyId,
-        args: Vec<InterpretValue>,
+        signature: IndirectCallSignature,
+        args: Packet,
         state: &mut ExecState,
         call_depth: u64,
-    ) -> InterpretResult<Vec<InterpretValue>> {
+    ) -> InterpretResult<Packet> {
+        let IndirectCallSignature {
+            id: sig,
+            calling_conv,
+        } = signature;
         ensure_call_depth(block, call_depth)?;
         let module = self.module_context(block, "closure call")?;
 
@@ -3016,16 +3466,19 @@ impl<'m> Interpreter<'m> {
         // returns. Checked against the DECLARED closure type's capture list,
         // not against the runtime capture values, so a closure whose value was
         // rebuilt by `InsertField` is held to the same signature.
-        let expected_params: Vec<Ty> = closure_ty
-            .captures
-            .iter()
-            .cloned()
-            .chain(apparent.params.iter().cloned())
-            .collect();
         if target_sig.is_vararg
-            || target_sig.params != expected_params
+            || !target_sig
+                .params
+                .iter()
+                .eq(closure_ty.captures.iter().chain(apparent.params.iter()))
             || target_sig.returns != apparent.returns
         {
+            let expected_params: Vec<Ty> = closure_ty
+                .captures
+                .iter()
+                .cloned()
+                .chain(apparent.params.iter().cloned())
+                .collect();
             return Err(signature_mismatch(
                 block,
                 format!(
@@ -3052,7 +3505,17 @@ impl<'m> Interpreter<'m> {
         check_signature_values(block, "closure captures", captures, &closure_ty.captures)?;
         check_signature_values(block, "CallIndirect arguments", &args, &apparent.params)?;
 
-        let full_args: Vec<InterpretValue> = captures.iter().cloned().chain(args).collect();
+        if target_function.calling_conv != calling_conv {
+            return Err(signature_mismatch(
+                block,
+                "CallIndirect: closure calling convention mismatch",
+            ));
+        }
+
+        state
+            .provenance
+            .require_unconstrained(block, "closure environment transport")?;
+        let full_args = Packet::plain(captures.iter().cloned().chain(args.values).collect());
         self.execute_callee(block, target_function, full_args, state, call_depth)
     }
 
@@ -3060,17 +3523,41 @@ impl<'m> Interpreter<'m> {
         &self,
         block: BlockId,
         callee: &InterpretValue,
-        sig: FuncTyId,
-        args: Vec<InterpretValue>,
+        signature: IndirectCallSignature,
+        args: Packet,
         state: &mut ExecState,
         call_depth: u64,
-    ) -> InterpretResult<Vec<InterpretValue>> {
+    ) -> InterpretResult<Packet> {
+        let IndirectCallSignature {
+            id: sig,
+            calling_conv,
+        } = signature;
+        if let Ty::FnItem(id) = callee.ty {
+            reject_partial(callee, block, "CallIndirect")?;
+            check_fn_item_carrier(callee, block)?;
+            ensure_call_depth(block, call_depth)?;
+            let (function, signature) = self.function_item(id, block)?;
+            if function.ty != sig || function.calling_conv != calling_conv {
+                return Err(signature_mismatch(
+                    block,
+                    "CallIndirect: nominal function item signature or calling convention mismatch",
+                ));
+            }
+            if signature.is_vararg && !function.is_declaration() {
+                return Err(signature_mismatch(
+                    block,
+                    "CallIndirect: variadic definition is not executable",
+                ));
+            }
+            self.check_function_args(function, &args, block)?;
+            return self.execute_callee(block, function, args, state, call_depth);
+        }
         // G18-2: a `Ty::Closure` callee is applied by `execute_closure_call`,
         // which supplies the captured environment as leading arguments. The
         // `Ty::Func` rule below is reached only for a non-closure callee and is
         // unchanged.
         if matches!(&callee.ty, Ty::Closure(_)) {
-            return self.execute_closure_call(block, callee, sig, args, state, call_depth);
+            return self.execute_closure_call(block, callee, signature, args, state, call_depth);
         }
         let value_sig = match &callee.ty {
             Ty::Func(sig) => *sig,
@@ -3181,8 +3668,23 @@ impl<'m> Interpreter<'m> {
                 ));
             }
             check_vararg_declaration_args(block, &args, &expected_sig.params)?;
+        } else if expected_sig.abi.is_some() {
+            typed_abi::check_carrier_types(
+                block,
+                "CallIndirect arguments",
+                &args,
+                &expected_sig.params,
+            )?;
         } else {
             check_signature_values(block, "CallIndirect arguments", &args, &expected_sig.params)?;
+        }
+        // The logical signature may have no recorded ABI. The edge's explicit
+        // convention must still match the actual function before it executes.
+        if callee_function.calling_conv != calling_conv {
+            return Err(signature_mismatch(
+                block,
+                format!("CallIndirect: calling convention mismatch for function {callee_id}"),
+            ));
         }
         self.execute_callee(block, callee_function, args, state, call_depth)
     }
@@ -3191,20 +3693,22 @@ impl<'m> Interpreter<'m> {
         &self,
         block: BlockId,
         callee: &Function,
-        args: Vec<InterpretValue>,
+        args: Packet,
         state: &mut ExecState,
         call_depth: u64,
-    ) -> InterpretResult<Vec<InterpretValue>> {
+    ) -> InterpretResult<Packet> {
         ensure_call_depth(block, call_depth)?;
         if callee.is_declaration() {
             // Every caller (direct, indirect, closure, `Invoke`, `SeqMap`) has
             // already checked `args` against the callee's signature.
-            return self.execute_host_call(block, callee, args, state);
+            return self.execute_packet_boundary(block, callee, args, state, call_depth);
         }
 
         let caller_values = std::mem::take(&mut state.values);
-        let result = self.execute_function_inner(callee, args, state, call_depth - 1);
+        let caller_facts = std::mem::take(&mut state.provenance.values);
+        let result = self.execute_packet_boundary(block, callee, args, state, call_depth - 1);
         state.values = caller_values;
+        state.provenance.values = caller_facts;
         result
     }
 
@@ -3214,7 +3718,7 @@ impl<'m> Interpreter<'m> {
         &self,
         block: BlockId,
         callee: &Function,
-        args: Vec<InterpretValue>,
+        args: Packet,
         state: &mut ExecState,
     ) -> InterpretResult<Vec<InterpretValue>> {
         let no_host_model = || {
@@ -3271,6 +3775,12 @@ impl<'m> Interpreter<'m> {
             self.check_function_returns(callee, &returns, block)?;
             return Ok(returns);
         }
+        if args.facts.iter().any(|fact| !fact.independent()) {
+            return Err(provenance::unavailable(
+                block,
+                "ordinary host has no declared address/lineage transport model for a constrained input",
+            ));
+        }
         let Some(result) = host.call(callee, sig, &args, &mut state.host) else {
             return Err(no_host_model());
         };
@@ -3306,7 +3816,7 @@ impl<'m> Interpreter<'m> {
         callee: &Function,
         sig: &FuncTy,
         op: HostRcOp,
-        args: &[InterpretValue],
+        args: &Packet,
         state: &mut ExecState,
     ) -> InterpretResult<Vec<InterpretValue>> {
         let name = &callee.name;
@@ -3333,7 +3843,7 @@ impl<'m> Interpreter<'m> {
                 ),
             ));
         }
-        let [arg] = args else {
+        let [arg] = args.values.as_slice() else {
             return Err(signature_mismatch(
                 block,
                 format!("host RC call @{name}: expected exactly one argument"),
@@ -3352,6 +3862,21 @@ impl<'m> Interpreter<'m> {
             }
         };
         state.memory.check_rc_cell(ptr, op.origin, name, block)?;
+        let fact = &args.facts[0];
+        let write = !matches!(op.role, HostRcRole::IsUnique);
+        let free = matches!(op.role, HostRcRole::Release)
+            && state
+                .memory
+                .allocations
+                .get(&ptr.allocation)
+                .is_some_and(|cell| cell.ref_count == 1);
+        state.provenance.rc(ptr, fact, write, free, block)?;
+        if free {
+            let bytes = state.memory.allocations[&ptr.allocation].size;
+            state
+                .provenance
+                .bytes(ptr, bytes, fact, true, true, block)?;
+        }
         Ok(match op.role {
             HostRcRole::Retain => {
                 state.memory.retain(ptr, block)?;
@@ -3425,6 +3950,9 @@ impl<'m> Interpreter<'m> {
         args: &[InterpretValue],
         block: BlockId,
     ) -> InterpretResult<()> {
+        for value in args {
+            self.validate_function_items(value, block)?;
+        }
         let Some(sig) = self.function_signature(function, block)? else {
             return Ok(());
         };
@@ -3449,6 +3977,12 @@ impl<'m> Interpreter<'m> {
             }
             return check_vararg_declaration_args(block, args, &sig.params);
         }
+        if sig.abi.is_some() {
+            // The typed boundary checks declared live bits and keeps padding
+            // poison transport-only. Legacy absence keeps its original strict
+            // whole-value call contract below.
+            return typed_abi::check_carrier_types(block, "Call arguments", args, &sig.params);
+        }
         check_signature_values(block, "Call arguments", args, &sig.params)
     }
 
@@ -3458,9 +3992,15 @@ impl<'m> Interpreter<'m> {
         returns: &[InterpretValue],
         block: BlockId,
     ) -> InterpretResult<()> {
+        for value in returns {
+            self.validate_function_items(value, block)?;
+        }
         let Some(sig) = self.function_signature(function, block)? else {
             return Ok(());
         };
+        if sig.abi.is_some() {
+            return typed_abi::check_carrier_types(block, "Call returns", returns, &sig.returns);
+        }
         check_signature_values(block, "Call returns", returns, &sig.returns)
     }
 
@@ -4083,6 +4623,13 @@ impl<'m> Interpreter<'m> {
                     },
                 })
             }
+            (Ty::FnItem(expected), Constant::FnItem(actual)) if expected == actual => {
+                self.function_item(*expected, block)?;
+                Ok(InterpretValue {
+                    ty: ty.clone(),
+                    kind: InterpretValueKind::FnItem(*expected),
+                })
+            }
             (Ty::Func(_), Constant::FnDef(func)) => Ok(InterpretValue {
                 ty: ty.clone(),
                 kind: InterpretValueKind::FnDef(*func),
@@ -4440,6 +4987,99 @@ impl<'m> Interpreter<'m> {
             ty: Ty::Ptr,
             kind: InterpretValueKind::Ptr(pointer),
         })
+    }
+
+    /// The validity rule of [`Inst::BoxDeref`]: `value` is non-null, a
+    /// multiple of the pointee's alignment, and, when the pointee has a
+    /// positive size, points into a live allocation covering it. A false
+    /// conjunct is undefined behaviour, named by its conjunct.
+    ///
+    /// A zero-size pointee is exempt from the allocation requirement (a valid
+    /// `Box` of a zero-sized type is any non-null aligned address), so only
+    /// the two value properties are checked for it. An allocation's extent is
+    /// this memory model's: a stack allocation is exact, and a heap
+    /// allocation includes its readable usable-size slack. Every address is
+    /// a `u64` in the model whatever the target's pointer width; the
+    /// pointee's size and alignment are the target's. Inspecting a poison
+    /// pointer is undefined behaviour, as every inspection is.
+    fn check_box_validity(
+        &self,
+        pointee: &crate::box_validity::BoxPointee,
+        value: &InterpretValue,
+        state: &ExecState,
+        block: BlockId,
+    ) -> InterpretResult<()> {
+        let crate::box_validity::BoxPointee::Sized { ty } = pointee;
+        if matches!(ty, Ty::Storage(_)) {
+            return Err(type_error(
+                block,
+                "BoxDeref: a storage-only type is not a Box pointee",
+            ));
+        }
+        let size = self.byte_size(ty, block)?;
+        let align = checked_align(self.byte_align(ty, block)?, block)?;
+        reject_partial(value, block, "BoxDeref")?;
+        match value.kind {
+            InterpretValueKind::NullPtr => Err(ub(
+                block,
+                "BoxDeref: NonNull is false: the box pointer is null",
+            )),
+            InterpretValueKind::Ptr(ptr) => {
+                let address = state.memory.pointer_address(ptr, block, "BoxDeref")?;
+                if address % align != 0 {
+                    return Err(ub(
+                        block,
+                        format!(
+                            "BoxDeref: Aligned is false: address {address} is not a multiple of {align}"
+                        ),
+                    ));
+                }
+                if size == 0 {
+                    return Ok(());
+                }
+                state
+                    .memory
+                    .checked_access(
+                        ptr,
+                        size,
+                        align,
+                        block,
+                        "BoxDeref: Dereferenceable is false",
+                    )
+                    .map(|_| ())
+            }
+            InterpretValueKind::DanglingPtr(address) => {
+                // A no-provenance pointer is a bare address; address 0 is
+                // null however it was spelled.
+                if address == 0 {
+                    return Err(ub(
+                        block,
+                        "BoxDeref: NonNull is false: the box pointer is null",
+                    ));
+                }
+                if address % align != 0 {
+                    return Err(ub(
+                        block,
+                        format!(
+                            "BoxDeref: Aligned is false: address {address} is not a multiple of {align}"
+                        ),
+                    ));
+                }
+                if size == 0 {
+                    return Ok(());
+                }
+                Err(ub(
+                    block,
+                    format!(
+                        "BoxDeref: Dereferenceable is false: pointer value {address} has no allocation provenance"
+                    ),
+                ))
+            }
+            _ => Err(type_error(
+                block,
+                format!("BoxDeref: expected pointer value, got {}", value.ty),
+            )),
+        }
     }
 
     /// Load a value of `ty` from `ptr`.
@@ -5172,6 +5812,10 @@ impl<'m> Interpreter<'m> {
                 self.require_fat_pointer_layout(block)?;
                 Ok(2 * self.pointer_bytes())
             }
+            Ty::FnItem(id) => {
+                self.function_item(*id, block)?;
+                Ok(0)
+            }
             Ty::Unit => Ok(0),
             Ty::Vector(elem, lanes) => {
                 if *lanes == 0 {
@@ -5780,6 +6424,26 @@ impl<'m> Interpreter<'m> {
                     format!("enum {ty} has an incoherent layout descriptor"),
                 ));
             }
+            if matches!(
+                &desc.encoding,
+                crate::ty::EnumTagEncoding::DirectWithUninhabited { .. }
+            ) {
+                let function_item = |id| self.function_item(id, block).is_ok();
+                let mut work = crate::layout_table::direct_storage::Ordinary {
+                    inhabit: &mut inhabit,
+                    function_item: &function_item,
+                };
+                if !crate::layout_table::direct_storage::validate(
+                    module, def, desc, tag_size, tag_align, &mut work,
+                )
+                .unwrap_or_else(|never| match never {})
+                {
+                    return Err(type_error(
+                        block,
+                        format!("enum {ty} has invalid uninhabited Direct storage"),
+                    ));
+                }
+            }
             let mut variant_field_offsets = Vec::with_capacity(def.variants.len());
             for (variant_idx, (variant, offsets)) in def
                 .variants
@@ -5787,6 +6451,12 @@ impl<'m> Interpreter<'m> {
                 .zip(&desc.variant_field_offsets)
                 .enumerate()
             {
+                if crate::layout_table::direct_storage::profile(def, variant_idx).is_some() {
+                    // Its full physical profile was checked above. No value or
+                    // payload codec exists for this proved-dead source row.
+                    variant_field_offsets.push(Vec::new());
+                    continue;
+                }
                 if matches!(desc.encoding, crate::ty::EnumTagEncoding::SingleInhabited { variant } if usize::try_from(variant).ok() != Some(variant_idx))
                 {
                     if !offsets.is_empty() {
@@ -5897,7 +6567,8 @@ impl<'m> Interpreter<'m> {
                     }
                     EnumByteView::Untagged { variant: active }
                 }
-                crate::ty::EnumTagEncoding::Direct { tag_offset } => {
+                crate::ty::EnumTagEncoding::Direct { tag_offset }
+                | crate::ty::EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
                     if tag_align > desc.align
                         || !tag_offset.is_multiple_of(tag_align)
                         || tag_offset
@@ -6153,6 +6824,10 @@ impl<'m> Interpreter<'m> {
                 Ok(self.pointer_bytes())
             }
             Ty::I128 | Ty::U128 => Ok(16),
+            Ty::FnItem(id) => {
+                self.function_item(*id, block)?;
+                Ok(1)
+            }
             Ty::Unit => Ok(1),
             Ty::Vector(elem, lanes) => {
                 if *lanes == 0 {
@@ -6271,6 +6946,11 @@ impl<'m> Interpreter<'m> {
             InterpretValueKind::Ptr(ptr) => {
                 let address = state.memory.address(*ptr, block, "Store")?;
                 Ok(self.pointer_image(address))
+            }
+            InterpretValueKind::FnItem(target) => {
+                check_fn_item_carrier(value, block)?;
+                self.function_item(*target, block)?;
+                Ok(Vec::new())
             }
             InterpretValueKind::FnDef(target) => {
                 if !matches!(value.ty, Ty::Func(_)) {
@@ -6479,7 +7159,12 @@ impl<'m> Interpreter<'m> {
                         format!("Store: tag {disc} does not name a variant of {}", value.ty),
                     )
                 })?;
-                layout.refuse_uninhabited(variant_idx, &value.ty, "Store", block)?;
+                layout.refuse_uninhabited(
+                    variant_idx,
+                    &value.ty,
+                    EnumValueOrigin::TypedValue,
+                    block,
+                )?;
                 let fields = &layout.variant_field_offsets[variant_idx];
                 if field_vals.len() != fields.len() {
                     return Err(type_error(
@@ -6865,7 +7550,7 @@ impl<'m> Interpreter<'m> {
                 let layout = self.enum_layout(ty, block)?;
                 let (variant_idx, tag_val) =
                     self.enum_image_variant(&layout, ty, image, state, block)?;
-                layout.refuse_uninhabited(variant_idx, ty, "Load", block)?;
+                layout.refuse_uninhabited(variant_idx, ty, EnumValueOrigin::MemoryImage, block)?;
                 let fields = &layout.variant_field_offsets[variant_idx];
                 let mut values = Vec::with_capacity(fields.len() + 1);
                 values.push(tag_val);
@@ -6978,11 +7663,15 @@ impl<'m> Interpreter<'m> {
                 // A loaded pointer whose address names no allocation is a
                 // no-provenance value (`DanglingPtr`), not an error — the
                 // provenance check is deferred to dereference (`expect_pointer`).
-                let kind = state.memory.resolve_pointer_kind(addr);
+                let kind = self.resolve_abi_pointer(state, addr, block)?;
                 Ok(InterpretValue {
                     ty: ty.clone(),
                     kind,
                 })
+            }
+            Ty::FnItem(id) => {
+                self.function_item(*id, block)?;
+                Ok(InterpretValue { ty: ty.clone(), kind: InterpretValueKind::FnItem(*id) })
             }
             Ty::Func(_) => {
                 let address = self.pointer_from_image(bytes, block)?;
@@ -7001,7 +7690,7 @@ impl<'m> Interpreter<'m> {
                 let addr = self.pointer_from_image(&bytes[..word], block)?;
                 // An empty slice / len-0 `&[T]` carries a dangling data lane
                 // (`NonNull::dangling`); resolve it as a no-provenance value.
-                let data_kind = state.memory.resolve_pointer_kind(addr);
+                let data_kind = self.resolve_abi_pointer(state, addr, block)?;
                 let data = InterpretValue { ty: Ty::Ptr, kind: data_kind };
                 let canonical = kind.metadata_ty(self.pointer_bits()).ok_or_else(|| {
                     type_error(block, format!("Load: {ty} has no metadata type"))
@@ -7063,7 +7752,7 @@ impl<'m> Interpreter<'m> {
                 )?;
                 let disc = tag_int_discriminant(expect_int_value(&tag_val, block)?);
                 let variant_idx = layout.variant_by_discriminant(disc).ok_or_else(|| {
-                    type_error(
+                    ub(
                         block,
                         format!(
                             "Load: enum tag value {disc} does not match any variant discriminant of {ty}"
@@ -7091,7 +7780,7 @@ impl<'m> Interpreter<'m> {
                 let variant_idx = if relative <= range_len {
                     let candidate = *niche_variants_start as usize + relative as usize;
                     if candidate == *untagged_variant {
-                        return Err(type_error(
+                        return Err(ub(
                             block,
                             format!(
                                 "Load: enum {ty} byte image uses the untagged variant's dead niche value"
@@ -7198,7 +7887,7 @@ impl<'m> Interpreter<'m> {
                     return Ok(Some(offset + at));
                 }
                 let (variant_idx, _) = self.enum_image_variant(&layout, ty, image, state, block)?;
-                layout.refuse_uninhabited(variant_idx, ty, "Load", block)?;
+                layout.refuse_uninhabited(variant_idx, ty, EnumValueOrigin::MemoryImage, block)?;
                 let mut first: Option<u64> = None;
                 for (rel_offset, field_ty) in &layout.variant_field_offsets[variant_idx] {
                     let offset = layout.payload_offset + rel_offset;
@@ -7614,6 +8303,16 @@ impl<'m> Interpreter<'m> {
     ) -> InterpretResult<InterpretValue> {
         reject_partial(operand, block, &format!("{op}"))?;
         expect_ty(operand, src_ty, block)?;
+        if matches!(op, CastOp::Bitcast | CastOp::Transmute)
+            && (matches!(src_ty, Ty::FnItem(_)) || matches!(dst_ty, Ty::FnItem(_)))
+            && self.byte_size(src_ty, block)? == 0
+            && self.byte_size(dst_ty, block)? == 0
+        {
+            return Ok(InterpretValue {
+                ty: dst_ty.clone(),
+                kind: self.eval_bitcast(src_ty, dst_ty, operand, state, block)?,
+            });
+        }
         let kind = match op {
             CastOp::Trunc => {
                 let int = expect_integer_resize_value(operand, block)?;
@@ -7864,7 +8563,7 @@ impl<'m> Interpreter<'m> {
                 // A nonzero address that names no allocation becomes a legal
                 // no-provenance pointer VALUE (`NonNull::dangling`); the
                 // provenance check is deferred to dereference.
-                state.memory.resolve_pointer_kind(address)
+                self.resolve_abi_pointer(state, address, block)?
             }
             CastOp::PtrToPtr => {
                 if !is_pointer_like_ty(src_ty) || !is_pointer_like_ty(dst_ty) {
@@ -7947,6 +8646,20 @@ impl<'m> Interpreter<'m> {
                 }
                 self.eval_bitcast(src_ty, dst_ty, operand, state, block)?
             }
+            CastOp::ReifyFnPointer if matches!((src_ty, dst_ty), (Ty::FnItem(_), Ty::Func(_))) => {
+                let (Ty::FnItem(target), Ty::Func(signature)) = (src_ty, dst_ty) else {
+                    unreachable!()
+                };
+                self.validate_function_items(operand, block)?;
+                let (function, _) = self.function_item(*target, block)?;
+                if function.ty != *signature {
+                    return Err(signature_mismatch(
+                        block,
+                        "ReifyFnPointer: item signature differs from destination",
+                    ));
+                }
+                InterpretValueKind::FnDef(*target)
+            }
             CastOp::ReifyFnPointer => {
                 return Err(err(
                     InterpretErrorCode::UnsupportedCast,
@@ -7969,8 +8682,13 @@ impl<'m> Interpreter<'m> {
         state: &ExecState,
         block: BlockId,
     ) -> InterpretResult<InterpretValueKind> {
+        self.validate_function_items(operand, block)?;
         if src_ty == dst_ty {
             return Ok(operand.kind.clone());
+        }
+        if self.byte_size(src_ty, block)? == 0 && self.byte_size(dst_ty, block)? == 0 {
+            let image = self.encode_image(operand, state, block)?;
+            return Ok(self.decode_image(dst_ty, &image, state, block)?.kind);
         }
         if let Some((bits, signed)) = int_shape(dst_ty) {
             let raw = match operand.kind {
@@ -8022,7 +8740,7 @@ impl<'m> Interpreter<'m> {
                         )
                     })?;
                     let address = state.memory.check_address(address, block, "Bitcast")?;
-                    Ok(state.memory.resolve_pointer_kind(address))
+                    self.resolve_abi_pointer(state, address, block)
                 }
                 _ => Err(type_error(
                     block,
@@ -9194,8 +9912,15 @@ impl Default for Interpreter<'_> {
     }
 }
 
+/// The two source-spelled signature fields of an indirect call.
+struct IndirectCallSignature {
+    id: FuncTyId,
+    calling_conv: crate::CallingConv,
+}
+
 struct ExecState {
     values: BTreeMap<ValueId, InterpretValue>,
+    provenance: provenance::State,
     memory: MemoryState,
     /// Lazily-materialized storage for module-level globals addressed by
     /// `Inst::GlobalAddr`. The first address-of a given global allocates a
@@ -9286,6 +10011,9 @@ struct MemoryState {
     /// (WS2.16). `u64::MAX` at 64 bits, where every check against it is
     /// vacuous and the model is byte-identical to the pre-WS2.16 one.
     max_address: u64,
+    /// Nested typed-call access restrictions. They live only for the actual
+    /// call, are restored on every exit, and are empty on all legacy runs.
+    abi_access: Vec<typed_abi::Access>,
     /// Crystal lane (E3b): per allocation, the byte RANGES a `Store` left uninitialised because
     /// the stored aggregate's lane there was UNWRITTEN (`InterpretValueKind::Uninit`), as
     /// disjoint `start -> end` (exclusive) entries: one entry per lane, whatever its size. A
@@ -9306,6 +10034,7 @@ impl Default for MemoryState {
             next_alloc_id: 0,
             next_addr: 1024,
             max_address: u64::MAX,
+            abi_access: Vec::new(),
             unwritten_lane_bytes: BTreeMap::new(),
         }
     }
@@ -9485,11 +10214,14 @@ impl MemoryState {
     /// `InterpretPointer::is_object_base` (SPEC "An ARC operation counts only
     /// a reference-counted cell", clause 3).
     fn retain(&mut self, ptr: InterpretPointer, block: BlockId) -> InterpretResult<()> {
+        let abi_write = typed_abi::check_rc_write(&self.abi_access, ptr, block);
         let allocation = self.arc_allocation_mut(ptr, block, "Retain")?;
-        allocation.ref_count = allocation
+        let next = allocation
             .ref_count
             .checked_add(1)
             .ok_or_else(|| ub(block, "Retain: reference count overflow"))?;
+        abi_write?;
+        allocation.ref_count = next;
         Ok(())
     }
 
@@ -9497,6 +10229,16 @@ impl MemoryState {
     /// reaches zero (the last owner released). Releasing a zero-count (already
     /// freed) allocation is UB.
     fn release(&mut self, ptr: InterpretPointer, block: BlockId) -> InterpretResult<()> {
+        let abi_write = typed_abi::check_rc_write(&self.abi_access, ptr, block);
+        let abi_freedom = if self
+            .allocations
+            .get(&ptr.allocation)
+            .is_some_and(|cell| cell.ref_count == 1)
+        {
+            typed_abi::check_free(&self.abi_access, ptr, block)
+        } else {
+            Ok(())
+        };
         let allocation = self.arc_allocation_mut(ptr, block, "Release")?;
         if allocation.ref_count == 0 {
             return Err(ub(
@@ -9504,6 +10246,8 @@ impl MemoryState {
                 "Release: reference count underflow (double free)",
             ));
         }
+        abi_write?;
+        abi_freedom?;
         allocation.ref_count -= 1;
         if allocation.ref_count == 0 {
             allocation.alive = false;
@@ -9649,6 +10393,7 @@ impl MemoryState {
         op: &str,
     ) -> InterpretResult<()> {
         self.checked_access(ptr, image.len(), align, block, op)?;
+        typed_abi::check_write(&self.abi_access, ptr, image.len(), block)?;
         let allocation = self.allocations.get_mut(&ptr.allocation).expect("checked");
         allocation.bytes.write(ptr.offset, image);
         // Crystal lane (E3b): any write over an unwritten-lane byte writes it, so the
@@ -9786,6 +10531,7 @@ impl MemoryState {
     }
 
     fn dealloc(&mut self, ptr: InterpretPointer, block: BlockId) -> InterpretResult<()> {
+        let abi_freedom = typed_abi::check_free(&self.abi_access, ptr, block);
         if ptr.offset != 0 {
             return Err(ub(block, "Dealloc: pointer must reference allocation base"));
         }
@@ -9834,6 +10580,7 @@ impl MemoryState {
                 ),
             ));
         }
+        abi_freedom?;
         allocation.alive = false;
         Ok(())
     }
@@ -9912,6 +10659,26 @@ impl MemoryState {
         } else {
             InterpretValueKind::DanglingPtr(address)
         }
+    }
+
+    /// The address a provenance-carrying pointer denotes, whether or not its
+    /// allocation is still live: an address is a property of the value.
+    fn pointer_address(
+        &self,
+        ptr: InterpretPointer,
+        block: BlockId,
+        op: &str,
+    ) -> InterpretResult<u64> {
+        let allocation = self.allocations.get(&ptr.allocation).ok_or_else(|| {
+            ub(
+                block,
+                format!("{op}: unknown allocation {}", ptr.allocation),
+            )
+        })?;
+        allocation
+            .base
+            .checked_add(ptr.offset)
+            .ok_or_else(|| ub(block, format!("{op}: pointer address overflow")))
     }
 
     fn checked_access(
@@ -9999,9 +10766,9 @@ enum Step {
     Continue,
     Jump {
         target: BlockId,
-        args: Vec<InterpretValue>,
+        args: Packet,
     },
-    Return(Vec<InterpretValue>),
+    Return(Packet),
     /// Amendment D, Part 2 (§21 rule 4): an unwinding caught at this
     /// terminator transfers by U(exception, target) in this frame. Produced
     /// only under `PanicStrategy::Unwind`.
@@ -10011,11 +10778,8 @@ enum Step {
     },
 }
 
-fn bind_block_params(
-    state: &mut ExecState,
-    block: &Block,
-    args: Vec<InterpretValue>,
-) -> InterpretResult<()> {
+fn bind_block_params(state: &mut ExecState, block: &Block, args: Packet) -> InterpretResult<()> {
+    args.check(block.id)?;
     if block.params.len() != args.len() {
         return Err(err(
             InterpretErrorCode::MalformedInstruction,
@@ -10027,10 +10791,11 @@ fn bind_block_params(
             ),
         ));
     }
-    for ((value, ty), arg) in block.params.iter().zip(args) {
+    for (((value, ty), arg), fact) in block.params.iter().zip(args.values).zip(args.facts) {
         expect_ty(&arg, ty, block.id)?;
         check_char_validity(&arg, block.id)?;
         state.values.insert(*value, arg);
+        state.provenance.values.insert(*value, fact);
     }
     Ok(())
 }
@@ -10094,9 +10859,32 @@ fn bind_results(
     }
     for (result, value) in node.results.iter().copied().zip(values) {
         check_char_validity(&value, block)?;
+        check_fn_item_carrier(&value, block)?;
         state.values.insert(result, value);
     }
     Ok(())
+}
+
+fn bind_packet_results(
+    state: &mut ExecState,
+    block: BlockId,
+    node: &InstrNode,
+    packet: Packet,
+) -> InterpretResult<()> {
+    packet.check(block)?;
+    let facts = packet.facts;
+    bind_results(state, block, node, packet.values)?;
+    for (id, fact) in node.results.iter().zip(facts) {
+        state.provenance.values.insert(*id, fact);
+    }
+    Ok(())
+}
+
+fn eval_packet(state: &ExecState, block: BlockId, args: &[ValueId]) -> InterpretResult<Packet> {
+    Ok(Packet {
+        values: eval_args(state, block, args)?,
+        facts: args.iter().map(|id| state.provenance.fact(*id)).collect(),
+    })
 }
 
 fn eval_args(
@@ -10109,7 +10897,20 @@ fn eval_args(
         .collect()
 }
 
+fn check_fn_item_carrier(value: &InterpretValue, block: BlockId) -> InterpretResult<()> {
+    match (&value.ty, &value.kind) {
+        (Ty::FnItem(_), InterpretValueKind::Uninit) => Ok(()),
+        (Ty::FnItem(expected), InterpretValueKind::FnItem(actual)) if expected == actual => Ok(()),
+        (Ty::FnItem(_), _) | (_, InterpretValueKind::FnItem(_)) => Err(type_error(
+            block,
+            "function item payload does not match its exact nominal type",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn expect_ty(value: &InterpretValue, ty: &Ty, block: BlockId) -> InterpretResult<()> {
+    check_fn_item_carrier(value, block)?;
     if &value.ty == ty {
         Ok(())
     } else {
@@ -10148,6 +10949,7 @@ fn check_signature_values(
         // A poison value may not cross a call/return boundary — that is an
         // inspection of its (uninitialized) content, undefined behaviour.
         reject_partial(value, block, label)?;
+        check_fn_item_carrier(value, block)?;
         if &value.ty != expected_ty {
             return Err(signature_mismatch(
                 block,
@@ -10314,6 +11116,7 @@ fn first_handle(value: &InterpretValue) -> Option<&InterpretValue> {
         | InterpretValueKind::Bool(_)
         | InterpretValueKind::Ptr(_)
         | InterpretValueKind::FnDef(_)
+        | InterpretValueKind::FnItem(_)
         | InterpretValueKind::PhantomData
         | InterpretValueKind::NullPtr
         | InterpretValueKind::Unit
@@ -10573,6 +11376,19 @@ fn expect_pointer(
     }
 }
 
+/// Immutable source declaration attached by execution, never inferred from held values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpretBindingFrameOrigin {
+    function: FuncId,
+    declaration: crate::inst::BindingFrameDef,
+}
+
+type BindingFrameSnapshot = (
+    u64,
+    Arc<InterpretBindingFrameOrigin>,
+    Arc<[Option<InterpretValue>]>,
+);
+
 /// The `OpenFrame` / `BindSlot` result handle: lineage `lineage`, holding
 /// the slot snapshot `slots`.
 ///
@@ -10585,22 +11401,31 @@ fn expect_pointer(
 /// value of type ptr, got ()") on a module that validated. The KIND stays
 /// `Frame`: it is still not a pointer to any interpreter operation that
 /// dereferences, compares or stores one (`expect_pointer`, `encode_image`).
-fn frame_handle(lineage: u64, slots: Arc<[Option<InterpretValue>]>) -> InterpretValue {
+fn frame_handle(
+    lineage: u64,
+    origin: Arc<InterpretBindingFrameOrigin>,
+    slots: Arc<[Option<InterpretValue>]>,
+) -> InterpretValue {
     InterpretValue {
         ty: Ty::Ptr,
-        kind: InterpretValueKind::Frame { lineage, slots },
+        kind: InterpretValueKind::Frame {
+            lineage,
+            origin: Some(origin),
+            slots,
+        },
     }
 }
 
 /// Extract the lineage and slot snapshot from an `OpenFrame` / `BindSlot`
 /// handle value.
-fn expect_frame(
-    value: &InterpretValue,
-    block: BlockId,
-) -> InterpretResult<(u64, Arc<[Option<InterpretValue>]>)> {
+fn expect_frame(value: &InterpretValue, block: BlockId) -> InterpretResult<BindingFrameSnapshot> {
     reject_partial(value, block, "frame handle use")?;
     match &value.kind {
-        InterpretValueKind::Frame { lineage, slots } => Ok((*lineage, Arc::clone(slots))),
+        InterpretValueKind::Frame {
+            lineage,
+            origin: Some(origin),
+            slots,
+        } => Ok((*lineage, Arc::clone(origin), Arc::clone(slots))),
         _ => Err(type_error(
             block,
             format!("expected a binding-frame handle, got {}", value.ty),
@@ -10616,12 +11441,12 @@ fn expect_open_frame(
     block: BlockId,
     frame: ValueId,
     op: &str,
-) -> InterpretResult<(u64, Arc<[Option<InterpretValue>]>)> {
-    let (lineage, slots) = expect_frame(state.value(block, frame)?, block)?;
+) -> InterpretResult<BindingFrameSnapshot> {
+    let (lineage, origin, slots) = expect_frame(state.value(block, frame)?, block)?;
     if !state.frames.contains(&lineage) {
         return Err(ub(block, format!("{op}: frame is not open")));
     }
-    Ok((lineage, slots))
+    Ok((lineage, origin, slots))
 }
 
 fn expect_vector_lanes(
@@ -10783,6 +11608,11 @@ enum EnumByteView {
     },
 }
 
+enum EnumValueOrigin {
+    TypedValue,
+    MemoryImage,
+}
+
 impl EnumLayout {
     /// The variant index whose effective discriminant equals `disc`.
     fn variant_by_discriminant(&self, disc: i128) -> Option<usize> {
@@ -10793,12 +11623,13 @@ impl EnumLayout {
     /// variant has no value, so a Store of one or a Load of a byte image that
     /// names one (a direct tag equal to its discriminant, or a niche value in
     /// its slot of the interval) is an invalid value, never a variant to
-    /// materialize.
+    /// materialize. An impossible typed value is a type error; reading an
+    /// impossible image from otherwise valid memory is undefined behavior.
     fn refuse_uninhabited(
         &self,
         variant_idx: usize,
         ty: &Ty,
-        op: &str,
+        origin: EnumValueOrigin,
         block: BlockId,
     ) -> InterpretResult<()> {
         if self
@@ -10807,7 +11638,12 @@ impl EnumLayout {
             .copied()
             .unwrap_or(false)
         {
-            return Err(type_error(
+            let (op, code) = match origin {
+                EnumValueOrigin::TypedValue => ("Store", InterpretErrorCode::TypeError),
+                EnumValueOrigin::MemoryImage => ("Load", InterpretErrorCode::UndefinedBehavior),
+            };
+            return Err(err(
+                code,
                 block,
                 format!(
                     "{op}: enum {ty} variant {variant_idx} is uninhabited; no value of it exists"
@@ -12192,6 +13028,7 @@ mod pointer_comparison_tests {
     fn state(pointer_bits: u32) -> ExecState {
         ExecState {
             values: BTreeMap::new(),
+            provenance: provenance::State::default(),
             memory: MemoryState {
                 max_address: max_address_for(pointer_bits),
                 ..MemoryState::default()
@@ -16167,6 +17004,7 @@ mod tests {
         };
         let mut state = ExecState {
             values: BTreeMap::new(),
+            provenance: provenance::State::default(),
             memory: MemoryState::default(),
             globals: BTreeMap::new(),
             frames: BTreeSet::new(),
@@ -20292,6 +21130,108 @@ mod tests {
         module
     }
 
+    #[test]
+    fn uninhabited_direct_large_storage_roundtrip_and_raw_dead_tag_refusal() {
+        for overwrite_dead_tag in [false, true] {
+            let mut module = crate::layout_table::direct_storage::tests::fixture();
+            module
+                .add_func_type(FuncTy {
+                    params: vec![],
+                    returns: vec![Ty::I32, Ty::U32],
+                    is_vararg: false,
+                    abi: None,
+                })
+                .unwrap();
+            let enum_ty = Ty::Enum(crate::EnumId::new(7));
+            let mut function = Function::new(
+                FuncId::new(0),
+                "Direct source/storage",
+                crate::FuncTyId::new(0),
+                b(0),
+            );
+            let mut block = Block::new(b(0));
+            block.body.push(result(
+                Inst::Alloca {
+                    ty: enum_ty.clone(),
+                    count: None,
+                    align: None,
+                },
+                v(0),
+            ));
+            block.body.push(result(
+                Inst::Const {
+                    ty: enum_ty.clone(),
+                    value: Constant::Aggregate(vec![Constant::Int(37), Constant::Int(0x55667788)]),
+                },
+                v(1),
+            ));
+            block.body.push(void(Inst::Store {
+                ty: enum_ty.clone(),
+                ptr: v(0),
+                value: v(1),
+                volatile: false,
+                align: None,
+            }));
+            if overwrite_dead_tag {
+                block.body.push(result(
+                    Inst::Const {
+                        ty: Ty::I32,
+                        value: Constant::Int(-7),
+                    },
+                    v(2),
+                ));
+                block.body.push(void(Inst::Store {
+                    ty: Ty::I32,
+                    ptr: v(0),
+                    value: v(2),
+                    volatile: false,
+                    align: None,
+                }));
+            }
+            block.body.push(result(
+                Inst::Load {
+                    ty: enum_ty,
+                    ptr: v(0),
+                    volatile: false,
+                    align: None,
+                },
+                v(3),
+            ));
+            block.body.push(result(
+                Inst::Load {
+                    ty: Ty::I32,
+                    ptr: v(0),
+                    volatile: false,
+                    align: None,
+                },
+                v(4),
+            ));
+            block.body.push(result(
+                Inst::ExtractField {
+                    ty: Ty::U32,
+                    aggregate: v(3),
+                    field: 1,
+                },
+                v(5),
+            ));
+            block.body.push(void(Inst::Return {
+                values: vec![v(4), v(5)],
+            }));
+            function.blocks.push(block);
+            module.try_add_function(function).unwrap();
+            let outcome = Interpreter::with_module(&module).execute_func(FuncId::new(0), []);
+            if overwrite_dead_tag {
+                let error = outcome.unwrap_err();
+                assert_eq!(error.code, InterpretErrorCode::UndefinedBehavior);
+                assert!(error.message.contains("uninhabited"), "{error:?}");
+            } else {
+                let outcome = outcome.unwrap();
+                assert_eq!(int_signed(&outcome.returns[0]), 37);
+                assert_eq!(int_signed(&outcome.returns[1]), 0x55667788);
+            }
+        }
+    }
+
     // The canonical byte layout: tag u8 @0, i32 payload at its 4-byte-aligned
     // offset, total 8 bytes align 4 — agreeing with `Module::enum_layout_shape`
     // (bits) on every count.
@@ -20454,6 +21394,7 @@ mod tests {
 
         let state = ExecState {
             values: BTreeMap::new(),
+            provenance: provenance::State::default(),
             memory: MemoryState::default(),
             globals: BTreeMap::new(),
             frames: BTreeSet::new(),
@@ -20633,7 +21574,7 @@ mod tests {
                 .decode_value(&wrapped_ty, &[255], &state, b(0))
                 .expect_err("the untagged variant's dead niche byte must be rejected")
                 .code,
-            InterpretErrorCode::TypeError
+            InterpretErrorCode::UndefinedBehavior
         );
 
         let mut misaligned_field = direct_module.clone();
@@ -20704,6 +21645,7 @@ mod tests {
 
         let state = ExecState {
             values: BTreeMap::new(),
+            provenance: provenance::State::default(),
             memory: MemoryState::default(),
             globals: BTreeMap::new(),
             frames: BTreeSet::new(),
@@ -21418,7 +22360,7 @@ mod tests {
         let corrupted = Interpreter::with_module(&module)
             .execute_func(FuncId::new(0), [])
             .expect_err("a tag matching no discriminant must not decode");
-        assert_eq!(corrupted.code, InterpretErrorCode::TypeError);
+        assert_eq!(corrupted.code, InterpretErrorCode::UndefinedBehavior);
     }
 
     // Fail-closed layout controls: uninhabited enums and unresolvable
@@ -22096,6 +23038,8 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod binding_frame_source_tests;
 #[cfg(test)]
 #[path = "interpret/single_inhabited_tests.rs"]
 mod single_inhabited_tests;

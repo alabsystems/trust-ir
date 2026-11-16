@@ -623,9 +623,14 @@ theorem cyclic_alias_invariant : cyclic.WordInvariant := by
   intro node equation found
   change (NatIndexTree.empty.insert 0 (Equation.alias 0)).find node = some equation at found
   rw [NatIndexTree.find_insert] at found
-  split at found
-  · cases found; exact .alias 0
-  · cases found
+  cases Nat.decEq node 0 with
+  | isTrue same =>
+    simp only [if_pos same] at found
+    cases found
+    exact .alias 0
+  | isFalse different =>
+    simp only [if_neg different] at found
+    cases found
 
 theorem cyclic_alias_refuses : cyclic.query 0 = .error (.cycle 0) := by
   trustIrCompilerProof {
@@ -1862,7 +1867,8 @@ private def uncovered : EnumDef :=
 theorem uncovered_inhabited_row_refuses :
     query { enums := [uncovered] } .shape (.Enum ⟨0⟩) = .error (.incoherent "enum" 0) := by
   trustIrCompilerProof {
-    exact rfl
+    simp only [query, prepare, Session.query]
+    rfl
   } {
     trustIrReduce
   }
@@ -2061,7 +2067,8 @@ private def wrappingValue : Summary :=
 
 theorem wrapping_start_accepts : query { enums := [wrapping] } .shape (.Enum ⟨0⟩) = .ok wrappingValue := by
   trustIrCompilerProof {
-    exact rfl
+    simp only [query, prepare, Session.query]
+    rfl
   } {
     trustIrReduce
   }

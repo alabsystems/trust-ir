@@ -94,11 +94,17 @@ const CLEAN_REPOSITORY: &str = "https://github.com/alabsystems/clean.git";
 // is TrustIR's exact local Clean authority. The cross-repository graph is an
 // SCC: predecessor backedges intentionally need not resolve this same commit.
 // The final epoch receipt attests those predecessor/successor identities.
-const CLEAN_REVISION: &str = "e7ae5d418cbac2e1a029369a5b5eda690d471c5c";
-const CLEAN_VERSION: &str = "0.9.0";
+const CLEAN_REVISION: &str = "fae0c94829740c9ffe527eeeb4ea472f9c08001b";
+const CLEAN_VERSION: &str = "0.9.2";
 const AY_REPOSITORY: &str = "https://github.com/alabsystems/ay.git";
-const AY_REVISION: &str = "9dfa20b5790b03c8ffe57fbbe67316ece665c5be";
-const AY_VERSION: &str = "0.28.0";
+const AY_REVISION: &str = "8bbc43108643d475a81a89b2b4f262e817ee1724";
+const AY_VERSION: &str = "0.28.2";
+/// The AY workspace version whose lock carries `trust-exec-policy` 0.13.0 as
+/// its one independently versioned package. The rules below accept that owner
+/// only at this version, so moving the AY pin re-reviews it. Publication
+/// transform T6 moves it with the public AY pin, after the public AY's own
+/// manifests show the same owner.
+const AY_POLICY_OWNER_VERSION: &str = "0.28.2";
 
 const TRUST_IR_MANIFEST: &str = include_str!("../Cargo.toml");
 const TRUST_IR_AY_MANIFEST: &str = include_str!("../../trust-ir-ay/Cargo.toml");
@@ -108,6 +114,435 @@ const TRUST_IR_BUILD_MANIFEST: &str = include_str!("../../trust-ir-build/Cargo.t
 const ROOT_MANIFEST: &str = include_str!("../../../Cargo.toml");
 const ROOT_LOCK: &str = include_str!("../../../Cargo.lock");
 const FRONTEND_LOCK: &str = include_str!("../../../frontend/Cargo.lock");
+const AY_PACKAGE_CONTRACT: &str = include_str!("../../../data/ay_package_versions.json");
+
+fn contract_string<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+    value[key].as_str().unwrap_or_else(|| {
+        panic!("AY package contract needs string {key}; run scripts/bump-dep-pin.sh")
+    })
+}
+
+fn contract_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn contract_version(value: &str) -> bool {
+    let identifiers = |s: &str| {
+        s.split('.').all(|part| {
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+    };
+    let (before_build, build_ok) = value
+        .split_once('+')
+        .map_or((value, true), |(core, build)| (core, identifiers(build)));
+    let (core, pre_ok) = before_build
+        .split_once('-')
+        .map_or((before_build, true), |(core, pre)| (core, identifiers(pre)));
+    let numbers: Vec<_> = core.split('.').collect();
+    build_ok
+        && pre_ok
+        && numbers.len() == 3
+        && numbers.iter().all(|number| {
+            !number.is_empty()
+                && (number.len() == 1 || !number.starts_with('0'))
+                && number.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
+fn contract_manifest_identity(value: &serde_json::Value, root: &serde_json::Value) {
+    assert_eq!(
+        value.as_object().expect("manifest object").len(),
+        3,
+        "AY manifest object shape{PIN_MOVE_PROTOCOL}"
+    );
+    let path = contract_string(value, "path");
+    let parts: Vec<_> = path.split('/').collect();
+    assert!(
+        path.len() <= 4096
+            && (1..=32).contains(&parts.len())
+            && parts.last() == Some(&"Cargo.toml")
+            && parts.iter().all(|part| {
+                !part.is_empty()
+                    && *part != "."
+                    && *part != ".."
+                    && !part.contains('\\')
+                    && !part.bytes().any(|b| b.is_ascii_control())
+            }),
+        "AY package contract manifest path{PIN_MOVE_PROTOCOL}"
+    );
+    assert!(
+        contract_hex(contract_string(value, "git_blob"), 40),
+        "AY manifest Git identity{PIN_MOVE_PROTOCOL}"
+    );
+    assert!(
+        contract_hex(contract_string(value, "sha256"), 64),
+        "AY manifest digest{PIN_MOVE_PROTOCOL}"
+    );
+    if path == "Cargo.toml" {
+        assert_eq!(value, root, "AY root manifest identity{PIN_MOVE_PROTOCOL}");
+    }
+}
+
+fn exact_ay_package_versions() -> std::collections::BTreeMap<String, String> {
+    let data: serde_json::Value =
+        serde_json::from_str(AY_PACKAGE_CONTRACT).expect("AY package contract JSON");
+    // The owner's canonical representation also refuses duplicate JSON keys;
+    // deserializing and silently keeping their last value is insufficient.
+    assert_eq!(
+        AY_PACKAGE_CONTRACT,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&data).expect("canonical JSON")
+        ),
+        "AY package contract must use the owner's canonical JSON{PIN_MOVE_PROTOCOL}"
+    );
+    assert_eq!(
+        data.as_object().expect("contract object").len(),
+        6,
+        "AY contract shape{PIN_MOVE_PROTOCOL}"
+    );
+    assert_eq!(
+        data["schema"].as_u64(),
+        Some(1),
+        "AY contract schema{PIN_MOVE_PROTOCOL}"
+    );
+    assert_eq!(
+        contract_string(&data, "repository"),
+        AY_REPOSITORY,
+        "AY contract repository{PIN_MOVE_PROTOCOL}"
+    );
+    assert_eq!(
+        contract_string(&data, "revision"),
+        AY_REVISION,
+        "AY contract revision{PIN_MOVE_PROTOCOL}"
+    );
+    assert_eq!(
+        contract_string(&data, "workspace_version"),
+        AY_VERSION,
+        "AY contract workspace version{PIN_MOVE_PROTOCOL}"
+    );
+    let root = &data["workspace_manifest"];
+    contract_manifest_identity(root, root);
+    assert_eq!(
+        contract_string(root, "path"),
+        "Cargo.toml",
+        "AY contract workspace path{PIN_MOVE_PROTOCOL}"
+    );
+    let packages = data["packages"].as_array().expect("package inventory");
+    assert!(
+        (1..=256).contains(&packages.len()),
+        "AY package inventory bounds{PIN_MOVE_PROTOCOL}"
+    );
+    let mut versions = std::collections::BTreeMap::new();
+    let mut previous = "";
+    for package in packages {
+        assert_eq!(
+            package.as_object().expect("package object").len(),
+            4,
+            "AY package shape{PIN_MOVE_PROTOCOL}"
+        );
+        let name = contract_string(package, "name");
+        let version = contract_string(package, "version");
+        assert!(
+            name > previous
+                && name
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphanumeric())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+            "AY package identity/order{PIN_MOVE_PROTOCOL}"
+        );
+        assert!(
+            contract_version(version),
+            "AY exact package version{PIN_MOVE_PROTOCOL}"
+        );
+        contract_manifest_identity(&package["manifest"], root);
+        contract_manifest_identity(&package["version_source"], root);
+        assert!(
+            versions
+                .insert(name.to_owned(), version.to_owned())
+                .is_none(),
+            "AY package duplicate identity{PIN_MOVE_PROTOCOL}"
+        );
+        previous = name;
+    }
+    versions
+}
+
+#[derive(Debug)]
+struct LockedPackage<'a> {
+    fields: std::collections::BTreeMap<&'a str, &'a str>,
+    dependencies: Option<Vec<&'a str>>,
+}
+
+fn canonical_lock_quoted(value: &str) -> Option<&str> {
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .filter(|v| !v.contains(['"', '\\']))
+}
+
+fn canonical_lock_packages(lock: &str) -> Result<Vec<LockedPackage<'_>>, String> {
+    let mut packages = Vec::new();
+    for block in lock.split("[[package]]").skip(1) {
+        let mut package = LockedPackage {
+            fields: Default::default(),
+            dependencies: None,
+        };
+        let mut dependencies = None::<Vec<&str>>;
+        for line in block
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            if let Some(values) = dependencies.as_mut() {
+                if line == "]" {
+                    package.dependencies = dependencies.take();
+                } else {
+                    let value = line
+                        .strip_suffix(',')
+                        .and_then(canonical_lock_quoted)
+                        .ok_or("unsupported canonical dependency line")?;
+                    values.push(value);
+                }
+                continue;
+            }
+            if line == "dependencies = [" {
+                if package.dependencies.is_some() {
+                    return Err("duplicate dependency array".into());
+                }
+                dependencies = Some(Vec::new());
+                continue;
+            }
+            let (key, value) = line
+                .split_once(" = ")
+                .ok_or("unsupported canonical lock field")?;
+            if !key.starts_with(|c: char| c.is_ascii_lowercase())
+                || !key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')
+            {
+                return Err("unsupported canonical field name".into());
+            }
+            let value = canonical_lock_quoted(value).ok_or("unsupported canonical quoted field")?;
+            if package.fields.insert(key, value).is_some() {
+                return Err("duplicate lock field".into());
+            }
+        }
+        if dependencies.is_some()
+            || !package.fields.contains_key("name")
+            || !package.fields.contains_key("version")
+        {
+            return Err("incomplete canonical package".into());
+        }
+        packages.push(package);
+    }
+    Ok(packages)
+}
+
+fn lock_edge_index(raw: &str, packages: &[LockedPackage<'_>]) -> Result<usize, String> {
+    let fields: Vec<_> = raw.split_whitespace().collect();
+    if fields.is_empty() || fields.len() > 3 {
+        return Err("malformed dependency identity".into());
+    }
+    let source = if fields.len() == 3 {
+        Some(
+            fields[2]
+                .strip_prefix('(')
+                .and_then(|v| v.strip_suffix(')'))
+                .ok_or("malformed dependency source")?,
+        )
+    } else {
+        None
+    };
+    let matching: Vec<_> = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, package)| {
+            package.fields.get("name").copied() == Some(fields[0])
+                && (fields.len() < 2 || package.fields.get("version").copied() == Some(fields[1]))
+                && source.is_none_or(|wanted| {
+                    package.fields.get("source").is_some_and(|actual| {
+                        *actual == wanted
+                            || (wanted.starts_with("git+")
+                                && !wanted.contains('#')
+                                && actual.rsplit_once('#').is_some_and(|(base, precise)| {
+                                    base == wanted
+                                        && precise.len() == 40
+                                        && precise.bytes().all(|c| {
+                                            c.is_ascii_digit() || (b'a'..=b'f').contains(&c)
+                                        })
+                                }))
+                    })
+                })
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if matching.len() == 1 {
+        Ok(matching[0])
+    } else {
+        Err("ambiguous or missing dependency".into())
+    }
+}
+
+fn validate_ay_lock_source_owner(lock: &str, revision: &str, version: &str) -> Result<(), String> {
+    const POLICY: &str = "trust-exec-policy";
+    const REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
+    let packages = canonical_lock_packages(lock)?;
+    let source = format!("git+{AY_REPOSITORY}?rev={revision}#{revision}");
+    let prefix = format!("git+{AY_REPOSITORY}");
+    let selected: Vec<_> = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            p.fields
+                .get("source")
+                .is_some_and(|s| s.starts_with(&prefix))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if selected.is_empty() {
+        return Err("missing selected AY source".into());
+    }
+    let mut vendors = Vec::new();
+    let mut systems = Vec::new();
+    for &index in &selected {
+        let row = &packages[index];
+        if row.fields.get("source").copied() != Some(source.as_str()) {
+            return Err("stale AY source".into());
+        }
+        let name = row.fields["name"];
+        if name == "ay-sys" {
+            systems.push(index);
+        }
+        if name == "ay" || name.starts_with("ay-") {
+            if row.fields["version"] != version {
+                return Err("wrong AY package version".into());
+            }
+        } else if name == POLICY
+            && row.fields["version"] == "0.13.0"
+            && version == AY_POLICY_OWNER_VERSION
+        {
+            vendors.push(index);
+        } else {
+            return Err("foreign AY-source package".into());
+        }
+    }
+    if vendors.is_empty() {
+        return if version == AY_POLICY_OWNER_VERSION && !systems.is_empty() {
+            Err("missing actual required system policy owner".into())
+        } else {
+            Ok(())
+        };
+    }
+    if vendors.len() != 1 || systems.len() != 1 {
+        return Err("duplicate/missing independent owner".into());
+    }
+    let (vendor, system) = (vendors[0], systems[0]);
+    let mut incoming = Vec::new();
+    for (index, row) in packages.iter().enumerate() {
+        for edge in row.dependencies.iter().flatten() {
+            if edge.split_whitespace().next() == Some(POLICY) {
+                let target = lock_edge_index(edge, &packages)?;
+                if target == vendor {
+                    incoming.push((index, target));
+                }
+            }
+        }
+    }
+    let policy = &packages[vendor];
+    if incoming != [(system, vendor)] || policy.fields.len() != 3 {
+        return Err("requires exactly the actual ay-sys incoming edge and policy metadata".into());
+    }
+    let edges = policy
+        .dependencies
+        .as_ref()
+        .ok_or("missing policy libc edge")?;
+    if edges.len() != 1 {
+        return Err("requires the sole policy libc edge".into());
+    }
+    let libc = &packages[lock_edge_index(edges[0], &packages)?];
+    let patch = libc.fields["version"]
+        .strip_prefix("0.2.")
+        .ok_or("unsupported libc version")?;
+    if libc.fields["name"] != "libc"
+        || libc.fields.get("source").copied() != Some(REGISTRY)
+        || patch.is_empty()
+        || !patch.bytes().all(|c| c.is_ascii_digit())
+        || (patch.len() > 1 && patch.starts_with('0'))
+    {
+        return Err("requires canonical registry libc0.2".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn ay_independent_policy_source_owner_controls() {
+    let revision = "1111111111111111111111111111111111111111";
+    let source = format!("git+{AY_REPOSITORY}?rev={revision}#{revision}");
+    let system = format!(
+        "[[package]]\nname = \"ay-sys\"\nversion = \"{AY_POLICY_OWNER_VERSION}\"\nsource = \"{source}\"\ndependencies = [\n \"trust-exec-policy\",\n]\n"
+    );
+    let policy = format!(
+        "[[package]]\nname = \"trust-exec-policy\"\nversion = \"0.13.0\"\nsource = \"{source}\"\ndependencies = [\n \"libc\",\n]\n"
+    );
+    let libc = format!(
+        "[[package]]\nname = \"libc\"\nversion = \"0.2.177\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\n",
+        "a".repeat(64)
+    );
+    let fixture = format!("{system}{policy}{libc}");
+    assert!(
+        validate_ay_lock_source_owner(&fixture, revision, AY_POLICY_OWNER_VERSION).is_ok(),
+        "supported independent source owner refused{PIN_MOVE_PROTOCOL}"
+    );
+    let legacy = system
+        .replace(
+            &format!("version = \"{AY_POLICY_OWNER_VERSION}\""),
+            "version = \"0.27.0\"",
+        )
+        .replace("dependencies = [\n \"trust-exec-policy\",\n]\n", "")
+        + &libc;
+    assert!(
+        validate_ay_lock_source_owner(&legacy, revision, "0.27.0").is_ok(),
+        "legacy independent source owner refused{PIN_MOVE_PROTOCOL}"
+    );
+    let candidates = [
+        fixture.replace(
+            "version = \"0.13.0\"",
+            &format!("version = \"{AY_POLICY_OWNER_VERSION}\""),
+        ),
+        fixture.replace("version = \"0.2.177\"", "version = \"0.3.0\""),
+        fixture.replace(" \"trust-exec-policy\",\n", ""),
+        format!("{fixture}{policy}"),
+        fixture.clone() + &system.replace("name = \"ay-sys\"", "name = \"other\""),
+        fixture.clone()
+            + &policy
+                .replace("name = \"trust-exec-policy\"", "name = \"foreign\"")
+                .replace(
+                    "version = \"0.13.0\"",
+                    &format!("version = \"{AY_POLICY_OWNER_VERSION}\""),
+                ),
+        format!("{system}{libc}"),
+        fixture.replace("name = \"ay-sys\"", "name = \"ay-other\""),
+        system
+            + &policy.replace(
+                "version = \"0.13.0\"",
+                "checksum = \"a\"\nversion = \"0.13.0\"",
+            )
+            + &libc,
+    ];
+    for (index, candidate) in candidates.iter().enumerate() {
+        assert!(
+            validate_ay_lock_source_owner(candidate, revision, AY_POLICY_OWNER_VERSION).is_err(),
+            "hostile independent source-owner fixture {index} accepted{PIN_MOVE_PROTOCOL}"
+        );
+    }
+}
 
 fn clean_dependency_lines(manifest: &str) -> Vec<&str> {
     manifest
@@ -479,12 +914,133 @@ fn ay_manifest_and_root_lock_are_exact_and_atomic() {
         ay_source_rows.len(),
         "root Cargo.lock AY package inventory disagrees with its exact source rows{PIN_MOVE_PROTOCOL}"
     );
-    let exact_version = format!("version = \"{AY_VERSION}\"");
     assert!(
         ay_packages
             .iter()
-            .all(|package| package.lines().any(|line| line.trim() == exact_version)),
+            .all(|package| ay_lock_package_version_allowed(package, AY_REVISION, AY_VERSION)),
         "root Cargo.lock resolves an AY package outside the frozen package version{PIN_MOVE_PROTOCOL}"
+    );
+    let expected_versions = exact_ay_package_versions();
+    let mut observed_versions = std::collections::BTreeMap::new();
+    for package in ay_packages {
+        let field = |key: &str| {
+            let prefix = format!("{key} = \"");
+            let values: Vec<_> = package
+                .lines()
+                .map(str::trim)
+                .filter_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
+                .collect();
+            assert_eq!(
+                values.len(),
+                1,
+                "AY package field cardinality{PIN_MOVE_PROTOCOL}"
+            );
+            values[0].to_owned()
+        };
+        let name = field("name");
+        let version = field("version");
+        assert_eq!(
+            expected_versions.get(&name),
+            Some(&version),
+            "root Cargo.lock resolves an AY package outside its exact immutable version: {name}{PIN_MOVE_PROTOCOL}"
+        );
+        assert!(
+            observed_versions.insert(name, version).is_none(),
+            "duplicate AY lock package identity{PIN_MOVE_PROTOCOL}"
+        );
+    }
+    assert_eq!(
+        observed_versions, expected_versions,
+        "root Cargo.lock AY inventory differs from immutable manifest contract{PIN_MOVE_PROTOCOL}"
+    );
+    assert!(
+        validate_ay_lock_source_owner(ROOT_LOCK, AY_REVISION, AY_VERSION).is_ok(),
+        "root Cargo.lock AY policy dependency ownership mismatch{PIN_MOVE_PROTOCOL}"
+    );
+}
+
+fn ay_lock_package_version_allowed(package: &str, revision: &str, version: &str) -> bool {
+    fn field<'a>(package: &'a str, key: &str) -> Option<&'a str> {
+        let prefix = format!("{key} = \"");
+        let mut values = package
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix(prefix.as_str())?.strip_suffix('"'));
+        let value = values.next()?;
+        if values.next().is_some() || value.contains(['"', '\\']) {
+            return None;
+        }
+        Some(value)
+    }
+    let source = format!("git+{AY_REPOSITORY}?rev={revision}#{revision}");
+    if field(package, "source") != Some(source.as_str()) {
+        return false;
+    }
+    match field(package, "name") {
+        Some("trust-exec-policy") => {
+            version == AY_POLICY_OWNER_VERSION && field(package, "version") == Some("0.13.0")
+        }
+        Some(_) => field(package, "version") == Some(version),
+        None => false,
+    }
+}
+
+#[test]
+fn independent_ay_package_version_owner_is_exact() {
+    let revision = "1111111111111111111111111111111111111111";
+    let source = format!("git+{AY_REPOSITORY}?rev={revision}#{revision}");
+    let row = |name: &str, version: &str, origin: &str| {
+        format!("name = \"{name}\"\nversion = \"{version}\"\nsource = \"{origin}\"\n")
+    };
+    assert!(
+        ay_lock_package_version_allowed(
+            &row("trust-exec-policy", "0.13.0", &source),
+            revision,
+            AY_POLICY_OWNER_VERSION
+        ),
+        "{PIN_MOVE_PROTOCOL}"
+    );
+    assert!(
+        ay_lock_package_version_allowed(
+            &row("ay-core", AY_POLICY_OWNER_VERSION, &source),
+            revision,
+            AY_POLICY_OWNER_VERSION
+        ),
+        "{PIN_MOVE_PROTOCOL}"
+    );
+    for (name, version, origin) in [
+        ("another-policy", "0.13.0", source.clone()),
+        ("ay-core", "0.13.0", source.clone()),
+        ("trust-exec-policy", AY_POLICY_OWNER_VERSION, source.clone()),
+        ("trust-exec-policy", "0.13.1", source.clone()),
+        (
+            "trust-exec-policy",
+            "0.13.0",
+            source.replace("alabsystems/ay", "foreign/ay"),
+        ),
+        ("trust-exec-policy", "0.13.0", format!("{source}bad")),
+        (
+            "trust-exec-policy",
+            "0.13.0",
+            "registry+https://github.com/rust-lang/crates.io-index".into(),
+        ),
+    ] {
+        assert!(
+            !ay_lock_package_version_allowed(
+                &row(name, version, &origin),
+                revision,
+                AY_POLICY_OWNER_VERSION
+            ),
+            "{PIN_MOVE_PROTOCOL}"
+        );
+    }
+    assert!(
+        !ay_lock_package_version_allowed(
+            &row("trust-exec-policy", "0.13.0", &source),
+            revision,
+            "0.27.0"
+        ),
+        "{PIN_MOVE_PROTOCOL}"
     );
 }
 

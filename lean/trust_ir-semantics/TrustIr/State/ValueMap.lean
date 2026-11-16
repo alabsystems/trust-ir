@@ -108,6 +108,12 @@ inductive Value where
       (`Sem.rejectPartial` faults on it wherever it would be), so no content-consuming
       semantic function ever sees it. -/
   | uninit : Value
+  /-- The zero-byte singleton of one nominal function-item type. Its identity
+      comes from that type, including after an explicit byte reinterpretation. -/
+  | fnItem : FuncId → Value
+  /-- Source-bound binding-frame snapshot. The two IDs identify the original
+      function-local declaration; values never supply their own slot types. -/
+  | sourceFrame : (lineage : Nat) → FuncId → BindingFrameDef → List Value → Value
   deriving Repr
 
 mutual
@@ -117,7 +123,7 @@ mutual
     match value with
     | .array ⟨size, tree⟩ => arrayTreeDepthRangeSpec tree 0 size + 1
     | .aggregate vs | .vector vs | .frame _ vs | .set vs | .sequence vs
-    | .closure _ vs | .typedClosure _ _ vs => valueListDepthSpec vs + 1
+    | .closure _ vs | .typedClosure _ _ vs | .sourceFrame _ _ _ vs => valueListDepthSpec vs + 1
     | .record fields => valueFieldDepthSpec fields + 1
     | .fatPtr _ _ metadata => metadata.depthSpec + 1
     | _ => 1
@@ -237,11 +243,13 @@ def Value.ty : Value → Ty
   | .aggregate _ => .Unit  -- aggregate type is context-dependent (#55)
   | .vector lanes => .Vector (lanes.length) .Unit
   | .frame _ _  => .Unit   -- frame type is context-dependent (carries BindingFrameId; #55)
+  | .sourceFrame _ _ _ _ => .Ptr
   | .set _      => .Unit   -- set type is context-dependent (carries TyId/SetRepr; #55)
   | .sequence _ => .Unit   -- sequence type is context-dependent (carries TyId; #55)
   | .record _   => .Unit   -- record type is context-dependent (carries RecordId; #55)
   | .closure _ _ => .Unit  -- bare function item, without a nominal closure type
   | .fnDef sig _ => .Func sig
+  | .fnItem fn => .FnItem fn
   | .typedClosure ty _ _ => .Closure ty
   | .fatPtr _ _ _ => .Unit   -- fat-ptr kind is context-dependent (the FatPtrKind lives on the producing Inst; #55)
   | .partial _  => .Unit   -- inert poison image; type is context-dependent (lives on the producing Load; like aggregate)

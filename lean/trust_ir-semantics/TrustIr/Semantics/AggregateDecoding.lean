@@ -81,20 +81,20 @@ private def minimum (first second : Option Nat) : Option Nat :=
 private def tagLane (info : Enumeration) : Option (Nat × Nat) :=
   match info.encoding with
   | .untagged | .singleInhabited _ => none
-  | .direct offset => some (offset, tagBits info.tag / 8)
+  | .direct offset | .directWithUninhabited offset _ => some (offset, tagBits info.tag / 8)
   | .niche _ _ _ _ offset repr => some (offset, tagBits repr / 8)
 
 private def selectVariant (info : Enumeration) (image : ByteImage) : Except SemError Nat := do
   let index ← match info.encoding with
     | .untagged => pure 0
     | .singleInhabited selected => pure selected
-    | .direct offset =>
+    | .direct offset | .directWithUninhabited offset _ =>
       let bytes ← initialized (image.slice offset (tagBits info.tag / 8))
       let raw := Int.ofNat (decodeIntBytes bytes)
       let discriminant := if tagSigned info.tag then toSigned raw (tagBits info.tag) else raw
       match discriminantIndex info.discriminants discriminant with
       | some index => pure index
-      | none => imageError "Load: enum tag does not name a variant"
+      | none => imageUB "Load: enum tag does not name a variant"
     | .niche untagged start stop first offset repr =>
       let bytes ← initialized (image.slice offset (tagBits repr / 8))
       let raw := decodeIntBytes bytes
@@ -102,10 +102,10 @@ private def selectVariant (info : Enumeration) (image : ByteImage) : Except SemE
       let relative := (raw + modulus - first) % modulus
       if relative ≤ stop - start then
         let index := start + relative
-        if index == untagged then imageError "Load: niche names its untagged variant"
+        if index == untagged then imageUB "Load: niche names its untagged variant"
         else pure index
       else pure untagged
-  if ((trustIrListGet? info.uninhabited index)).getD false then imageError "Load: uninhabited enum variant"
+  if ((trustIrListGet? info.uninhabited index)).getD false then imageUB "Load: uninhabited enum variant"
   else if index ≥ info.discriminants.length then imageError "Load: enum variant is out of range"
   else pure index
 
@@ -140,6 +140,7 @@ mutual
       return ← imageError "Load: image size does not match source layout"
     match plan with
     | .leaf _ _ => pure (firstMissing image)
+    | .fnItem _ _ => pure (firstMissing image)
     | .fields _ _ fields => coveredFields fields image
     | .array _ _ count element =>
       if count == 0 || element.layout.size == 0 then pure none
@@ -169,7 +170,7 @@ mutual
       (image : ByteImage) : Except SemError (Option Nat) :=
     match variants, index with
     | [], _ => imageError "Load: missing enum variant layout"
-    | none :: _, 0 => imageError "Load: uninhabited enum variant"
+    | none :: _, 0 => imageUB "Load: uninhabited enum variant"
     | some first :: _, 0 => coveredFields first image
     | _ :: rest, index + 1 => coveredVariant rest index image
   termination_by sizeOf variants
@@ -184,6 +185,9 @@ mutual
       ByteImage.BlockResult (fun _ => True) error (covered plan image) := by
     cases plan with
     | leaf ty layout =>
+      rw [covered]
+      repeat' first | exact True.intro | exact typeErrors _ | split | (dsimp only; split)
+    | fnItem target layout =>
       rw [covered]
       repeat' first | exact True.intro | exact typeErrors _ | split | (dsimp only; split)
     | fields ty layout fields =>
@@ -245,7 +249,7 @@ mutual
       cases index with
       | zero =>
         cases first with
-        | none => rw [coveredVariant]; exact typeErrors _
+        | none => rw [coveredVariant]; exact undefined _
         | some fields => rw [coveredVariant]; exact covered_fields_errors error typeErrors undefined fields image
       | succ index => rw [coveredVariant]; exact covered_variant_errors error typeErrors undefined rest index image
   termination_by sizeOf variants
@@ -258,6 +262,10 @@ mutual
     if image.size != plan.layout.size then
       return ← imageError "Load: image size does not match source layout"
     match plan with
+    | .fnItem target layout =>
+      if layout.size != 0 || layout.alignment != 1 then
+        imageError "Load: function item layout is not zero-sized/alignment-one"
+      else pure (.fnItem target)
     | .leaf ty _ =>
       let bytes ← initialized image
       match ty with
@@ -309,7 +317,7 @@ mutual
       Except SemError (List Value) :=
     match variants, index with
     | [], _ => imageError "Load: missing enum variant layout"
-    | none :: _, 0 => imageError "Load: uninhabited enum variant"
+    | none :: _, 0 => imageUB "Load: uninhabited enum variant"
     | some first :: _, 0 => decodeFields model order memory first image false
     | _ :: rest, index + 1 => decodeVariant model order memory rest index image
   termination_by sizeOf variants
@@ -326,6 +334,7 @@ structure DecodeRules (valid : Value → Prop) (error : SemError → Prop) : Pro
   uninit : valid .uninit
   aggregate : ∀ values, (∀ value ∈ values, valid value) → valid (.aggregate values)
   array : ∀ values : CompactArray.Packed Value, ByteImage.BlockTreeValid valid values.tree → valid (.array values)
+  fnItem : ∀ target, valid (.fnItem target)
 
 private def DecodedLanes (valid : Value → Prop) (values : List Value) : Prop := ∀ value ∈ values, valid value
 
@@ -352,6 +361,13 @@ mutual
         | (simp only [pure_bind])
         | (refine ByteImage.BlockResult.bind (fun _ => True) valid error _ _
             (initialized_errors error rules.undefined image) ?_; intro bytes _)
+        | split
+        | (dsimp only; split)
+    | fnItem target layout =>
+      rw [decodeCore]
+      repeat' first
+        | exact rules.typeErrors _
+        | exact rules.fnItem target
         | split
         | (dsimp only; split)
     | fields ty layout fields =>
@@ -438,7 +454,7 @@ mutual
       cases index with
       | zero =>
         cases first with
-        | none => rw [decodeVariant]; exact rules.typeErrors _
+        | none => rw [decodeVariant]; exact rules.undefined _
         | some fields => rw [decodeVariant]; exact decodeFields_valid valid error rules model order memory fields image false
       | succ index => rw [decodeVariant]; exact decodeVariant_valid valid error rules model order memory rest index image
   termination_by sizeOf variants
@@ -543,7 +559,7 @@ theorem VariantDecoded.fields {model : ByteModel} {order : FunctionAddressOrder}
     cases position with
     | zero =>
       cases row with
-      | none => simp [decodeVariant,imageError] at run
+      | none => simp [decodeVariant,imageUB] at run
       | some fields =>
         rw [decodeVariant] at run
         exact ⟨fields,rfl,run⟩
@@ -638,6 +654,10 @@ def InitializedLane (image : ByteImage) (offset count : Nat) (bytes : List UInt8
 def EnumDecodingSelects (info : Enumeration) (image : ByteImage) (position : Nat) : Prop :=
   selectVariant info image = .ok position
 
+/-- Exact rejection by the actual selector, before any payload traversal. -/
+def EnumDecodingRejects (info : Enumeration) (image : ByteImage) (error : SemError) : Prop :=
+  selectVariant info image = .error error
+
 theorem EnumDecodingSelects.functional {info : Enumeration} {image : ByteImage} {first second : Nat}
     (left : EnumDecodingSelects info image first) (right : EnumDecodingSelects info image second) : first = second := by
   unfold EnumDecodingSelects at left right
@@ -715,6 +735,24 @@ theorem EnumDecodingSelects.single (info : Enumeration) (image : ByteImage) (sel
   rw [encoding]
   simp [Bind.bind,Except.bind,Pure.pure,Except.pure,live,Nat.not_le_of_lt bound]
 
+theorem EnumDecodingSelects.direct_encoding (info : Enumeration) (image : ByteImage) (offset position : Nat)
+    (bytes : List UInt8) (encoding : DirectEncodingAt info.encoding offset)
+    (read : InitializedLane image offset (tagBits info.tag / 8) bytes)
+    (found : discriminantIndex info.discriminants (if tagSigned info.tag then
+      toSigned (Int.ofNat (decodeIntBytes bytes)) (tagBits info.tag) else Int.ofNat (decodeIntBytes bytes)) = some position)
+    (live : (trustIrListGet? info.uninhabited position) = some false) (bound : position < info.discriminants.length) :
+    EnumDecodingSelects info image position := by
+  rcases encoding with encoding | ⟨profiles, encoding⟩
+  all_goals
+    unfold EnumDecodingSelects selectVariant
+    rw [encoding]
+    dsimp only
+    change initialized (image.slice offset (tagBits info.tag / 8)) = .ok bytes at read
+    rw [read]
+    simp only [Bind.bind,Except.bind,Pure.pure,Except.pure]
+    rw [found]
+    simp [live,Nat.not_le_of_lt bound]
+
 theorem EnumDecodingSelects.direct (info : Enumeration) (image : ByteImage) (offset position : Nat)
     (bytes : List UInt8) (encoding : info.encoding = .direct offset)
     (read : InitializedLane image offset (tagBits info.tag / 8) bytes)
@@ -722,14 +760,17 @@ theorem EnumDecodingSelects.direct (info : Enumeration) (image : ByteImage) (off
       toSigned (Int.ofNat (decodeIntBytes bytes)) (tagBits info.tag) else Int.ofNat (decodeIntBytes bytes)) = some position)
     (live : (trustIrListGet? info.uninhabited position) = some false) (bound : position < info.discriminants.length) :
     EnumDecodingSelects info image position := by
-  unfold EnumDecodingSelects selectVariant
-  rw [encoding]
-  dsimp only
-  change initialized (image.slice offset (tagBits info.tag / 8)) = .ok bytes at read
-  rw [read]
-  simp only [Bind.bind,Except.bind,Pure.pure,Except.pure]
-  rw [found]
-  simp [live,Nat.not_le_of_lt bound]
+  exact EnumDecodingSelects.direct_encoding info image offset position bytes (Or.inl encoding) read found live bound
+
+theorem EnumDecodingSelects.profiled_direct (info : Enumeration) (image : ByteImage) (offset position : Nat)
+    (bytes : List UInt8) {profiles : List UninhabitedVariantLayout} (encoding : info.encoding = .directWithUninhabited offset profiles)
+    (read : InitializedLane image offset (tagBits info.tag / 8) bytes)
+    (found : discriminantIndex info.discriminants (if tagSigned info.tag then
+      toSigned (Int.ofNat (decodeIntBytes bytes)) (tagBits info.tag) else Int.ofNat (decodeIntBytes bytes)) = some position)
+    (live : (trustIrListGet? info.uninhabited position) = some false) (bound : position < info.discriminants.length) :
+    EnumDecodingSelects info image position := by
+  exact EnumDecodingSelects.direct_encoding info image offset position bytes (Or.inr ⟨profiles, encoding⟩) read found live bound
+
 
 theorem EnumDecodingSelects.niche_tagged (info : Enumeration) (image : ByteImage)
     (untagged start stop first offset position : Nat) (repr : EnumTagRepr) (bytes : List UInt8)
@@ -806,16 +847,33 @@ theorem InitializedLane.defaulted {image : ByteImage} {offset count : Nat} {byte
   simpa only [List.map_map] using (List.map_id bytes)
 
 /-- Direct selection depends only on the actual initialized tag read. -/
+theorem EnumDecodingSelects.transfer_direct_encoding {info : Enumeration} {before after : ByteImage}
+    {position offset : Nat} {bytes : List UInt8} (encoding : DirectEncodingAt info.encoding offset)
+    (initial : InitializedLane before offset (tagBits info.tag / 8) bytes)
+    (final : InitializedLane after offset (tagBits info.tag / 8) bytes)
+    (selected : EnumDecodingSelects info before position) : EnumDecodingSelects info after position := by
+  rcases encoding with encoding | ⟨profiles, encoding⟩
+  all_goals
+    unfold InitializedLane at initial final
+    unfold EnumDecodingSelects selectVariant at selected ⊢
+    simp only [encoding,initial,Bind.bind,Except.bind,Pure.pure,Except.pure] at selected
+    simp only [encoding,final,Bind.bind,Except.bind,Pure.pure,Except.pure]
+    exact selected
+
 theorem EnumDecodingSelects.transfer_direct {info : Enumeration} {before after : ByteImage}
     {position offset : Nat} {bytes : List UInt8} (encoding : info.encoding = .direct offset)
     (initial : InitializedLane before offset (tagBits info.tag / 8) bytes)
     (final : InitializedLane after offset (tagBits info.tag / 8) bytes)
     (selected : EnumDecodingSelects info before position) : EnumDecodingSelects info after position := by
-  unfold InitializedLane at initial final
-  unfold EnumDecodingSelects selectVariant at selected ⊢
-  simp only [encoding,initial,Bind.bind,Except.bind,Pure.pure,Except.pure] at selected
-  simp only [encoding,final,Bind.bind,Except.bind,Pure.pure,Except.pure]
-  exact selected
+  exact EnumDecodingSelects.transfer_direct_encoding (Or.inl encoding) initial final selected
+
+theorem EnumDecodingSelects.transfer_profiled_direct {info : Enumeration} {before after : ByteImage}
+    {position offset : Nat} {bytes : List UInt8} {profiles : List UninhabitedVariantLayout} (encoding : info.encoding = .directWithUninhabited offset profiles)
+    (initial : InitializedLane before offset (tagBits info.tag / 8) bytes)
+    (final : InitializedLane after offset (tagBits info.tag / 8) bytes)
+    (selected : EnumDecodingSelects info before position) : EnumDecodingSelects info after position := by
+  exact EnumDecodingSelects.transfer_direct_encoding (Or.inr ⟨profiles, encoding⟩) initial final selected
+
 
 /-- Niche selection depends only on the actual initialized carrier read. -/
 theorem EnumDecodingSelects.transfer_niche {info : Enumeration} {before after : ByteImage}
@@ -859,6 +917,23 @@ theorem decode_leaf_of_bytes (model : ByteModel) (order : FunctionAddressOrder) 
   rw [initialized_literal]
   cases ty <;> rfl
 
+
+/-- A manually constructed scalar leaf cannot reconstruct a nominal item.
+Only the source compiler's dedicated plan carries that operation. -/
+theorem decode_fnItem_as_scalar_leaf_refuses (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (target : FuncId) (layout : MemoryTypeLayout)
+    (image : ByteImage) (value : Value) :
+    decode model order memory (.leaf (.FnItem target) layout) image ≠ .ok value := by
+  intro success
+  unfold decode at success
+  rw [decodeCore] at success
+  by_cases sized : image.size = layout.size
+  · simp only [Plan.layout,sized,beq_self_eq_true,Bool.not_true,Bool.false_eq_true,ite_false,
+      Bind.bind,Except.bind,Pure.pure,Except.pure] at success
+    cases initializedImage : initialized image with
+    | error failure => simp [initializedImage,Bind.bind,Except.bind] at success
+    | ok bytes => simp [initializedImage,decodeMemoryWithFunctions,Bind.bind,Except.bind] at success
+  · simp [Plan.layout,sized,imageError,Bind.bind,Except.bind,Pure.pure,Except.pure] at success
 
 /-- A literal initialized image reaches the actual nested scalar branch.
     Char retains its raw 32-bit rule; other types use contextual decoding. -/
@@ -1002,6 +1077,28 @@ theorem VariantDecoded.of_fields (model : ByteModel) (order : FunctionAddressOrd
       rw [decodeVariant]
       exact ih position row
 
+private theorem decode_enumeration_core_of_rejection (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (ty : Ty) (layout : MemoryTypeLayout) (info : Enumeration)
+    (variants : List (Option (List (Nat × Plan)))) (image : ByteImage) (error : SemError)
+    (extent : image.size = layout.size) (rejected : EnumDecodingRejects info image error)
+    (topChar allowUnwritten : Bool) :
+    decodeCore model order memory (.enumeration ty layout info variants) image topChar allowUnwritten =
+      .error error := by
+  unfold EnumDecodingRejects at rejected
+  rw [decodeCore]
+  simp only [Plan.layout,extent,bne,beq_self_eq_true,Bool.not_true,Bool.false_eq_true,ite_false,
+    rejected,Bind.bind,Except.bind,Pure.pure,Except.pure]
+
+/-- A correctly sized enum image propagates its exact selection error.
+No payload row, field decoder or well-founded payload rank is evaluated. -/
+theorem decode_enumeration_of_rejection (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (ty : Ty) (layout : MemoryTypeLayout) (info : Enumeration)
+    (variants : List (Option (List (Nat × Plan)))) (image : ByteImage) (error : SemError)
+    (extent : image.size = layout.size) (rejected : EnumDecodingRejects info image error) :
+    decode model order memory (.enumeration ty layout info variants) image = .error error :=
+  decode_enumeration_core_of_rejection model order memory ty layout info variants image error
+    extent rejected true false
+
 private theorem decode_enumeration_core_of_payload (model : ByteModel) (order : FunctionAddressOrder) (memory : Memory)
     (ty : Ty) (layout : MemoryTypeLayout) (info : Enumeration) (variants : List (Option (List (Nat × Plan))))
     (image : ByteImage) (position : Nat) (discriminant : Int) (fields : List (Nat × Plan)) (values : List Value)
@@ -1050,7 +1147,7 @@ theorem EnumDecodingSelects.bound {info : Enumeration} {image : ByteImage} {posi
   unfold EnumDecodingSelects selectVariant at selected
   simp only [Bind.bind,Except.bind,Pure.pure,Except.pure] at selected
   repeat' split at selected
-  all_goals simp_all [imageError,Bind.bind,Except.bind,Pure.pure,Except.pure]
+  all_goals simp_all [imageError,imageUB,Bind.bind,Except.bind,Pure.pure,Except.pure]
   all_goals trustIrCompilerProof { omega } {
     have nonempty : info.discriminants ≠ [] := by assumption
     have positive := List.length_pos_iff.mpr nonempty
@@ -1171,6 +1268,10 @@ theorem ChildDecoded.ordinary_iff_decode (model : ByteModel) (order : FunctionAd
       intro same
       subst ty
       exact ordinary layout rfl)
+  | fnItem target layout =>
+    unfold ChildDecoded decode
+    conv => lhs; lhs; rw [decodeCore]
+    conv => rhs; lhs; rw [decodeCore]
   | fields ty layout fields =>
     unfold ChildDecoded decode
     conv => lhs; lhs; rw [decodeCore]
@@ -1180,5 +1281,96 @@ theorem ChildDecoded.ordinary_iff_decode (model : ByteModel) (order : FunctionAd
     unfold ChildDecoded decode
     conv => lhs; lhs; rw [decodeCore]
     conv => rhs; lhs; rw [decodeCore]
+
+/-- Exact item leaf for either internal decode mode; neither mode changes
+    nominal identity or relaxes the checked byte extent and alignment. -/
+theorem decodeCore_fnItem (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (target : FuncId) (layout : MemoryTypeLayout) (image : ByteImage)
+    (topChar allowUnwritten : Bool) :
+    decodeCore model order memory (.fnItem target layout) image topChar allowUnwritten = (do
+      if image.size != layout.size then
+        return ← imageError "Load: image size does not match source layout"
+      if layout.size != 0 || layout.alignment != 1 then
+        imageError "Load: function item layout is not zero-sized/alignment-one"
+      else pure (.fnItem target)) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta decodeCore decodeCore._mutual
+      rw [WellFounded.fix_eq]
+    rfl
+  } {
+    rw [decodeCore.eq_def] <;> rfl
+  }
+
+/-- A prepared item-typed plan, not bytes or a code-address table, supplies
+    the singleton identity. Invalid layout geometry remains a refusal. -/
+theorem decode_fnItem (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (target : FuncId) (layout : MemoryTypeLayout) (image : ByteImage) :
+    decode model order memory (.fnItem target layout) image = (do
+      if image.size != layout.size then
+        return ← imageError "Load: image size does not match source layout"
+      if layout.size != 0 || layout.alignment != 1 then
+        imageError "Load: function item layout is not zero-sized/alignment-one"
+      else pure (.fnItem target)) := by
+  trustIrCompilerProof {
+    unfold decode
+    conv =>
+      lhs
+      delta decodeCore decodeCore._mutual
+      rw [WellFounded.fix_eq]
+    rfl
+  } {
+    unfold decode
+    rw [decodeCore.eq_def] <;> rfl
+  }
+
+/-- Zero-sized positive arrays decode their actual child once and retain the
+    full logical count as a compact uniform value. Empty arrays decode none. -/
+theorem decode_array (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (ty : Ty) (layout : MemoryTypeLayout) (count : Nat)
+    (element : Plan) (image : ByteImage) :
+    decode model order memory (.array ty layout count element) image = (do
+      if image.size != layout.size then
+        return ← imageError "Load: image size does not match source layout"
+      if count == 0 then return .array (CompactArray.Packed.ofArray #[])
+      if element.layout.size == 0 then
+        let value ← decodeCore model order memory element ByteImage.empty false false
+        return .array (CompactArray.Packed.uniform count value)
+      let values ← image.mapBlocks
+        (fun part => decodeCore model order memory element part false false)
+        element.layout.size count
+      pure (.array ⟨count, values⟩)) := by
+  trustIrCompilerProof {
+    unfold decode
+    conv =>
+      lhs
+      delta decodeCore decodeCore._mutual
+      rw [WellFounded.fix_eq]
+    rfl
+  } {
+    unfold decode
+    rw [decodeCore.eq_def] <;> rfl
+  }
+
+/-- Every logical array length uses the actual typed singleton once; the
+    zero-length case retains the decoder's genuine empty representation. -/
+theorem decode_fnItem_array (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (element : TyId) (target : FuncId) (count : Nat) :
+    decode model order memory
+      (.array (.Array element count) ⟨0, 1⟩ count (.fnItem target ⟨0, 1⟩))
+      ByteImage.empty =
+      (if count == 0 then .ok (.array (CompactArray.Packed.ofArray #[]))
+       else .ok (.array (CompactArray.Packed.uniform count (.fnItem target)))) := by
+  cases count with
+  | zero => rw [decode_array]; rfl
+  | succ count =>
+    rw [decode_array]
+    change (do
+      let value ← decodeCore model order memory (.fnItem target ⟨0, 1⟩)
+        ByteImage.empty false false
+      pure (Value.array (CompactArray.Packed.uniform (count + 1) value))) = _
+    rw [decodeCore_fnItem]
+    rfl
 
 end TrustIr.AggregateMemory

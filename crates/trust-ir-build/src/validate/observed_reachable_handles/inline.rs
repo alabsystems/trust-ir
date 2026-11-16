@@ -60,6 +60,7 @@ impl<'a> State<'a> {
                         | Ty::Array(_, _)
                         | Ty::Enum(_)
                         | Ty::Func(_)
+                        | Ty::FnItem(_)
                         | Ty::Set(_, _)
                         | Ty::Sequence(_)
                         | Ty::Record(_)
@@ -141,6 +142,7 @@ impl<'a> State<'a> {
             | Ty::Vector(_, _)
             | Ty::Tensor(_, _)
             | Ty::Dialect(_)
+            | Ty::FnItem(_)
             | Ty::Ext(_) => return Ok(()),
         };
         if self.fresh(key, work)? {

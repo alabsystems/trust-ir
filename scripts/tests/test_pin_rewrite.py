@@ -45,6 +45,19 @@ CLEAN_DEP_LINE = (
 )
 
 
+def package_contract(revision, version, names=("ay", "ay-proof")):
+    def identity(path):
+        return {"path": path, "git_blob": "d" * 40, "sha256": "e" * 64}
+    root = identity("Cargo.toml")
+    return json.dumps({"schema": 1, "repository": PIN.AY_REMOTE,
+                       "revision": revision, "workspace_version": version,
+                       "workspace_manifest": root,
+                       "packages": [{"name": n, "version": version,
+                                     "manifest": identity(f"crates/{n}/Cargo.toml"),
+                                     "version_source": root} for n in sorted(names)]},
+                      indent=2, sort_keys=True) + "\n"
+
+
 def copy_archived_pin_boundary(root: Path) -> None:
     fixture = ROOT / "scripts/tests/fixtures/captured-pin-boundary"
     manifest = fixture / "artifact-manifest.json"
@@ -215,6 +228,32 @@ class SubstituteTests(unittest.TestCase):
             PIN.plan_version_edits(lambda _: "", "clean", "^2.0")
 
 
+class IndependentAyOwnerTests(unittest.TestCase):
+    def test_independent_package_tuple_does_not_weaken_the_ay_family_version(self):
+        revision = "1" * 40
+        source = f"git+{PIN.AY_REMOTE}?rev={revision}#{revision}"
+
+        def row(name, version, origin=source):
+            return f'name = "{name}"\nversion = "{version}"\nsource = "{origin}"\n'
+
+        self.assertTrue(PIN.ay_lock_package_version_allowed(row("trust-exec-policy", "0.13.0"),
+                                                         revision, PIN.exec_policy.OWNER_AY_VERSION))
+        self.assertTrue(PIN.ay_lock_package_version_allowed(row("ay-core", PIN.exec_policy.OWNER_AY_VERSION),
+                                                         revision, PIN.exec_policy.OWNER_AY_VERSION))
+        cases = [row("ay-core", "0.13.0"), row("another-policy", "0.13.0"),
+                 row("trust-exec-policy", PIN.exec_policy.OWNER_AY_VERSION), row("trust-exec-policy", "0.13.1"),
+                 row("trust-exec-policy", "0.13.0", source.replace("alabsystems/ay", "foreign/ay")),
+                 row("trust-exec-policy", "0.13.0", source.replace("#" + revision, "#" + "2" * 40)),
+                 row("trust-exec-policy", "0.13.0", source.replace(revision, "2" * 40)),
+                 row("trust-exec-policy", "0.13.0", "registry+https://github.com/rust-lang/crates.io-index"),
+                 row("trust-exec-policy", "0.13.0") + 'name = "ay-core"\n']
+        for package in cases:
+            with self.subTest(package=package):
+                self.assertFalse(PIN.ay_lock_package_version_allowed(package, revision, PIN.exec_policy.OWNER_AY_VERSION))
+        self.assertFalse(PIN.ay_lock_package_version_allowed(row("trust-exec-policy", "0.13.0"),
+                                                          revision, "0.27.0"))
+
+
 class StaticGuardMirrorTests(unittest.TestCase):
     """The Python fallback must reject every authority class the Rust guard does."""
 
@@ -238,6 +277,46 @@ class StaticGuardMirrorTests(unittest.TestCase):
     def test_live_repository_passes_the_exact_static_mirror(self) -> None:
         report = PIN.static_guard(self._reader())
         self.assertTrue(report.coherent, report.render())
+
+    def test_heterogeneous_exact_contract_and_lock_pass(self):
+        contract = json.loads((ROOT / PIN.AY_PACKAGE_CONTRACT).read_text())
+        row = next(p for p in contract["packages"] if p["name"] == "trust-exec-policy")
+        self.assertEqual(row["version"], "0.13.0")
+        self.assertNotEqual(row["version"], contract["workspace_version"])
+        lock = (ROOT / "Cargo.lock").read_text()
+        old = 'name = "trust-exec-policy"\nversion = "0.13.0"'
+        self.assertEqual(lock.count(old), 1)
+        report = PIN.static_guard(self._reader())
+        self.assertTrue(report.coherent, report.render())
+        # Even a coordinated rewrite of the immutable contract and resolver
+        # cannot broaden the independently reviewed .13 package boundary.
+        changed = lock.replace(old, 'name = "trust-exec-policy"\nversion = "0.13.1"')
+        row["version"] = "0.13.1"
+        overrides = {PIN.AY_PACKAGE_CONTRACT: json.dumps(contract, indent=2, sort_keys=True) + "\n",
+                     "Cargo.lock": changed}
+        report = PIN.static_guard(self._reader(overrides))
+        self.assertFalse(report.coherent, "reviewed independent-owner restriction must remain")
+
+    def test_package_contract_corruption_refuses(self):
+        import copy
+        original = json.loads((ROOT / PIN.AY_PACKAGE_CONTRACT).read_text())
+        for mutation in ("revision", "workspace", "missing", "duplicate", "extra", "path", "digest", "schema"):
+            with self.subTest(mutation=mutation):
+                data = copy.deepcopy(original)
+                if mutation == "revision": data["revision"] = "f" * 40
+                if mutation == "workspace": data["workspace_version"] = "999.0.0"
+                if mutation == "missing": data["packages"].pop()
+                if mutation == "duplicate": data["packages"].append(copy.deepcopy(data["packages"][-1]))
+                if mutation == "extra": data["packages"].append(dict(data["packages"][-1], name="zz-forged"))
+                if mutation == "path": data["packages"][0]["manifest"]["path"] = "../Cargo.toml"
+                if mutation == "digest": data["packages"][0]["manifest"]["sha256"] = "0"
+                if mutation == "schema": data["schema"] = True
+                raw = json.dumps(data, indent=2, sort_keys=True) + "\n"
+                self.assert_rejected(PIN.AY_PACKAGE_CONTRACT, raw, "AY")
+        raw = (ROOT / PIN.AY_PACKAGE_CONTRACT).read_text()
+        for malformed in (raw.replace('"schema": 1', '"schema": 1, "schema": 1'),
+                          json.dumps(original)):
+            self.assert_rejected(PIN.AY_PACKAGE_CONTRACT, malformed, "AY package contract")
 
     def test_lock_source_control_prefix_is_not_rust_whitespace(self) -> None:
         revision = PIN.census(self._reader(), "clean").current()
@@ -296,6 +375,72 @@ class StaticGuardMirrorTests(unittest.TestCase):
             self.assertFalse(report.coherent, report.render())
             self.assertIn("Clean source", report.render())
             self.assertEqual(read("Cargo.lock").encode("utf-8"), path.read_bytes())
+
+    def test_independent_ay_owner_supported_and_hostile_profiles_match_the_compiled_guard(self) -> None:
+        self.assertEqual(PIN.ay_policy_profile_control_violations(), [])
+
+    def test_canonical_lock_owner_refuses_duplicate_incomplete_escaped_and_unbounded_fields(self) -> None:
+        good = '[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+        for changed in (
+            good + 'version = "0.2.178"\n',
+            good.replace('name = "libc"\n', ''),
+            good + 'dependencies = [\n "libc",\n',
+            good + 'dependencies = [\n "libc"\n]\n',
+            good + 'note = "escaped\\nvalue"\n',
+            good + '[unsupported]\n',
+        ):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                PIN.canonical_lock_packages(changed)
+
+    def test_policy_owner_incoming_edge_cannot_hide_leading_space_in_canonical_lock(self) -> None:
+        revision = "1" * 40
+        source = f"git+{PIN.AY_REMOTE}?rev={revision}#{revision}"
+        fixture = (f'[[package]]\nname = "ay-sys"\nversion = "{PIN.exec_policy.OWNER_AY_VERSION}"\n'
+                   f'source = "{source}"\ndependencies = [\n "trust-exec-policy",\n]\n'
+                   '[[package]]\nname = "trust-exec-policy"\nversion = "0.13.0"\n'
+                   f'source = "{source}"\ndependencies = [\n "libc",\n]\n'
+                   '[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+                   f'source = "{PIN.exec_policy.REGISTRY}"\n')
+        hostile = fixture + ('[[package]]\nname = "other"\nversion = "1"\n'
+                             'dependencies = [\n " trust-exec-policy",\n]\n')
+        with self.assertRaises(ValueError):
+            PIN.validate_ay_lock_source_owner(hostile, revision, PIN.exec_policy.OWNER_AY_VERSION)
+
+    def test_canonical_lock_control_prefixes_are_not_trimmed_as_rust_whitespace(self) -> None:
+        good = '[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+        for prefix in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            changed = good.replace('name = "libc"', prefix + 'name = "libc"')
+            with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                PIN.canonical_lock_packages(changed)
+
+    def test_canonical_lock_only_lf_and_crlf_separate_rust_lines(self) -> None:
+        good = '[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+        for separator in ("\r", "\v", "\f", "\x85", "\x1c", "\x1d", "\x1e", "\u2028", "\u2029"):
+            changed = good.replace('\nversion =', separator + 'version =')
+            with self.subTest(separator=separator), self.assertRaises(ValueError):
+                PIN.canonical_lock_packages(changed)
+
+    def test_canonical_lock_preserves_supported_rust_line_endings_and_trim(self) -> None:
+        good = '[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+        expected = [{"name": "libc", "version": "0.2.177"}]
+        for changed in (good, good.rstrip("\n"), good.replace("\n", "\r\n"),
+                        good.replace('name =', "\u00a0\tname =").replace('version =', "\u2003version =")):
+            with self.subTest(changed=changed):
+                self.assertEqual(PIN.canonical_lock_packages(changed), expected)
+
+    def test_policy_owner_cannot_hide_non_rust_control_before_source_field(self) -> None:
+        revision = "1" * 40
+        source = f"git+{PIN.AY_REMOTE}?rev={revision}#{revision}"
+        fixture = (f'[[package]]\nname = "ay-sys"\nversion = "{PIN.exec_policy.OWNER_AY_VERSION}"\n'
+                   f'source = "{source}"\ndependencies = [\n "trust-exec-policy",\n]\n'
+                   '[[package]]\nname = "trust-exec-policy"\nversion = "0.13.0"\n'
+                   f'source = "{source}"\ndependencies = [\n "libc",\n]\n'
+                   '[[package]]\nname = "libc"\nversion = "0.2.177"\n'
+                   f'source = "{PIN.exec_policy.REGISTRY}"\n')
+        for prefix in ("\x1c", "\x1f"):
+            changed = fixture.replace(f'source = "{source}"', prefix + f'source = "{source}"', 1)
+            with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                PIN.validate_ay_lock_source_owner(changed, revision, PIN.exec_policy.OWNER_AY_VERSION)
 
     def test_root_clean_patch_is_rejected(self) -> None:
         manifest = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
@@ -539,6 +684,7 @@ class SyntheticTreeTests(unittest.TestCase):
 
     def build_tree(self, root: Path, *, guard_rev: str) -> None:
         files = {
+            PIN.AY_PACKAGE_CONTRACT: package_contract(OTHER, "0.4.0"),
             "crates/trust-ir/Cargo.toml": CLEAN_DEP_LINE.format(rev=OLD),
             "crates/trust-ir-build/Cargo.toml": "".join(
                 CLEAN_DEP_LINE.format(rev=OLD) for _ in range(6)
@@ -1031,8 +1177,13 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         (root / "scripts").mkdir(parents=True)
         shutil.copy2(BUMP_SCRIPT, root / "scripts" / BUMP_SCRIPT.name)
         shutil.copy2(PIN_REWRITE_PATH, root / "scripts" / PIN_REWRITE_PATH.name)
+        shutil.copy2(ROOT / "scripts/ay_exec_policy_owner.py", root / "scripts/ay_exec_policy_owner.py")
         shutil.copy2(TARGO_RUNNER, root / "scripts" / TARGO_RUNNER.name)
         shutil.copy2(ROOT / "scripts/dependency_authority.py", root / "scripts/dependency_authority.py")
+        shutil.copy2(ROOT / "scripts/derive_ay_package_contract.py", root / "scripts/derive_ay_package_contract.py")
+        shutil.copytree(ROOT / "scripts/_vendor", root / "scripts/_vendor",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        self._write(root / PIN.AY_PACKAGE_CONTRACT, package_contract(ay_rev, ay_version))
         self._write(root / "Cargo.toml", "[workspace]\nmembers = []\n")
         self._write(
             root / "crates/trust-ir/Cargo.toml",
@@ -1123,9 +1274,14 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             path.relative_to(root).as_posix(): path.read_bytes()
             for path in sorted(root.rglob("*"))
             if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix not in {".pyc", ".pyo"}
         }
 
-    def _fake_targo(self, directory: Path, body: str, *, guard_exit: int = 0) -> None:
+    def _fake_targo(
+        self, directory: Path, body: str, *, guard_exit: int = 0,
+        guard_target: str | None = None,
+    ) -> None:
         """A recorded fake frontend, never an actual compiler or resolver.
 
         The real repository wrapper must select this exact binary and preserve
@@ -1146,11 +1302,26 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             "with open(os.environ['FAKE_TARGO_LOG'], 'a', encoding='utf-8') as log:\n"
             "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "if sys.argv[1:3] == ['--unverified', 'test']:\n"
+            f"    if {guard_target!r} is not None and os.environ.get('CARGO_TARGET_DIR') != {guard_target!r}:\n"
+            "        raise SystemExit(37)\n"
             f"    raise SystemExit({guard_exit})\n"
             "if sys.argv[1] not in ('metadata', 'update'):\n"
             "    raise SystemExit(97)\n"
+            "os.environ['FAKE_TARGO_MANIFEST'] = sys.argv[sys.argv.index('--manifest-path') + 1]\n"
             f"body = {body!r}\n"
-            "raise SystemExit(subprocess.run(['/bin/sh', '-c', body, 'fake-targo', *sys.argv[1:]]).returncode)\n"
+            "result = subprocess.run(['/bin/sh', '-c', body, 'fake-targo', *sys.argv[1:]])\n"
+            "if result.returncode or sys.argv[1] != 'metadata': raise SystemExit(result.returncode)\n"
+            "from pathlib import Path\n"
+            "import re\n"
+            "packages = []\n"
+            "for block in Path('Cargo.lock').read_text().split('[[package]]')[1:]:\n"
+            "    fields = dict(re.findall(r'^([a-z]+) = \"([^\"]+)\"', block, re.M))\n"
+            "    if 'ay.git' not in fields.get('source', ''): continue\n"
+            "    revision = fields['source'].split('#')[-1]\n"
+            "    home = Path(os.environ.get('CARGO_HOME', str(Path.home() / '.cargo')))\n"
+            "    path = home / 'git/checkouts/ay-0123456789abcdef' / revision[:7] / 'crates' / fields['name'] / 'Cargo.toml'\n"
+            "    packages.append({'name': fields['name'], 'version': fields['version'], 'source': fields['source'], 'manifest_path': str(path)})\n"
+            "print(json.dumps({'packages': packages}))\n"
             "PYTHON_FIXTURE\n",
         )
         binary.chmod(0o755)
@@ -1172,8 +1343,8 @@ class BumpScriptIntegrationTests(unittest.TestCase):
         calls = [["metadata", "--format-version", "1", "--all-features",
                   "--manifest-path", os.fspath(root / "Cargo.toml")]]
         if frontend:
-            calls.append(["update", "--manifest-path", os.fspath(root / "frontend/Cargo.toml"),
-                          "-p", "clean-kernel"])
+            calls.append(["metadata", "--format-version", "1", "--manifest-path",
+                          os.fspath(root / "frontend/Cargo.toml")])
         if guard:
             calls.append(["--unverified", "test", "--locked", "-p", "trust-ir",
                           "--test", "dependency_pin_coherence"])
@@ -1191,6 +1362,63 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
             env["TRUST_TARGO_BIN"] = os.fspath(path_prefix / "targo")
             env["FAKE_TARGO_LOG"] = os.fspath(path_prefix / "targo-calls.jsonl")
+        # Standalone protocol fixture: no network and no production bypass.
+        # Authorize fixed immutable AY manifests independently of fake Cargo's
+        # lock-derived metadata, so forged resolver versions still refuse.
+        authority_bin = root.parent / "authority-bin"
+        authority_bin.mkdir(exist_ok=True)
+        clean = root.parent / "clean"
+        if (clean / ".git").exists():
+            manifest = subprocess.check_output(
+                ["git", "-C", str(clean), "show", "HEAD:Cargo.toml"], text=True)
+            import re
+            target = re.search(r'git = "https://github.com/alabsystems/ay.git", rev = "([0-9a-f]{40})"', manifest)
+            version = re.search(r'ay-fixture-0 = \{ version = "([^"]+)"', manifest)
+            if target and version:
+                revision, expected_version = target.group(1), version.group(1)
+                files = {"Cargo.toml": f'[workspace.package]\nversion = "{expected_version}"\n'}
+                for name in ("ay", "ay-proof"):
+                    files[f"crates/{name}/Cargo.toml"] = (
+                        f'[package]\nname = "{name}"\nversion.workspace = true\n')
+                replies = {}
+                def tree(prefix):
+                    entries = []
+                    children = sorted({p[len(prefix):].split("/")[0] for p in files if p.startswith(prefix)})
+                    for child in children:
+                        path = prefix + child
+                        if path in files:
+                            data = files[path].encode()
+                            oid = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                            import base64
+                            replies[f"git/blobs/{oid}"] = {"sha": oid, "size": len(data), "encoding": "base64", "content": base64.b64encode(data).decode()}
+                            entries.append({"path": child, "type": "blob", "mode": "100644", "sha": oid})
+                        else:
+                            oid = tree(path + "/")
+                            entries.append({"path": child, "type": "tree", "mode": "040000", "sha": oid})
+                    data = b"".join((e["mode"].lstrip("0") + " " + e["path"]).encode() + b"\0" + bytes.fromhex(e["sha"]) for e in entries)
+                    oid = hashlib.sha1(b"tree " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                    replies[f"git/trees/{oid}"] = {"sha": oid, "truncated": False, "tree": entries}
+                    return oid
+                root_tree = tree("")
+                replies[f"git/commits/{revision}"] = {"sha": revision, "tree": {"sha": root_tree}}
+                fixture = authority_bin / "replies.json"
+                fixture.write_text(json.dumps({"revision": revision, "replies": replies}))
+                binary = authority_bin / "agh"
+                binary.write_text(
+                    "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " - \"$@\" <<'FIXTURE'\n"
+                    "import json, sys\n"
+                    + "data = json.load(open(" + repr(str(fixture)) + "))\n"
+                    "args = sys.argv[1:]\n"
+                    "assert args.pop(0) == '--no-anonymous-api'\n"
+                    "if args[0] == 'rev':\n"
+                    "    assert args[1] == 'alabsystems/ay@' + data['revision']\n"
+                    "    print(data['revision'])\n"
+                    "else:\n"
+                    "    assert args[0] == 'api' and args[1].startswith('repos/alabsystems/ay/')\n"
+                    "    print(json.dumps(data['replies'][args[1][len('repos/alabsystems/ay/'):]]))\n"
+                    "FIXTURE\n")
+                binary.chmod(0o755)
+                env["PATH"] = str(authority_bin) + os.pathsep + env["PATH"]
         return env
 
     def _run_bump(
@@ -1280,6 +1508,38 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
+
+    def test_frontend_resolution_selects_its_own_target_and_preserves_root_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=OLD)
+            root = self._build_trust_ir(workspace, clean_rev=OTHER, ay_rev=OLD)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            root_target = str(workspace / "root-owned-target")
+            self._fake_targo(fake_bin,
+                f'if [ "$FAKE_TARGO_MANIFEST" = {shlex.quote(str(root / "Cargo.toml"))} ]; then\n'
+                f'  [ "$CARGO_TARGET_DIR" = {shlex.quote(root_target)} ] || exit 35\n'
+                f"  sed 's/{OTHER}/{clean_target}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
+                "  mv Cargo.lock.next Cargo.lock || exit 32\n"
+                "else\n"
+                '  [ -z "${CARGO_TARGET_DIR+x}" ] || exit 36\n'
+                f"  sed 's/{OTHER}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next || exit 33\n"
+                "  mv frontend/Cargo.lock.next frontend/Cargo.lock || exit 34\n"
+                "fi\n", guard_target=root_target)
+            env = self._environment(root, fake_bin)
+            env["CARGO_TARGET_DIR"] = root_target
+            result = subprocess.run(
+                ["/bin/bash", str(root / "scripts/bump-dep-pin.sh"), "clean", clean_target,
+                 "--offline"], cwd=root, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("guard test PASSED", result.stdout)
+            self.assertEqual(self._targo_calls(fake_bin),
+                             self._expected_targo_calls(root, frontend=True, guard=True))
+            report = PIN.static_guard(PIN.repo_reader(root))
+            self.assertTrue(report.coherent, report.render())
 
     def test_ay_bump_uses_frozen_commit_even_when_clean_head_is_ahead(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1549,7 +1809,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 21\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 22\n"
                 "  exit 0\n"
@@ -1591,7 +1851,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
                 f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
                 "Cargo.lock > Cargo.lock.next || exit 31\n"
@@ -1636,7 +1896,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
                 f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
                 "Cargo.lock > Cargo.lock.next || exit 31\n"
@@ -1670,7 +1930,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
                 f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
                 "Cargo.lock > Cargo.lock.next || exit 31\n"
@@ -1694,6 +1954,29 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             self.assertNotIn("DONE", result.stdout)
             self.assertEqual(self._snapshot(root), before)
 
+    def test_forged_resolver_version_refuses_immutable_manifest_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, clean_target, _ = self._init_clean(workspace, ay_rev=NEW)
+            root = self._build_trust_ir(workspace, clean_rev=OLD, ay_rev=OLD,
+                                        rule_ay=(NEW, "0.9.0"))
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            self._fake_targo(fake_bin,
+                'if [ "$FAKE_TARGO_MANIFEST" = "$PWD/Cargo.toml" ]; then\n'
+                + f"sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
+                + f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
+                + "-e 's/version = \"0.9.0\"/version = \"0.13.0\"/g' Cargo.lock > Cargo.lock.next\n"
+                + "mv Cargo.lock.next Cargo.lock\nelse\n"
+                + f"sed 's/{OLD}/{clean_target}/g' frontend/Cargo.lock > frontend/Cargo.lock.next\n"
+                + "mv frontend/Cargo.lock.next frontend/Cargo.lock\nfi\n")
+            before = self._snapshot(root)
+            result = self._run_clean_ay_bump(root, clean_target, NEW, path_prefix=fake_bin)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("resolved version disagrees with immutable package manifest", result.stdout)
+            self.assertIn("ROLLED BACK", result.stdout)
+            self.assertEqual(self._snapshot(root), before)
+
     def test_compiled_guard_failure_still_rolls_back_after_successful_static_guard(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -1704,7 +1987,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed -e 's|clean.git?rev={OLD}#{OLD}|clean.git?rev={clean_target}#{clean_target}|g' "
                 f"-e 's|ay.git?rev={OLD}#{OLD}|ay.git?rev={NEW}#{NEW}|g' "
                 "Cargo.lock > Cargo.lock.next || exit 31\n"
@@ -1754,7 +2037,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed 's/{OTHER}/{clean_target}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 32\n"
                 "else\n"
@@ -1784,7 +2067,7 @@ class BumpScriptIntegrationTests(unittest.TestCase):
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
             self._fake_targo(fake_bin,
-                "if [ \"$1\" = metadata ]; then\n"
+                "if [ \"$FAKE_TARGO_MANIFEST\" = \"$PWD/Cargo.toml\" ]; then\n"
                 f"  sed -e 's/{OTHER}/{clean_target}/g' -e 's/{OLD}/{NEW}/g' Cargo.lock > Cargo.lock.next || exit 31\n"
                 "  mv Cargo.lock.next Cargo.lock || exit 32\n"
                 "else\n"

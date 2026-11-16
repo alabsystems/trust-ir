@@ -69,6 +69,73 @@ fn parity(bytes: &[u8], write: impl FnOnce(&mut Writer<'_, '_, Observer>) -> Res
 }
 
 #[test]
+fn direct_dead_storage_profiles_are_digest_bound_under_original_observation() {
+    let module = crate::layout_table::direct_storage::tests::fixture();
+    let mut facts = NativeCompilerFacts::default();
+    facts
+        .adt_layouts
+        .push(crate::layout_table::direct_storage::tests::native_fact(
+            &module,
+        ));
+    let expected = facts.stable_digest();
+    let mut measured = Observer::default();
+    let mut session = ObservedSession::new(InterpretOptions::default(), &mut measured);
+    assert_eq!(
+        facts.stable_digest_observed(&mut session, site()).unwrap(),
+        expected
+    );
+    for change in 0..5 {
+        let mut changed = facts.clone();
+        let NativeEnumTagEncoding::DirectWithUninhabited { variants } = &mut changed.adt_layouts[0]
+            .enum_layout
+            .as_mut()
+            .unwrap()
+            .tag_encoding
+        else {
+            unreachable!()
+        };
+        match change {
+            0 => variants[0].variant += 1,
+            1 => variants[0].size += 16,
+            2 => variants[0].align *= 2,
+            3 => variants[0].fields[0].size += 16,
+            4 => variants[0].fields[0].align *= 2,
+            _ => unreachable!(),
+        }
+        assert_ne!(changed.stable_digest(), expected);
+        let mut observer = Observer::default();
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        assert_eq!(
+            changed
+                .stable_digest_observed(&mut session, site())
+                .unwrap(),
+            changed.stable_digest()
+        );
+    }
+    for stop_at in 1..=measured.events.len() {
+        let mut observer = Observer {
+            stop_at: Some(stop_at),
+            ..Observer::default()
+        };
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        assert_eq!(
+            facts.stable_digest_observed(&mut session, site()),
+            Err(ObservedValueError::AdmissionRefused)
+        );
+        assert_eq!(session.first_refusal().unwrap().cause, "interior");
+    }
+    for (encoding, tag) in [
+        (NativeEnumTagEncoding::Direct, 0),
+        (NativeEnumTagEncoding::Niche, 1),
+        (NativeEnumTagEncoding::Untagged, 2),
+    ] {
+        let mut bytes = vec![];
+        crate::request::write_enum_tag_encoding_stable(&mut bytes, &encoding);
+        assert_eq!(bytes, vec![tag], "legacy stable encoding must not change");
+    }
+}
+
+#[test]
 fn complete_bundle_and_every_child_digest_match_unchanged_canonical_spelling() {
     let bundle = bundle();
     assert_eq!(bundle.evidence_bundles.len(), 3);
@@ -311,5 +378,92 @@ fn every_variable_length_sort_key_field_matches_the_legacy_derived_order() {
             write_certificate_refs(out, &certificates)
         });
         tools.reverse();
+    }
+}
+
+#[test]
+fn fn_item_native_identity_preimages_keep_target_and_pointer_kind_distinct() {
+    use crate::FuncTyId;
+    let mut item = Vec::new();
+    let mut pointer = Vec::new();
+    crate::request::digest::write_ty_stable(&mut item, &Ty::FnItem(FuncId::new(7)));
+    crate::request::digest::write_ty_stable(&mut pointer, &Ty::Func(FuncTyId::new(7)));
+    assert_ne!(item, pointer);
+    parity(&item, |out| write_ty(out, &Ty::FnItem(FuncId::new(7))));
+    let first_item = item;
+    let mut other_item = Vec::new();
+    crate::request::digest::write_ty_stable(&mut other_item, &Ty::FnItem(FuncId::new(19)));
+    assert_ne!(first_item, other_item);
+    let mut item = Vec::new();
+    pointer.clear();
+    crate::request::digest::write_constant_stable(&mut item, &Constant::FnItem(FuncId::new(7)));
+    crate::request::digest::write_constant_stable(&mut pointer, &Constant::FnDef(FuncId::new(7)));
+    assert_ne!(item, pointer);
+    parity(&item, |out| {
+        write_constant(out, &Constant::FnItem(FuncId::new(7)))
+    });
+    other_item.clear();
+    crate::request::digest::write_constant_stable(
+        &mut other_item,
+        &Constant::FnItem(FuncId::new(19)),
+    );
+    assert_ne!(item, other_item);
+}
+
+#[test]
+fn fn_item_native_shape_preimages_are_not_unit_or_pointer_shapes() {
+    let mut item = Vec::new();
+    let mut other = Vec::new();
+    write_ty_shape_stable(&mut item, crate::TyShape::FnItem);
+    parity(&item, |out| write_ty_shape(out, crate::TyShape::FnItem));
+    for shape in [crate::TyShape::Unit, crate::TyShape::Function] {
+        other.clear();
+        write_ty_shape_stable(&mut other, shape);
+        assert_ne!(item, other);
+    }
+    item.clear();
+    write_ty_layout_kind_stable(&mut item, &crate::TyLayoutKind::FnItem);
+    parity(&item, |out| {
+        write_ty_layout_kind(out, &crate::TyLayoutKind::FnItem)
+    });
+    for kind in [crate::TyLayoutKind::Unit, crate::TyLayoutKind::ThinPointer] {
+        other.clear();
+        write_ty_layout_kind_stable(&mut other, &kind);
+        assert_ne!(item, other);
+    }
+}
+
+#[test]
+fn fn_item_and_tensor_digest_tags_are_disjoint_with_observed_parity() {
+    let mut tags = std::collections::BTreeSet::new();
+    for (ty, expected_tag) in [
+        (Ty::Tensor(Box::new(Ty::I8), 2), 41),
+        (Ty::FnItem(FuncId::new(7)), 42),
+    ] {
+        let mut bytes = Vec::new();
+        write_ty_stable(&mut bytes, &ty);
+        assert_eq!(bytes.first(), Some(&expected_tag));
+        assert!(tags.insert(bytes[0]), "duplicate type tag for {ty:?}");
+        parity(&bytes, |out| write_ty(out, &ty));
+    }
+    tags.clear();
+    for (value, expected_tag) in [
+        (
+            Constant::TensorBlob {
+                digest: crate::blob::BlobDigest::of(&[1, 2, 3]),
+                dims: vec![3],
+            },
+            18,
+        ),
+        (Constant::FnItem(FuncId::new(7)), 19),
+    ] {
+        let mut bytes = Vec::new();
+        write_constant_stable(&mut bytes, &value);
+        assert_eq!(bytes.first(), Some(&expected_tag));
+        assert!(
+            tags.insert(bytes[0]),
+            "duplicate constant tag for {value:?}"
+        );
+        parity(&bytes, |out| write_constant(out, &value));
     }
 }

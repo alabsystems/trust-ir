@@ -69,6 +69,29 @@ fn consume_encoding<O: ExecutionObserver>(encoding: EnumTagEncoding, work: &mut 
         }
         EnumTagEncoding::Untagged => work.fixed(()),
         EnumTagEncoding::SingleInhabited { variant } => work.fixed(variant),
+        EnumTagEncoding::DirectWithUninhabited {
+            tag_offset,
+            mut variants,
+        } => {
+            work.fixed(tag_offset);
+            loop {
+                work.step(
+                    size_of::<Option<crate::ty::UninhabitedVariantLayout>>().saturating_add(1),
+                );
+                let Some(row) = variants.pop() else { break };
+                let crate::ty::UninhabitedVariantLayout {
+                    variant,
+                    size,
+                    align,
+                    fields,
+                } = row;
+                work.fixed(variant);
+                work.fixed(size);
+                work.fixed(align);
+                work.scalars(fields);
+            }
+            work.empty(variants);
+        }
     }
 }
 

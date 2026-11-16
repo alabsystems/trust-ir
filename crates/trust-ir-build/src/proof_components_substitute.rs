@@ -496,7 +496,7 @@ fn substitute_prevalidated_scoped_terms_impl(
     }
     *work = walker.work;
     match walker.error {
-        Some(error) => Err(error.into()),
+        Some(error) => Err(error),
         None => Ok(output),
     }
 }
@@ -576,7 +576,7 @@ mod tests {
                                 &scope,
                                 &context,
                                 &bindings,
-                                &[root.clone()],
+                                std::slice::from_ref(root),
                             )
                             .unwrap()
                             .remove(0)
@@ -651,7 +651,7 @@ mod tests {
         let mut parts = ProofComponents::new("prepared.substitution.guards", Default::default());
         parts.set_base(&scope, vec![]).unwrap();
         let context = parts
-            .charged_external_context(&scope, &[x.clone()])
+            .charged_external_context(&scope, std::slice::from_ref(&x))
             .unwrap();
         let mut other = ProofComponents::new("prepared.substitution.other", Default::default());
         other.set_base(&scope, vec![]).unwrap();
@@ -698,7 +698,7 @@ mod tests {
             parts
                 .substitute_scoped_terms(
                     &scope,
-                    &[x.clone()],
+                    std::slice::from_ref(&x),
                     &[(x.clone(), ambient)],
                     &[x.term().clone()]
                 )
@@ -774,6 +774,51 @@ mod tests {
     }
     #[test]
     fn simultaneous_owned_substitution_preserves_named_goal_binders_and_original_replay() {
+        let mut scope = LocalScope::new();
+        let f = scope.try_local(Expr::arrow(n(), n())).unwrap();
+        let g = scope.try_local(Expr::arrow(n(), n())).unwrap();
+        let x = scope.try_local(n()).unwrap();
+        let original = x.lam(Expr::app(f.term().clone(), x.term().clone()));
+        let mut parts = ProofComponents::new("substitute.binders", ProofLimits::default());
+        parts
+            .set_base(
+                &scope,
+                vec![
+                    OwnedProofCapture::Parameter(f.clone()),
+                    OwnedProofCapture::Parameter(g.clone()),
+                ],
+            )
+            .unwrap();
+        let redirected = parts
+            .substitute_scoped_terms(
+                &scope,
+                &[f.clone(), g.clone()],
+                &[(f.clone(), g.term().clone())],
+                &[original],
+            )
+            .unwrap()
+            .remove(0);
+        let actual = Expr::app(g.term().clone(), Expr::nat_lit(0));
+        let proposition = eq(Expr::app(redirected, Expr::nat_lit(0)), actual.clone());
+        let claim = scope.close(&f.pi(g.pi(proposition.clone()))).unwrap();
+        let bundle = parts
+            .close_scoped(
+                &scope,
+                f.lam(g.lam(refl(actual))),
+                proposition,
+                Default::default(),
+            )
+            .unwrap();
+        let bytes = bundle.encode_with_claim(&claim).unwrap();
+        let (decoded, transported) = ScopedProofComponentBundle::decode_with_claim(&bytes).unwrap();
+        assert_eq!(claim, transported);
+        let mut env = Environment::new();
+        env.init_nat().unwrap();
+        env.init_eq().unwrap();
+        decoded.replay(&env, &claim, 2_000_000).unwrap();
+    }
+    #[test]
+    fn prepared_owned_substitution_preserves_named_goal_binders_and_original_replay() {
         let mut scope = LocalScope::new();
         let f = scope.try_local(Expr::arrow(n(), n())).unwrap();
         let g = scope.try_local(Expr::arrow(n(), n())).unwrap();
@@ -910,7 +955,7 @@ mod tests {
             parts
                 .substitute_scoped_terms(
                     &scope,
-                    &[f.clone()],
+                    std::slice::from_ref(&f),
                     &[(other, f.term().clone())],
                     &[f.term().clone()]
                 )
@@ -920,7 +965,7 @@ mod tests {
             parts
                 .substitute_scoped_terms(
                     &scope,
-                    &[f.clone()],
+                    std::slice::from_ref(&f),
                     &[(f.clone(), Expr::bvar(0))],
                     &[f.term().clone()]
                 )
@@ -935,7 +980,7 @@ mod tests {
             parts
                 .substitute_scoped_terms(
                     &scope,
-                    &[f.clone()],
+                    std::slice::from_ref(&f),
                     &[(f.clone(), f.term().clone()), (f.clone(), f.term().clone())],
                     &[f.term().clone()]
                 )

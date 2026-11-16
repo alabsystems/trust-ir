@@ -38,6 +38,14 @@ private def untaggedLayout : Json := object [
   ("encoding", .str "Untagged"), ("size", number 8), ("align", number 8),
   ("variant_field_offsets", .arr #[.arr #[number 0]])]
 
+private def directWithUninhabitedLayout (offset variant size fieldSize : Nat) : Json := object [
+  ("encoding", object [("DirectWithUninhabited", object [
+    ("tag_offset", number offset), ("variants", .arr #[object [
+      ("variant", number variant), ("size", number size), ("align", number 16),
+      ("fields", .arr #[object [("size", number fieldSize), ("align", number 16)]])]])])]),
+  ("size", number 65552), ("align", number 16),
+  ("variant_field_offsets", .arr #[.arr #[number 16], .arr #[number 4]])]
+
 private def nicheLayout (start : Json) : Json := object [
   ("encoding", object [("Niche", object [
     ("untagged_variant", number 0), ("niche_variants_start", number 1),
@@ -83,6 +91,24 @@ def run : IO Unit := do
   let direct ← decoded "direct" (enumLayoutDescriptor directLayout)
   require "direct" (direct.encoding == .direct 4 && direct.variantFieldOffsets == [[], [8]] &&
     direct.size == 24 && direct.align == 8)
+  let reserved ← decoded "direct physical profile"
+    (enumLayoutDescriptor (directWithUninhabitedLayout 0 0 65552 65536))
+  require "direct physical profile retains every extent and offset"
+    (reserved.encoding == .directWithUninhabited 0 [
+      { variant := 0, size := 65552, align := 16, fields := [{ size := 65536, align := 16 }] }] &&
+      reserved.size == 65552 && reserved.align == 16 && reserved.variantFieldOffsets == [[16], [4]])
+  require "direct physical tag offset refuses u64 overflow" (match
+      enumLayoutDescriptor (directWithUninhabitedLayout (2 ^ 64) 0 65552 65536) with
+    | .error (.malformed _) => true | _ => false)
+  require "direct physical variant refuses u32 overflow" (match
+      enumLayoutDescriptor (directWithUninhabitedLayout 0 (2 ^ 32) 65552 65536) with
+    | .error (.malformed _) => true | _ => false)
+  require "direct physical profile refuses u64 overflow" (match
+      enumLayoutDescriptor (directWithUninhabitedLayout 0 0 (2 ^ 64) 65536) with
+    | .error (.malformed _) => true | _ => false)
+  require "direct physical field refuses u64 overflow" (match
+      enumLayoutDescriptor (directWithUninhabitedLayout 0 0 65552 (2 ^ 64)) with
+    | .error (.malformed _) => true | _ => false)
   let untagged ← decoded "untagged" (enumLayoutDescriptor untaggedLayout)
   require "untagged" (untagged.encoding == .untagged && untagged.variantFieldOffsets == [[0]])
   let selected ← decoded "single-inhabited selector" (enumLayoutDescriptor (object [
@@ -91,6 +117,17 @@ def run : IO Unit := do
     ("variant_field_offsets", .arr #[.arr #[], .arr #[number 0]])]))
   require "single-inhabited retained selector and rows"
     (selected.encoding == .singleInhabited 1 && selected.variantFieldOffsets == [[], [0]])
+  require "single inhabited selector is u32" (match enumTagEncoding
+      (object [("SingleInhabited", object [("variant", number (2 ^ 32))])]) with
+    | .error (.malformed "SingleInhabited.variant: expected u32") => true
+    | _ => false)
+  require "dead field align u64" (match enumTagEncoding
+      (object [("DirectWithUninhabited", object [
+        ("tag_offset", number 0), ("variants", .arr #[object [
+          ("variant", number 0), ("size", number 65552), ("align", number 16),
+          ("fields", .arr #[object [("size", number 65536), ("align", number (2 ^ 64))]])]])])]) with
+    | .error (.malformed "align: expected u64") => true
+    | _ => false)
   let empty ← decoded "retained empty nominal declaration" (enumDef (object [
     ("id", number 10), ("name", .str "Empty"), ("variants", .arr #[]),
     ("discriminants", .arr #[]), ("repr", .null), ("layout", .null)]))

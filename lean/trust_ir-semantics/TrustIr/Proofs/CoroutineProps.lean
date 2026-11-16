@@ -474,6 +474,23 @@ def Model.function (model : Model) : EvalFunction :=
 def Model.context (model : Model) (ctx : EvalContext) : EvalContext :=
   ctx.forFunction model.function
 
+/-- These concrete frame interfaces contain no nominal item lane; retain
+    the operational validation and prove its exact success. -/
+private theorem sr_items_nil (ctx : EvalContext) :
+    checkFunctionItemValues ctx [] [] = .ok () := rfl
+
+private theorem sr_items_ptr (ctx : EvalContext) (address : Addr) (allocation : AllocId) :
+    checkFunctionItemValues ctx [.Ptr] [.ptr address (some allocation)] = .ok () := by trustIrReduce
+
+private theorem sr_items_yield (ctx : EvalContext) :
+    checkFunctionItemValues ctx [.I32] [yieldValue] = .ok () := by trustIrReduce
+
+private theorem sr_items_final (ctx : EvalContext) :
+    checkFunctionItemValues ctx [.I32] [finalValue] = .ok () := by trustIrReduce
+
+private theorem sr_model_returnTypes (model : Model) (ctx : EvalContext) :
+    (model.context ctx).functionReturnTypes = some [.I32] := rfl
+
 private theorem sr_model_byteModel (model : Model) (ctx : EvalContext) :
     (model.context ctx).byteModel = ctx.byteModel := rfl
 
@@ -536,7 +553,7 @@ private theorem sr_model_index (ctx : EvalContext) (nextState raw : Int)
         (.Const .I64 (.int raw)) (.value (some result)) [expansionIndexId] =
       bindInstrResultDests (.value (some result)) [expansionIndexId] := by
   apply bindInstructionResults_single_nonChar _ _ _ _ .I64
-  · rfl
+  · trustIrReduce
   · intro h; cases h
 
 private theorem sr_model_pointer (ctx : EvalContext) (nextState : Int)
@@ -545,7 +562,7 @@ private theorem sr_model_pointer (ctx : EvalContext) (nextState : Int)
         (.GEP .I64 fp [expansionIndexId] false) (.value (some result)) [expansionPointerId] =
       bindInstrResultDests (.value (some result)) [expansionPointerId] := by
   apply bindInstructionResults_single_nonChar _ _ _ _ .Ptr
-  · rfl
+  · trustIrReduce
   · intro h; cases h
 
 private theorem sr_model_state (ctx : EvalContext) (nextState raw : Int)
@@ -554,7 +571,7 @@ private theorem sr_model_state (ctx : EvalContext) (nextState raw : Int)
         (.Const .I64 (.int raw)) (.value (some result)) [expansionStateId] =
       bindInstrResultDests (.value (some result)) [expansionStateId] := by
   apply bindInstructionResults_single_nonChar _ _ _ _ .I64
-  · rfl
+  · trustIrReduce
   · intro h; cases h
 
 private theorem sr_model_store (ctx : EvalContext) (pointer value : ValueId) :
@@ -880,7 +897,8 @@ theorem entry_run_case (ctx : EvalContext) (fuel depth : Nat) (model : Model) (a
       = Sem.run (stepNWithContext (model.context ctx) fuel depth model.cfg target [])
           (entryExit s a fid k) := by
   conv => lhs; unfold stepNWithContext
-  simp only [sr_model_byteModel, sr_model_functionOrder, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+  simp only [sr_model_byteModel, sr_model_functionOrder, sr_model_returnTypes,
+    sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbEntry, entryBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
     sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
@@ -918,7 +936,8 @@ theorem entry_run_default (ctx : EvalContext) (fuel depth : Nat) (model : Model)
       = Sem.run (stepNWithContext (model.context ctx) fuel depth model.cfg bbTrap [])
           (entryExit s a fid k) := by
   conv => lhs; unfold stepNWithContext
-  simp only [sr_model_byteModel, sr_model_functionOrder, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+  simp only [sr_model_byteModel, sr_model_functionOrder, sr_model_returnTypes,
+    sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbEntry, entryBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
     sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
@@ -952,7 +971,8 @@ theorem suspend_run (ctx : EvalContext) (fuel depth : Nat) (nextState : Int) (a 
     Sem.run (stepNWithContext ((Model.intrinsic nextState).context ctx) (fuel + 1) depth (Model.intrinsic nextState).cfg bbSuspend []) (entryExit s a fid k)
       = .ok ([yieldValue], suspendExit s a fid k nextState enc) := by
   unfold stepNWithContext
-  simp only [sr_model_byteModel, sr_model_functionOrder, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+  simp only [sr_model_byteModel, sr_model_functionOrder, sr_model_returnTypes,
+    sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, Model.suspend, cfgWith, bbSuspend, suspendBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
     sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
@@ -974,13 +994,13 @@ theorem suspend_run (ctx : EvalContext) (fuel depth : Nat) (nextState : Int) (a 
         (reader := fun (_ : Unit) value => typedIntegerValue ctx.byteModel .I64 value)
         (identity := ()) (a := a) (fid := fid) (model := ctx.byteModel)]
       · dsimp only
-        rw [sr_semStoreValue_i64_ok (a := a) (fid := fid) (model := ctx.byteModel)]
+        rw [sr_semStoreValue_i64_ok (a := a) (fid := fid) (enc := enc) (model := ctx.byteModel)]
         · dsimp only
           rw [sr_semReturn_one (v := yieldValue)]
-          · rfl
+          · trustIrReduce
           · rfl
         · exact hFrame
-        · rfl
+        · trustIrReduce
         · simpa only [Value.intAt, encodeMemoryAt_i64_int] using hEnc
         · exact hLen
       · exact hFrame
@@ -995,7 +1015,8 @@ theorem final_run (ctx : EvalContext) (fuel depth : Nat) (model : Model) (a : Ad
     Sem.run (stepNWithContext (model.context ctx) (fuel + 1) depth model.cfg bbFinal []) (entryExit s a fid k)
       = .ok ([finalValue], finalExit s a fid k) := by
   unfold stepNWithContext
-  simp only [sr_model_byteModel, sr_model_functionOrder, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+  simp only [sr_model_byteModel, sr_model_functionOrder, sr_model_returnTypes,
+    sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbFinal, finalBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
     sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
@@ -1011,7 +1032,7 @@ theorem final_run (ctx : EvalContext) (fuel depth : Nat) (model : Model) (a : Ad
   rw [sr_bindInstrResultDests_one (value := .int 32 7)]
   · dsimp only
     rw [sr_semReturn_one (v := finalValue)]
-    · rfl
+    · trustIrReduce
     · rfl
   · rfl
 
@@ -1021,7 +1042,8 @@ theorem trap_run (ctx : EvalContext) (fuel depth : Nat) (model : Model) (st : Ma
     Sem.run (stepNWithContext (model.context ctx) (fuel + 1) depth model.cfg bbTrap []) st
       = .error (.ub "reached unreachable") := by
   unfold stepNWithContext
-  simp only [sr_model_byteModel, sr_model_functionOrder, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+  simp only [sr_model_byteModel, sr_model_functionOrder, sr_model_returnTypes,
+    sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbTrap, trapBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
   simp only [Sem.run, sr_bind, Except.bind]
@@ -1260,7 +1282,8 @@ theorem suspend_run_expanded (ctx : EvalContext) (fuel depth : Nat) (nextState :
         (Model.expanded nextState storeFrom).cfg bbSuspend []) (entryExit s a fid k)
       = .ok ([yieldValue], expandedSuspendExit s a fid k nextState enc) := by
   unfold stepNWithContext
-  simp only [sr_model_byteModel, sr_model_functionOrder, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
+  simp only [sr_model_byteModel, sr_model_functionOrder, sr_model_returnTypes,
+    sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, Model.suspend, cfgWith, bbSuspend, suspendBlockExpanded, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
     sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
@@ -1290,7 +1313,7 @@ theorem suspend_run_expanded (ctx : EvalContext) (fuel depth : Nat) (nextState :
             rw [sr_semStore_i64_ok (a := a) (fid := fid) (value := .int 64 stored) (enc := enc) (model := ctx.byteModel)]
             · dsimp only
               rw [sr_semReturn_one (v := yieldValue)]
-              · rfl
+              · trustIrReduce
               · rfl
             · exact hFrame
             · rfl

@@ -67,17 +67,37 @@ theorem function_call_no_unwind (ctx : EvalContext) (safe : StaticFunctionErrors
     | (solve | cases run; exact safe.no_unwind ctx target _ _ (by assumption))
     | split at run
 
+/-- The additional guard returns a type error, never an unwind state. -/
+theorem function_call_with_convention_no_unwind (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
+    (held : FuncTyId) (target : FuncId) (sig : FuncTyId) (convention : CallingConv)
+    (exception : Addr) (after : MachineState) :
+    functionCallWithConvention ctx held target sig convention ≠ .error (.unwinding exception after) := by
+  intro run
+  unfold functionCallWithConvention at run
+  cases checked : functionCall ctx held target sig with
+  | error error =>
+    rw [checked] at run
+    cases run
+    exact function_call_no_unwind ctx safe held target sig exception after checked
+  | ok resolved =>
+    rw [checked] at run
+    cases found : ctx.functions resolved with
+    | none => simp only [found] at run; cases run
+    | some callee =>
+      simp only [found] at run
+      split at run <;> cases run
+
 theorem function_arguments_no_unwind (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
     (held : FuncTyId) (target : FuncId) (address : Addr) (sig : FuncTyId)
     (args : List Value) (conv : CallingConv) :
     CallCheckNoUnwind (indirectArguments ctx (.fnDef held target) address sig args conv) := by
   intro state exception after run
-  cases checked : functionCall ctx held target sig with
+  cases checked : functionCallWithConvention ctx held target sig conv with
   | ok id => simp only [indirectArguments,checked] at run; cases run
   | error error =>
     simp only [indirectArguments,checked] at run
     cases run
-    exact function_call_no_unwind ctx safe held target sig exception after checked
+    exact function_call_with_convention_no_unwind ctx safe held target sig conv exception after checked
 
 /-- State-specific FnDef argument preparation consumes actual original checks
 and transports already-minted arguments without modifying the caller state. -/

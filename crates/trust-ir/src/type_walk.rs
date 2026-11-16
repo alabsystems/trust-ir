@@ -66,6 +66,7 @@ impl<X> TyG<X> {
                 | TyG::Array(_, _)
                 | TyG::Enum(_)
                 | TyG::Func(_)
+                | TyG::FnItem(_)
                 | TyG::Set(_, _)
                 | TyG::Sequence(_)
                 | TyG::Record(_)
@@ -184,6 +185,14 @@ impl<X> InstG<X> {
             }
             InstG::GEP { pointee_ty, .. } => root(pointee_ty),
             InstG::PtrData { ptr_ty, .. } => root(ptr_ty),
+            // The pointer type, then the pointee type the validity fact is
+            // about.
+            InstG::BoxDeref {
+                ptr_ty, pointee, ..
+            } => {
+                root(ptr_ty);
+                root(pointee.ty());
+            }
             InstG::PtrMetadata {
                 ptr_ty,
                 metadata_ty,

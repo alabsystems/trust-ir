@@ -21,7 +21,11 @@ open SourceLayout
 private def row : StructDef := { id := ⟨1⟩, name := "Byte", fields := [{ name := "value", ty := .U8, offset := none }], size := none, align := none }
 private def shadow : StructDef := { row with name := "Shadow", fields := [{ name := "flag", ty := .Bool, offset := none }] }
 private def source : Environment := { structs := [shadow,row], types := [some (.Struct ⟨1⟩)] }
-private def context : EvalContext := { EvalContext.empty with structs := fun id => if id.index == 1 then some row else none, types := fun id => if id.index == 0 then some (.Struct ⟨1⟩) else none }
+private def context : EvalContext := { EvalContext.empty with valueSource := FunctionItemPresence.prepare { EvalContext.empty.valueSource.source with structs := [row], types := [some (.Struct ⟨1⟩)] } }
+private def contextWithStructs (rows : List StructDef) : EvalContext :=
+  { context with valueSource := FunctionItemPresence.prepare { context.valueSource.source with structs := rows } }
+private def contextWithTypes (rows : List (Option Ty)) : EvalContext :=
+  { context with valueSource := FunctionItemPresence.prepare { context.valueSource.source with types := rows } }
 private def byte : Plan := .leaf .U8 ⟨1,1⟩
 private def nominal : Plan := .fields (.Struct ⟨1⟩) ⟨1,1⟩ [(0,byte)]
 private def array : Plan := .array (.Array ⟨0⟩ 2) ⟨2,1⟩ 2 nominal
@@ -55,19 +59,19 @@ theorem enumeration_refused (ty : Ty) (layout : MemoryTypeLayout) (info : Enumer
 
 theorem record_refused : sourceReadbackPolicy source context (.fields (.Record ⟨1⟩) ⟨0,1⟩ []) = false := rfl
 
-theorem duplicate_selects_execution_row : selectedStructAgrees source context ⟨1⟩ = true := rfl
+theorem duplicate_selects_execution_row : selectedStructAgrees source context ⟨1⟩ = true := by trustIrReduce
 
-theorem first_duplicate_refused : selectedStructAgrees source { context with structs := fun _ => some shadow } ⟨1⟩ = false := rfl
+theorem first_duplicate_refused : selectedStructAgrees source (contextWithStructs [shadow]) ⟨1⟩ = false := rfl
 
-theorem full_row_metadata_bound : selectedStructAgrees source { context with structs := fun _ => some { row with name := "Renamed" } } ⟨1⟩ = false := rfl
+theorem full_row_metadata_bound : selectedStructAgrees source (contextWithStructs [{ row with name := "Renamed" }]) ⟨1⟩ = false := rfl
 
 theorem absent_nominal_refused : selectedStructAgrees source context ⟨8⟩ = false := rfl
 
-theorem absent_evaluator_row_refused : selectedStructAgrees source { context with structs := fun _ => none } ⟨1⟩ = false := rfl
+theorem absent_evaluator_row_refused : selectedStructAgrees source (contextWithStructs []) ⟨1⟩ = false := rfl
 
-theorem wrong_array_type_refused : sourceReadbackPolicy source { context with types := fun _ => some .Bool } array = false := rfl
+theorem wrong_array_type_refused : sourceReadbackPolicy source (contextWithTypes [some .Bool]) array = false := by trustIrReduce
 
-theorem absent_array_type_refused : sourceReadbackPolicy source { context with types := fun _ => none } array = false := rfl
+theorem absent_array_type_refused : sourceReadbackPolicy source (contextWithTypes []) array = false := rfl
 
 theorem array_count_mismatch_refused : sourceReadbackPolicy source context (.array (.Array ⟨0⟩ 3) ⟨2,1⟩ 2 nominal) = false := rfl
 
@@ -77,7 +81,7 @@ theorem unused_empty_template_accepted : sourceReadbackPolicy source EvalContext
 theorem unsupported_nested_child_refused : sourceReadbackPolicy source context
     (.fields (.Tuple [.F64]) ⟨8,8⟩ [(0,.leaf .F64 ⟨8,8⟩)]) = false := rfl
 
-theorem nested_nominal_policy_accepted : sourceReadbackPolicy source context root = true := rfl
+theorem nested_nominal_policy_accepted : sourceReadbackPolicy source context root = true := by trustIrReduce
 
 private theorem prepared : (prepare source []).query rootTy = .ok root := by
   trustIrCompilerProof {

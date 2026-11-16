@@ -515,12 +515,7 @@ mod tests {
         let value = sc.local(nat.clone());
         let input = sc.local(sf.clone());
         let frame = |state: Expr| projection(1, &nat, &nat, state);
-        let changed = pair(
-            &nat,
-            &nat,
-            Expr::nat_lit(3u64.into()),
-            Expr::nat_lit(9u64.into()),
-        );
+        let changed = pair(&nat, &nat, Expr::nat_lit(3u64), Expr::nat_lit(9u64));
         let result_at = |post: Expr, failed: bool| {
             pair(
                 &sf,
@@ -528,7 +523,7 @@ mod tests {
                 post,
                 apps(
                     if failed { "Except.error" } else { "Except.ok" },
-                    [nat.clone(), nat.clone(), Expr::nat_lit(0u64.into())],
+                    [nat.clone(), nat.clone(), Expr::nat_lit(0u64)],
                 ),
             )
         };

@@ -63,6 +63,7 @@ impl<'a> State<'a> {
                 | Ty::RefMut(_)
                 | Ty::FatPtr(_)
                 | Ty::Func(_)
+                | Ty::FnItem(_)
                 | Ty::Vector(_, _) => {}
                 Ty::Tuple(elements) => work.push(&mut self.stack, Frame::Tail(elements))?,
                 Ty::Array(element, len) => {

@@ -310,6 +310,9 @@ fn rewrite_inst_with(inst: &mut Inst, lookup: &mut impl FnMut(&ValueId) -> Value
                 *coord = lookup(coord);
             }
         }
+        Inst::BoxDeref { operand, .. } => {
+            *operand = lookup(operand);
+        }
         Inst::ExtractField { aggregate, .. } => {
             *aggregate = lookup(aggregate);
         }

@@ -138,6 +138,7 @@ fn leaf_matches(value: &Constant, ty: &Ty, bits: u32) -> bool {
                     _ => false,
                 })
         }
+        (Constant::FnItem(actual), Ty::FnItem(expected)) => actual == expected,
         (Constant::U128(_), Ty::U128) | (Constant::Int(_), Ty::Ptr) => true,
         (Constant::Bytes { data, .. }, Ty::Array(_, count)) => *count == data.len() as u64,
         (Constant::Aggregate(elements), Ty::FatPtr(_)) => {
@@ -163,4 +164,43 @@ fn leaf_matches(value: &Constant, ty: &Ty, bits: u32) -> bool {
         | (Constant::PhantomData, Ty::Unit) => true,
         _ => false,
     }
+}
+
+// Scan only the stored inline source tree; references remain IDs. Returned
+// scratch is explicitly retired by the owning compiler-fact constituent.
+pub(super) fn function_items<O: ExecutionObserver>(
+    root: &Ty,
+    session: &mut ObservedSession<'_, O>,
+    site: ExecutionSite,
+) -> R<Vec<FuncId>> {
+    let mut pending = Vec::new();
+    let mut output = Vec::new();
+    let result: R = (|| {
+        push(&mut pending, root, session, site)?;
+        while let Some(ty) = pending.pop() {
+            admit(session, site, 1, 0)?;
+            match ty {
+                Ty::FnItem(id) => push(&mut output, *id, session, site)?,
+                Ty::Vector(child, _)
+                | Ty::Ref(child)
+                | Ty::RefMut(child)
+                | Ty::PtrConst(child)
+                | Ty::PtrMut(child)
+                | Ty::Rc(child) => push(&mut pending, child.as_ref(), session, site)?,
+                Ty::Tuple(children) => {
+                    for child in children {
+                        push(&mut pending, child, session, site)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    })();
+    retire_vec(&mut pending, session, site);
+    if let Err(error) = result {
+        retire_vec(&mut output, session, site);
+        return Err(error);
+    }
+    Ok(output)
 }

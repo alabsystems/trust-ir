@@ -100,9 +100,15 @@ theorem encode_ordinary_not_uninit (model : ByteModel) (order : FunctionAddressO
     (input : Value) (stored : Image) (encoded : encode model order plan input false = .ok stored) :
     input.isUninit = false := by
   by_cases uninit : input.isUninit = true
-  · cases plan <;> rw [encode] at encoded
-    all_goals simp only [uninit,ite_true,Bool.false_eq_true,ite_false] at encoded
-    all_goals cases encoded
+  · trustIrCompilerProof {
+      cases plan <;> rw [encode] at encoded
+      all_goals simp only [uninit,ite_true,Bool.false_eq_true,ite_false] at encoded
+      all_goals cases encoded
+    } {
+      rw [encode.eq_def] at encoded
+      simp only [uninit,ite_true,Bool.false_eq_true,ite_false] at encoded
+      cases encoded
+    }
   · cases flag : input.isUninit with
     | false => rfl
     | true => exact False.elim (uninit flag)

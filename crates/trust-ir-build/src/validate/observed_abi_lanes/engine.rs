@@ -158,6 +158,13 @@ impl<'a> State<'a> {
                         dataful: *untagged_variant as usize,
                     },
                     Some(EnumTagEncoding::Direct { .. }) | None => Rule::Direct { widest: 0 },
+                    Some(EnumTagEncoding::DirectWithUninhabited { .. }) => {
+                        if !self.direct_storage_fits(layouts, def, w)? {
+                            memo.write(node, Slot::Counted(None), w)?;
+                            return Ok(Action::Return(None));
+                        }
+                        Rule::DirectWithUninhabited { widest: 0 }
+                    }
                 };
                 memo.write(node, Slot::Open, w)?;
                 w.push(

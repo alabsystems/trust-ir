@@ -102,6 +102,10 @@ fn type_head<'a, O: ExecutionObserver>(
             observed_write_u8(buf, 20)?;
             observed_write_func_ty_id(buf, *id)?;
         }
+        TyG::FnItem(id) => {
+            observed_write_u8(buf, 42)?;
+            observed_write_func_id(buf, *id)?;
+        }
         TyG::Ref(inner) => {
             observed_write_u8(buf, 21)?;
             buf.push_value(tasks, TypeTask::Value(inner))?;

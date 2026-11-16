@@ -107,5 +107,60 @@ class AuthorityTests(unittest.TestCase):
         with self.assertRaises(ValueError): AUTH.remote("../clean", "a" * 40)
         with self.assertRaises(ValueError): AUTH.remote("clean", "a" * 39)
 
+    def nested_fixture(self):
+        rev, root, _, replies, original = self.fixture()
+        parent, child = "d" * 40, "e" * 40
+        data = b'[package]\nname = "policy"\nversion = "0.13.0"\n'
+        oid = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+        replies[f"git/trees/{root}"]["tree"].append(
+            {"path": "vendor", "type": "tree", "mode": "040000", "sha": parent})
+        replies[f"git/trees/{parent}"] = {
+            "sha": parent, "truncated": False, "tree": [
+                {"path": "policy", "type": "tree", "mode": "040000", "sha": child}]}
+        replies[f"git/trees/{child}"] = {
+            "sha": child, "truncated": False, "tree": [
+                {"path": "Cargo.toml", "type": "blob", "mode": "100644", "sha": oid}]}
+        replies[f"git/blobs/{oid}"] = {
+            "sha": oid, "size": len(data), "encoding": "base64",
+            "content": base64.encodebytes(data).decode()}
+        return rev, root, parent, child, replies, original, data
+
+    def test_nested_manifest_uses_the_same_commit_and_reuses_only_its_trees(self):
+        rev, root, parent, child, replies, original, data = self.nested_fixture()
+        with patch.object(AUTH, "remote") as remote, patch.object(
+                AUTH, "api", side_effect=lambda repo, p: replies[p]) as api:
+            source = AUTH.ManifestAuthority("ay", rev)
+            self.assertEqual(source.read("vendor/policy/Cargo.toml")[0], data)
+            self.assertEqual(source.read("Cargo.toml")[0], original)
+            self.assertEqual(source.read("vendor/policy/Cargo.toml")[0], data)
+            remote.assert_called_once_with("ay", rev)
+            for oid in (root, parent, child):
+                self.assertEqual(sum(call.args[1] == f"git/trees/{oid}"
+                                     for call in api.call_args_list), 1)
+
+    def test_manifest_path_traversal_and_non_manifest_paths_refuse(self):
+        rev, _, _, replies, _ = self.fixture()
+        with patch.object(AUTH, "remote"), patch.object(AUTH, "api", side_effect=lambda repo, p: replies[p]):
+            source = AUTH.ManifestAuthority("ay", rev)
+            for path in ("../Cargo.toml", "/Cargo.toml", "vendor//Cargo.toml",
+                         "vendor/./Cargo.toml", "vendor/../Cargo.toml",
+                         "vendor\\Cargo.toml", "vendor/README.md", "\x00/Cargo.toml"):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    source.read(path)
+
+    def test_nested_symlink_duplicate_and_incomplete_ancestors_refuse(self):
+        for mutation in ("symlink", "duplicate", "truncated", "wrong_identity", "leaf_mode"):
+            with self.subTest(mutation=mutation):
+                rev, _, parent, child, replies, _, _ = self.nested_fixture()
+                entries = replies[f"git/trees/{parent}"]["tree"]
+                if mutation == "symlink": entries[0]["mode"] = "120000"
+                if mutation == "duplicate": entries.append(dict(entries[0]))
+                if mutation == "truncated": replies[f"git/trees/{parent}"]["truncated"] = True
+                if mutation == "wrong_identity": replies[f"git/trees/{parent}"]["sha"] = "f" * 40
+                if mutation == "leaf_mode": replies[f"git/trees/{child}"]["tree"][0]["mode"] = "120000"
+                with patch.object(AUTH, "remote"), patch.object(AUTH, "api", side_effect=lambda repo, p: replies[p]):
+                    with self.assertRaises(ValueError):
+                        AUTH.ManifestAuthority("ay", rev).read("vendor/policy/Cargo.toml")
+
 
 if __name__ == "__main__": unittest.main()

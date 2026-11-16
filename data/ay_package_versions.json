@@ -1,0 +1,559 @@
+{
+  "packages": [
+    {
+      "manifest": {
+        "git_blob": "d5461dc7afeb3f4fb35ed6fa2f90d23702b22775",
+        "path": "crates/ay/Cargo.toml",
+        "sha256": "772942e85b3685e185d9bbdd7e422f84100843018d585f4df322e0b85d0cbcfd"
+      },
+      "name": "ay",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "dcfaf7af0983b1b526002977e61d1f884c198107",
+        "path": "crates/ay-allsat/Cargo.toml",
+        "sha256": "ff5579f948316e42d143f7852a2c475ef20fc8dc0937982d105224e6703514eb"
+      },
+      "name": "ay-allsat",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "70953e455ceab747c14071c8f4048bec7bcf43d5",
+        "path": "crates/ay-theories/arrays/Cargo.toml",
+        "sha256": "ab667ba47baf8cfc1a2122280dc7f05b34d206bd115302846e2c10e7ba863e7c"
+      },
+      "name": "ay-arrays",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "c1ea3b29ac238986a44f046de59dd8156cd11cdf",
+        "path": "crates/ay-theories/bv/Cargo.toml",
+        "sha256": "8c005668dfa6d8832d61bc7043fb5e73d3192083786eff40777dbc51858e1b06"
+      },
+      "name": "ay-bv",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "ec1c8e083b107d38d8769582e72dc5a4737c14d8",
+        "path": "crates/ay-cdclt/Cargo.toml",
+        "sha256": "52f508aad4f1cc969805c31df02aa8091cef66c0966e0f986210fbe8e0cb4e42"
+      },
+      "name": "ay-cdclt",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "5aa77f5ce97516e8ec76ea201e744b2bee684567",
+        "path": "crates/ay-chc/Cargo.toml",
+        "sha256": "a552dc3e71f62492fbb2a078a87651e85d096f1348f3194fdc7d59373484de03"
+      },
+      "name": "ay-chc",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "8fe0af428b3a9e34a1b8ce85b11135b141d5f562",
+        "path": "crates/ay-core/Cargo.toml",
+        "sha256": "42d6fbae4061cfcd76f96620edbc596dc17d64f7fab5825678870a01a123447f"
+      },
+      "name": "ay-core",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "6bbbb4a822cb837d6fe939d92225e86d34b0eb38",
+        "path": "crates/ay-count/Cargo.toml",
+        "sha256": "18bc88bff45d16b8136d4b8b721fd207ebe92779979f0a5e36574dc5c6692120"
+      },
+      "name": "ay-count",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "25efc6d2303471e8d888fe401bde613ff6e324aa",
+        "path": "crates/ay-theories/diff-logic/Cargo.toml",
+        "sha256": "b6a4f80ccf508548aea17327054df9c855e8d56f83591b5d3c5b06cd7cfee2a4"
+      },
+      "name": "ay-diff-logic",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "efee36e5bfcd1f99263d3534f02016e5cbce7084",
+        "path": "crates/ay-dispatch/Cargo.toml",
+        "sha256": "b543d57d97518270d6f0057dcfd4384464b868d06de0b5a0aca2d15bc465b188"
+      },
+      "name": "ay-dispatch",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "066504417d2f8225c9cd4003807a7ce47303f012",
+        "path": "crates/ay-dpll/Cargo.toml",
+        "sha256": "32a050dce22295d45c420ae0fe187515d5047d36292fb5c041ac951bd9730479"
+      },
+      "name": "ay-dpll",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "5ceccdc3d128b4653c425f4546ed2f696ccc132c",
+        "path": "crates/ay-drat-check/Cargo.toml",
+        "sha256": "13ca08c64c2a38b390dd19e7a2d46b28f6dab7fc89eed5f4ea2cbd96c23f495b"
+      },
+      "name": "ay-drat-check",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "2a6d825ca8b7ee5be7260f663797c8ebde1c1b26",
+        "path": "crates/ay-theories/dt/Cargo.toml",
+        "sha256": "b56b77affff4e1ef36f606028e25154996408e378a8fe5b915ab0a0468c834fe"
+      },
+      "name": "ay-dt",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "15b522a1cd4895dff6b4e695d2caf2c77b50e09f",
+        "path": "crates/ay-theories/euf/Cargo.toml",
+        "sha256": "f174d03e7b92789e6b8431ce5e0e602b1276bd17445bb8b1ae66a05bedf74516"
+      },
+      "name": "ay-euf",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "4975c16a2884ec260dba7a8077ac9c6a02eb1ad8",
+        "path": "crates/ay-theories/fp/Cargo.toml",
+        "sha256": "9a2b2234871bb43750a50b7f990f824a096e53ab9a11aa0a0c16a896e7288b34"
+      },
+      "name": "ay-fp",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "2d327c52ca2db0da28fa7a1d4d80553df116a477",
+        "path": "crates/ay-frontend/Cargo.toml",
+        "sha256": "585d52238cdffbc02a5ae534ac5696951d729db0c5171db3e964a155b81d9bd6"
+      },
+      "name": "ay-frontend",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "9befc98730322de5261aa648b268b44d7fbd9247",
+        "path": "crates/ay-theories/intsat/Cargo.toml",
+        "sha256": "1272c5ca3164c71550aaf37f2a89fdd7b0c66c1ca59ce7add1c54ffc843d5d66"
+      },
+      "name": "ay-intsat",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "f868a4cef45b600c9c8db58bf5ce4e1da4c6a6c2",
+        "path": "crates/ay-jit/Cargo.toml",
+        "sha256": "df1deb8090452aeed91357cfd8d9bdc510ae92e23e44f9fc6fffe99564fb4b84"
+      },
+      "name": "ay-jit",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "b3f10ea77631b2deeca3465aa93067d05699263c",
+        "path": "crates/ay-theories/lia/Cargo.toml",
+        "sha256": "f789c1064de0a487b7ca0e9f8f7c846e56ab0a3c2b52220fe231b3326d2363aa"
+      },
+      "name": "ay-lia",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "65987ad83d8c17489b943dfa5c5af97a0311202e",
+        "path": "crates/ay-theories/lra/Cargo.toml",
+        "sha256": "f8f0986994ef199d83b06beef34e92c4622cf3fc75ab3c339c85ce94d0f14800"
+      },
+      "name": "ay-lra",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "e731ae03b944c101dc0866d36e6aa8be02e4f96a",
+        "path": "crates/ay-theories/map/Cargo.toml",
+        "sha256": "37e06f3f302d67f0f4603d60fead8888085d21d0eda771b8e58726ee689d1bb7"
+      },
+      "name": "ay-map",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "8b0995c8bae0e4661e77c1841c00f1a13ff5d3c4",
+        "path": "crates/ay-milp/Cargo.toml",
+        "sha256": "1139f6565e2a517b4f6b5d20901b144bc98d42509d713e66e0aa826ce6fa5c66"
+      },
+      "name": "ay-milp",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "e6797d24872210542c89868c38349f84d7772040",
+        "path": "crates/ay-model-check/Cargo.toml",
+        "sha256": "bd8ab4842ebdc19d9d8209db6613dcbfaf5c95d6b564843de49ea93436f249d0"
+      },
+      "name": "ay-model-check",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "e676f354c22e14f563a5eca476e471bb3734d27e",
+        "path": "crates/ay-theories/multiset/Cargo.toml",
+        "sha256": "170b935417681241fb1836b0936b562618b54466497b3f15f198f3b56c7658eb"
+      },
+      "name": "ay-multiset",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "e58d78d37688eb2bc317c6eaf3f5f735f4a590eb",
+        "path": "crates/ay-theories/nia/Cargo.toml",
+        "sha256": "d64404e00a1957e84c8cbca75ffec7cbd30601a1236c6561c9cb437fd691d085"
+      },
+      "name": "ay-nia",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "3a03158737b880f917f384d5538ee5f355fe58d7",
+        "path": "crates/ay-theories/nonlinear-common/Cargo.toml",
+        "sha256": "c0907210008885fa95a1348effbbcbd7d24637df6b632695a640cb6035ecb7f1"
+      },
+      "name": "ay-nonlinear-common",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "16b86ddde4d27c0ec1600d68156e3e78c03e2cb3",
+        "path": "crates/ay-theories/nra/Cargo.toml",
+        "sha256": "dc977fc85a3eb10f335ffb6d519f4bbf70c70c4defcb2df4b611c70a6d150ffe"
+      },
+      "name": "ay-nra",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "ad6256b5bc8fa81b3e8e710cca118f9b3d6f4db4",
+        "path": "crates/ay-pb-core/Cargo.toml",
+        "sha256": "c324db7e0757335144323b84d807a238627123c0eef1227ebdd41cd41c09cb98"
+      },
+      "name": "ay-pb-core",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "55d8559f7083bf5e13987fe858e29ecfe5524d3f",
+        "path": "crates/ay-prefetch/Cargo.toml",
+        "sha256": "091dd0568a224e7072149673db1f8a952f4314476812ddc4ddc2440ef47bf515"
+      },
+      "name": "ay-prefetch",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "1822be70218e189ba6f2dd5a5b9ce1b9b8b717bd",
+        "path": "crates/ay-proof/Cargo.toml",
+        "sha256": "35f37ed388e09bc27314b6c94b96153f22e81019d0bcea1c7126e28d98ffd189"
+      },
+      "name": "ay-proof",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "12b05719d8fa24b47b6c375a3b06ceea829d27e9",
+        "path": "crates/ay-proof-common/Cargo.toml",
+        "sha256": "77f195ddec37612f2e4ef784b8bdf4da0ad4d40027a504eabd341cfed5d7917f"
+      },
+      "name": "ay-proof-common",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "8849e32a8b805803fffeecd668ea0f1cb4e6b1d4",
+        "path": "crates/ay-sat/Cargo.toml",
+        "sha256": "fbbd21b9dd40ea05ed6dd131ece39b99ef1adc1eff028e26650cd9ae3a0e0fc7"
+      },
+      "name": "ay-sat",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "b131a72796ff79cd4f0ffdc8d154ad6e24c785d9",
+        "path": "crates/ay-sat-congruence-core/Cargo.toml",
+        "sha256": "b38166e61d7033aa2346050ada12c6d0703783caf8d5d5f582905385933e92ca"
+      },
+      "name": "ay-sat-congruence-core",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "936ca5b5a6529cdb5b674aa95bb464223af06d86",
+        "path": "crates/ay-theories/seq/Cargo.toml",
+        "sha256": "d9425072abc2e0d4f38254cbe06f9854cc6b76b1f359e897a5f761836c415a06"
+      },
+      "name": "ay-seq",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "2aa7708edacf13a21259b42f4f35ff0cba48e089",
+        "path": "crates/ay-theories/set/Cargo.toml",
+        "sha256": "3110aecb2e951c64ef97d89577e90051a7e73060126aa015cb7b2de9a0f2e0e4"
+      },
+      "name": "ay-set",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "2411aa02d2b7c2cd60ec11ebcaa5afb5c1d0c07a",
+        "path": "crates/ay-theories/strings/Cargo.toml",
+        "sha256": "9f1cda7c4a20d340a0e5cb571b7406a3f5414e67355038ce5ffd41b5da8ada41"
+      },
+      "name": "ay-strings",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "006509cd2577c06ff5bccf94bfe856bfb7d81a7d",
+        "path": "crates/ay-sys/Cargo.toml",
+        "sha256": "f4750b2c5cb4f62b6b8e26f6a17f6a05de024aa630764b252441dcfc2f606214"
+      },
+      "name": "ay-sys",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "25854be62dc3e06c2d7a650282b10437c5fe8c00",
+        "path": "crates/ay-translate/Cargo.toml",
+        "sha256": "f1f89950bc692bd04287602ab6f90e0408c4bf4c9cc1ba8428619611189d6088"
+      },
+      "name": "ay-translate",
+      "version": "0.28.2",
+      "version_source": {
+        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "path": "Cargo.toml",
+        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+      }
+    },
+    {
+      "manifest": {
+        "git_blob": "57f13f5a8462267ee9e4d5fd8cd89b47ee5e8e48",
+        "path": "vendor/trust-exec-policy/Cargo.toml",
+        "sha256": "bb4e09144500bb1f50529b2d0298d7f8177d6db81fe2aa0577c1fca2a767c5e6"
+      },
+      "name": "trust-exec-policy",
+      "version": "0.13.0",
+      "version_source": {
+        "git_blob": "57f13f5a8462267ee9e4d5fd8cd89b47ee5e8e48",
+        "path": "vendor/trust-exec-policy/Cargo.toml",
+        "sha256": "bb4e09144500bb1f50529b2d0298d7f8177d6db81fe2aa0577c1fca2a767c5e6"
+      }
+    }
+  ],
+  "repository": "https://github.com/alabsystems/ay.git",
+  "revision": "8bbc43108643d475a81a89b2b4f262e817ee1724",
+  "schema": 1,
+  "workspace_manifest": {
+    "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+    "path": "Cargo.toml",
+    "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+  },
+  "workspace_version": "0.28.2"
+}

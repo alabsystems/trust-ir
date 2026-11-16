@@ -405,9 +405,11 @@ impl<X: crate::level::Extension> fmt::Display for crate::ModuleG<X> {
             writeln!(f)?;
         }
 
-        for func in &self.functions {
+        for (position, function) in self.functions.iter().enumerate() {
             writeln!(f)?;
-            write!(f, "{func}")?;
+            let explicit_id =
+                (u64::from(function.id.index()) != position as u64).then_some(function.id);
+            write_function(f, function, explicit_id)?;
         }
 
         for po in &self.proof_obligations {
@@ -1093,6 +1095,30 @@ fn write_enum_layout(
         )?,
         EnumTagEncoding::Untagged => f.write_str("untagged")?,
         EnumTagEncoding::SingleInhabited { variant } => write!(f, "single inhabited={variant}")?,
+        EnumTagEncoding::DirectWithUninhabited {
+            tag_offset,
+            variants,
+        } => {
+            write!(f, "direct_uninhabited tag@{tag_offset} profiles=[")?;
+            for (index, row) in variants.iter().enumerate() {
+                if index != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(
+                    f,
+                    "{{variant={} size={} align={} fields=[",
+                    row.variant, row.size, row.align
+                )?;
+                for (index, field) in row.fields.iter().enumerate() {
+                    if index != 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{{size={} align={}}}", field.size, field.align)?;
+                }
+                f.write_str("]}")?;
+            }
+            f.write_str("]")?;
+        }
     }
     write!(f, " size={size} align={align} offsets=[")?;
     for (i, offsets) in variant_field_offsets.iter().enumerate() {
@@ -1140,177 +1166,194 @@ fn write_func_ty<X: crate::level::Extension>(
 
 impl<X: crate::level::Extension> fmt::Display for crate::FunctionG<X> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::{CallingConv, Linkage};
-        let ft_idx = self.ty.index();
-        if self.linkage != Linkage::External {
-            write!(f, "{} ", self.linkage)?;
-        }
-        if self.calling_conv != CallingConv::C {
-            write!(f, "{} ", self.calling_conv)?;
-        }
-        write!(f, "fn @")?;
-        write_symbol(f, &self.name)?;
-        write!(f, "(functy.{ft_idx})")?;
-        writeln!(f, " {{")?;
+        write_function(f, self, None)
+    }
+}
 
-        // Producer provenance (v23). Same `; #...` comment-directive syntax as
-        // proofs/attrs, so pre-v23 parsers skip it as an unknown directive
-        // instead of failing. Known producers print their bare token; the
-        // `Other` escape prints as a quoted (Debug-escaped) string.
-        if let Some(producer) = &self.producer {
-            writeln!(f, "    ; {}: {producer}", directive::PRODUCER)?;
-        }
+/// Module text carries a sparse ID explicitly. The standalone legacy display
+/// has no source-position context and retains its established header spelling.
+fn write_function<X: crate::level::Extension>(
+    f: &mut fmt::Formatter<'_>,
+    function: &crate::FunctionG<X>,
+    explicit_id: Option<crate::FuncId>,
+) -> fmt::Result {
+    use crate::{CallingConv, Linkage};
+    let ft_idx = function.ty.index();
+    if function.linkage != Linkage::External {
+        write!(f, "{} ", function.linkage)?;
+    }
+    if function.calling_conv != CallingConv::C {
+        write!(f, "{} ", function.calling_conv)?;
+    }
+    write!(f, "fn @")?;
+    write_symbol(f, &function.name)?;
+    write!(f, "(functy.{ft_idx}")?;
+    if let Some(id) = explicit_id {
+        write!(f, ", func.{}", id.index())?;
+    }
+    write!(f, ")")?;
+    writeln!(f, " {{")?;
 
-        // Codegen license (v41). Printed only when a claim is MADE: an absent
-        // directive decodes to `None` ("no licensing claim"), which is a
-        // different thing from an explicit `ungated`, so the two must not
-        // share a spelling.
-        if let Some(gate) = &self.body_gate {
-            writeln!(f, "    ; {}: {gate}", directive::BODY_GATE)?;
-        }
+    // Producer provenance (v23). Same `; #...` comment-directive syntax as
+    // proofs/attrs, so pre-v23 parsers skip it as an unknown directive
+    // instead of failing. Known producers print their bare token; the
+    // `Other` escape prints as a quoted (Debug-escaped) string.
+    if let Some(producer) = &function.producer {
+        writeln!(f, "    ; {}: {producer}", directive::PRODUCER)?;
+    }
 
-        // Human definition path (v41). Quoted, because a def-path routinely
-        // carries `<`, `>`, `,` and spaces that no bare-token grammar admits.
-        if let Some(path) = &self.display_path {
-            writeln!(f, "    ; {}: {path:?}", directive::DISPLAY_PATH)?;
-        }
+    // Codegen license (v41). Printed only when a claim is MADE: an absent
+    // directive decodes to `None` ("no licensing claim"), which is a
+    // different thing from an explicit `ungated`, so the two must not
+    // share a spelling.
+    if let Some(gate) = &function.body_gate {
+        writeln!(f, "    ; {}: {gate}", directive::BODY_GATE)?;
+    }
 
-        // Separate-compilation contract (v18 / v41), WS4.4 (F-064). One
-        // contiguous block in a FIXED order — `#summary` (proved bit and
-        // formal names), then one line per `requires`, `ensures` and
-        // `decreases` clause, then at most one `#backed-by`, then at most one
-        // `#effects` (v59, WS1.14) — so the parser
-        // can refuse any other arrangement and printer output has one
-        // spelling. Absent summary prints nothing (`None` is not an empty
-        // summary: `Some(FunctionSummary::default())` prints the header line).
-        if let Some(summary) = &self.summary {
-            write_function_summary(f, summary)?;
-        }
+    // Human definition path (v41). Quoted, because a def-path routinely
+    // carries `<`, `>`, `,` and spaces that no bare-token grammar admits.
+    if let Some(path) = &function.display_path {
+        writeln!(f, "    ; {}: {path:?}", directive::DISPLAY_PATH)?;
+    }
 
-        // Symbol attributes (v45, WS3.10). Each is printed only when it
-        // differs from the pre-v45 default, so a legacy function's text is
-        // unchanged. The section is a quoted (Debug-escaped) string — the same
-        // escaping `#display-path` uses, which `read_quoted_string` inverts
-        // exactly — because an arbitrary section name may carry `"`, `\`,
-        // `;` or a newline and must survive the text round trip INJECTIVELY.
-        if let Some(section) = &self.section {
-            writeln!(f, "    ; {}: {section:?}", directive::SECTION)?;
-        }
-        if self.visibility != crate::Visibility::Default {
-            writeln!(f, "    ; {}: {}", directive::VISIBILITY, self.visibility)?;
-        }
-        if self.retained {
-            writeln!(f, "    ; {}: true", directive::RETAINED)?;
-        }
+    // Separate-compilation contract (v18 / v41), WS4.4 (F-064). One
+    // contiguous block in a FIXED order — `#summary` (proved bit and
+    // formal names), then one line per `requires`, `ensures` and
+    // `decreases` clause, then at most one `#backed-by`, then at most one
+    // `#effects` (v59, WS1.14) — so the parser
+    // can refuse any other arrangement and printer output has one
+    // spelling. Absent summary prints nothing (`None` is not an empty
+    // summary: `Some(FunctionSummary::default())` prints the header line).
+    if let Some(summary) = &function.summary {
+        write_function_summary(f, summary)?;
+    }
 
-        // Function-level proof annotations (finding B). Mirrors the
-        // instruction-node `; #proof:` comment syntax; the parser reads these
-        // back into `Function.proofs` before the first block.
-        if !self.proofs.is_empty() {
-            write!(f, "    ; {}:", directive::PROOF)?;
-            for (i, p) in self.proofs.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ",")?;
-                }
-                write!(f, " {p}")?;
+    // Symbol attributes (v45, WS3.10). Each is printed only when it
+    // differs from the pre-v45 default, so a legacy function's text is
+    // unchanged. The section is a quoted (Debug-escaped) string — the same
+    // escaping `#display-path` uses, which `read_quoted_string` inverts
+    // exactly — because an arbitrary section name may carry `"`, `\`,
+    // `;` or a newline and must survive the text round trip INJECTIVELY.
+    if let Some(section) = &function.section {
+        writeln!(f, "    ; {}: {section:?}", directive::SECTION)?;
+    }
+    if function.visibility != crate::Visibility::Default {
+        writeln!(
+            f,
+            "    ; {}: {}",
+            directive::VISIBILITY,
+            function.visibility
+        )?;
+    }
+    if function.retained {
+        writeln!(f, "    ; {}: true", directive::RETAINED)?;
+    }
+
+    // Function-level proof annotations (finding B). Mirrors the
+    // instruction-node `; #proof:` comment syntax; the parser reads these
+    // back into `Function.proofs` before the first block.
+    if !function.proofs.is_empty() {
+        write!(f, "    ; {}:", directive::PROOF)?;
+        for (i, p) in function.proofs.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(f, " {p}")?;
+        }
+        writeln!(f)?;
+    }
+
+    // Function- and parameter-level optimization attributes (finding B).
+    write_func_attrs(f, &function.attrs)?;
+
+    // Debug value names (v32) and the lexical scope tree (v33). Same
+    // `; #...` comment-directive syntax, so older parsers skip them.
+    // Rendered because a debug-info field nobody can SEE is a field nobody
+    // can check: these two lines are how the producer's output gets
+    // inspected against built MIR without a hex dump.
+    if let Some(names) = &function.value_names {
+        write!(f, "    ; {}:", directive::NAMES)?;
+        for (i, (v, n)) in names.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            // Names are arbitrary producer strings, not identifiers.
+            // Debug quoting keeps commas, whitespace, and control
+            // characters from changing the directive grammar.
+            write!(f, " %{}={n:?}", v.index())?;
+        }
+        writeln!(f)?;
+    }
+    if let Some(scopes) = &function.scopes {
+        for (i, sc) in scopes.iter().enumerate() {
+            write!(f, "    ; {}: {i}", directive::SCOPE)?;
+            match sc.parent {
+                None => write!(f, " root")?,
+                Some(p) => write!(f, " parent={p}")?,
+            }
+            if let Some(span) = &sc.span {
+                write!(f, " at {} {} {}", span.file, span.line, span.col)?;
+            }
+            // WS4.19 inlining chain link: the call site, then the callee
+            // display path with the same Debug quoting `#names` uses, so
+            // a path containing whitespace or a quote cannot change the
+            // directive grammar.
+            if let Some(link) = &sc.inlined_at {
+                write!(
+                    f,
+                    " inlined-at {} {} {} callee {:?}",
+                    link.span.file, link.span.line, link.span.col, link.callee
+                )?;
             }
             writeln!(f)?;
         }
-
-        // Function- and parameter-level optimization attributes (finding B).
-        write_func_attrs(f, &self.attrs)?;
-
-        // Debug value names (v32) and the lexical scope tree (v33). Same
-        // `; #...` comment-directive syntax, so older parsers skip them.
-        // Rendered because a debug-info field nobody can SEE is a field nobody
-        // can check: these two lines are how the producer's output gets
-        // inspected against built MIR without a hex dump.
-        if let Some(names) = &self.value_names {
-            write!(f, "    ; {}:", directive::NAMES)?;
-            for (i, (v, n)) in names.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ",")?;
-                }
-                // Names are arbitrary producer strings, not identifiers.
-                // Debug quoting keeps commas, whitespace, and control
-                // characters from changing the directive grammar.
-                write!(f, " %{}={n:?}", v.index())?;
-            }
-            writeln!(f)?;
-        }
-        if let Some(scopes) = &self.scopes {
-            for (i, sc) in scopes.iter().enumerate() {
-                write!(f, "    ; {}: {i}", directive::SCOPE)?;
-                match sc.parent {
-                    None => write!(f, " root")?,
-                    Some(p) => write!(f, " parent={p}")?,
-                }
-                if let Some(span) = &sc.span {
-                    write!(f, " at {} {} {}", span.file, span.line, span.col)?;
-                }
-                // WS4.19 inlining chain link: the call site, then the callee
-                // display path with the same Debug quoting `#names` uses, so
-                // a path containing whitespace or a quote cannot change the
-                // directive grammar.
-                if let Some(link) = &sc.inlined_at {
-                    write!(
-                        f,
-                        " inlined-at {} {} {} callee {:?}",
-                        link.span.file, link.span.line, link.span.col, link.callee
-                    )?;
-                }
-                writeln!(f)?;
-            }
-        }
-        // v35 semantic source-loop/place provenance. Unlike the debug lines
-        // above, these directives carry proof-relevant identity and therefore
-        // round-trip every digest and binding field exactly.
-        if let Some(provenance) = &self.source_provenance {
+    }
+    // v35 semantic source-loop/place provenance. Unlike the debug lines
+    // above, these directives carry proof-relevant identity and therefore
+    // round-trip every digest and binding field exactly.
+    if let Some(provenance) = &function.source_provenance {
+        writeln!(
+            f,
+            "    ; {}: schema {} compiler {:?} semantic {:?} binding {:?}",
+            directive::SOURCE_PROVENANCE,
+            provenance.schema,
+            provenance.compiler_source_digest.to_string(),
+            provenance.semantic_body_digest.to_string(),
+            provenance.binding_digest.to_string(),
+        )?;
+        for source_loop in &provenance.loops {
             writeln!(
                 f,
-                "    ; {}: schema {} compiler {:?} semantic {:?} binding {:?}",
-                directive::SOURCE_PROVENANCE,
-                provenance.schema,
-                provenance.compiler_source_digest.to_string(),
-                provenance.semantic_body_digest.to_string(),
-                provenance.binding_digest.to_string(),
+                "    ; {}: {} hir {} header {}",
+                directive::SOURCE_LOOP,
+                source_loop.source_loop_id,
+                source_loop.hir_local_id,
+                source_loop.header.index(),
             )?;
-            for source_loop in &provenance.loops {
+            for binding in &source_loop.bindings {
+                let (place, index) = match binding.place {
+                    crate::SourcePlace::FunctionParameter { index } => ("function-param", index),
+                    crate::SourcePlace::LoopParameter { index } => ("loop-param", index),
+                };
                 writeln!(
                     f,
-                    "    ; {}: {} hir {} header {}",
-                    directive::SOURCE_LOOP,
+                    "    ; {}: loop {} name {:?} hir {} {} {}",
+                    directive::SOURCE_BINDING,
                     source_loop.source_loop_id,
-                    source_loop.hir_local_id,
-                    source_loop.header.index(),
+                    binding.name,
+                    binding.hir_local_id,
+                    place,
+                    index,
                 )?;
-                for binding in &source_loop.bindings {
-                    let (place, index) = match binding.place {
-                        crate::SourcePlace::FunctionParameter { index } => {
-                            ("function-param", index)
-                        }
-                        crate::SourcePlace::LoopParameter { index } => ("loop-param", index),
-                    };
-                    writeln!(
-                        f,
-                        "    ; {}: loop {} name {:?} hir {} {} {}",
-                        directive::SOURCE_BINDING,
-                        source_loop.source_loop_id,
-                        binding.name,
-                        binding.hir_local_id,
-                        place,
-                        index,
-                    )?;
-                }
             }
         }
-
-        for block in &self.blocks {
-            write!(f, "{block}")?;
-        }
-
-        writeln!(f, "}}")
     }
+
+    for block in &function.blocks {
+        write!(f, "{block}")?;
+    }
+
+    writeln!(f, "}}")
 }
 
 /// WS4.4 (F-064): a [`crate::FunctionSummary`] as the function-header block
@@ -1720,6 +1763,61 @@ fn write_node_refs(f: &mut fmt::Formatter<'_>, nodes: &[u32]) -> fmt::Result {
         write!(f, "${node}")?;
     }
     Ok(())
+}
+
+/// The fact clauses of a `box_deref`, after its operand.
+fn write_box_validity_fact(
+    f: &mut fmt::Formatter<'_>,
+    fact: &crate::box_validity::BoxValidityFact,
+) -> fmt::Result {
+    use crate::box_validity::ValidityEvidence;
+    write!(f, ", site ")?;
+    for byte in fact.site.item {
+        write!(f, "{byte:02x}")?;
+    }
+    write!(
+        f,
+        ":{}, session {} {}, evidence [",
+        fact.site.ordinal,
+        fact.session.judged.name(),
+        fact.session.producing.name()
+    )?;
+    for (i, entry) in fact.evidence.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(
+            f,
+            "{} {}(",
+            entry.conjunct.name(),
+            entry.evidence.kind_name()
+        )?;
+        match &entry.evidence {
+            ValidityEvidence::Premise { root, standing } => {
+                write!(f, "{};", root.name())?;
+                for (j, assumption) in standing.iter().enumerate() {
+                    write!(f, "{}{}", if j > 0 { ", " } else { " " }, assumption.name())?;
+                }
+            }
+            ValidityEvidence::DominatingCheck { align } => {
+                if let Some(align) = align {
+                    write!(f, "align {align}")?;
+                }
+            }
+            ValidityEvidence::Obligation { obligation } => {
+                write!(f, "{}", obligation.index())?;
+            }
+        }
+        write!(f, ")")?;
+    }
+    write!(f, "], not_claimed [")?;
+    for (i, non_claim) in fact.not_claimed.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{}", non_claim.name())?;
+    }
+    write!(f, "]")
 }
 
 fn write_inst<X: crate::level::Extension>(
@@ -2172,6 +2270,25 @@ fn write_inst<X: crate::level::Extension>(
             )?;
             write_value_list(f, coords)?;
             write!(f, "]")
+        }
+        // `box_deref PTR_TY sized POINTEE_TY %op, site HEX:ORDINAL, session
+        // JUDGED PRODUCING, evidence [CONJUNCT EVIDENCE, ..], not_claimed
+        // [NAME, ..]`. Every clause is always written: the fact has no
+        // defaulted part.
+        InstG::BoxDeref {
+            ptr_ty,
+            pointee,
+            operand,
+            fact,
+        } => {
+            write!(
+                f,
+                "box_deref {ptr_ty} {} {} %{}",
+                pointee.shape_name(),
+                pointee.ty(),
+                val(operand)
+            )?;
+            write_box_validity_fact(f, fact)
         }
         InstG::ExtractField {
             ty,
@@ -2767,6 +2884,7 @@ impl<X: crate::level::Extension> fmt::Display for crate::ConstantG<X> {
                 }
             }
             ConstantG::FnDef(func) => write!(f, "fndef<func.{}>", func.index()),
+            ConstantG::FnItem(func) => write!(f, "fnitem<func.{}>", func.index()),
             ConstantG::SymbolAddr { symbol, addend } => {
                 if *addend == 0 {
                     write!(f, "symaddr<{symbol}>")

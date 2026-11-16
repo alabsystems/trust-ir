@@ -247,6 +247,14 @@ fn tensor_contraction_equals_loop_nest() {
     };
     let stdlib = clean_olean::require_pinned_lean_lib_path()
         .unwrap_or_else(|e| panic!("{e} (Clean's reference entry reads Lean {PIN})"));
+    // Record the actual strict resolver result: a still-valid build-time
+    // library can take precedence over the runtime installation root.
+    writeln!(
+        std::io::stderr().lock(),
+        "tensor_contraction_pinned_input: pin={PIN}; clean_stdlib={}",
+        stdlib.display()
+    )
+    .expect("write the selected pinned input");
 
     // No split modules: the base `.olean` is the whole module.
     for module in [MODULE, "SemR"] {

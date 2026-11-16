@@ -34,7 +34,8 @@ private def entry : EvalFunction := fn [] [.I64,.I64]
 private def ctx : EvalContext :=
   { EvalContext.empty with
     maxCallDepth := 8
-    closures := fun c => if c == cid then some {func := sig,captures := [.Ptr]} else none
+    valueSource := FunctionItemPresence.prepare
+      { closures := [{func := sig, captures := [.Ptr]}] }
     funcTys := fun s => if s == sig then some {params := [.I64],returns := [.Ptr],isVararg := false} else none
     functions := fun f => if f == fid 0 then some entry else if f == fid 1 then some target else none }
 private def require (name : String) (ok : Bool) : IO Unit := do
@@ -103,7 +104,9 @@ def main : IO Unit := do
     (returnsPointer (closureExtract ctx .Ptr cid (fid 1) [pointer] 0))
   let constCtx := {ctx with
     functions := fun _ => none
-    closures := fun _ => some {func := sig, captures := [.I64]}}
+    -- This control asks for the actual closure at `cid = 0` only.
+    valueSource := FunctionItemPresence.prepare
+      { closures := [{func := sig, captures := [.I64]}] }}
   require "unused legacy closure target is not invoked by constant construction"
     (match constValueAtWithDefs constCtx
         (.Closure cid) (.closure (fid 1) [.int 24]) with
@@ -124,7 +127,8 @@ def main : IO Unit := do
   require "poison capture rejected"
     (errCode (makeClosureValue ctx cid (fid 1) [.undef .Ptr]) == "ub")
   require "missing closure table refuses"
-    (errCode (makeClosureValue {ctx with closures := fun _ => none} cid (fid 1) [pointer]) == "unsupported.closure_def_table")
+    (errCode (makeClosureValue {ctx with valueSource := FunctionItemPresence.prepare {}}
+      cid (fid 1) [pointer]) == "unsupported.closure_def_table")
   require "missing target rejected"
     (isError (makeClosureValue ctx cid (fid 9) [pointer]))
   require "bodyless target refuses"

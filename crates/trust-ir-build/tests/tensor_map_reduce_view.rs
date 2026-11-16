@@ -38,6 +38,7 @@ use trust_ir_build::{
 };
 
 type Node = TensorMapNode<trust_ir::NoExt>;
+type CaseBody = dyn Fn(&mut FunctionBuilder<'_>, &[ValueId]) -> ValueId;
 use TensorIndexExpr as E;
 
 fn tensor(elem: Ty, rank: u32) -> Ty {
@@ -57,7 +58,7 @@ struct Case {
     name: &'static str,
     params: Vec<Ty>,
     result: Ty,
-    body: Box<dyn Fn(&mut FunctionBuilder<'_>, &[ValueId]) -> ValueId>,
+    body: Box<CaseBody>,
 }
 
 fn case(
@@ -229,14 +230,14 @@ fn reduce_case(
 /// parameters and an optional `i32` fill (the last parameter).
 fn view_case(
     name: &'static str,
-    s: u32,
-    r: u32,
+    ranks: (u32, u32),
     params: usize,
     fill: bool,
     exprs: Vec<TensorIndexExpr>,
     shape: Vec<u32>,
     index: Vec<u32>,
 ) -> Case {
+    let (s, r) = ranks;
     let mut tys = vec![tensor(Ty::I32, s)];
     tys.extend(std::iter::repeat_n(Ty::Usize, params));
     if fill {
@@ -260,8 +261,7 @@ fn view_case(
 fn transpose_case() -> Case {
     view_case(
         "transpose",
-        2,
-        2,
+        (2, 2),
         0,
         false,
         vec![E::SrcExtent(1), E::SrcExtent(0), E::Coord(1), E::Coord(0)],
@@ -275,8 +275,7 @@ fn transpose_case() -> Case {
 fn slice_case() -> Case {
     view_case(
         "slice",
-        2,
-        2,
+        (2, 2),
         2,
         false,
         vec![
@@ -297,8 +296,7 @@ fn slice_case() -> Case {
 fn pad_case() -> Case {
     view_case(
         "pad",
-        1,
-        1,
+        (1, 1),
         0,
         true,
         vec![
@@ -319,8 +317,7 @@ fn pad_case() -> Case {
 fn broadcast_case() -> Case {
     view_case(
         "broadcast",
-        1,
-        2,
+        (1, 2),
         1,
         false,
         vec![E::Param(0), E::SrcExtent(0), E::Coord(1)],
@@ -335,8 +332,7 @@ fn reshape_cases() -> [Case; 2] {
     [
         view_case(
             "reshape_up",
-            1,
-            2,
+            (1, 2),
             0,
             false,
             vec![
@@ -352,8 +348,7 @@ fn reshape_cases() -> [Case; 2] {
         ),
         view_case(
             "reshape_down",
-            2,
-            1,
+            (2, 1),
             0,
             false,
             vec![
@@ -667,8 +662,7 @@ fn the_view_rules_are_each_refused_by_name() {
     assert_rule(
         view_case(
             "v4_count",
-            2,
-            1,
+            (2, 1),
             0,
             false,
             vec![E::Lit(1), E::Coord(0)],
@@ -681,8 +675,7 @@ fn the_view_rules_are_each_refused_by_name() {
     assert_rule(
         view_case(
             "v4_dangling",
-            1,
-            1,
+            (1, 1),
             0,
             false,
             vec![E::Lit(1), E::Coord(0)],
@@ -703,8 +696,7 @@ fn the_view_rules_are_each_refused_by_name() {
         assert_rule(
             view_case(
                 name,
-                1,
-                1,
+                (1, 1),
                 0,
                 false,
                 vec![E::Lit(1), expr, E::Coord(0)],
@@ -719,8 +711,7 @@ fn the_view_rules_are_each_refused_by_name() {
     assert_rule(
         view_case(
             "v6",
-            1,
-            1,
+            (1, 1),
             0,
             false,
             vec![E::Coord(0), E::Lit(1), E::Add(0, 1)],
@@ -1244,7 +1235,7 @@ fn a_reduction_past_usize_is_undefined_behaviour() {
 #[test]
 fn view_preconditions_are_undefined_behaviour_by_message() {
     let one_node = |name, exprs: Vec<TensorIndexExpr>, shape_node: u32| {
-        view_case(name, 1, 1, 0, false, exprs, vec![shape_node], vec![0])
+        view_case(name, (1, 1), 0, false, exprs, vec![shape_node], vec![0])
     };
     let big = u64::MAX;
     let m = module_of(
@@ -1253,8 +1244,7 @@ fn view_preconditions_are_undefined_behaviour_by_message() {
             // Out of range with no fill: [n + 1] from [n].
             view_case(
                 "overrun",
-                1,
-                1,
+                (1, 1),
                 0,
                 false,
                 vec![E::SrcExtent(0), E::Lit(1), E::Add(0, 1), E::Coord(0)],
@@ -1288,8 +1278,7 @@ fn view_preconditions_are_undefined_behaviour_by_message() {
             // [2^32, 2^32]: each extent fits, the count (2^64) does not.
             view_case(
                 "count",
-                1,
-                2,
+                (1, 2),
                 0,
                 false,
                 vec![E::Lit(1 << 32), E::Coord(1)],

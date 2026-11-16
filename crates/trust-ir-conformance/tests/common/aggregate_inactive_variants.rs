@@ -3,7 +3,8 @@
 
 //! An impossible variant needs a source layout, but no executable payload.
 //! Byte mutations select it without constructing an invalid source constant.
-//! Paired dynamic TypeError controls are kept separate from Ok/UB agreement.
+//! Invalid memory images are runtime UB; typed construction and malformed
+//! layout controls are covered separately by the enum validation tests.
 
 use super::{Batch, Comparison, Oracle, Val, Verdict, differential, oracle, semr_target};
 use trust_ir::constant::Constant as C;
@@ -16,7 +17,6 @@ use trust_ir_build::{FunctionBuilder, ModuleBuilder};
 enum Expected {
     Value(Val),
     Ub,
-    TypeError,
 }
 
 #[derive(Clone)]
@@ -252,7 +252,7 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
             format!("nested_tuple_dead_{mutate}"),
             tuple.clone(),
             if mutate {
-                Expected::TypeError
+                Expected::Ub
             } else {
                 Expected::Value(Val::Aggregate(vec![good(42), int(8, 7)]))
             },
@@ -275,7 +275,7 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
             format!("nested_array_dead_{mutate}"),
             array.clone(),
             if mutate {
-                Expected::TypeError
+                Expected::Ub
             } else {
                 Expected::Value(Val::Aggregate(vec![good(42), good(42)]))
             },
@@ -304,19 +304,19 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
                 &mut mb,
                 format!("selected_never_{image}_{strict}"),
                 ty.clone(),
-                Expected::TypeError,
+                Expected::Ub,
                 |fb| mutate_tag(fb, &ty, 1, image, strict),
             ));
         }
     }
-    // This independent error has no Never field and must already be TypeError.
+    // Unknown runtime tags are UB even when every declared variant is inhabited.
     let inhabited_ty = Ty::Enum(inhabited);
     for image in ["padding", "full", "tag_only"] {
         cases.push(add(
             &mut mb,
             format!("inhabited_unknown_tag_{image}"),
             inhabited_ty.clone(),
-            Expected::TypeError,
+            Expected::Ub,
             |fb| mutate_tag(fb, &inhabited_ty, 2, image, false),
         ));
     }
@@ -354,7 +354,7 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
             let expected = if raw == 0 {
                 Expected::Value(Val::Aggregate(vec![int(8, 1)]))
             } else if index == 0 && raw == 1 {
-                Expected::TypeError
+                Expected::Ub
             } else {
                 Expected::Value(good(raw))
             };
@@ -377,7 +377,7 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
             &mut mb,
             format!("all_dead_tag_{raw}"),
             Ty::Enum(all_dead),
-            Expected::TypeError,
+            Expected::Ub,
             |fb| {
                 let pointer = slot(fb);
                 let byte = fb.uconst(Ty::U8, raw);
@@ -400,7 +400,7 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
         &mut mb,
         "zero_byte_dead",
         Ty::Enum(zero_dead),
-        Expected::TypeError,
+        Expected::Ub,
         |fb| {
             let pointer = slot(fb);
             fb.load(Ty::Enum(zero_dead), pointer)
@@ -413,7 +413,7 @@ fn corpus(bits: u32) -> (Module, Vec<Case>) {
             format!("nested_uninhabited_enum_{mutate}"),
             outer.clone(),
             if mutate {
-                Expected::TypeError
+                Expected::Ub
             } else {
                 Expected::Value(good(42))
             },
@@ -445,15 +445,14 @@ fn inhabited_enum_images_ignore_the_impossible_never_variant() {
     let mut modules = Vec::new();
     for bits in [32, 64] {
         let (module, cases) = corpus(bits);
-        let census = cases.iter().fold([0; 3], |mut counts, case| {
+        let census = cases.iter().fold([0; 2], |mut counts, case| {
             counts[match case.expected {
                 Expected::Value(_) => 0,
                 Expected::Ub => 1,
-                Expected::TypeError => 2,
             }] += 1;
             counts
         });
-        assert_eq!(census, [14, 4, 17], "{bits}: exact fixture census");
+        assert_eq!(census, [14, 21], "{bits}: exact fixture census");
         for (codec, module) in codeced(module) {
             let errors = trust_ir_build::validate_module(&module);
             assert!(errors.is_empty(), "{bits}/{codec}: {errors:?}");
@@ -487,7 +486,6 @@ fn inhabited_enum_images_ignore_the_impossible_never_variant() {
     let mut failures = Vec::new();
     let mut ok_agreement = 0;
     let mut ub_agreement = 0;
-    let mut paired_type_error = 0;
     for (report, case) in reports
         .iter()
         .zip(modules.iter().flat_map(|(_, _, cases)| cases))
@@ -514,16 +512,6 @@ fn inhabited_enum_images_ignore_the_impossible_never_variant() {
                 ub_agreement += usize::from(same);
                 same
             }
-            Expected::TypeError => {
-                assert!(
-                    matches!(report.rust, Verdict::TypeError(_)),
-                    "{}: {report:?}",
-                    case.name
-                );
-                let paired = matches!(report.lean, Verdict::TypeError(_));
-                paired_type_error += usize::from(paired);
-                paired
-            }
         };
         if !accepted {
             eprintln!("inactive_never_gap {}: {report:?}", case.name);
@@ -531,7 +519,7 @@ fn inhabited_enum_images_ignore_the_impossible_never_variant() {
         }
     }
     eprintln!(
-        "inactive_never_total={} ok_agreement={ok_agreement} ub_agreement={ub_agreement} paired_type_error={paired_type_error} uncovered={}",
+        "inactive_never_total={} ok_agreement={ok_agreement} ub_agreement={ub_agreement} uncovered={}",
         reports.len(),
         failures.len()
     );

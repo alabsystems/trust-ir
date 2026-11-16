@@ -2834,6 +2834,24 @@ fn fp_inst(
                 lanes.join(",")
             );
         }
+        // The whole fact is part of the instruction's identity: a changed
+        // site, session, evidence entry or non-claim is a changed instruction.
+        Inst::BoxDeref {
+            ptr_ty,
+            pointee,
+            operand,
+            fact,
+        } => {
+            let _ = write!(
+                s,
+                "BoxDeref({},{}:{},{},{:?})",
+                fp_ty(m, ptr_ty),
+                pointee.shape_name(),
+                fp_ty(m, pointee.ty()),
+                vv(operand),
+                fact
+            );
+        }
         Inst::MakeClosure { ty, func, captures } => {
             let lanes = captures.iter().map(vv).collect::<Vec<_>>().join(",");
             let _ = write!(
@@ -3301,6 +3319,7 @@ impl<'a> TypeFingerprint<'a> {
             }
             Ty::Enum(id) => self.enum_ref(*id),
             Ty::Func(id) => self.func_ty_ref(*id),
+            Ty::FnItem(id) => format!("fnitem({})", spec_func_ref(m, *id)),
             Ty::Ref(inner) => format!("&{}", self.ty(inner)),
             Ty::RefMut(inner) => format!("&mut {}", self.ty(inner)),
             Ty::PtrConst(inner) => format!("*const {}", self.ty(inner)),
@@ -3459,6 +3478,12 @@ impl<'a> TypeFingerprint<'a> {
                             }
                             crate::ty::EnumTagEncoding::Direct { tag_offset } => {
                                 let _ = write!(s, "direct@{tag_offset}");
+                            }
+                            crate::ty::EnumTagEncoding::DirectWithUninhabited {
+                                tag_offset,
+                                variants,
+                            } => {
+                                let _ = write!(s, "direct_uninhabited@{tag_offset}:{variants:?}");
                             }
                             crate::ty::EnumTagEncoding::Niche {
                                 untagged_variant,
@@ -3665,6 +3690,7 @@ fn fp_constant(m: &Module, c: &Constant) -> String {
             s.push(')');
             s
         }
+        Constant::FnItem(func) => format!("fnitem({})", spec_func_ref(m, *func)),
         Constant::FnDef(func) => {
             let name = m
                 .functions
@@ -4142,6 +4168,22 @@ fn render_inst_core(m: &Module, inst: &Inst) -> String {
             }
             let lanes: Vec<String> = fields.iter().map(|f| format!("%{}", f.0)).collect();
             let _ = write!(s, " ({})", lanes.join(", "));
+        }
+        Inst::BoxDeref {
+            ptr_ty,
+            pointee,
+            operand,
+            fact,
+        } => {
+            let _ = write!(
+                s,
+                "box_deref {} {} {} %{} {:?}",
+                render_ty(m, ptr_ty),
+                pointee.shape_name(),
+                render_ty(m, pointee.ty()),
+                operand.0,
+                fact
+            );
         }
         Inst::MakeClosure { ty, func, captures } => {
             let lanes = captures

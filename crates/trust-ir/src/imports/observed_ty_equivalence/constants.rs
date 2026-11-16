@@ -48,7 +48,7 @@ pub(super) fn pair<'a, O: ExecutionObserver>(
                 s.push(Task::Constants(ca, cb), w)?;
             }
         }
-        (FnDef(a), FnDef(b)) => s.last = a == b,
+        (FnDef(a), FnDef(b)) | (FnItem(a), FnItem(b)) => s.last = a == b,
         (
             SymbolAddr {
                 symbol: a,
@@ -138,6 +138,7 @@ fn tag(value: &Constant) -> u8 {
         Constant::Record(_) => 11,
         Constant::Closure { .. } => 12,
         Constant::FnDef(_) => 13,
+        Constant::FnItem(_) => 17,
         Constant::SymbolAddr { .. } => 14,
         Constant::PhantomData => 15,
         Constant::Uninit => 16,

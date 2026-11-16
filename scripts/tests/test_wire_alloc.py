@@ -386,6 +386,24 @@ class VersionedIdentitiesAreAClosedWorld(unittest.TestCase):
         gated = '#[cfg(all(test, feature = "serde"))]\nmod t {\n' + "\n".join(source) + "\n}\n"
         self.assertEqual(TOOL.literals_in(TOOL.production_lines(gated)), [])
 
+    def test_native_replay_formula_reference_transport_is_registered_exactly(self) -> None:
+        domain = "trust.native-bundle.replay-formula-ref"
+        identity = versioned(domain, ".", 1)
+        rows = [row for row in TABLES["digest_domain"] if row.fields.get("domain") == domain]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].fields["version"], 1)
+        self.assertEqual(rows[0].fields["status"], "landed")
+        self.assertIn(identity, DOMAINS)
+        self.assertFalse(any(identity.startswith(row.fields["name"])
+            for row in TABLES["scan_exempt"] if row.fields.get("scan") == "literal"))
+        missing = errors_for(drop_lines(REGISTRY_TEXT, f'domain = "{domain}"'))
+        self.assertEqual(len(missing), 1, missing)
+        self.assertIn(f"`{identity}`", missing[0])
+        self.assertIn("no digest_domain row", missing[0])
+        unallocated = versioned(domain, ".", 2)
+        errors = errors_for(REGISTRY_TEXT, domains=[*DOMAINS, unallocated])
+        self.assertTrue(any(f"`{unallocated}`" in error and "no digest_domain row" in error for error in errors), errors)
+
     def test_the_rows_for_the_legacy_spellings_are_load_bearing(self) -> None:
         errors = errors_for(drop_lines(REGISTRY_TEXT, 'domain = "trust-ir.sha256-domain"'))
         self.assertEqual(len(errors), 1, errors)

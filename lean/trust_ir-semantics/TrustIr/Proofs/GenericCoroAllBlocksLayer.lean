@@ -107,9 +107,13 @@ theorem lowerRows_layer_of_transfer (sourceRecurse targetRecurse : Recurse)
   | kept block notSuspend =>
     apply AllBlocksKept.evalLayer_effect sourceRecurse targetRecurse base source target headers effects
       (some sourceTypes) (some targetTypes) depth (cfgOf blocks) (cfgOf (planAllBlocks blocks).rows)
-      pc args strategy block sourceEq targetEq views _ _ state fresh
+      pc args strategy block sourceEq targetEq views _ _ _ state fresh
     · intro row member
       exact resolvedEntry_typesAgree base blocks pc block sourceEq sourceTypes targetTypes preserved row member
+    · exact (resolvedRow_typesAgree base blocks sourceTypes targetTypes preserved
+        (block.terminator, block.terminatorResultDests)
+        (term_mem_graphNodes blocks pc block sourceEq)).mono
+        (fun _ member => trustIrListMemAppendRight _ member)
     · intro result after afterFresh
       exact transfers depth (base.resolveBlock block) strategy result
         (resolvedRow_typesAgree base blocks sourceTypes targetTypes preserved

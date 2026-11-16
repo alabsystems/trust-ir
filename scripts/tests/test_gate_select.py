@@ -46,6 +46,8 @@ FAKE_TOOLCHAIN = {name: "fixture-" + name for name in (
     "targo", "targo-version", "targo-file", "trustc", "trustc-vV", "trustc-file",
     "lake", "lake-file", "lean", "lean-file")}
 
+FAKE_TOOLCHAIN.update({key: "fixture-" + key for key in gs.LEAN_TOOL_KEYS})
+
 
 def real():
     """(units, pin legs, graph) of this repository, computed once."""
@@ -973,6 +975,7 @@ class RecordAndFinish(unittest.TestCase):
 
     def test_actual_runner_scoped_environment_does_not_change_finish_identity(self):
         source = (ROOT / "scripts/ci_gates.sh").read_text()
+        formatter = source[source.index("\nformat_workspace() (") + 1:source.index("\ngate workspace-format")]
         lint = source[source.index("\nlint() {") + 1:source.index("\ngate workspace-clippy")]
         lean = source[source.index("\nlean_exec_differential() {") + 1:source.index("\ngate lean-exec-differential")]
         with tempfile.TemporaryDirectory(prefix="gate-env-") as tmp:
@@ -981,13 +984,19 @@ class RecordAndFinish(unittest.TestCase):
             lake.parent.mkdir(parents=True)
             lake.write_text("#!/bin/sh\nexit 0\n")
             lake.chmod(0o755)
+            launcher = home / "runner-root/scripts/run-targo.sh"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("#!/bin/sh\nset -eu\n"
+                                "test -z \"${CARGO_TARGET_DIR+x}\"\n"
+                                "test \"$*\" = 'fmt --check --all'\n")
+            launcher.chmod(0o755)
             # Run the exact maintained functions with their downstream heavy
             # commands stubbed, checking that both assignments were effective.
             program = ("set -e\n"
-                       "stub_clippy() { test \"$CARGO_TARGET_DIR\" = /test-target/tippy; }\n"
+                       "stub_clippy() { test \"$CARGO_TARGET_DIR\" = /test-target-tippy; test \"$1\" = tippy; }\n"
                        "run_registry() { test \"$TRUST_IR_REQUIRE_LEAN\" = 1; }\n"
-                       "TARGO_RUNNER=stub_clippy\nTARGET_DIR=/test-target\n"
-                       + lint + "\n" + lean + "\nenv\nprintf '\\nGATE-ENV-END\\n'\nlint\nlean_exec_differential\nenv\n")
+                       "TARGO_RUNNER=stub_clippy\nTARGET_DIR=/test-target\nROOT=\"$HOME/runner-root\"\n"
+                       + formatter + "\n" + lint + "\n" + lean + "\nenv\nprintf '\\nGATE-ENV-END\\n'\nformat_workspace\nlint\nlean_exec_differential\nenv\n")
             env = dict(os.environ, HOME=str(home), CARGO_TARGET_DIR="/original-target")
             env.pop("TRUST_IR_REQUIRE_LEAN", None)
             proc = subprocess.run(["bash", "-c", program], env=env, text=True, capture_output=True)
@@ -1429,6 +1438,156 @@ class RecoveryPlan(unittest.TestCase):
                 self.assertEqual((self.cache / "last-toolchain.json").exists(), failure == "none")
                 (self.cache / "last-toolchain.json").unlink(missing_ok=True)
                 self.seed_passes(self.plan())
+
+
+
+class LeanProjectIdentity(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='project-tool-identity-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.tools = self.root / 'tools'
+        self.tools.mkdir()
+        # File identities are unit fixtures; every process launch is mocked.
+        for name in ('lake', 'lean'):
+            path = self.tools / name
+            path.write_bytes(b'\xcf\xfa\xed\xfeunit-fixture-' + name.encode())
+            path.chmod(0o755)
+        for project in gs.LEAN_PROJECTS:
+            package = self.root / project
+            package.mkdir(parents=True)
+            version = '4.8.0' if project.endswith('trust_ir-semantics') else '4.30.0-rc2'
+            (package / 'lean-toolchain').write_text('leanprover/lean4:v' + version + '\n')
+        self.env = dict(os.environ, PATH=str(self.tools), SDKROOT='/ambient/sdk')
+        self.calls = []
+
+    def probe(self, argv, *, cwd, env, **kwargs):
+        self.calls.append((argv, cwd, env))
+        self.assertNotIn('SDKROOT', env)
+        self.assertEqual(Path(cwd).parent, self.root / 'lean')
+        version = (Path(cwd) / 'lean-toolchain').read_text().strip().split(':v')[1]
+        if argv[1:] == ['--version']:
+            output = 'Lake version test (Lean version ' + version + ')'
+        elif argv[1:] == ['env', 'lean', '--version']:
+            output = 'Lean (version ' + version + ', test-host, commit abcdef, Release)'
+        else:
+            self.assertEqual(argv[1:3], ['env', sys.executable])
+            self.assertIn('-I', argv)
+            output = json.dumps({'lake': str(self.tools / 'lake'), 'lean': str(self.tools / 'lean'),
+                                 'sysroot': str(self.tools.parent), 'githash': 'abcdef'})
+        return subprocess.CompletedProcess(argv, 0, output.encode(), b'')
+
+    def selected(self, project='lean/trust_ir-semantics', launcher=None):
+        with mock.patch.object(gs.subprocess, 'run', side_effect=self.probe):
+            return gs.lean_project_identity(self.root, project, launcher or str(self.tools/'lake'), self.env)
+
+    def test_native_project_pin_and_actual_tool_files_are_bound(self):
+        for project in gs.LEAN_PROJECTS:
+            identity = self.selected(project)
+            self.assertEqual(set(identity), set(gs.LEAN_PROJECT_FIELDS))
+            self.assertEqual(identity['launcher-closure'], 'direct native Lake')
+            self.assertFalse(any(value.startswith('unavailable:') or value == 'not found' for value in identity.values()))
+            self.assertIn('sha256', identity['lake-file'])
+            self.assertIn('sha256', identity['lean-file'])
+            self.assertIn(identity['pin'].split(':v')[1], identity['lean-version'])
+
+    def test_indirect_helper_closure_is_not_assumed_bound(self):
+        launcher = self.root / 'dispatcher/lake'
+        launcher.parent.mkdir()
+        launcher.write_text('#!/bin/sh\nexec external-helper "$@"\n')
+        launcher.chmod(0o755)
+        self.assertFalse(launcher.with_name('lean').exists())
+        identity = self.selected(launcher=str(launcher))
+        self.assertEqual(identity['lean'], str((self.tools/'lean').resolve()))
+        self.assertTrue(identity['launcher-closure'].startswith('unavailable:'))
+
+    def test_failed_selection_is_unavailable_even_if_repeatable(self):
+        with mock.patch.object(gs.subprocess, 'run', return_value=subprocess.CompletedProcess([], 17, b'', b'')):
+            identity = gs.lean_project_identity(self.root, gs.LEAN_PROJECTS[0], str(self.tools/'lake'), self.env)
+        self.assertEqual(identity['lake'], 'unavailable: Lake project probe exited 17')
+        self.assertEqual(identity['lean-file'], 'not found')
+
+    def test_relative_launcher_is_not_probed_under_an_ambiguous_runner_cwd(self):
+        with mock.patch.object(gs.subprocess, 'run') as process:
+            identity = gs.lean_project_identity(self.root, gs.LEAN_PROJECTS[0], 'tools/lake', self.env)
+        process.assert_not_called()
+        self.assertTrue(identity['launcher-file'].startswith('unavailable:'))
+
+    def test_relative_selected_paths_use_the_project_directory(self):
+        normal = self.probe
+        def relative(argv, **kwargs):
+            response = normal(argv, **kwargs)
+            if argv[1:3] == ['env', sys.executable]:
+                response.stdout = json.dumps({'lake': '../../tools/lake', 'lean': '../../tools/lean',
+                                              'sysroot': '../..', 'githash': 'abcdef'}).encode()
+            return response
+        with mock.patch.object(gs.subprocess, 'run', side_effect=relative):
+            identity = gs.lean_project_identity(self.root, gs.LEAN_PROJECTS[0], str(self.tools/'lake'), self.env)
+        self.assertEqual(identity['lake'], str((self.tools/'lake').resolve()))
+        self.assertEqual(identity['lean'], str((self.tools/'lean').resolve()))
+        self.assertEqual(identity['sysroot'], str(self.root.resolve()))
+        self.assertEqual(identity['launcher-closure'], 'direct native Lake')
+
+    def test_launcher_changed_during_selection_is_unavailable(self):
+        normal = self.probe
+        def change(argv, **kwargs):
+            response = normal(argv, **kwargs)
+            if argv[1:3] == ['env', sys.executable]:
+                (self.tools/'lake').write_bytes(b'\xcf\xfa\xed\xfenew-launcher')
+            return response
+        with mock.patch.object(gs.subprocess, 'run', side_effect=change):
+            identity = gs.lean_project_identity(self.root, gs.LEAN_PROJECTS[0], str(self.tools/'lake'), self.env)
+        self.assertEqual(identity['launcher-file'], 'unavailable: Lake launcher changed during probes')
+
+    def test_wrong_compiler_version_refuses_exact_pin(self):
+        normal = self.probe
+        def wrong(argv, **kwargs):
+            response = normal(argv, **kwargs)
+            if argv[1:] == ['env', 'lean', '--version']:
+                response.stdout = b'Lean (version 4.8.0, test-host, Release)'
+            return response
+        with mock.patch.object(gs.subprocess, 'run', side_effect=wrong):
+            identity = gs.lean_project_identity(self.root, 'lean/semr', str(self.tools/'lake'), self.env)
+        self.assertTrue(identity['lean-version'].startswith('unavailable:'))
+
+    def test_changed_selected_compiler_bytes_during_probes_refuse(self):
+        normal = self.probe
+        def change(argv, **kwargs):
+            response = normal(argv, **kwargs)
+            if argv[1:] == ['env', 'lean', '--version']:
+                (self.tools/'lean').write_bytes(b'\xcf\xfa\xed\xfenew-fixture')
+            return response
+        with mock.patch.object(gs.subprocess, 'run', side_effect=change):
+            identity = gs.lean_project_identity(self.root, gs.LEAN_PROJECTS[0], str(self.tools/'lake'), self.env)
+        self.assertEqual(identity['lean-file'], 'unavailable: selected executable changed during probes')
+
+    def test_native_semr_selector_has_correct_project_scope(self):
+        env = dict(self.env, TRUST_IR_LAKE='/native/4.8/lake', TRUST_IR_SEMR_LAKE='/native/4.30/lake')
+        def selected(root, project, launcher, child_env):
+            return {field: launcher + ':' + field for field in gs.LEAN_PROJECT_FIELDS}
+        with mock.patch.object(gs, 'lean_project_identity', side_effect=selected) as resolver:
+            gs.toolchain_identity(self.root, env)
+        self.assertEqual([call.args[2] for call in resolver.call_args_list], ['/native/4.8/lake', '/native/4.30/lake', '/native/4.30/lake'])
+
+    def test_semr_tool_changes_affect_differential_and_unknown_units(self):
+        identity = {key:'fixture-'+key for key in gs.RUST_TOOL_KEYS | gs.LEAN_TOOL_KEYS | gs.COMMON_TOOL_KEYS | gs.COMPILER_TOOL_KEYS}
+        first = gs.KeyContext(identity, {}, {}, [], {})
+        changed = dict(identity, **{'lean/semr:lean-file':'changed compiler'})
+        second = gs.KeyContext(changed, {}, {}, [], {})
+        for name in ('lean-proofs','validator-fail-closed','enforcement-links'):
+            self.assertEqual(gs.execution_binding(name, first), gs.execution_binding(name, second), name)
+        for name in ('lean-exec-differential','trust-default-authority','unknown'):
+            self.assertNotEqual(gs.execution_binding(name, first), gs.execution_binding(name, second), name)
+        del changed['lean/semr-memory:lean-file']
+        missing = gs.KeyContext(changed, {}, {}, [], {})
+        self.assertTrue(gs.execution_binding('lean-proofs', missing)['cacheable'])
+        self.assertFalse(gs.execution_binding('lean-exec-differential', missing)['cacheable'])
+
+    def test_locator_matches_path_fallback_and_explicit_precedence(self):
+        env = dict(self.env, HOME=str(self.root / 'absent-home'))
+        self.assertEqual(gs.find_lake(env), str(self.tools/'lake'))
+        env['TRUST_IR_LAKE']='/explicit/missing/lake'
+        self.assertEqual(gs.find_lake(env), '/explicit/missing/lake')
 
 
 if __name__ == "__main__":

@@ -171,30 +171,55 @@ private theorem abi_exit (abi : Option SignatureAbi) :
   · intro state valid; exact True.intro
   · exact pure_exit _
 
+/-- The compiled original guard distributes its continuation into both
+branches. Its refusal and its actual ABI/body continuation are both covered. -/
+private theorem header_then_exit (header : FunctionHeader) (callee : EvalFunction)
+    (next : Sem (List Value)) (safe : FrameActionValid (fun _ _ => True) next) :
+    FrameActionValid (fun _ _ => True)
+      (if !(header.matches callee) then do
+        let _ ← (Sem.throwTypeError "SeqMap: original header does not match executable function metadata" : Sem Unit)
+        next
+      else do
+        let _ ← pure ()
+        next) := by
+  rw [HistoryEffects.conditional_property_iff (FrameActionValid (fun _ _ => True))]
+  constructor
+  · intro selected state valid
+    exact True.intro
+  · intro selected state valid
+    exact safe state valid
+
 /-- Lazy function errors and real executable lookup, after the cell store. -/
 theorem seqmap_invoke_frame_exit (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
     (header : FunctionHeader) (id : FuncId) (invoke : EvalFunction → Value → Sem (List Value))
     (callback : ∀ callee, ctx.functions id = some callee → ∀ pointer, MintedValue 0 pointer →
       FrameActionValid (fun _ _ => True) (invoke callee pointer)) (pointer : Value) (pointerMinted : MintedValue 0 pointer) :
     FrameActionValid (fun _ _ => True) (seqMapInvoke ctx header id invoke pointer) := by
-  unfold seqMapInvoke
+  intro state valid
+  dsimp only [seqMapInvoke, Sem.run, StateT.run, StateT.bind, StateT.pure]
   cases failure : ctx.functionErrors id with
-  | some error => simp only [failure]; exact throw_exit error (safe id error failure)
+  | some error =>
+    simp only [failure]
+    exact throw_exit error (safe id error failure) state valid
   | none =>
-    simp only [failure,pure_bind]
+    simp only [failure]
     unfold EvalContext.lookupDirectCallee
     cases found : ctx.functions id with
     | none =>
-      cases ctx.declared id <;> intro state valid <;> exact True.intro
+      cases ctx.declared id <;> exact True.intro
     | some callee =>
-      simp only [found,pure_bind]
-      split
-      · intro state valid; exact True.intro
-      · intro state valid
-        apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state (abi_exit _ state valid)
-        intro unit state valid _
-        cases unit
-        exact callback callee found pointer pointerMinted state valid
+      simp only [found]
+      change FrameActionExit (fun _ _ => True) state (Sem.run (do
+        if !(header.matches callee) then
+          Sem.throwTypeError "SeqMap: original header does not match executable function metadata"
+        requireUntypedAbi callee.body.abi
+        invoke callee pointer) state)
+      apply header_then_exit header callee _ ?_ state valid
+      intro state valid
+      apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state (abi_exit _ state valid)
+      intro unit state valid _
+      cases unit
+      exact callback callee found pointer pointerMinted state valid
 
 theorem seqmap_apply_frame_exit (ctx : EvalContext) (safe : StaticFunctionErrors ctx)
     (memory : MemoryContextErrors ctx) (inst : Inst) (header : FunctionHeader) (id : FuncId) (ty : Ty)

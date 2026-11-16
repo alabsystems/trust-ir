@@ -31,6 +31,10 @@ impl<'a> State<'a> {
         let mut names = None;
         let types = match (item.constant, item.ty) {
             (Constant::Uninit, _) => return Ok(None),
+            (Constant::FnItem(actual), Ty::FnItem(expected)) if actual == expected => {
+                self.function_item(symbols, *expected, work)?;
+                return Ok(None);
+            }
             (Constant::FnDef(target), Ty::Func(signature)) => {
                 self.function(symbols, *target, *signature, work)?;
                 return Ok(None);

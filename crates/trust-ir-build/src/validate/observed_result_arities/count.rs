@@ -58,6 +58,7 @@ pub(super) fn expected<O: ExecutionObserver>(
         | Inst::AtomicRMW { .. }
         | Inst::MakeAggregate { .. }
         | Inst::MakeClosure { .. }
+        | Inst::BoxDeref { .. }
         | Inst::ArraySplat { .. }
         | Inst::TensorContract { .. }
         | Inst::TensorMap { .. }

@@ -3,7 +3,7 @@
   "upstream": "https://github.com/minirust/minirust",
   "revision": "e8666821f7ee06282199e126a623679f8df85a36",
   "translation": "lean/semr/MiniRust.lean",
-  "translation_sha256": "3bf00652679675fd80e304a36766b5e2f7f200949f99c79a76fb742fe388e0e5",
+  "translation_sha256": "0de8e8aa1c30f277e4a2bca00b44696d5cf803fffc081767e067d5f713ecef51",
   "scope": "Generated MiniRust operator slice follows the upstream revision marker; hand-authored Specr prelude is maintained by Trust. License texts are exact upstream blobs.",
   "license_files": {
     "LICENSES/MiniRust-MIT.txt": {

@@ -1507,3 +1507,7 @@ fn a_lent_memo_keeps_its_verdicts_until_the_signature_table_moves() {
     assert_eq!(table.stats().reach_nodes, 0);
     assert_eq!(table.stats().nodes, 0);
 }
+
+// Storage policy is a distinct epoch; preserve every original seeded query.
+#[path = "by_value_reach_differential/storage_epoch.rs"]
+mod storage_epoch;

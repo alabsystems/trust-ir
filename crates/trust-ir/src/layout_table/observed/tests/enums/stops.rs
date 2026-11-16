@@ -5,7 +5,12 @@ use super::*;
 
 #[test]
 fn every_enum_field_descriptor_inhabit_and_retirement_callback_is_terminal() {
-    for module in [direct(), niche_graph()] {
+    for module in [
+        direct(),
+        niche_graph(),
+        single_reference_fixture(),
+        uninhabited_direct(),
+    ] {
         let mut measured = Observer::default();
         run(&module, &mut measured).unwrap().unwrap();
         for stop_at in 1..=measured.events.len() {
@@ -40,6 +45,49 @@ fn every_enum_field_descriptor_inhabit_and_retirement_callback_is_terminal() {
 #[test]
 fn enum_requested_bytes_and_work_accumulate_in_the_same_session() {
     let module = niche_graph();
+    let mut measured = Observer::default();
+    run(&module, &mut measured).unwrap().unwrap();
+    for copying in [false, true] {
+        let mut observer = if copying {
+            Observer {
+                byte_limit: Some(measured.bytes),
+                ..Observer::default()
+            }
+        } else {
+            Observer {
+                work_limit: Some(measured.work),
+                ..Observer::default()
+            }
+        };
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        let table = LayoutTable::new_observed(&module, &mut session, site()).unwrap();
+        let first = table
+            .enum_layout_observed(EnumId::new(7), &mut session, site())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *first,
+            *LayoutTable::new(&module)
+                .enum_layout(EnumId::new(7))
+                .unwrap()
+        );
+        assert_eq!(
+            table
+                .enum_layout_observed(EnumId::new(7), &mut session, site())
+                .unwrap_err(),
+            ObservedValueError::AdmissionRefused
+        );
+        assert_eq!(
+            session.first_refusal().unwrap().cause,
+            if copying { "bytes" } else { "work" }
+        );
+        assert_eq!(session.remaining_fuel(), InterpretOptions::default().fuel);
+    }
+}
+
+#[test]
+fn direct_profile_requested_bytes_and_work_accumulate_in_the_same_session() {
+    let module = uninhabited_direct();
     let mut measured = Observer::default();
     run(&module, &mut measured).unwrap().unwrap();
     for copying in [false, true] {
@@ -212,5 +260,48 @@ fn inhabited_cycle_false_answer_has_interior_stops_and_cumulative_allowances() {
             session.first_refusal().unwrap().cause,
             if copying { "bytes" } else { "work" }
         );
+    }
+}
+
+#[test]
+fn single_inhabited_requested_bytes_and_work_accumulate_in_the_same_session() {
+    let module = single_reference_fixture();
+    let mut measured = Observer::default();
+    run(&module, &mut measured).unwrap().unwrap();
+    for copying in [false, true] {
+        let mut observer = if copying {
+            Observer {
+                byte_limit: Some(measured.bytes),
+                ..Observer::default()
+            }
+        } else {
+            Observer {
+                work_limit: Some(measured.work),
+                ..Observer::default()
+            }
+        };
+        let mut session = ObservedSession::new(InterpretOptions::default(), &mut observer);
+        let table = LayoutTable::new_observed(&module, &mut session, site()).unwrap();
+        let first = table
+            .enum_layout_observed(EnumId::new(7), &mut session, site())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *first,
+            *LayoutTable::new(&module)
+                .enum_layout(EnumId::new(7))
+                .unwrap()
+        );
+        assert_eq!(
+            table
+                .enum_layout_observed(EnumId::new(7), &mut session, site())
+                .unwrap_err(),
+            ObservedValueError::AdmissionRefused
+        );
+        assert_eq!(
+            session.first_refusal().unwrap().cause,
+            if copying { "bytes" } else { "work" }
+        );
+        assert_eq!(session.remaining_fuel(), InterpretOptions::default().fuel);
     }
 }

@@ -74,6 +74,26 @@ pub(super) fn encodings() -> Vec<EnumTagEncoding> {
         },
         EnumTagEncoding::Untagged,
         EnumTagEncoding::SingleInhabited { variant: u32::MAX },
+        EnumTagEncoding::DirectWithUninhabited {
+            tag_offset: u64::MAX,
+            variants: vec![
+                crate::UninhabitedVariantLayout {
+                    variant: u32::MAX,
+                    size: 0,
+                    align: u64::MAX,
+                    fields: vec![crate::FieldStorageLayout {
+                        size: u64::MAX,
+                        align: 0,
+                    }],
+                },
+                crate::UninhabitedVariantLayout {
+                    variant: 0,
+                    size: u64::MAX,
+                    align: 0,
+                    fields: vec![],
+                },
+            ],
+        },
     ]
 }
 pub(super) fn enum_shape(encoding: Option<EnumTagEncoding>) -> EnumLayoutShape {
@@ -128,6 +148,20 @@ pub(super) fn expected_enum_work(shape: &EnumLayoutShape) -> Vec<usize> {
             }
             EnumTagEncoding::Untagged => out.push(1),
             EnumTagEncoding::SingleInhabited { variant: _ } => out.push(size_of::<u32>() + 1),
+            EnumTagEncoding::DirectWithUninhabited { variants, .. } => {
+                out.push(size_of::<u64>() + 1);
+                for row in variants.iter().rev() {
+                    out.push(size_of::<Option<crate::UninhabitedVariantLayout>>() + 1);
+                    out.push(size_of::<u32>() + 1);
+                    out.extend([size_of::<u64>() + 1; 2]);
+                    scalar_work::<crate::FieldStorageLayout>(row.fields.len(), &mut out);
+                }
+                out.extend([
+                    size_of::<Option<crate::UninhabitedVariantLayout>>() + 1,
+                    size_of::<Vec<crate::UninhabitedVariantLayout>>() + 1,
+                    0,
+                ]);
+            }
         }
         out.extend([size_of::<u64>() + 1; 2]);
         for row in descriptor.variant_field_offsets.iter().rev() {

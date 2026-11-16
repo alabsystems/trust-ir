@@ -187,10 +187,12 @@ theorem SemPrefix.closureTermWithContext (ctx : EvalContext) (depth : Nat)
   | CallIndirect valueId sig argIds conv =>
     simp only [TrustIr.closureTermWithContext]
     refine SemPrefix.seq (SemPrefix.refl _) (fun value => ?_)
+    refine SemPrefix.seq (SemPrefix.refl _) (fun _ => ?_)
     cases value <;> first | exact h | exact SemPrefix.refl _
   | InvokeIndirect valueId sig argIds conv normalDest normalArgs unwindDest =>
     simp only [TrustIr.closureTermWithContext]
     refine SemPrefix.seq (SemPrefix.refl _) (fun value => ?_)
+    refine SemPrefix.seq (SemPrefix.refl _) (fun _ => ?_)
     cases value <;> first | exact h | exact SemPrefix.refl _
   | _ => exact h
 

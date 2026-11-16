@@ -130,7 +130,7 @@ impl NativeVerificationBundle {
         digest(
             session,
             site,
-            "trust_ir.native.verification.bundle.v8",
+            "trust_ir.native.verification.bundle.v9",
             |out| {
                 write_u32(out, self.schema_version)?;
                 write_bundle_producer(out, self.producer)?;

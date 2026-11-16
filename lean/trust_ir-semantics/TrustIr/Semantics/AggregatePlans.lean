@@ -6,20 +6,24 @@ import TrustIr.State.ByteImageTraversal
 namespace TrustIr.AggregateMemory
 open SourceLayout
 
-/-- A finite source-derived image tree. Array counts do not expand the plan. -/
+/-- A finite source-derived image tree. Array counts do not expand the plan.
+    Low-level image operations presuppose a plan returned by the authentic
+    source Service; constructing a Plan manually grants no module admission. -/
 inductive Plan where
   | leaf (ty : Ty) (layout : MemoryTypeLayout)
   | fields (ty : Ty) (layout : MemoryTypeLayout) (fields : List (Nat × Plan))
   | array (ty : Ty) (layout : MemoryTypeLayout) (count : Nat) (element : Plan)
   | enumeration (ty : Ty) (layout : MemoryTypeLayout) (info : Enumeration)
       (variants : List (Option (List (Nat × Plan))))
+  | fnItem (target : FuncId) (layout : MemoryTypeLayout)
 
 def Plan.ty : Plan → Ty
   | .leaf ty _ | .fields ty _ _ | .array ty _ _ _ | .enumeration ty _ _ _ => ty
+  | .fnItem target _ => .FnItem target
 
 def Plan.layout : Plan → MemoryTypeLayout
   | .leaf _ layout | .fields _ layout _ | .array _ layout _ _
-  | .enumeration _ layout _ _ => layout
+  | .enumeration _ layout _ _ | .fnItem _ layout => layout
 
 /-- The exact field types supplied by the actual tuple/struct compiler branch. -/
 def Plan.fieldInputTypes (ty : Ty) (value : Summary) : List Ty :=
@@ -78,7 +82,7 @@ theorem VariantExtents.live {first : List Field} {fields : List (Nat × Plan)}
 
 /-- Exactly the source types dispatched to the compiler's leaf branch. -/
 def Plan.LeafType : Ty → Prop
-  | .Array _ _ | .Struct _ | .Tuple _ | .Enum _ => False
+  | .Array _ _ | .Struct _ | .Tuple _ | .Enum _ | .FnItem _ => False
   | _ => True
 
 /-- Exactly the source types dispatched to the compiler's field-list branch. -/
@@ -97,6 +101,7 @@ def Plan.SourceShape (ty : Ty) (plan : Plan) : Prop :=
   | .Struct id => ∃ layout fields, plan = .fields (.Struct id) layout fields
   | .Tuple types => ∃ layout fields, plan = .fields (.Tuple types) layout fields
   | .Enum id => ∃ layout info variants, plan = .enumeration (.Enum id) layout info variants
+  | .FnItem target => ∃ layout, plan = .fnItem target layout
   | _ => ∃ layout, plan = .leaf ty layout
 
 /- The plan retains the actual typed summary used for enum metadata.
@@ -132,6 +137,10 @@ mutual
           (info.variants.map (fun fields => fields.map (·.offset))) info.uninhabited variants)
         (sizes : VariantExtents info.variants variants) :
         Plan.Origin resolves valid (.Enum id) (.enumeration (.Enum id) layout info variants)
+    | fnItem (target : FuncId) (layout : MemoryTypeLayout)
+        (value : Summary) (summary : valid (.FnItem target) value)
+        (extent : layout.size = value.size ∧ value.align = some layout.alignment) :
+        Plan.Origin resolves valid (.FnItem target) (.fnItem target layout)
   inductive VariantOrigins (resolves : TyId → Ty → Prop) (valid : Ty → Summary → Prop) :
       List Bool → List (Option (List (Nat × Plan))) → Prop where
     | nil : VariantOrigins resolves valid [] []
@@ -163,6 +172,19 @@ theorem Plan.Origin.source_shape {resolves : TyId → Ty → Prop}
   | array id layout count element child binding value summary extent => exact ⟨layout,element,rfl⟩
   | enumeration id layout info variants value summary present extent children bindings sizes =>
     exact ⟨layout,info,variants,rfl⟩
+  | fnItem target layout value summary extent => exact ⟨layout,rfl⟩
+
+/-- A nominal item plan retains its exact queried type and source summary;
+an ordinary scalar leaf cannot stand in for the dedicated item constructor. -/
+theorem Plan.Origin.fnItem_view {resolves : TyId → Ty → Prop}
+    {valid : Ty → Summary → Prop} {target : FuncId} {plan : Plan}
+    (origin : Plan.Origin resolves valid (.FnItem target) plan) :
+    ∃ layout value, plan = .fnItem target layout ∧ valid (.FnItem target) value ∧
+      layout.size = value.size ∧ value.align = some layout.alignment := by
+  cases origin with
+  | leaf ty layout kind value summary extent => exact False.elim kind
+  | fields ty layout fields kind children value summary extent bindings metadata sizes => exact False.elim kind
+  | fnItem target layout value summary extent => exact ⟨layout,value,rfl,summary,extent⟩
 
 /-- An array origin retains the actual source array constructor and its count. -/
 theorem Plan.Origin.array_type {resolves : TyId → Ty → Prop} {valid : Ty → Summary → Prop} {ty : Ty}
@@ -198,27 +220,50 @@ theorem Plan.Origin.array_binding_view {resolves : TyId → Ty → Prop}
   exact ⟨_,rfl,rfl,by assumption,by assumption,_,by assumption,
     (by assumption : _ ∧ _).1,(by assumption : _ ∧ _).2⟩
 
-private def layoutError (error : SourceLayout.Error) : SemError :=
+/-- Plan compilation has only static source/layout refusals. Runtime errors
+and unwind worlds cannot inhabit either compiler cache. -/
+private inductive CompilerLayoutFeature where
+  | layout
+
+private inductive CompilerError where
+  | typeError (message : String)
+  | unsupported (feature : CompilerLayoutFeature) (message : String)
+
+private def CompilerError.toSemError : CompilerError → SemError
+  | .typeError message => .typeError message
+  | .unsupported .layout message => .unsupported .layout message
+
+private def semanticResult {α : Type} : Except CompilerError α → Except SemError α
+  | .ok value => .ok value
+  | .error failure => .error failure.toSemError
+
+private theorem semanticResult_ok {α : Type} (result : Except CompilerError α) (value : α)
+    (run : semanticResult result = .ok value) : result = .ok value := by
+  cases result with
+  | error failure => cases run
+  | ok actual => cases run; rfl
+
+private def layoutError (error : SourceLayout.Error) : CompilerError :=
   match error with
   | .unsupported _ => .unsupported .layout s!"memory: {repr error}"
   | _ => .typeError s!"memory layout: {repr error}"
 
-private abbrev PlanCache := NatIndexTree (List (Ty × Except SemError Plan))
-private abbrev SummaryCache := NatIndexTree (List (Ty × Except SemError Summary))
+private abbrev PlanCache := NatIndexTree (List (Ty × Except CompilerError Plan))
+private abbrev SummaryCache := NatIndexTree (List (Ty × Except CompilerError Summary))
 
-private def SummaryCache.findType (cache : SummaryCache) (ty : Ty) : Option (Except SemError Summary) :=
+private def SummaryCache.findType (cache : SummaryCache) (ty : Ty) : Option (Except CompilerError Summary) :=
   ((cache.find (typeBucket ty)).getD []).find? (fun row => closureTyEq row.1 ty) |>.map (·.2)
 
 private def SummaryCache.insertType (cache : SummaryCache) (ty : Ty)
-    (result : Except SemError Summary) : SummaryCache :=
+    (result : Except CompilerError Summary) : SummaryCache :=
   let bucket := typeBucket ty
   cache.insert bucket ((ty, result) :: (cache.find bucket).getD [])
 
-private def PlanCache.findType (cache : PlanCache) (ty : Ty) : Option (Except SemError Plan) :=
+private def PlanCache.findType (cache : PlanCache) (ty : Ty) : Option (Except CompilerError Plan) :=
   ((cache.find (typeBucket ty)).getD []).find? (fun row => closureTyEq row.1 ty) |>.map (·.2)
 
 private def PlanCache.insertType (cache : PlanCache) (ty : Ty)
-    (result : Except SemError Plan) : PlanCache :=
+    (result : Except CompilerError Plan) : PlanCache :=
   let bucket := typeBucket ty
   cache.insert bucket ((ty, result) :: (cache.find bucket).getD [])
 
@@ -227,7 +272,7 @@ private structure Compiler where
   cache : PlanCache := .empty
   layouts : SummaryCache := .empty
 
-private abbrev Compile := ExceptT SemError (StateM Compiler)
+private abbrev Compile := ExceptT CompilerError (StateM Compiler)
 
 private def summary (ty : Ty) : Compile Summary := do
   let state ← get
@@ -242,15 +287,30 @@ private def summary (ty : Ty) : Compile Summary := do
     set { state with source := next, layouts := state.layouts.insertType ty (.ok value) }
     pure value
 
+/-- Exact cache and source-query transitions for staged kernel proofs. -/
+theorem summary_eq (ty : Ty) :
+    summary ty = (do
+      let state ← get
+      if let some result := state.layouts.findType ty then
+        match result with | .ok value => return value | .error error => throw error
+      match state.source.query .execution ty with
+      | .error error =>
+        let error := layoutError error
+        set { state with layouts := state.layouts.insertType ty (.error error) }
+        throw error
+      | .ok (value, next) =>
+        set { state with source := next, layouts := state.layouts.insertType ty (.ok value) }
+        pure value) := rfl
+
 /-- A nominal edge consumes its actual finite source position, never fuel. -/
 private def descend (available : NatIndexTree Unit) (key : Nat) :
-    Except SemError { rest : NatIndexTree Unit // Available.size rest < Available.size available } :=
+    Except CompilerError { rest : NatIndexTree Unit // Available.size rest < Available.size available } :=
   match present : available.find key with
   | none => .error (.typeError "memory layout: by-value source cycle")
   | some _ => .ok ⟨Available.erase available key, Available.erase_size_lt available key
       (by rw [present]; rfl)⟩
 
-private def fromExcept {α : Type} (result : Except SemError α) : Compile α :=
+private def fromExcept {α : Type} (result : Except CompilerError α) : Compile α :=
   match result with | .ok value => pure value | .error error => throw error
 
 mutual
@@ -264,6 +324,9 @@ mutual
     let layout : MemoryTypeLayout := { size := value.size, alignment }
     let index := initial.source.index
     let plan ← match ty with
+      -- `summary` above has already resolved the one actual function header
+      -- and its signature. A pointer-address table is not a substitute.
+      | .FnItem target => pure (.fnItem target layout)
       | .Array id count => do
         let smaller ← fromExcept (descend available id.index)
         let element ← match ((trustIrArrayGet? index.typeRows id.index)).join with
@@ -328,12 +391,12 @@ mutual
   termination_by (Available.size available, sizeOf types)
 end
 
-private def CacheErrors {α : Type} (error : SemError → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) : Prop :=
+private def CacheErrors {α : Type} (error : CompilerError → Prop)
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) : Prop :=
   ∀ key rows, cache.find key = some rows → ∀ row ∈ rows, ByteImage.BlockResult (fun _ => True) error row.2
 
-private theorem cache_empty_errors {α : Type} (error : SemError → Prop) :
-    CacheErrors error (NatIndexTree.empty : NatIndexTree (List (Ty × Except SemError α))) := by
+private theorem cache_empty_errors {α : Type} (error : CompilerError → Prop) :
+    CacheErrors error (NatIndexTree.empty : NatIndexTree (List (Ty × Except CompilerError α))) := by
   intro key rows found
   cases found
 
@@ -347,16 +410,16 @@ private theorem find_row_mem {α : Type} (test : α → Bool) (rows : List α) (
     · exact List.mem_cons_of_mem _ (ih found)
     · cases found; exact (trustIrListMemConsSelf _ _)
 
-private theorem cache_rows_errors {α : Type} (error : SemError → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) (safe : CacheErrors error cache) (key : Nat) :
+private theorem cache_rows_errors {α : Type} (error : CompilerError → Prop)
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) (safe : CacheErrors error cache) (key : Nat) :
     ∀ row ∈ (cache.find key).getD [], ByteImage.BlockResult (fun _ => True) error row.2 := by
   cases found : cache.find key with
   | none => intro row member; cases member
   | some rows => exact safe key rows found
 
-private theorem cache_find_errors {α : Type} (error : SemError → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) (safe : CacheErrors error cache)
-    (ty : Ty) (result : Except SemError α)
+private theorem cache_find_errors {α : Type} (error : CompilerError → Prop)
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) (safe : CacheErrors error cache)
+    (ty : Ty) (result : Except CompilerError α)
     (found : (((cache.find (typeBucket ty)).getD []).find? (fun row => closureTyEq row.1 ty)).map (·.2) = some result) :
     ByteImage.BlockResult (fun _ => True) error result := by
   cases selected : ((cache.find (typeBucket ty)).getD []).find? (fun row => closureTyEq row.1 ty) with
@@ -366,9 +429,9 @@ private theorem cache_find_errors {α : Type} (error : SemError → Prop)
     subst result
     exact cache_rows_errors error cache safe _ row (find_row_mem _ _ row selected)
 
-private theorem cache_insert_errors {α : Type} (error : SemError → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) (safe : CacheErrors error cache)
-    (ty : Ty) (result : Except SemError α) (held : ByteImage.BlockResult (fun _ => True) error result) :
+private theorem cache_insert_errors {α : Type} (error : CompilerError → Prop)
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) (safe : CacheErrors error cache)
+    (ty : Ty) (result : Except CompilerError α) (held : ByteImage.BlockResult (fun _ => True) error result) :
     CacheErrors error (cache.insert (typeBucket ty) ((ty,result) :: (cache.find (typeBucket ty)).getD [])) := by
   intro key rows found row member
   rw [NatIndexTree.find_insert] at found
@@ -380,14 +443,14 @@ private theorem cache_insert_errors {α : Type} (error : SemError → Prop)
     · exact cache_rows_errors error cache safe _ row member
   · exact safe key rows found row member
 
-private def CompilerErrors (error : SemError → Prop) (state : Compiler) : Prop :=
+private def CompilerErrors (error : CompilerError → Prop) (state : Compiler) : Prop :=
   CacheErrors error state.cache ∧ CacheErrors error state.layouts
 
-private def CompileInvariant {α : Type} (error : SemError → Prop) (post : α → Prop) (action : Compile α) : Prop :=
+private def CompileInvariant {α : Type} (error : CompilerError → Prop) (post : α → Prop) (action : Compile α) : Prop :=
   ∀ state, CompilerErrors error state →
     ByteImage.BlockResult post error (action.run state).1 ∧ CompilerErrors error (action.run state).2
 
-private theorem CompileInvariant.bind {α β : Type} (error : SemError → Prop) (post : α → Prop) (nextPost : β → Prop)
+private theorem CompileInvariant.bind {α β : Type} (error : CompilerError → Prop) (post : α → Prop) (nextPost : β → Prop)
     (action : Compile α) (next : α → Compile β) (first : CompileInvariant error post action)
     (rest : ∀ value, post value → CompileInvariant error nextPost (next value)) :
     CompileInvariant error nextPost (action >>= next) := by
@@ -403,51 +466,51 @@ private theorem CompileInvariant.bind {α β : Type} (error : SemError → Prop)
     | ok value =>
       simpa [Bind.bind,Pure.pure,ExceptT.bind,ExceptT.bindCont,ExceptT.run,ExceptT.mk,StateT.run,StateT.bind,StateT.pure,ran] using rest value held.1 middle held.2
 
-private theorem CompileInvariant.pure {α : Type} (error : SemError → Prop) (post : α → Prop)
+private theorem CompileInvariant.pure {α : Type} (error : CompilerError → Prop) (post : α → Prop)
     (value : α) (held : post value) : CompileInvariant error post (pure value) := by
   intro state safe
   exact ⟨held,safe⟩
 
-private theorem CompileInvariant.throw {α : Type} (error : SemError → Prop) (post : α → Prop)
-    (failure : SemError) (held : error failure) : CompileInvariant error post (throw failure : Compile α) := by
+private theorem CompileInvariant.throw {α : Type} (error : CompilerError → Prop) (post : α → Prop)
+    (failure : CompilerError) (held : error failure) : CompileInvariant error post (throw failure : Compile α) := by
   intro state safe
   exact ⟨held,safe⟩
 
-private theorem CompileInvariant.get (error : SemError → Prop) :
+private theorem CompileInvariant.get (error : CompilerError → Prop) :
     CompileInvariant error (CompilerErrors error) (get : Compile Compiler) := by
   intro state safe
   exact ⟨safe,safe⟩
 
-private theorem CompileInvariant.set (error : SemError → Prop) (state : Compiler) (safe : CompilerErrors error state) :
+private theorem CompileInvariant.set (error : CompilerError → Prop) (state : Compiler) (safe : CompilerErrors error state) :
     CompileInvariant error (fun _ => True) (set state : Compile Unit) := by
   intro before _
   exact ⟨True.intro,safe⟩
 
-private theorem CompileInvariant.modify (error : SemError → Prop) (update : Compiler → Compiler)
+private theorem CompileInvariant.modify (error : CompilerError → Prop) (update : Compiler → Compiler)
     (preserves : ∀ state, CompilerErrors error state → CompilerErrors error (update state)) :
     CompileInvariant error (fun _ => True) (modify update : Compile Unit) := by
   intro state safe
   exact ⟨True.intro,preserves state safe⟩
 
-private theorem CompileInvariant.fromExcept {α : Type} (error : SemError → Prop) (post : α → Prop)
-    (result : Except SemError α) (held : ByteImage.BlockResult post error result) :
+private theorem CompileInvariant.fromExcept {α : Type} (error : CompilerError → Prop) (post : α → Prop)
+    (result : Except CompilerError α) (held : ByteImage.BlockResult post error result) :
     CompileInvariant error post (fromExcept result) := by
   cases result
   · exact CompileInvariant.throw error post _ held
   · exact CompileInvariant.pure error post _ held
 
-private theorem layout_error_allowed (error : SemError → Prop)
+private theorem layout_error_allowed (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (failure : SourceLayout.Error) :
     error (layoutError failure) := by
   cases failure <;> first | exact typeErrors _ | exact unsupported _
 
-private theorem compile_throw_bind {α β : Type} (failure : SemError) (next : α → Compile β) :
+private theorem compile_throw_bind {α β : Type} (failure : CompilerError) (next : α → Compile β) :
     (throw failure : Compile α) >>= next = (throw failure : Compile β) := by
   funext state
   rfl
 
-private theorem summary_errors (error : SemError → Prop)
+private theorem summary_errors (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (ty : Ty) :
     CompileInvariant error (fun _ => True) (summary ty) := by
@@ -486,20 +549,20 @@ private theorem summary_errors (error : SemError → Prop)
       intro _ _
       exact CompileInvariant.pure error _ value True.intro
 
-private theorem descend_errors (error : SemError → Prop) (typeErrors : ∀ message, error (.typeError message))
+private theorem descend_errors (error : CompilerError → Prop) (typeErrors : ∀ message, error (.typeError message))
     (available : NatIndexTree Unit) (key : Nat) : ByteImage.BlockResult (fun _ => True) error (descend available key) := by
   unfold descend
   split
   · exact typeErrors _
   · exact True.intro
 
-private theorem cache_plan_errors (error : SemError → Prop) (ty : Ty) (plan : Plan) :
+private theorem cache_plan_errors (error : CompilerError → Prop) (ty : Ty) (plan : Plan) :
     CompileInvariant error (fun _ => True) (modify fun state => {state with cache := state.cache.insertType ty (.ok plan)}) :=
   CompileInvariant.modify error _ (fun state safe =>
     ⟨cache_insert_errors error state.cache safe.1 ty (.ok plan) True.intro,safe.2⟩)
 
 mutual
-  private theorem compile_errors (error : SemError → Prop)
+  private theorem compile_errors (error : CompilerError → Prop)
       (typeErrors : ∀ message, error (.typeError message))
       (unsupported : ∀ message, error (.unsupported .layout message)) (available : NatIndexTree Unit) (ty : Ty) :
       CompileInvariant error (fun _ => True) (compile available ty) := by
@@ -540,7 +603,7 @@ mutual
         | (dsimp only; split)
   termination_by (Available.size available,sizeOf ty)
 
-  private theorem compileFields_errors (error : SemError → Prop)
+  private theorem compileFields_errors (error : CompilerError → Prop)
       (typeErrors : ∀ message, error (.typeError message))
       (unsupported : ∀ message, error (.unsupported .layout message)) (available : NatIndexTree Unit)
       (types : List Ty) (offsets : List Field) :
@@ -558,7 +621,7 @@ mutual
       | (dsimp only; split)
   termination_by (Available.size available,sizeOf types)
 
-  private theorem compileVariants_errors (error : SemError → Prop)
+  private theorem compileVariants_errors (error : CompilerError → Prop)
       (typeErrors : ∀ message, error (.typeError message))
       (unsupported : ∀ message, error (.unsupported .layout message)) (available : NatIndexTree Unit)
       (types : List (List Ty)) (offsets : List (List Field)) (dead : List Bool) :
@@ -578,18 +641,78 @@ mutual
   termination_by (Available.size available,sizeOf types)
 end
 
+/-- Exact array compiler clause. Its abstract count avoids normalizing the
+    recursive compiler's termination rank at a huge literal logical length. -/
+theorem compile_array (available : NatIndexTree Unit) (element : TyId) (count : Nat) :
+    compile available (.Array element count) = (do
+      let ty := Ty.Array element count
+      let initial ← get
+      if let some result := initial.cache.findType ty then return ← fromExcept result
+      let value ← summary ty
+      let alignment ← match value.align with
+        | some alignment => pure alignment
+        | none => throw (.unsupported .layout "memory: type has no byte alignment")
+      let layout : MemoryTypeLayout := { size := value.size, alignment }
+      let index := initial.source.index
+      let plan ← do
+        let smaller ← fromExcept (descend available element.index)
+        let child ← match (trustIrArrayGet? index.typeRows element.index).join with
+          | some child => pure child
+          | none => throw (.typeError "memory: array element type is missing")
+        pure (.array ty layout count (← compile smaller.val child))
+      modify fun state => { state with cache := state.cache.insertType ty (.ok plan) }
+      pure plan) := by
+  trustIrCompilerProof {
+    conv =>
+      lhs
+      delta compile compile._mutual
+      rw [WellFounded.fix_eq]
+    rfl
+  } {
+    rw [compile]
+  }
+
+/-- The authenticated layout query remains part of compiling an item leaf. -/
+theorem compile_fnItem (available : NatIndexTree Unit) (target : FuncId) :
+    compile available (.FnItem target) = (do
+      let ty := Ty.FnItem target
+      let initial ← get
+      if let some result := initial.cache.findType ty then return ← fromExcept result
+      let value ← summary ty
+      let alignment ← match value.align with
+        | some alignment => pure alignment
+        | none => throw (.unsupported .layout "memory: type has no byte alignment")
+      let plan := Plan.fnItem target { size := value.size, alignment }
+      modify fun state => { state with cache := state.cache.insertType ty (.ok plan) }
+      pure plan) := by
+  conv =>
+    lhs
+    delta compile compile._mutual
+    rw [WellFounded.fix_eq]
+  rfl
+
 /-- Module-static memory roots retain both successful plans and refusals. -/
 structure Service where
   private compiler : Compiler
   private available : NatIndexTree Unit
 
-private def runCompile (service : Service) (ty : Ty) : Except SemError Plan × Service :=
+private def runCompile (service : Service) (ty : Ty) : Except CompilerError Plan × Service :=
   match service.compiler.cache.findType ty with
   | some result => (result, service)
   | none =>
     let (result, state) := (compile service.available ty).run service.compiler
     let state := { state with cache := state.cache.insertType ty result }
     (result, { service with compiler := state })
+
+/-- Expose the actual cached compiler, including memoized refusals. -/
+theorem runCompile_eq (service : Service) (ty : Ty) :
+    runCompile service ty =
+      (match service.compiler.cache.findType ty with
+      | some result => (result, service)
+      | none =>
+        let (result, state) := (compile service.available ty).run service.compiler
+        let state := { state with cache := state.cache.insertType ty result }
+        (result, { service with compiler := state })) := rfl
 
 def prepare (source : Environment) (roots : List Ty) : Service := Id.run do
   let session := SourceLayout.prepare source
@@ -601,14 +724,18 @@ def prepare (source : Environment) (roots : List Ty) : Service := Id.run do
 
 /-- Decoded roots hit the prepared cache. Uncached manual questions compute
     honestly; there is no refusal-to-legacy fallback. -/
-def Service.query (service : Service) (ty : Ty) : Except SemError Plan :=
+private def Service.queryStatic (service : Service) (ty : Ty) : Except CompilerError Plan :=
   match service.compiler.cache.findType ty with
   | some result => result
   | none => (runCompile service ty).1
 
+/-- Public runtime integration embeds the intrinsically static compiler result. -/
+def Service.query (service : Service) (ty : Ty) : Except SemError Plan :=
+  semanticResult (service.queryStatic ty)
+
 def Service.model (service : Service) : ByteModel := service.compiler.source.index.source.model
 
-private def summaryLayout (result : Except SemError Summary) : Except SemError MemoryTypeLayout := do
+private def summaryLayout (result : Except CompilerError Summary) : Except CompilerError MemoryTypeLayout := do
   let value ← result
   match value.align with
   | some alignment => pure { size := value.size, alignment }
@@ -617,7 +744,7 @@ private def summaryLayout (result : Except SemError Summary) : Except SemError M
 /-- Layout queries do not require an executable image codec. In particular,
     allocation, GEP and BSS use producer tuple size/alignment even when an
     embedded Closure/Refine byte codec remains explicitly unsupported. -/
-def Service.queryLayoutWithWork (service : Service) (ty : Ty) : Except SemError MemoryTypeLayout × Nat :=
+private def Service.queryStaticLayoutWithWork (service : Service) (ty : Ty) : Except CompilerError MemoryTypeLayout × Nat :=
   match service.compiler.layouts.findType ty with
   | some result => (summaryLayout result, 0)
   | none =>
@@ -626,6 +753,13 @@ def Service.queryLayoutWithWork (service : Service) (ty : Ty) : Except SemError 
       | .error error => .error (layoutError error)
     (summaryLayout result, 1)
 
+private def Service.queryStaticLayout (service : Service) (ty : Ty) : Except CompilerError MemoryTypeLayout :=
+  (service.queryStaticLayoutWithWork ty).1
+
+def Service.queryLayoutWithWork (service : Service) (ty : Ty) : Except SemError MemoryTypeLayout × Nat :=
+  let (result, work) := service.queryStaticLayoutWithWork ty
+  (semanticResult result, work)
+
 def Service.queryLayout (service : Service) (ty : Ty) : Except SemError MemoryTypeLayout :=
   (service.queryLayoutWithWork ty).1
 
@@ -633,13 +767,13 @@ def Service.queryLayout (service : Service) (ty : Ty) : Except SemError MemoryTy
     executes neither source layout traversal nor plan compilation. -/
 def Service.queryWithWork (service : Service) (ty : Ty) : Except SemError Plan × Nat :=
   match service.compiler.cache.findType ty with
-  | some result => (result, 0)
-  | none => ((runCompile service ty).1, 1)
+  | some result => (semanticResult result, 0)
+  | none => (semanticResult (runCompile service ty).1, 1)
 
-private def ServiceCompilerErrors (error : SemError → Prop) (service : Service) : Prop :=
+private def ServiceCompilerErrors (error : CompilerError → Prop) (service : Service) : Prop :=
   CompilerErrors error service.compiler
 
-private theorem runCompile_errors (error : SemError → Prop)
+private theorem runCompile_errors (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (service : Service) (ty : Ty)
     (safe : ServiceCompilerErrors error service) :
@@ -655,7 +789,7 @@ private theorem runCompile_errors (error : SemError → Prop)
       rw [executed] at held
       exact ⟨held.1,cache_insert_errors error state.cache held.2.1 ty result held.1,held.2.2⟩
 
-private theorem roots_errors (error : SemError → Prop)
+private theorem roots_errors (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (roots : List Ty) (service : Service)
     (safe : ServiceCompilerErrors error service) :
@@ -667,7 +801,7 @@ private theorem roots_errors (error : SemError → Prop)
     rw [List.forIn_cons]
     exact ih _ (runCompile_errors error typeErrors unsupported service ty safe).2
 
-private theorem prepare_compiler_errors (error : SemError → Prop)
+private theorem prepare_compiler_errors (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (source : Environment) (roots : List Ty) :
     ServiceCompilerErrors error (prepare source roots) := by
@@ -676,17 +810,17 @@ private theorem prepare_compiler_errors (error : SemError → Prop)
   apply roots_errors error typeErrors unsupported roots
   exact ⟨cache_empty_errors error,cache_empty_errors error⟩
 
-private theorem query_errors (error : SemError → Prop)
+private theorem query_errors (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (service : Service) (ty : Ty)
-    (safe : ServiceCompilerErrors error service) : ByteImage.BlockResult (fun _ => True) error (service.query ty) := by
-  unfold Service.query
+    (safe : ServiceCompilerErrors error service) : ByteImage.BlockResult (fun _ => True) error (service.queryStatic ty) := by
+  unfold Service.queryStatic
   cases cached : service.compiler.cache.findType ty with
   | some result => exact cache_find_errors error service.compiler.cache safe.1 ty result cached
   | none => exact (runCompile_errors error typeErrors unsupported service ty safe).1
 
-private theorem summary_layout_errors (error : SemError → Prop)
-    (unsupported : ∀ message, error (.unsupported .layout message)) (result : Except SemError Summary)
+private theorem summary_layout_errors (error : CompilerError → Prop)
+    (unsupported : ∀ message, error (.unsupported .layout message)) (result : Except CompilerError Summary)
     (safe : ByteImage.BlockResult (fun _ => True) error result) :
     ByteImage.BlockResult (fun _ => True) error (summaryLayout result) := by
   unfold summaryLayout
@@ -696,11 +830,11 @@ private theorem summary_layout_errors (error : SemError → Prop)
   | none => exact unsupported _
   | some alignment => exact True.intro
 
-private theorem query_layout_errors (error : SemError → Prop)
+private theorem query_layout_errors (error : CompilerError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (service : Service) (ty : Ty)
-    (safe : ServiceCompilerErrors error service) : ByteImage.BlockResult (fun _ => True) error (service.queryLayout ty) := by
-  unfold Service.queryLayout Service.queryLayoutWithWork
+    (safe : ServiceCompilerErrors error service) : ByteImage.BlockResult (fun _ => True) error (service.queryStaticLayout ty) := by
+  unfold Service.queryStaticLayout Service.queryStaticLayoutWithWork
   cases cached : service.compiler.layouts.findType ty with
   | some result => exact summary_layout_errors error unsupported result (cache_find_errors error service.compiler.layouts safe.2 ty result cached)
   | none =>
@@ -715,24 +849,45 @@ def ServiceErrorPolicy (error : SemError → Prop) (service : Service) : Prop :=
   ∀ ty, ByteImage.BlockResult (fun _ => True) error (service.query ty) ∧
     ByteImage.BlockResult (fun _ => True) error (service.queryLayout ty)
 
+private theorem semanticResult_error_policy {α : Type} (error : SemError → Prop)
+    (typeErrors : ∀ message, error (.typeError message))
+    (unsupported : ∀ message, error (.unsupported .layout message)) (result : Except CompilerError α) :
+    ByteImage.BlockResult (fun _ => True) error (semanticResult result) := by
+  cases result with
+  | ok value => exact True.intro
+  | error failure =>
+    cases failure with
+    | typeError message => exact typeErrors message
+    | unsupported feature message => cases feature; exact unsupported message
+
+/-- Every service value has a static error domain, including arbitrary cached
+refusals and uncached questions. No preparation or context premise is required. -/
+theorem Service.error_policy (error : SemError → Prop)
+    (typeErrors : ∀ message, error (.typeError message))
+    (unsupported : ∀ message, error (.unsupported .layout message)) (service : Service) :
+    ServiceErrorPolicy error service := by
+  intro ty
+  constructor
+  · exact semanticResult_error_policy error typeErrors unsupported (service.queryStatic ty)
+  · change ByteImage.BlockResult (fun _ => True) error (semanticResult (service.queryStaticLayout ty))
+    exact semanticResult_error_policy error typeErrors unsupported (service.queryStaticLayout ty)
+
 /-- Original preparation discharges the cache invariant for every source
 and root list, including negative cache entries and later uncached queries. -/
 theorem prepare_error_policy (error : SemError → Prop)
     (typeErrors : ∀ message, error (.typeError message))
     (unsupported : ∀ message, error (.unsupported .layout message)) (source : Environment) (roots : List Ty) :
-    ServiceErrorPolicy error (prepare source roots) := by
-  have safe := prepare_compiler_errors error typeErrors unsupported source roots
-  intro ty
-  exact ⟨query_errors error typeErrors unsupported _ ty safe,query_layout_errors error typeErrors unsupported _ ty safe⟩
+    ServiceErrorPolicy error (prepare source roots) :=
+  Service.error_policy error typeErrors unsupported (prepare source roots)
 
 /-- Typed cache invariants authenticate equality matches, not hash buckets. -/
 private def CacheOrigins {α : Type} (property : Ty → α → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) : Prop :=
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) : Prop :=
   ∀ key rows, cache.find key = some rows → ∀ row ∈ rows,
     ByteImage.BlockResult (property row.1) (fun _ => True) row.2
 
 private theorem cache_origins_empty {α : Type} (property : Ty → α → Prop) :
-    CacheOrigins property (.empty : NatIndexTree (List (Ty × Except SemError α))) := by
+    CacheOrigins property (.empty : NatIndexTree (List (Ty × Except CompilerError α))) := by
   intro key rows found; cases found
 
 private theorem find_row_true {α : Type} (test : α → Bool) (rows : List α) (row : α)
@@ -746,15 +901,15 @@ private theorem find_row_true {α : Type} (test : α → Bool) (rows : List α) 
     · cases found; exact selected
 
 private theorem cache_origins_rows {α : Type} (property : Ty → α → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) (safe : CacheOrigins property cache) (key : Nat) :
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) (safe : CacheOrigins property cache) (key : Nat) :
     ∀ row ∈ (cache.find key).getD [], ByteImage.BlockResult (property row.1) (fun _ => True) row.2 := by
   cases found : cache.find key with
   | none => intro row member; cases member
   | some rows => exact safe key rows found
 
 private theorem cache_origins_find {α : Type} (property : Ty → α → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) (safe : CacheOrigins property cache)
-    (ty : Ty) (result : Except SemError α)
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) (safe : CacheOrigins property cache)
+    (ty : Ty) (result : Except CompilerError α)
     (found : (((cache.find (typeBucket ty)).getD []).find? (fun row => closureTyEq row.1 ty)).map (·.2) = some result) :
     ByteImage.BlockResult (property ty) (fun _ => True) result := by
   cases selected : ((cache.find (typeBucket ty)).getD []).find? (fun row => closureTyEq row.1 ty) with
@@ -768,8 +923,8 @@ private theorem cache_origins_find {α : Type} (property : Ty → α → Prop)
     exact held
 
 private theorem cache_origins_insert {α : Type} (property : Ty → α → Prop)
-    (cache : NatIndexTree (List (Ty × Except SemError α))) (safe : CacheOrigins property cache)
-    (ty : Ty) (result : Except SemError α) (held : ByteImage.BlockResult (property ty) (fun _ => True) result) :
+    (cache : NatIndexTree (List (Ty × Except CompilerError α))) (safe : CacheOrigins property cache)
+    (ty : Ty) (result : Except CompilerError α) (held : ByteImage.BlockResult (property ty) (fun _ => True) result) :
     CacheOrigins property (cache.insert (typeBucket ty) ((ty,result) :: (cache.find (typeBucket ty)).getD [])) := by
   intro key rows found row member
   rw [NatIndexTree.find_insert] at found
@@ -811,7 +966,7 @@ private theorem OriginAction.pure {α : Type} (resolves : TyId → Ty → Prop) 
   intro state safe; exact ⟨held,safe⟩
 
 private theorem OriginAction.throw {α : Type} (resolves : TyId → Ty → Prop) (valid : Ty → Summary → Prop) (sessions : Session → Prop)
-    (post : α → Prop) (failure : SemError) : OriginAction resolves valid sessions post (throw failure : Compile α) := by
+    (post : α → Prop) (failure : CompilerError) : OriginAction resolves valid sessions post (throw failure : Compile α) := by
   intro state safe; exact ⟨True.intro,safe⟩
 
 private theorem OriginAction.get (resolves : TyId → Ty → Prop) (valid : Ty → Summary → Prop) (sessions : Session → Prop) :
@@ -830,7 +985,7 @@ private theorem OriginAction.modify (resolves : TyId → Ty → Prop) (valid : T
   intro state safe; exact ⟨True.intro,preserves state safe⟩
 
 private theorem OriginAction.fromExcept {α : Type} (resolves : TyId → Ty → Prop) (valid : Ty → Summary → Prop) (sessions : Session → Prop)
-    (result : Except SemError α) : OriginAction resolves valid sessions (fun _ => True) (fromExcept result) := by
+    (result : Except CompilerError α) : OriginAction resolves valid sessions (fun _ => True) (fromExcept result) := by
   cases result
   · exact OriginAction.throw resolves valid sessions _ _
   · exact OriginAction.pure resolves valid sessions _ _ True.intro
@@ -1007,6 +1162,7 @@ mutual
         all_goals repeat' first
           | (solve | simp)
           | (simp only [compile_throw_bind,pure_bind])
+          | (solve | apply cache_yield_origin resolves valid sessions; exact .fnItem _ _ value valueOrigin ⟨rfl,aligned⟩)
           | (solve | apply cache_yield_origin resolves valid sessions; exact .leaf _ _ True.intro value valueOrigin ⟨rfl,aligned⟩)
           | (solve | apply cache_yield_origin resolves valid sessions; exact .fields _ _ _ True.intro fieldsOrigin.children value valueOrigin ⟨rfl,aligned⟩ (by simpa only [Plan.fieldInputTypes] using fieldsOrigin.inputs) fieldsOrigin.metadata fieldsOrigin.extents)
           | (solve | apply cache_yield_origin resolves valid sessions; exact .array _ _ _ _ (by apply Plan.Origin.own; assumption) (by
@@ -1110,24 +1266,26 @@ theorem prepare_query_origin (resolves : TyId → Ty → Prop) (valid : Ty → S
     (initial : sessions (SourceLayout.prepare source)) (roots : List Ty) (ty : Ty) (plan : Plan)
     (run : (prepare source roots).query ty = .ok plan) : Plan.Origin resolves valid ty plan := by
   have safe := prepare_compiler_origins resolves valid sessions policy source initial roots
-  unfold Service.query at run
+  have staticRun : (prepare source roots).queryStatic ty = .ok plan :=
+    semanticResult_ok _ plan run
+  unfold Service.queryStatic at staticRun
   cases cached : (prepare source roots).compiler.cache.findType ty with
   | some result =>
-    rw [cached] at run
+    rw [cached] at staticRun
     have origin := cache_origins_find (Plan.Origin resolves valid) _ safe.2.1 ty result cached
-    dsimp only at run
-    rw [run] at origin
+    dsimp only at staticRun
+    rw [staticRun] at origin
     exact origin
   | none =>
-    rw [cached] at run
+    rw [cached] at staticRun
     have origin := (runCompile_origins resolves valid sessions policy _ ty safe).1
-    dsimp only at run
-    rw [run] at origin
+    dsimp only at staticRun
+    rw [staticRun] at origin
     exact origin
 
 theorem Service.queryWithWork_result (service : Service) (ty : Ty) :
     (service.queryWithWork ty).1 = service.query ty := by
-  unfold Service.queryWithWork Service.query
+  unfold Service.queryWithWork Service.query Service.queryStatic
   split <;> rfl
 
 theorem Plan.Origin.enum_view {resolves : TyId → Ty → Prop} {valid : Ty → Summary → Prop} {id : EnumId} {plan : Plan}

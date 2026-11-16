@@ -668,7 +668,7 @@ mod tests {
         let term = local.lam(Expr::app(Expr::const_str("Nat.succ"), local.term().clone()));
         for requested in [0, 1, 2, usize::MAX] {
             let (result, stats) = scope.close_external_forest_with_limits(
-                &[term.clone()],
+                std::slice::from_ref(&term),
                 &[],
                 &[0],
                 TermScopeLimits {

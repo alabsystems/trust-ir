@@ -30,14 +30,15 @@ theorem localResultTypes_borrow_operand (direct : FuncId → Option FuncTyDef) (
     (classified : localResultTypes direct indirect inst = .ok sources)
     (operand : ValueId) (member : LocalTypeSource.borrow operand ∈ sources) :
     operand ∈ operandIds inst := by
-  apply Classical.byContradiction
-  intro absent
-  have avoids : SourceAvoids operand.index (.borrow operand) :=
-    classified_sources_avoid direct indirect operand.index inst
-      (fun id inOperands same => by
-        have equal : id = operand := by cases id; cases operand; exact congrArg ValueId.mk same
-        exact absent (equal ▸ inOperands)) sources classified (.borrow operand) member
-  exact avoids rfl
+  cases (inferInstance : Decidable (operand ∈ operandIds inst)) with
+  | isTrue present => exact present
+  | isFalse absent =>
+    have avoids : SourceAvoids operand.index (.borrow operand) :=
+      classified_sources_avoid direct indirect operand.index inst
+        (fun id inOperands same => by
+          have equal : id = operand := by cases id; cases operand; exact congrArg ValueId.mk same
+          exact absent (equal ▸ inOperands)) sources classified (.borrow operand) member
+    exact False.elim (avoids rfl)
 
 /-- Congruence of the core left-to-right monadic traversal keeps early errors. -/
 theorem mapM_congr_mem {α β : Type} (items : List α)
@@ -79,7 +80,7 @@ theorem makeArrayValueWithContext_congr (base : EvalContext)
       intro id member
       simp only [checkArrayRegisterType, pure_bind, agree id member]
     unfold makeArrayValueWithContext
-    simp only [scopedContext, reads]
+    simp only [scopedContext, EvalContext.types, reads]
 
 theorem integerOperand_congr (base : EvalContext)
     (source target : FuncId → Option EvalFunction) (sourceTypes targetTypes : Option LocalTypeTable)

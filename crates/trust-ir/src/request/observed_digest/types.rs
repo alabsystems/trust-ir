@@ -98,6 +98,10 @@ fn write_head<'a, O: ExecutionObserver>(
             write_u8(out, 21)?;
             write_func_ty_id(out, *id)?;
         }
+        Ty::FnItem(id) => {
+            write_u8(out, 42)?;
+            write_u32(out, id.index())?;
+        }
         Ty::Ref(inner) => {
             write_u8(out, 22)?;
             out.push_value(tasks, TyTask::Value(inner))?;

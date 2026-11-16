@@ -230,6 +230,34 @@ theorem callFrameWith_arity_bind {α : Type} (ctx : EvalContext)
   simpa only [Bool.false_eq_true, if_false, pure_bind] using
     callFrameWith_checkReturns_bind ctx returnTys false false message callee next
 
+/-- The caller's lexical metadata can differ from a newly entered callee.
+    The induction ranges over both fields instead of fabricating either. -/
+structure CallerMetadata where
+  returnTypes : Option (List Ty)
+  currentFunction : Option FuncId
+
+def CallerMetadata.ofContext (base : EvalContext) : CallerMetadata :=
+  ⟨base.functionReturnTypes, base.currentFunction⟩
+
+def callerContext (base : EvalContext) (metadata : CallerMetadata) : EvalContext :=
+  { base with
+    functionReturnTypes := metadata.returnTypes
+    currentFunction := metadata.currentFunction }
+
+theorem callerContext_self (base : EvalContext) :
+    callerContext base (CallerMetadata.ofContext base) = base := rfl
+
+/-- The genuine function supplies SSA, return and source-owner declarations. -/
+def calleeContext (base : EvalContext) (functions : FuncId → Option EvalFunction)
+    (function : EvalFunction) : EvalContext :=
+  scopedContext (callerContext base ⟨some function.body.returnTys, function.sourceId⟩)
+    functions function.localTypes
+
+theorem calleeContext_callerContext (base : EvalContext) (metadata : CallerMetadata)
+    (functions : FuncId → Option EvalFunction) (function : EvalFunction) :
+    calleeContext (callerContext base metadata) functions function =
+      calleeContext base functions function := rfl
+
 /-- Recursive hypotheses are stated at actual function-table lookups. The
     callee starts in a cleared frame; no condition is imposed on the caller. -/
 def CalleeEffects (sourceRecurse targetRecurse : Recurse) (base : EvalContext)
@@ -238,9 +266,9 @@ def CalleeEffects (sourceRecurse targetRecurse : Recurse) (base : EvalContext)
     source id = some sourceFunction → target id = some targetFunction →
     ∀ depth args strat world,
       EffectRelation
-        (Sem.run (sourceRecurse (scopedContext base source sourceFunction.localTypes)
+        (Sem.run (sourceRecurse (calleeContext base source sourceFunction)
           depth sourceFunction.cfg sourceFunction.entryBlock args strat) (callerWorld world))
-        (Sem.run (targetRecurse (scopedContext base target targetFunction.localTypes)
+        (Sem.run (targetRecurse (calleeContext base target targetFunction)
           depth targetFunction.cfg targetFunction.entryBlock args strat) (callerWorld world))
 
 def bodyCall (recurse : Recurse) (ctx : EvalContext) (depth : Nat)
@@ -291,7 +319,7 @@ theorem scopedContext_forFunction (base : EvalContext)
     (functions : FuncId → Option EvalFunction) (types : Option LocalTypeTable)
     (function : EvalFunction) :
     (scopedContext base functions types).forFunction function =
-      scopedContext base functions function.localTypes := rfl
+      calleeContext base functions function := rfl
 
 theorem bodyCall_congr (sourceRecurse targetRecurse : Recurse) (base : EvalContext)
     (source target : FuncId → Option EvalFunction) (headers : HeaderAgreement source target)
@@ -312,8 +340,9 @@ theorem bodyCall_congr (sourceRecurse targetRecurse : Recurse) (base : EvalConte
     | none =>
       cases targetFound : target id with
       | none =>
-        simp only [EvalContext.lookupDirectCallee, scopedContext, sourceFound, targetFound]
-        split <;> rfl
+        cases declared : base.declared id <;>
+          simp only [EvalContext.lookupDirectCallee, scopedContext, sourceFound, targetFound,
+            declared, Bool.false_eq_true, ↓reduceIte] <;> rfl
       | some targetFunction => rw [sourceFound, targetFound] at related; cases related
     | some sourceFunction =>
       cases targetFound : target id with
@@ -323,9 +352,9 @@ theorem bodyCall_congr (sourceRecurse targetRecurse : Recurse) (base : EvalConte
         cases related with
         | present _ _ body convention =>
           have framed := callFrame_eq_of_effectRelation sourceFunction.body.returnTys
-            (sourceRecurse (scopedContext base source sourceFunction.localTypes)
+            (sourceRecurse (calleeContext base source sourceFunction)
               depth sourceFunction.cfg sourceFunction.entryBlock values strat)
-            (targetRecurse (scopedContext base target targetFunction.localTypes)
+            (targetRecurse (calleeContext base target targetFunction)
               depth targetFunction.cfg targetFunction.entryBlock values strat)
             (effects id sourceFunction targetFunction sourceFound targetFound depth values strat)
           simp only [EvalContext.lookupDirectCallee,

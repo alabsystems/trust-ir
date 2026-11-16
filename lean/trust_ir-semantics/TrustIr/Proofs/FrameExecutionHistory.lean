@@ -111,25 +111,16 @@ theorem frame_step_history (ctx : EvalContext) (inst : Inst) (site : FrameInstru
     (s final : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx inst) s = .ok (result,final)) : HistoryExtends s final := by
   cases site with
-  | «open» definition =>
-    exact mapped_history (semOpenFrame definition) (fun id => .value (some id))
-      (fun state after id executed => (open_success_history state after definition id executed).1) s final result run
-  | close frame =>
-    apply mapped_history (semCloseFrame frame) (fun _ => .value none) ?_ s final result run
-    intro state after unit executed
-    cases unit
-    obtain ⟨lineage,slots,_,_,rfl⟩ := close_success_state state after frame executed
-    exact history_close state lineage
-  | bind frame slot value =>
-    exact mapped_keep_history (semBindSlot frame slot value) (fun id => .value (some id)) (semBindSlot_history frame slot value) s final result run
-  | load frame slot ty =>
-    exact mapped_keep_history (semLoadSlot frame slot ty) (fun id => .value (some id)) (semLoadSlot_history frame slot ty) s final result run
+  | «open» definition => exact contextual_open_history ctx definition s final result run
+  | close frame => exact contextual_close_history ctx frame s final result run
+  | bind frame slot value => exact (contextual_bind_history ctx frame slot value).extends s final result run
+  | load frame slot ty => exact (contextual_load_history ctx frame slot ty).extends s final result run
   | unary op ty operand =>
     exact mapped_keep_history (semUnOp op ty operand) (fun id => .value (some id)) (semUnOp_history op ty operand) s final result run
   | overflow op ty left right =>
     exact mapped_keep_history (semOverflow op ty left right) (fun ids => .values [ids.1,ids.2]) (semOverflow_history op ty left right) s final result run
   | cast op srcTy dstTy operand =>
-    exact mapped_keep_history (semCast op srcTy dstTy operand ctx.byteModel) (fun id => .value (some id)) (semCast_history op srcTy dstTy operand ctx.byteModel) s final result run
+    exact (contextual_cast_history ctx op srcTy dstTy operand).extends s final result run
   | icmp op ty left right =>
     exact mapped_keep_history (semICmpInst op ty left right ctx.byteModel) (fun id => .value (some id)) (semICmpInst_history op ty left right ctx.byteModel) s final result run
   | fcmp op ty left right =>
@@ -224,6 +215,10 @@ theorem frame_layer_history (recurse : Recurse) (ctx : EvalContext) (depth : Nat
   | some block =>
     obtain ⟨sites,⟨control⟩⟩ := grammar pc block found
     simp only [evalLayer,found] at run
+    obtain ⟨unit, checkedState, checked, run⟩ := split_bind_success _ _ s final values run
+    have same := memory_check_success_state _ s checkedState unit checked
+    subst checkedState
+    cases unit
     obtain ⟨unit,bound,params,tail⟩ := split_bind_success _ _ s final values run
     cases unit
     have boundValid := valid.checked_params_success _ args s bound incoming params
@@ -240,8 +235,10 @@ theorem frame_layer_history (recurse : Recurse) (ctx : EvalContext) (depth : Nat
     | Continue next nextArgs =>
       exact paramsHistory.trans (bodyHistory.trans (continuation next nextArgs afterBody final values bodyValid transported tail))
     | Ret returned =>
-      change Except.ok (returned,afterBody) = Except.ok (values,final) at tail
-      cases tail
+      change Sem.run (GenericCoro.checkedReturn ctx returned) afterBody = .ok (values,final) at tail
+      obtain ⟨same, equal⟩ := checked_return_success ctx returned values afterBody final tail
+      subst final
+      subst values
       exact paramsHistory.trans bodyHistory
     | Stuck =>
       change Except.error (SemError.ub "reached unreachable") = Except.ok (values,final) at tail

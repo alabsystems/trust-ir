@@ -42,6 +42,86 @@ private noncomputable def insertSpec (tree : NatIndexTree α) (key : Nat) (entry
 termination_by key
 decreasing_by all_goals exact Nat.div_lt_self (Nat.pos_of_ne_zero zero) (by decide)
 
+private theorem half_div_le (key : Nat) : key / 2 ≤ key := by
+  trustIrCompilerProof {
+    induction key using trustIrNatStrongInduction with
+    | ind key ih =>
+      cases key with
+      | zero => decide
+      | succ before =>
+        cases before with
+        | zero => decide
+        | succ smaller =>
+          have possible : 0 < 2 ∧ 2 ≤ smaller + 2 :=
+            ⟨by decide, Nat.succ_le_succ (Nat.succ_le_succ (Nat.zero_le smaller))⟩
+          rw [Nat.div_eq,if_pos possible]
+          change smaller / 2 + 1 ≤ smaller + 2
+          have bound := ih smaller (Nat.lt_trans (Nat.lt_succ_self smaller)
+            (Nat.lt_succ_self (smaller + 1)))
+          exact Nat.le.step (Nat.succ_le_succ bound)
+  } {
+    have go_le : ∀ fuel key (below : key < fuel),
+        Nat.div.go 2 (by decide) fuel key below ≤ key := by
+      intro fuel
+      induction fuel with
+      | zero => intro key below; exact False.elim (Nat.not_lt_zero key below)
+      | succ fuel ih =>
+          intro key below
+          rw [Nat.div.go]
+          split
+          next enough =>
+            have recursive := ih (key - 2) (Nat.div_rec_fuel_lemma (by decide) enough below)
+            exact Nat.le_trans (Nat.succ_le_succ recursive)
+              (Nat.sub_lt (Nat.lt_of_lt_of_le (by decide) enough) (by decide))
+          next => exact Nat.zero_le key
+
+    change Nat.div key 2 ≤ key
+    unfold Nat.div
+    exact go_le (key + 1) key (Nat.lt_succ_self key)
+  }
+
+private theorem half_div_lt (key : Nat) (nonzero : key ≠ 0) : key / 2 < key := by
+  trustIrCompilerProof {
+    cases key with
+    | zero => exact False.elim (nonzero rfl)
+    | succ before =>
+      cases before with
+      | zero => decide
+      | succ smaller =>
+        have possible : 0 < 2 ∧ 2 ≤ smaller + 2 :=
+          ⟨by decide, Nat.succ_le_succ (Nat.succ_le_succ (Nat.zero_le smaller))⟩
+        rw [Nat.div_eq,if_pos possible]
+        change smaller / 2 + 1 < smaller + 2
+        exact Nat.succ_lt_succ (Nat.lt_succ_of_le (half_div_le smaller))
+  } {
+    have go_le : ∀ fuel key (below : key < fuel),
+        Nat.div.go 2 (by decide) fuel key below ≤ key := by
+      intro fuel
+      induction fuel with
+      | zero => intro key below; exact False.elim (Nat.not_lt_zero key below)
+      | succ fuel ih =>
+          intro key below
+          rw [Nat.div.go]
+          split
+          next enough =>
+            have recursive := ih (key - 2) (Nat.div_rec_fuel_lemma (by decide) enough below)
+            exact Nat.le_trans (Nat.succ_le_succ recursive)
+              (Nat.sub_lt (Nat.lt_of_lt_of_le (by decide) enough) (by decide))
+          next => exact Nat.zero_le key
+
+    cases key with
+    | zero => exact False.elim (nonzero rfl)
+    | succ before =>
+        cases before with
+        | zero => decide
+        | succ smaller =>
+            change Nat.div (smaller + 2) 2 < smaller + 2
+            unfold Nat.div
+            have recursive := go_le (smaller + 2) smaller
+              (Nat.lt_trans (Nat.lt_succ_self smaller) (Nat.lt_succ_self (smaller + 1)))
+            exact Nat.succ_lt_succ (Nat.lt_succ_of_le recursive)
+  }
+
 /-- New paths recurse on a derived structural witness. Existing paths use
     structural tree recursion below and carry no executable numeric witness. -/
 private def pathBelow : (bound key : Nat) → key < bound → α → NatIndexTree α
@@ -50,10 +130,10 @@ private def pathBelow : (bound key : Nat) → key < bound → α → NatIndexTre
     if zero : key = 0 then .node (some entry) .empty .empty
     else if key % 2 = 0 then
       .node none (pathBelow bound (key / 2)
-        (Nat.lt_of_lt_of_le (Nat.div_lt_self (Nat.pos_of_ne_zero zero) (by decide))
+        (Nat.lt_of_lt_of_le (half_div_lt key zero)
           (Nat.le_of_lt_succ below)) entry) .empty
     else .node none .empty (pathBelow bound (key / 2)
-        (Nat.lt_of_lt_of_le (Nat.div_lt_self (Nat.pos_of_ne_zero zero) (by decide))
+        (Nat.lt_of_lt_of_le (half_div_lt key zero)
           (Nat.le_of_lt_succ below)) entry)
 
 /-- Consume an existing routing constructor explicitly so native execution

@@ -1,6 +1,6 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Original complete ordinary enum block; only separately fixed diagnostic differs from793.
+//! Original complete ordinary enum block; with the separately qualified diagnostic and v67 Direct-profile corrections.
 use super::*;
 pub(super) fn run(module: &Module) -> Vec<ValidationError> {
     let layouts = module.layout_table();
@@ -59,6 +59,25 @@ pub(super) fn run(module: &Module) -> Vec<ValidationError> {
         }
         let Some(layout) = &enm.layout else { continue };
         let location = || format!("enum.{} ({}) layout", enm.id.index(), enm.name);
+        if matches!(
+            &layout.encoding,
+            trust_ir::EnumTagEncoding::DirectWithUninhabited { .. }
+        ) {
+            let bound = module
+                .enums
+                .iter()
+                .find(|row| row.id == enm.id)
+                .is_some_and(|row| core::ptr::eq(row, enm));
+            if !bound || layouts.enum_layout(enm.id).is_err() {
+                errors.push(ValidationError::ConstTypeMismatch {
+                    location: location(),
+                    expected: "a valid Direct storage profile for exactly the uninhabited variants"
+                        .into(),
+                    actual: "invalid Direct uninhabited storage".into(),
+                });
+            }
+            continue;
+        }
         // WS2.22: the tag lane's SIZE is the repr's own width
         // (`EnumTagRepr::size_bytes`); its ALIGNMENT is the TARGET's, and the
         // two are different facts — an ABI may align an integer below its
@@ -69,7 +88,8 @@ pub(super) fn run(module: &Module) -> Vec<ValidationError> {
         // count; the alignment clauses below are then skipped, the enum having
         // already drawn its error.
         let lane_repr = match &layout.encoding {
-            trust_ir::EnumTagEncoding::Direct { .. } => enm.canonical_tag_repr(),
+            trust_ir::EnumTagEncoding::Direct { .. }
+            | trust_ir::EnumTagEncoding::DirectWithUninhabited { .. } => enm.canonical_tag_repr(),
             trust_ir::EnumTagEncoding::Niche { niche_ty, .. } => Some(*niche_ty),
             trust_ir::EnumTagEncoding::Untagged
             | trust_ir::EnumTagEncoding::SingleInhabited { .. } => None,
@@ -299,7 +319,8 @@ pub(super) fn run(module: &Module) -> Vec<ValidationError> {
                     push_layout_error("one selected inhabited variant and only structurally uninhabited inactive variants".into(), format!("single-inhabited selector {variant}"));
                 }
             }
-            trust_ir::EnumTagEncoding::Direct { tag_offset } => {
+            trust_ir::EnumTagEncoding::Direct { tag_offset }
+            | trust_ir::EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
                 if let Some(repr) = enm.canonical_tag_repr() {
                     let tag_size = repr.size_bytes();
                     if let Some(tag_align) = lane_align {

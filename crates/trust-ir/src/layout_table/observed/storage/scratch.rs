@@ -8,6 +8,57 @@
 use super::*;
 
 impl<O: ExecutionObserver> Work<'_, '_, O> {
+    pub(in super::super) fn retire_storage_fields(
+        &mut self,
+        mut fields: Vec<crate::ty::FieldStorageLayout>,
+    ) {
+        loop {
+            self.session.retirement_step(
+                self.site,
+                size_of::<Option<crate::ty::FieldStorageLayout>>().saturating_add(1),
+            );
+            let Some(crate::ty::FieldStorageLayout { size, align }) = fields.pop() else {
+                break;
+            };
+            self.retire_fixed((size, align));
+        }
+        self.session.retirement_step(
+            self.site,
+            size_of::<Vec<crate::ty::FieldStorageLayout>>().saturating_add(1),
+        );
+        drop(fields);
+        self.session.retirement_poll(self.site);
+    }
+
+    pub(in super::super) fn retire_storage_profiles(
+        &mut self,
+        mut rows: Vec<crate::ty::UninhabitedVariantLayout>,
+    ) {
+        loop {
+            self.session.retirement_step(
+                self.site,
+                size_of::<Option<crate::ty::UninhabitedVariantLayout>>().saturating_add(1),
+            );
+            let Some(crate::ty::UninhabitedVariantLayout {
+                variant,
+                size,
+                align,
+                fields,
+            }) = rows.pop()
+            else {
+                break;
+            };
+            self.retire_storage_fields(fields);
+            self.retire_fixed((variant, size, align));
+        }
+        self.session.retirement_step(
+            self.site,
+            size_of::<Vec<crate::ty::UninhabitedVariantLayout>>().saturating_add(1),
+        );
+        drop(rows);
+        self.session.retirement_poll(self.site);
+    }
+
     pub(in super::super) fn retire_text(&mut self, text: String) {
         self.session.retirement_step(
             self.site,

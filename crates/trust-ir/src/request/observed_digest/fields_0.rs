@@ -315,6 +315,7 @@ pub(super) fn write_ty_shape<O: ExecutionObserver>(
         TyShape::Storage => write_u8(out, 27)?,
         // PKG-U13a: the next free shape tag (the native digest's 28).
         TyShape::Tensor => write_u8(out, 28)?,
+        TyShape::FnItem => write_u8(out, 29)?,
         TyShape::Int { signed, bits } => {
             write_u8(out, 0)?;
             write_bool(out, signed)?;

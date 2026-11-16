@@ -54,7 +54,10 @@ fn repeated_contexts_preserve_actual_definitions_and_complete_kernel_replay() {
     let mut work = Vec::new();
     for _ in 0..3 {
         let (context, _, observed) = parts
-            .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &scope,
+                std::slice::from_ref(&definition.reference),
+            )
             .unwrap();
         assert_eq!(
             TypeChecker::with_context(&env, context).whnf(&definition.reference),
@@ -130,7 +133,10 @@ fn foreign_scope_refusal_and_base_extension_keep_original_visibility() {
         .unwrap();
     parts.enable_normalization_reference_reuse(&scope).unwrap();
     let (first, _, cold) = parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert_eq!(
         TypeChecker::with_context(&env, first).whnf(&definition.reference),
@@ -141,13 +147,19 @@ fn foreign_scope_refusal_and_base_extension_keep_original_visibility() {
     assert_eq!(same_id.id(), input.id());
     assert!(
         parts
-            .untrusted_normalization_context_profiled(&foreign, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &foreign,
+                std::slice::from_ref(&definition.reference),
+            )
             .err()
             .unwrap()
             .contains("owner")
     );
     let (_, _, warm) = parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert!(warm.dependency_visits < cold.dependency_visits);
     let extra = scope.try_local(nat()).unwrap();
@@ -161,7 +173,10 @@ fn foreign_scope_refusal_and_base_extension_keep_original_visibility() {
         "cache invalidation refunds no work"
     );
     let (extended, _, again) = parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert!(again.dependency_visits > warm.dependency_visits);
     assert_eq!(
@@ -194,7 +209,10 @@ fn changed_actual_body_recomputes_references_and_still_requires_complete_replay(
         .unwrap();
     parts.enable_normalization_reference_reuse(&scope).unwrap();
     let (original, _, _) = parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert_eq!(
         TypeChecker::with_context(&env, original).whnf(&definition.reference),
@@ -204,7 +222,10 @@ fn changed_actual_body_recomputes_references_and_still_requires_complete_replay(
     // declaration ID would omit the newly required second parameter.
     parts.bindings[0].1 = second.term().clone();
     let (changed, _, _) = parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert_eq!(
         TypeChecker::with_context(&env, changed).whnf(&definition.reference),
@@ -246,7 +267,10 @@ fn explicit_reuse_requires_original_owner_and_never_restarts_a_failed_scan() {
         .unwrap();
     assert!(parts.normalization_references.is_none());
     parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert!(
         parts.normalization_references.is_none(),
@@ -342,7 +366,10 @@ fn producer_and_charged_contexts_share_only_owner_paid_reference_work() {
     parts.enable_normalization_reference_reuse(&scope).unwrap();
     let before = parts.counts().3;
     let (producer, _, cold) = parts
-        .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+        .untrusted_normalization_context_profiled(
+            &scope,
+            std::slice::from_ref(&definition.reference),
+        )
         .unwrap();
     assert_eq!(parts.counts().3 - before, cold.dependency_visits);
     assert!(cold.dependency_visits > 0);
@@ -355,7 +382,7 @@ fn producer_and_charged_contexts_share_only_owner_paid_reference_work() {
         .charged_normalization_context_with_opaque(
             &scope,
             std::slice::from_ref(&input),
-            &[definition.reference.clone()],
+            std::slice::from_ref(&definition.reference),
             &[],
         )
         .unwrap();
@@ -397,7 +424,10 @@ fn failed_producers_pay_completed_scans_and_exhaustion_cannot_warm_a_retry() {
     let before = parts.counts().3;
     assert!(
         parts
-            .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &scope,
+                std::slice::from_ref(&definition.reference),
+            )
             .is_err()
     );
     let cold_paid = parts.counts().3 - before;
@@ -413,7 +443,10 @@ fn failed_producers_pay_completed_scans_and_exhaustion_cannot_warm_a_retry() {
     let before = parts.counts().3;
     assert!(
         parts
-            .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &scope,
+                std::slice::from_ref(&definition.reference),
+            )
             .is_err()
     );
     let warm_paid = parts.counts().3 - before;
@@ -424,7 +457,7 @@ fn failed_producers_pay_completed_scans_and_exhaustion_cannot_warm_a_retry() {
             .charged_normalization_context_with_opaque(
                 &scope,
                 std::slice::from_ref(&input),
-                &[definition.reference.clone()],
+                std::slice::from_ref(&definition.reference),
                 &[]
             )
             .is_err()
@@ -434,7 +467,10 @@ fn failed_producers_pay_completed_scans_and_exhaustion_cannot_warm_a_retry() {
     parts.limits.operations = before + 1; // Lower this control's remaining pot to one.
     assert!(
         parts
-            .untrusted_normalization_context_profiled(&scope, &[definition.reference.clone()])
+            .untrusted_normalization_context_profiled(
+                &scope,
+                std::slice::from_ref(&definition.reference),
+            )
             .is_err()
     );
     assert_eq!(

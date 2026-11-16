@@ -24,9 +24,16 @@ def closureLayout (document : Json) : D ClosureLayoutDescriptor := do
     if offset ≤ word64Max then pure offset else malformed "capture_offset: outside u64")
   pure { closure := ⟨closure⟩, size := ← word document "size", align := ← word document "align", captureOffsets }
 
-/-- Decode only actual layout/source tables. Functions, CFGs, SSA metadata,
-    globals and executable bodies are deliberately never inspected. No
-    fabricated closure frame or tuple layout is installed in the evaluator. -/
+/-- Retain only a real function header, not its CFG or executable body. -/
+private def functionHeader (document : Json) : D (FuncId × FuncTyId) := do
+  let id ← natField document "id"
+  let signature ← natField document "ty"
+  if id ≥ 2 ^ 32 || signature ≥ 2 ^ 32 then malformed "function header: id outside u32"
+  pure (⟨id⟩, ⟨signature⟩)
+
+/-- Decode actual layout/source tables and function headers/signatures. CFGs,
+    SSA metadata, globals and executable bodies are never inspected. Missing
+    or duplicate headers remain absent/ambiguous; none are synthesized. -/
 def environment (document : Json) : D Environment := do
   let (model, canonical, present) ← match document.getObjVal? "target_info" with
     | .error _ | .ok .null => pure (.le64, true, false)
@@ -55,6 +62,8 @@ def environment (document : Json) : D Environment := do
     records := ← (← rows document "records").mapM recordDef
     closures := closures
     tupleLayouts := ← (← rows document "tuple_layouts").mapM tupleLayoutDescriptor
-    closureLayouts := ← (← rows document "closure_layouts").mapM closureLayout }
+    closureLayouts := ← (← rows document "closure_layouts").mapM closureLayout
+    functions := ← (← rows document "functions").mapM functionHeader
+    funcTypes := ← (← rows document "func_types").mapM funcTyDef }
 
 end TrustIrEval.SourceLayoutSchema

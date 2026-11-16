@@ -21,7 +21,7 @@ private def view : Input → Shape
   | .value (.array values) => ⟨1, [.tree values.tree 0 values.size]⟩
   | .value (.aggregate values) | .value (.vector values) | .value (.frame _ values)
   | .value (.set values) | .value (.sequence values) | .value (.closure _ values)
-  | .value (.typedClosure _ _ values) => ⟨1, [.values values]⟩
+  | .value (.typedClosure _ _ values) | .value (.sourceFrame _ _ _ values) => ⟨1, [.values values]⟩
   | .value (.record fields) => ⟨1, [.fields fields]⟩
   | .value (.fatPtr _ _ metadata) => ⟨1, [.value metadata]⟩
   | .value _ => ⟨1, []⟩

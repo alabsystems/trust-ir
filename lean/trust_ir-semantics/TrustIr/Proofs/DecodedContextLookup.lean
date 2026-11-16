@@ -20,7 +20,9 @@ private noncomputable def memoryServiceSpec (m : Module) (model : ByteModel) :
     { model, canonicalScalars := true, hasTargetInfo := m.hasTargetInfo,
       types := m.types, structs := m.structs, enums := m.enums,
       records := m.records.filterMap (·.2), closures := m.closureTys,
-      tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts }
+      tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts,
+      functions := m.functions.map (fun function => (function.id, function.ty)),
+      funcTypes := m.funcTys }
   let roots := [.I64] ++ m.globals.map (·.ty) ++ trustIrListBind m.functions (fun function =>
     match function.blocks with
     | .error _ => []
@@ -1836,6 +1838,7 @@ noncomputable def listContextSpec (m : Module) (maxCallDepth : Nat) : D EvalCont
       else some (f.id, DecodedCFG.evalFunctionListSpec signatures direct f blocks)
     | .error _ => none)
   pure { byteModel := selectedModel
+         valueSource := valueSourceOf m
          memoryService := some (memoryServiceSpec m selectedModel)
          functions := fun fid =>
            match defs.find? (fun p => p.fst == fid) with
@@ -1848,7 +1851,6 @@ noncomputable def listContextSpec (m : Module) (maxCallDepth : Nat) : D EvalCont
          functionOrder := some (m.functions.map (·.id))
          funcPtrs := fun _ => none
          funcTys := fun id => trustIrArrayGet? signatures id.index
-         closures := fun id => trustIrListGet? m.closureTys id.index
          maxCallDepth := maxCallDepth
          globalsTable := fun id => trustIrListGet? m.globals id.index
          -- A bodyless declaration is `unsupported.interprocedural_call` when
@@ -1867,11 +1869,7 @@ noncomputable def listContextSpec (m : Module) (maxCallDepth : Nat) : D EvalCont
                | some (_, Except.error (.unsupported feature)) => some (.unsupported .ssaTypeTable feature)
                | _ => none
            | none => none
-         enums := fun eid => m.enums.find? (fun d => d.id == eid)
-         structs := fun sid => m.structs.find? (fun d => d.id == sid)
          tupleLayouts := m.tupleLayouts
-         records := fun rid => ((m.records.find? (fun row => row.fst == rid)).map (·.snd)).join
-         types := fun tid => (trustIrListGet? m.types tid.index).join
          -- Amendment D: a drop resolves to the glue of the row keyed on its
          -- type, and is then the ordinary `Call` / `Invoke`.
          dropGlue := dropGlueOf m }

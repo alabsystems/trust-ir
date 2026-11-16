@@ -49,6 +49,15 @@ The Trust toolchain's correctness rests on exactly this trusted base:
    double-compilation and/or independent re-check) and the closure of the
    `ProofLineageNode` chain with zero `Trusted(...)` rungs.
 
+Compiled Lean `native_decide` fixtures are compiler/runtime tests. Canonical
+Lean 4.8 records their evaluation through `Lean.ofReduceBool`; pinned Lean 4.30
+records a separate Boolean-equality assertion for each site. The census checks
+actual fixture-module ownership, the complete closed Boolean expression and its
+stored dependencies, evaluates it again, and replays the assertion conditional
+on exactly that successful runtime evaluation. Raw fixture assertions are reported
+separately from permanent logical axioms. Other modules cannot inherit this
+permission, and fixtures supply test evidence rather than mathematical proofs.
+
 Everything **outside** this list — including the `rustc`/LLVM that built the
 first checker — is **not** trusted: its output is independently re-checkable
 from the proof certificates. Items 6–14 below are the enumerated residual
@@ -777,9 +786,9 @@ they did not interfere with the run stays trusted.
 | Item | What the row is about | Enforcement |
 |------|------------------------|-------------|
 | 1 | the Lean 4 kernel is sound | (prose-only) trusted by declaration; nothing in this tree checks the kernel itself: the replay in the next row runs the SAME kernel a second time, and no independent checker runs (Lean 4.8.0 ships no leanchecker executable) |
-| 1 | every safe constant of the `TrustIr` library was admitted by the kernel, none written into the environment by a meta-program, except the unsafe-recursion bodies of partial definitions, which no safe constant may name | (test) `lean/trust_ir-semantics/ProofCensus.lean`, run by the `lean-proofs` gate, replays each one through the kernel from its stored term on top of Init (Lean core's replay, the engine of lean4checker), a native_decide site with its evaluation re-run first, and the gate checks that the replayed and skipped counts cover every safe constant. Red demonstrated on a scratch copy with a False theorem written by a meta-program, which the build and the axiom census alone passed |
+| 1 | every safe constant of the `TrustIr` library was admitted by the kernel, none written into the environment by a meta-program, except the unsafe-recursion bodies of partial definitions, which no safe constant may name | (test) `lean/trust_ir-semantics/ProofCensus.lean`, run by the `lean-proofs` gate, replays each one through the kernel from its stored term on top of the exact external import closure (Lean core's replay, the engine of lean4checker), a native_decide site with its evaluation re-run first, and the gate checks that the replayed and skipped counts cover every safe constant. Red demonstrated on a scratch copy with a False theorem written by a meta-program, which the build and the axiom census alone passed |
 | 1 | the `native_decide` fixture theorems (462 on 2026-09-29) trust the Lean COMPILER and runtime as well as the kernel, and no other theorem does | (test) `lean/trust_ir-semantics/ProofCensus.lean`, run by the `lean-proofs` gate, admits the compiler axiom only in the modules `nativeDecideModules` names and refuses it by name everywhere else; such a fixture witnesses `(test)`, never `(lean-theorem)` |
-| 2 | `ay_sound_unsat` is the ONLY first-party axiom | (test) `lean/trust_ir-semantics/ProofCensus.lean`, run by the `lean-proofs` gate: EVERY safe constant of the `TrustIr` library may rest on the Lean-core trio and `ay_sound_unsat` only, and no other safe axiom may be declared; a placeholder fails the same gate, from the census or, inside an example, from the build log. `lean/trust_ir-semantics/TrustIr/Proofs/AxiomAudit.lean` pins the exact printouts of a curated list. Skipped, by name, on a machine without the elan lake |
+| 2 | `ay_sound_unsat` is the ONLY permanent first-party logical axiom | (test) `lean/trust_ir-semantics/ProofCensus.lean`, run by the `lean-proofs` gate: safe mathematical constants may rest on the Lean-core trio and `ay_sound_unsat` only. Compiled evaluations are permitted solely in the two explicit fixture modules: canonical `Lean.ofReduceBool` sites and modern generated Boolean assertions are re-evaluated before exact runtime premises enter replay. Raw fixture assertions remain separately reported; a forbidden stored dependency, outside-fixture use, unevaluated assertion, other declared axiom or placeholder fails the gate. `lean/trust_ir-semantics/TrustIr/Proofs/AxiomAudit.lean` pins exact per-compiler dependency sets and generated-family rosters. |
 | 2 | every `ay` UNSAT verdict is sound | (prose-only) the axiom's content, assumed |
 | 3 | the Rust and Lean schemas name the same constructs | (test) `crates/trust-ir/tests/lean_schema_parity.rs`, the `lean-schema-parity` gate. NAME parity only |
 | 3 | the Rust reference interpreter is locked to the numerics policy | (test) `crates/trust-ir-build/tests/numerics_policy.rs` |

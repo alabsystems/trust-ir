@@ -138,7 +138,7 @@ pub(super) fn inst_type<O: ExecutionObserver>(
         | Inst::LoadSlot { ty, .. } => Some(ty),
         Inst::Cast { dst_ty, .. } => Some(dst_ty),
         Inst::PtrMetadata { metadata_ty, .. } => Some(metadata_ty),
-        Inst::PtrFromParts { ptr_ty, .. } => Some(ptr_ty),
+        Inst::PtrFromParts { ptr_ty, .. } | Inst::BoxDeref { ptr_ty, .. } => Some(ptr_ty),
         Inst::DialectOp(op) if op.result_tys.len() == 1 => Some(&op.result_tys[0]),
         _ => None,
     };

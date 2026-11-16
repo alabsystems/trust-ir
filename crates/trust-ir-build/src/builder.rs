@@ -2455,6 +2455,25 @@ impl<'m> FunctionBuilder<'m> {
         })
     }
 
+    /// A `Box` deref of the thin pointer `operand` to a sized `pointee`,
+    /// carrying `fact` (wire v72). The result is the same pointer at
+    /// `Ty::Ptr`. The builder states the fact as given; the validator judges
+    /// it (`validate/box_validity.rs`), and refuses a fact that is missing a
+    /// conjunct, misordered, or whose checkable evidence does not re-derive.
+    pub fn box_deref(
+        &mut self,
+        pointee: Ty,
+        operand: ValueId,
+        fact: trust_ir::box_validity::BoxValidityFact,
+    ) -> ValueId {
+        self.emit(Inst::BoxDeref {
+            ptr_ty: Ty::Ptr,
+            pointee: trust_ir::box_validity::BoxPointee::Sized { ty: pointee },
+            operand,
+            fact: Box::new(fact),
+        })
+    }
+
     // --- Aggregates ---
 
     /// Capture current SSA values in an environment with an exact nominal

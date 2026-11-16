@@ -31,12 +31,12 @@ pub enum StructuredObservationStep {
         branches: Vec<(Vec<ScopedLocal>, StructuredObservationConstruction)>,
     },
     Handle {
-        operator: ScopedLocal,
+        operator: Box<ScopedLocal>,
         original_arguments: Vec<Expr>,
         actual_run: Expr,
         actual_state: Expr,
-        yes: StructuredContinuationConstruction,
-        no: StructuredContinuationConstruction,
+        yes: Box<StructuredContinuationConstruction>,
+        no: Box<StructuredContinuationConstruction>,
     },
 }
 // All trace fields are UNTRUSTED producer data. Consumers must retain complete

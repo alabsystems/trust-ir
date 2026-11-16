@@ -164,6 +164,17 @@ lean_lib SemRBoolWholeBody where
 
 lean_lib SemRBoolBodyChecker where
 
+-- Equations composing the original decoder and the complete-byte root goal.
+lean_lib SemRByteBinding where
+
+lean_lib SemRDecodeCertificate where
+
+lean_lib SemRDecodeCertificateCheck where
+
+lean_lib SemRParserCertificate where
+
+lean_lib SemRParserCertificateCheck where
+
 -- Canonical integer assignment/substitution rules used by native WP consumers.
 lean_lib SemRUnsignedSelect where
 

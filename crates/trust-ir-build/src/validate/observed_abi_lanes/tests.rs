@@ -5,7 +5,7 @@
     clippy::drop_non_drop,
     reason = "observed-r23 lane code landed unwired (2026-10-19, Track L); docs/DECISIONS.md, observed-r23 landing"
 )]
-use super::super::abi_lanes::{AbiLanes, abi_lanes};
+use super::super::abi_lanes::{AbiLanes, abi_lanes, direct_storage_fixture};
 use super::*;
 use std::{
     cell::{Cell, RefCell},
@@ -108,7 +108,11 @@ fn run(m: &Module, ty: &Ty) -> (Option<usize>, Observer, usize, usize) {
 }
 fn empty(state: &State<'_>, lanes: &ObservedAbiLanes<'_>) {
     assert!(state.layout.is_none());
-    assert_eq!(state.frames.capacity() + lanes.nodes.capacity(), 0);
+    assert!(state.enum_layout.is_none());
+    assert_eq!(
+        state.frames.capacity() + state.ranges.capacity() + lanes.nodes.capacity(),
+        0
+    );
 }
 fn drain<O: ExecutionObserver>(
     state: &mut State<'_>,

@@ -10,6 +10,7 @@ import TrustIr.Semantics.ClosureTypes
 import TrustIr.Semantics.Step
 import TrustIr.Semantics.LocalTypes
 import TrustIr.Semantics.CharValidity
+import TrustIr.Semantics.FunctionItemPresence
 import TrustIr.Semantics.AggregateAccess
 import TrustIr.StringCompat
 
@@ -239,14 +240,10 @@ sets up a fresh local frame for callees, restores the caller frame on return,
 and bounds calls by both block fuel and call depth.
 -/
 
-/-- Original signature and calling convention, independent of whether a
-    function has an executable body. No CFG or synthetic body is stored. -/
-structure FunctionHeader where
-  signature : FuncTyDef
-  callingConv : CallingConv
-
 /-- Executable function body carried by an evaluator context. -/
 structure EvalFunction where
+  /-- Actual decoded identity; absent in the context-free manual body API. -/
+  sourceId : Option FuncId := none
   body       : FuncBody
   cfg        : CFG
   entryBlock : BlockId
@@ -278,11 +275,16 @@ def GlobalsTable := GlobalId → Option GlobalDef
 structure EvalContext where
   /-- Selected from the module target before any instruction executes. -/
   byteModel : ByteModel := .le64
+  /-- One finite source carrier supplies both declaration lookup and nominal
+      value containment. A context cannot forge an unrelated presence result. -/
+  valueSource : FunctionItemPresence.Prepared := FunctionItemPresence.prepare {}
   /-- Original source layouts and statically prepared image roots. Actual
       decoded modules always install this; manual scalar contexts may omit it. -/
   memoryService : Option AggregateMemory.Service := none
   /-- Active function's declarations; calls replace this lexical context. -/
   localTypes : Option LocalTypeTable := none
+  functionReturnTypes : Option (List Ty) := none
+  currentFunction : Option FuncId := none
   functions    : FuncId -> Option EvalFunction
   /-- Complete original headers, including declarations and lazily refused
       bodies. A known malformed header is an error, not an absent entry. -/
@@ -292,8 +294,6 @@ structure EvalContext where
       bodies and call depth. No table is inferred from `functions`. -/
   functionOrder : FunctionAddressOrder := none
   funcTys      : FuncTyTable
-  /-- Actual module closure definitions, never inferred from capture shape. -/
-  closures : ClosureTyId → Option ClosureTy := fun _ => none
   maxCallDepth : Nat
   /-- Module globals, enabling full-fidelity `GlobalAddr` (real size + initializer)
       under `stepNWithContext`. The bare `stepInst` keeps the honest size-1
@@ -309,26 +309,8 @@ structure EvalContext where
   /-- A decoded target outside the executable fragment is refused only when
       called. Passing an unused function value must not evaluate its body. -/
   functionErrors : FuncId → Option SemError := fun _ => none
-  /-- WS2.19: the module's enum definitions, so an enum-typed `Const`
-      lowers its `[tag, fields..]` lanes at their DECLARED types (tag at the
-      canonical tag width, payload at the active variant's field types) the
-      way the reference interpreter's `constant_to_value` does. An enum
-      constant whose definition the table does not carry (`none`, the
-      default) is refused as `unsupported.enum_def_table` under the context
-      (`constValueAtWithDefs`), never lowered at the 64-bit default. -/
-  enums : EnumId → Option EnumDef := fun _ => none
-  /-- WS2.19: the module's struct definitions, for the same lane typing (and
-      the same refusal without an entry) of a struct-typed `Const`. -/
-  structs : StructId → Option StructDef := fun _ => none
   /-- Producer tuple layouts retain original source TyIds and field order. -/
   tupleLayouts : List TupleLayoutDescriptor := []
-  /-- Named record field types for contextual constant evaluation. Field
-      order is retained from the literal; names select the declared types. -/
-  records : RecordId → Option RecordDef := fun _ => none
-  /-- WS2.19: the module's type table (`Module.types`, indexed by `TyId`),
-      so an ARRAY literal lowers its elements at the declared element type
-      (`Ty.Array` names its element by `TyId`); refused without an entry. -/
-  types : TyId → Option Ty := fun _ => none
   /-- Amendment D (§20): the module drop-glue table, as a lookup from the
       dropped type to its glue (`Module.drop_glue`; derived `Ty` equality,
       the tuple-layout rule). A drop at a type the table maps RESOLVES to a
@@ -338,6 +320,17 @@ structure EvalContext where
   dropGlue : Ty → Option FuncId := fun _ => none
 
 namespace EvalContext
+
+def types (ctx : EvalContext) : TyId → Option Ty := ctx.valueSource.ty
+def structs (ctx : EvalContext) : StructId → Option StructDef := ctx.valueSource.firstStructDef
+def enums (ctx : EvalContext) : EnumId → Option EnumDef := ctx.valueSource.firstEnumDef
+def records (ctx : EvalContext) : RecordId → Option RecordDef := ctx.valueSource.firstRecordDef
+def closures (ctx : EvalContext) : ClosureTyId → Option ClosureTy := ctx.valueSource.closureTy
+
+/-- Static item declarations share the finite source authority used by frame
+    origins and value containment; metadata cannot supply a runtime unwind. -/
+def functionItems (ctx : EvalContext) : FuncId → Option (Except String FunctionItemHeader) :=
+  ctx.valueSource.functionItem
 
 /-- Existing canonical leaf layouts/codecs depend only on the byte model
     and function namespace. Producer aggregate metadata cannot change them.
@@ -363,7 +356,10 @@ theorem semGEPUsing_canonical (ctx : EvalContext) (reader : IntegerOperandReader
 /-- A callee gets its own declarations. The caller retains its lexical context
     for the continuation, just as its local values are restored from a frame. -/
 def forFunction (ctx : EvalContext) (function : EvalFunction) : EvalContext :=
-  { ctx with localTypes := function.localTypes }
+  { ctx with
+    localTypes := function.localTypes
+    currentFunction := function.sourceId
+    functionReturnTypes := some function.body.returnTys }
 
 /-- Interpret a typed integer without imposing a consumer-specific sign guard.
     Poison is inspected before metadata, including in an untyped context. -/
@@ -509,7 +505,8 @@ def checkIndirectSignature (sig : FuncTyDef) (body : FuncBody) :
     Except String Unit :=
   if sig.abi.isSome || body.abi.isSome then
     .error "typed ABI transport semantics unsupported"
-  else if sig.params == body.paramTys && sig.returns == body.returnTys && !sig.isVararg && !body.isVararg then
+  else if closureTyListEq sig.params body.paramTys &&
+      closureTyListEq sig.returns body.returnTys && !sig.isVararg && !body.isVararg then
     .ok ()
   else
     .error "indirect call signature mismatch"
@@ -549,6 +546,92 @@ def functionCall (ctx : EvalContext) (held : FuncTyId) (target : FuncId)
   | .error msg => throw (.typeError (trustIrStringAppend "CallIndirect: " msg))
 
 #trustIrAxiomsExact TrustIr.functionCall == []
+
+/-- Apply signature-only resolution and inspect the resolved target's actual
+    convention before entering it. The repeated target lookup is pure. -/
+def functionCallWithConvention (ctx : EvalContext) (held : FuncTyId) (target : FuncId)
+    (sig : FuncTyId) (convention : CallingConv) : Except SemError FuncId :=
+  match functionCall ctx held target sig with
+  | .error error => .error error
+  | .ok resolved =>
+    match ctx.functions resolved with
+    | none => .error (.typeError "CallIndirect: undefined function")
+    | some callee =>
+      if callee.callingConv != convention then
+        .error (.typeError "CallIndirect: calling convention mismatch")
+      else .ok resolved
+
+/-- Item construction inspects the unique original header, never its body. -/
+def functionItemDeclaration (ctx : EvalContext) (target : FuncId) :
+    Except SemError FunctionItemHeader :=
+  match ctx.functionItems target with
+  | some (.ok header) => .ok header
+  | some (.error message) => .error (.typeError message)
+  | none => .error (.typeError "FnItem: original function declaration is absent")
+
+/-- Static declaration failures cannot carry a runtime unwind state. This is
+    a consequence of the finite metadata carrier, with no context premise. -/
+theorem functionItemDeclaration_error_is_typeError (ctx : EvalContext) (target : FuncId)
+    (error : SemError) (failed : functionItemDeclaration ctx target = .error error) :
+    ∃ message, error = .typeError message := by
+  unfold functionItemDeclaration at failed
+  cases found : ctx.functionItems target with
+  | none =>
+    rw [found] at failed
+    cases failed
+    exact ⟨"FnItem: original function declaration is absent", rfl⟩
+  | some declaration =>
+    rw [found] at failed
+    cases declaration with
+    | error message =>
+      cases failed
+      exact ⟨message, rfl⟩
+    | ok header => cases failed
+
+/-- Application retains nominal identity, original signature id and calling
+    convention before entering the ordinary function-call machinery. -/
+def functionItemCall (ctx : EvalContext) (target : FuncId) (sig : FuncTyId)
+    (convention : CallingConv) : Except SemError FuncId := do
+  let declaration ← functionItemDeclaration ctx target
+  if declaration.header.callingConv != convention then
+    throw (.typeError "CallIndirect: function item calling convention mismatch")
+  if declaration.signatureId != sig then
+    throw (.typeError "CallIndirect: function item signature id mismatch")
+  let expected ← match ctx.funcTys sig with
+    | some expected => pure expected
+    | none => throw (.typeError "CallIndirect: undefined function type")
+  if expected.abi.isSome || declaration.header.signature.abi.isSome then
+    throw (.unsupported .interproceduralCall "typed ABI transport semantics unsupported")
+  if !(closureTyListEq expected.params declaration.header.signature.params) ||
+      !(closureTyListEq expected.returns declaration.header.signature.returns) ||
+      expected.isVararg || declaration.header.signature.isVararg then
+    throw (.typeError "CallIndirect: function item signature mismatch")
+  pure target
+
+/-- A runtime item cannot replace a pointer or a differently declared item.
+    Existing pointer/closure declarations keep their own validation path. -/
+def checkFunctionItemCalleeType (ctx : EvalContext) (operand : ValueId)
+    (value : Value) : Except SemError Unit :=
+  match ctx.localTypes.bind (fun table => table operand), value with
+  | some (.FnItem expected), .fnItem held =>
+    if expected == held then .ok ()
+    else .error (.typeError "CallIndirect: function item identity differs from its SSA declaration")
+  | some (.FnItem _), _ | _, .fnItem _ =>
+    .error (.typeError "CallIndirect: nominal function item declaration is absent or mismatched")
+  | _, _ => .ok ()
+
+/-- The body stays lazy until depth and argument inspection have completed. -/
+def resolveFunctionItemBody (ctx : EvalContext) (target : FuncId) :
+    Except SemError EvalFunction :=
+  match ctx.functions target with
+  | some function => .ok function
+  | none =>
+    match ctx.functionErrors target with
+    | some error => .error error
+    | none =>
+      if ctx.declared target then
+        .error (.unsupported .interproceduralCall "CallIndirect: callee is a bodyless declaration")
+      else .error (.typeError "CallIndirect: undefined function")
 
 /-- Resolve a nominal closure's code contract. A missing table or an ABI
     transport outside this evaluator's model is an explicit refusal. This
@@ -650,6 +733,139 @@ def listIndexOf? (xs : List Int) (x : Int) : Option Nat :=
     | y :: ys, i => if y == x then some i else go ys (i + 1)
   go xs 0
 
+/-- Complete immutable declaration equality, matching the native origin
+    check; source names and raw type identities are not erased. -/
+def bindingFrameDeclarationEq (left right : BindingFrameDef) : Bool :=
+  left.id == right.id && left.name == right.name &&
+    left.slots.length == right.slots.length &&
+    (left.slots.zip right.slots).all (fun (a, b) => a.name == b.name && closureTyEq a.ty b.ty)
+
+/-- Authenticate a frame snapshot against the original finite declaration
+    table, including exact slot census. Ptr is only the SSA transport type. -/
+def bindingFrameTypes (ctx : EvalContext) (value : Value) : Except SemError (List Ty) := do
+  match value with
+  | .sourceFrame _ origin declaration values =>
+    let original ← match ctx.valueSource.bindingFrame origin declaration.id with
+      | some original => pure original
+      | none => throw (.typeError "binding frame: original declaration is absent or ambiguous")
+    if !(bindingFrameDeclarationEq original declaration) then
+      throw (.typeError "binding frame: original declaration differs from held origin")
+    if original.slots.length != values.length then
+      throw (.typeError "binding frame: slot census differs from original declaration")
+    pure (original.slots.map (·.ty))
+  | _ => throw (.typeError "binding frame: authenticated source origin is absent")
+
+private def distinctFieldNames : List String → Bool
+  | [] => true
+  | name :: rest => !rest.contains name && distinctFieldNames rest
+
+/-- Check only nominal item lanes against their declared source positions.
+    Unwritten aggregate lanes remain transport markers. Stored array seeds
+    are visited once; pointer pointees and inactive enum fields are not read.
+    One complete declaration-directed check layer. The recursion parameter
+    is explicit so the match compiler does not duplicate its fuel iterator. -/
+def checkFunctionItemLayer (ctx : EvalContext)
+    (recurse : Ty → Value → Except SemError Unit) (ty : Ty) (value : Value) :
+    Except SemError Unit := do
+    if value.isUninit then return ()
+    let relevant := ctx.valueSource.hasFnItem ty
+    let fields (types : List Ty) (values : List Value) : Except SemError Unit :=
+      do
+      if relevant && types.length != values.length then
+        throw (.typeError "FnItem: container field census differs from its declaration")
+      ((types ++ List.replicate values.length Ty.Error).zip values).forM
+        (fun (ty, value) => recurse ty value)
+    match ty, value with
+    | .Ptr, .sourceFrame _ _ _ values =>
+      let types ← bindingFrameTypes ctx value
+      (types.zip values).forM (fun (ty, value) => recurse ty value)
+    | _, .sourceFrame _ _ _ _ =>
+      throw (.typeError "binding frame: runtime handle requires its Ptr transport type")
+    | .FnItem expected, .fnItem held =>
+      if expected != held then throw (.typeError "FnItem: runtime identity differs from declared type")
+      let _ ← functionItemDeclaration ctx expected
+      pure ()
+    | .FnItem _, _ | _, .fnItem _ =>
+      throw (.typeError "FnItem: runtime kind differs from declared type")
+    | .Tuple types, .aggregate values => fields types values
+    | .Struct id, .aggregate values =>
+      fields (((ctx.structs id).map (fun definition => definition.fields.map (·.ty))).getD []) values
+    | .Enum id, .aggregate values =>
+      match values with
+      | [] =>
+        if relevant then throw (.typeError "FnItem: enum tag is absent") else pure ()
+      | tag :: values => do
+        let _ ← recurse .Error tag
+        let types := do
+          let definition ← ctx.enums id
+          let repr ← enumCanonicalTagRepr definition
+          let discriminants ← enumEffectiveDiscriminants definition
+          let raw ← match tag with | .int width raw => if width == repr.bitWidth then some raw else none | _ => none
+          let tag := if SourceLayout.tagSigned repr then toSigned raw repr.bitWidth else truncateUnsigned raw repr.bitWidth
+          let selected ← listIndexOf? discriminants tag
+          pure (← trustIrListGet? definition.variants selected).fields
+        if relevant && types.isNone then
+          throw (.typeError "FnItem: enum tag does not select a declared payload")
+        fields (types.getD []) values
+    | .Array element count, .array values =>
+      if relevant && values.size != count then
+        throw (.typeError "FnItem: array length differs from its declaration")
+      values.tree.checkStored (recurse ((ctx.types element).getD .Error))
+    | .Vector count element, .vector values =>
+      if relevant && values.length != count then
+        throw (.typeError "FnItem: vector length differs from its declaration")
+      values.forM (recurse element)
+    | .Sequence element, .sequence values | .Set element _, .set values =>
+      values.forM (recurse ((ctx.types element).getD .Error))
+    | .Record id, .record values =>
+      if relevant then
+        let declared ← match ctx.records id with
+          | some definition => pure definition.fields
+          | none => throw (.typeError "FnItem: record declaration is absent")
+        if declared.length != values.length ||
+            !distinctFieldNames (declared.map (·.name)) ||
+            !distinctFieldNames (values.map (·.fst)) then
+          throw (.typeError "FnItem: record field census differs from its declaration")
+      values.forM fun (name, value) => do
+        let field := (ctx.records id).bind (fun definition => definition.fields.find? (fun field => field.name == name))
+        if relevant && field.isNone then
+          throw (.typeError "FnItem: record field is not declared")
+        recurse ((field.map (·.ty)).getD .Error) value
+    | .Closure id, .typedClosure held _ captures =>
+      if relevant && held != id then
+        throw (.typeError "FnItem: closure identity differs from its declaration")
+      fields (((ctx.closures id).map (·.captures)).getD []) captures
+    | .Closure id, .closure _ captures =>
+      fields (((ctx.closures id).map (·.captures)).getD []) captures
+    | .FatPtr kind, .fatPtr _ _ metadata =>
+      recurse (kind.metadataTyAtModel ctx.byteModel) metadata
+    | _, _ =>
+      if relevant then throw (.typeError "FnItem: container runtime kind differs from its declaration")
+      match value with
+      | .aggregate values | .vector values | .sequence values | .set values
+      | .closure _ values | .typedClosure _ _ values | .frame _ values => fields [] values
+      | .array values => values.tree.checkStored (recurse .Error)
+      | .record values => values.forM (fun (_, value) => recurse .Error value)
+      | _ => pure ()
+
+/-- Iterate the same layer along the actual stored value depth. Nominal
+    containment itself comes from the complete finite source fixed point. -/
+def checkFunctionItemLanes (ctx : EvalContext) (fuel : Nat) (ty : Ty) (value : Value) :
+    Except SemError Unit :=
+  match fuel with
+  | 0 =>
+    match ty, value with
+    | .FnItem _, _ | _, .fnItem _ =>
+      .error (.typeError "FnItem: value nesting does not match its declaration")
+    | _, .sourceFrame _ _ _ _ =>
+      .error (.typeError "binding frame: value nesting does not match its declaration")
+    | _, _ => .ok ()
+  | fuel + 1 => checkFunctionItemLayer ctx (checkFunctionItemLanes ctx fuel) ty value
+
+def checkFunctionItemValues (ctx : EvalContext) (types : List Ty) (values : List Value) :
+    Except SemError Unit :=
+  (types.zip values).forM (fun (ty, value) => checkFunctionItemLanes ctx (value.depth + 1) ty value)
+
 /-- Runtime value/type check for closure boundaries. References retain their
     actual pointer/provenance; this never dereferences or reconstructs them.
     Integer signedness remains instruction-level in the legacy value model;
@@ -683,6 +899,9 @@ def checkClosureValueAt (ctx : EvalContext) (fuel : Nat) (ty : Ty) (v : Value) :
     | .PtrConst _, .ptr _ _ | .PtrConst _, .nullPtr
     | .PtrMut _, .ptr _ _ | .PtrMut _, .nullPtr => pure ()
     | .Unit, .aggregate [] => pure ()
+    | .FnItem expected, .fnItem held =>
+      if expected != held then mismatch
+      else do let _ ← functionItemDeclaration ctx expected; pure ()
     | .Func sig, .fnDef held _ => if sig == held then pure () else mismatch
     | .Func _, .nullPtr => pure ()
     | .Tuple ts, .aggregate vs =>
@@ -928,15 +1147,20 @@ def semGlobalAddrWithCtx (globalsTable : GlobalsTable) (global : GlobalId)
     are deliberately absent: changing a CFG cannot change a literal value. -/
 structure ConstantEvalContext where
   byteModel : ByteModel
-  closures : ClosureTyId → Option ClosureTy
-  enums : EnumId → Option EnumDef
-  structs : StructId → Option StructDef
-  records : RecordId → Option RecordDef
-  types : TyId → Option Ty
+  valueSource : FunctionItemPresence.Prepared := FunctionItemPresence.prepare {}
+
+def ConstantEvalContext.types (ctx : ConstantEvalContext) : TyId → Option Ty := ctx.valueSource.ty
+def ConstantEvalContext.structs (ctx : ConstantEvalContext) : StructId → Option StructDef := ctx.valueSource.firstStructDef
+def ConstantEvalContext.enums (ctx : ConstantEvalContext) : EnumId → Option EnumDef := ctx.valueSource.firstEnumDef
+def ConstantEvalContext.records (ctx : ConstantEvalContext) : RecordId → Option RecordDef := ctx.valueSource.firstRecordDef
+def ConstantEvalContext.closures (ctx : ConstantEvalContext) : ClosureTyId → Option ClosureTy := ctx.valueSource.closureTy
+
+def ConstantEvalContext.functionItems (ctx : ConstantEvalContext) :
+    FuncId → Option (Except String FunctionItemHeader) := ctx.valueSource.functionItem
 
 /-- Project exactly the definition tables used by constant lowering. -/
 def EvalContext.constantContext (ctx : EvalContext) : ConstantEvalContext :=
-  ⟨ctx.byteModel, ctx.closures, ctx.enums, ctx.structs, ctx.records, ctx.types⟩
+  ⟨ctx.byteModel, ctx.valueSource⟩
 
 /-- Distinct supplied record names, together with the declared census and
     membership checks below, name every declared field exactly once. -/
@@ -976,6 +1200,14 @@ def constValueAtWithDefsIn (ctx : ConstantEvalContext) (ty : Ty) (c : Constant)
   if !constPointerFormsSupported ty c then
     throw (.typeError "constant requires null pointer spellings and matching inline field census")
   match ty, c with
+  | .FnItem expected, .fnItem held =>
+    if expected != held then throw (.typeError "FnItem: constant identity differs from type")
+    match ctx.functionItems expected with
+    | some (.ok _) => pure (.fnItem expected)
+    | some (.error message) => throw (.typeError message)
+    | none => throw (.typeError "FnItem: original function declaration is absent")
+  | .FnItem _, _ | _, .fnItem _ =>
+    throw (.typeError "FnItem: constant and nominal type must have the same identity")
   | .Closure cid, .closure fn cs => do
     let d ← match ctx.closures cid with
       | some d => pure d
@@ -1240,6 +1472,7 @@ def checkAggregateLane (model : ByteModel) (ty : Ty) (value : Value) :
   | .PtrMut _, .ptr _ _ | .PtrMut _, .nullPtr
   | .Rc _, .ptr _ _ | .Rc _, .nullPtr => pure ()
   | .Unit, .aggregate [] => pure ()
+  | .FnItem expected, .fnItem held => if expected == held then pure () else mismatch
   | .Func expected, .fnDef held _ => if expected == held then pure () else mismatch
   | .Func _, .nullPtr => pure ()
   | .Tuple _, .aggregate _ | .Struct _, .aggregate _ | .Array _ _, .array _
@@ -1452,6 +1685,91 @@ def semGlobalAddrInContext (ctx : EvalContext) (global : GlobalId) : Sem ValueId
 def stepInstWithContext (ctx : EvalContext) (inst : Inst) :
     Sem InstrResult := do
   match inst with
+  | .OpenFrame declaration =>
+    match ctx.currentFunction with
+    | none =>
+      -- The context-free API retains its ordinary typed-unwritten carrier.
+      pure (.value (some (← semOpenFrame declaration)))
+    | some origin => do
+      let original ← match ctx.valueSource.bindingFrame origin declaration.id with
+        | some original => pure original
+        | none => Sem.throwTypeError "OpenFrame: original declaration is absent or ambiguous"
+      if !(bindingFrameDeclarationEq original declaration) then
+        Sem.throwTypeError "OpenFrame: instruction differs from original slot declaration"
+      let state ← Sem.getState
+      if state.nextFrameLineage < 2 ^ Sem.frameLineageBits - 1 then
+        Sem.setFrameState (state.nextFrameLineage :: state.openFrameLineages) (state.nextFrameLineage + 1)
+        let id ← Sem.bindFresh (.sourceFrame state.nextFrameLineage origin original (original.slots.map (fun _ => .uninit)))
+        pure (.value (some id))
+      else Sem.throwUB "OpenFrame: frame id overflow"
+  | .BindSlot frame slot value =>
+    let (lineage, slots) ← Sem.frameHandle frame "BindSlot"
+    let state ← Sem.getState
+    if !(state.openFrameLineages.contains lineage) then
+      Sem.throwUB "BindSlot: frame is not open"
+    let held ← Sem.lookupValue frame
+    match held with
+    | .frame _ _ => do
+      let value ← Sem.lookupValue value
+      if slot < slots.length then
+        -- An ordinary carrier supplies no original nominal slot authority.
+        Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) .Error value)
+        let result ← match bindSlot held slot value with
+          | some result => pure result
+          | none => Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots"
+        pure (.value (some (← Sem.bindFresh result)))
+      else Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots"
+    | _ => do
+      let types ← Sem.fromMemoryExcept (bindingFrameTypes ctx held)
+      let value ← Sem.lookupValue value
+      let ty ← match trustIrListGet? types slot with
+        | some ty => pure ty
+        | none => Sem.throwUB "BindSlot: slot out of bounds"
+      Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) ty value)
+      let result ← match bindSlot held slot value with
+        | some result => pure result
+        | none => Sem.throwUB "BindSlot: slot out of bounds"
+      pure (.value (some (← Sem.bindFresh result)))
+  | .LoadSlot frame slot ty =>
+    let (lineage, slots) ← Sem.frameHandle frame "LoadSlot"
+    let state ← Sem.getState
+    if !(state.openFrameLineages.contains lineage) then
+      Sem.throwUB "LoadSlot: frame is not open"
+    let held ← Sem.lookupValue frame
+    match held with
+    | .frame _ _ =>
+      match trustIrListGet? slots slot with
+      | none => Sem.throwUB s!"LoadSlot: slot {slot} out of range for frame of {slots.length} slots"
+      | some value => do
+        Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) .Error value)
+        pure (.value (some (← Sem.bindFresh value)))
+    | _ => do
+      let types ← Sem.fromMemoryExcept (bindingFrameTypes ctx held)
+      let declared ← match trustIrListGet? types slot with
+        | some declared => pure declared
+        | none => Sem.throwUB "LoadSlot: slot out of bounds"
+      if !(closureTyEq declared ty) then
+        Sem.throwTypeError "LoadSlot: requested type differs from original slot declaration"
+      let value ← match loadSlot held slot with
+        | some value => pure value
+        | none => Sem.throwUB "LoadSlot: slot out of bounds"
+      if value.isUninit then
+        if isPartialLoadTy ty then
+          pure (.value (some (← Sem.bindFresh (.undef ty))))
+        else Sem.throwUB (nonpartialUndefMessage ty)
+      else
+        Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) ty value)
+        pure (.value (some (← Sem.bindFresh value)))
+  | .CloseFrame frame =>
+    let held ← Sem.lookupValue frame
+    match held with
+    | .sourceFrame _ _ _ _ => do
+      let _ ← Sem.fromMemoryExcept (bindingFrameTypes ctx held)
+      semCloseFrame frame
+      pure (.value none)
+    | _ =>
+      semCloseFrame frame
+      pure (.value none)
   | .Alloca ty count align =>
     let id ← semAllocaUsing ctx.memoryLayout ctx.carrierIntegerOperand
       ty count align ctx.byteModel
@@ -1464,6 +1782,39 @@ def stepInstWithContext (ctx : EvalContext) (inst : Inst) :
     let id ← semGEPUsing ctx.memoryLayout ctx.carrierIntegerOperand
       ty base indices ctx.byteModel
     pure (.value (some id))
+  | .Cast .ReifyFnPointer (.FnItem source) (.Func signature) operand =>
+    let value ← Sem.lookupValue operand
+    Sem.rejectPartial value "ReifyFnPointer"
+    match value with
+    | .fnItem held =>
+      if held != source then Sem.throwTypeError "ReifyFnPointer: item identity differs from source type"
+      let declaration ← Sem.fromMemoryExcept (functionItemDeclaration ctx source)
+      if declaration.signatureId != signature then
+        Sem.throwTypeError "ReifyFnPointer: destination signature differs from item declaration"
+      pure (.value (some (← Sem.bindFresh (.fnDef signature source))))
+    | _ => Sem.throwTypeError "ReifyFnPointer: source is not a nominal function item"
+  | .Cast op source destination operand =>
+    if (op == .Bitcast || op == .Transmute) &&
+        ((match source with | .FnItem _ => true | _ => false) ||
+         (match destination with | .FnItem _ => true | _ => false)) then do
+      let service ← match ctx.memoryService with
+        | some service => pure service
+        | none => Sem.throwTypeError "FnItem cast: original source layouts are absent"
+      if service.model != ctx.byteModel then
+        Sem.throwTypeError "FnItem cast: source layout target differs from evaluator target"
+      let sourcePlan ← Sem.fromMemoryExcept (service.query source)
+      let destinationPlan ← Sem.fromMemoryExcept (service.query destination)
+      if sourcePlan.layout.size != destinationPlan.layout.size then
+        Sem.throwTypeError "FnItem cast: byte extents differ"
+      let value ← Sem.lookupValue operand
+      Sem.rejectPartial value "FnItem cast"
+      let image ← Sem.fromMemoryExcept
+        (AggregateMemory.encode ctx.byteModel ctx.functionOrder sourcePlan value false)
+      let state ← Sem.getState
+      let result ← Sem.fromMemoryExcept
+        (AggregateMemory.decode ctx.byteModel ctx.functionOrder state.memory destinationPlan image.bytes)
+      pure (.value (some (← Sem.bindFresh result)))
+    else stepInst inst ctx.byteModel
   | .ExtractElement ty array index =>
     let vid ← semExtractElementUsing (ctx.elementIndex index) ty array index
     pure (.value (some vid))
@@ -1541,7 +1892,8 @@ def stepInstWithContext (ctx : EvalContext) (inst : Inst) :
   | .Const ty c@(.aggregate _) | .Const ty c@(.array _)
   | .Const ty c@(.splat _ _) | .Const ty c@(.vector _)
   | .Const ty c@(.sequence _) | .Const ty c@(.set _) | .Const ty c@(.record _)
-  | .Const ty c@(.closure _ _) | .Const ty c@(.bytes _ _) =>
+  | .Const ty c@(.closure _ _) | .Const ty c@(.bytes _ _)
+  | .Const ty c@(.fnItem _) =>
     -- Resolve every named element/field type before checking float width:
     -- the inline type alone cannot determine every named field/element leaf.
     if c.hasSymbolAddr then
@@ -1788,14 +2140,23 @@ def closureTermWithContext (ctx : EvalContext) (callDepth : Nat) (term : Inst)
   match term with
   | .CallIndirect valueId sig argIds conv => do
     let value ← Sem.lookupValue valueId
+    let _ ← Sem.fromMemoryExcept (checkFunctionItemCalleeType ctx valueId value)
     match value with
     | .nullPtr => Sem.throwTypeError "CallIndirect: null function pointer"
+    | .fnItem target =>
+      match callDepth with
+      | 0 => throw SemError.outOfFuel
+      | _ + 1 => do
+        let fn ← Sem.fromMemoryExcept (functionItemCall ctx target sig conv)
+        let args ← argIds.mapM Sem.lookupValue
+        let _ ← Sem.fromMemoryExcept (resolveFunctionItemBody ctx fn)
+        pure (.terminator (.CallReq fn args))
     | .fnDef held target =>
       let args ← argIds.mapM Sem.lookupValue
       match callDepth with
       | 0 => throw SemError.outOfFuel
       | _ + 1 => do
-        let fn ← match functionCall ctx held target sig with
+        let fn ← match functionCallWithConvention ctx held target sig conv with
           | .ok fn => pure fn
           | .error e => throw e
         pure (.terminator (.CallReq fn args))
@@ -1809,16 +2170,25 @@ def closureTermWithContext (ctx : EvalContext) (callDepth : Nat) (term : Inst)
           | .error e => throw e
         pure (.terminator (.CallReq target physicalArgs))
     | _ => fallback
-  | .InvokeIndirect valueId sig argIds _conv normalDest normalArgs unwindDest => do
+  | .InvokeIndirect valueId sig argIds conv normalDest normalArgs unwindDest => do
     let value ← Sem.lookupValue valueId
+    let _ ← Sem.fromMemoryExcept (checkFunctionItemCalleeType ctx valueId value)
     match value with
     | .nullPtr => Sem.throwTypeError "InvokeIndirect: null function pointer"
+    | .fnItem target =>
+      match callDepth with
+      | 0 => throw SemError.outOfFuel
+      | _ + 1 => do
+        let fn ← Sem.fromMemoryExcept (functionItemCall ctx target sig conv)
+        let args ← argIds.mapM Sem.lookupValue
+        let _ ← Sem.fromMemoryExcept (resolveFunctionItemBody ctx fn)
+        pure (.terminator (.InvokeReq fn args normalDest normalArgs unwindDest))
     | .fnDef held target =>
       let args ← argIds.mapM Sem.lookupValue
       match callDepth with
       | 0 => throw SemError.outOfFuel
       | _ + 1 => do
-        let fn ← match functionCall ctx held target sig with
+        let fn ← match functionCallWithConvention ctx held target sig conv with
           | .ok fn => pure fn
           | .error e => throw e
         pure (.terminator (.InvokeReq fn args normalDest normalArgs unwindDest))
@@ -1973,6 +2343,7 @@ def stepNWithContext (ctx : EvalContext) (fuel : Nat) (callDepth : Nat)
       -- drop runs the `Call` / `Invoke` rules below verbatim, and an
       -- unresolved one reaches the bare `stepInst`, which refuses it.
       let block := ctx.resolveBlock blk
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (block.params.map (·.snd)) args)
       bindBlockParamsChecked block.params args
       for bodyInst in bodyInstsWithResultDests block.body block.bodyResultDests do
         let inst := bodyInst.fst
@@ -2005,21 +2376,29 @@ def stepNWithContext (ctx : EvalContext) (fuel : Nat) (callDepth : Nat)
             ctx.bindCallResults inst resultDests retVals
         | .CallIndirect calleeValId sig argIds conv => do
           let calleeVal ← Sem.lookupValue calleeValId
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemCalleeType ctx calleeValId calleeVal)
           -- Validate a pointer before argument lookup as before. A nominal
           -- closure is resolved only after the same call-depth boundary.
           let addr ← match calleeVal with
             | .ptr a _ => pure a
             | .fnDef _ _ => pure 0
+            | .fnItem _ => pure 0
             | .typedClosure _ _ _ => pure 0
             | .nullPtr => Sem.throwTypeError "CallIndirect: null function pointer"
             | _ => Sem.throwTypeError "CallIndirect: callee is not a pointer or typed closure"
-          let args ← argIds.mapM Sem.lookupValue
+          let args ← match calleeVal with
+            | .fnItem _ => pure []
+            | _ => argIds.mapM Sem.lookupValue
           match callDepth with
           | 0 => throw SemError.outOfFuel
           | callDepth + 1 => do
             let (calleeId, callArgs) ← match calleeVal with
+              | .fnItem target =>
+                match functionItemCall ctx target sig conv with
+                | .ok fn => do pure (fn, ← argIds.mapM Sem.lookupValue)
+                | .error e => throw e
               | .fnDef held target =>
-                match functionCall ctx held target sig with
+                match functionCallWithConvention ctx held target sig conv with
                 | .ok fn => pure (fn, args)
                 | .error e => throw e
               | .typedClosure cid fn captures =>
@@ -2043,7 +2422,10 @@ def stepNWithContext (ctx : EvalContext) (fuel : Nat) (callDepth : Nat)
                 pure (calleeId, args)
             let callee ← match ctx.functions calleeId with
               | some f => pure f
-              | none => Sem.throwTypeError "CallIndirect: undefined function"
+              | none =>
+                match calleeVal with
+                | .fnItem _ => Sem.fromMemoryExcept (resolveFunctionItemBody ctx calleeId)
+                | _ => Sem.throwTypeError "CallIndirect: undefined function"
             requireUntypedAbi callee.body.abi
             match checkCallArity callArgs callee.body.paramTys with
             | .ok () => pure ()
@@ -2145,7 +2527,11 @@ def stepNWithContext (ctx : EvalContext) (fuel : Nat) (callDepth : Nat)
         | .value _ => Sem.throwTypeError "basic block does not end with a terminator"
         | .values _ => Sem.throwTypeError "basic block does not end with a terminator"
       match result with
-      | .Ret values => pure values
+      | .Ret values =>
+        if let some expected := ctx.functionReturnTypes then
+          let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected values)
+          pure values
+        else pure values
       | .Stuck => Sem.throwUB "reached unreachable"
       | .Continue nextPc nextArgs =>
         stepNWithContext ctx fuel callDepth cfg nextPc nextArgs strat
@@ -2331,15 +2717,17 @@ def evalFunctionInContext (ctx : EvalContext) (entryFunc : FuncId)
   -- the entry's arguments and returns like any callee's): poison may not
   -- enter or leave it.
   Sem.rejectPoisonValues args "Call arguments"
+  let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx func.body.paramTys args)
   -- R7: under `.unwind` an escaping unwinding is the panic its raise recorded.
   let retVals ← exitUnwinding strat
     (stepNWithContext (ctx.forFunction func) fuel ctx.maxCallDepth func.cfg func.entryBlock args strat)
   Sem.rejectPoisonValues retVals "Call returns"
+  let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx func.body.returnTys retVals)
   pure retVals
 
 end TrustIr
 
-#trustIrAxiomsPinned TrustIr.EvalContext.bindInstructionResults == [propext, Classical.choice, Quot.sound] modern []
+#trustIrAxiomsPinned TrustIr.EvalContext.bindInstructionResults == [] modern []
 #trustIrAxiomsExact TrustIr.bindResultDests == []
 #trustIrAxiomsExact TrustIr.bindBlockParams == []
 #trustIrAxiomsExact TrustIr.bindBlockParamsChecked == []

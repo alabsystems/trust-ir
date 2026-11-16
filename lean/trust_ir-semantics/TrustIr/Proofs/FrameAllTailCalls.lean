@@ -71,6 +71,10 @@ theorem all_tail_frame_layer_success (recurse : Recurse) (ctx : EvalContext) (de
   | some block =>
     obtain ⟨sites,⟨control⟩⟩ := grammar pc block found
     simp only [found] at run
+    obtain ⟨unit, checkedState, checked, run⟩ := split_bind_success _ _ s final values run
+    have same := memory_check_success_state _ s checkedState unit checked
+    subst checkedState
+    cases unit
     obtain ⟨unit,bound,params,tail⟩ := split_bind_success _ _ s final values run
     cases unit
     have boundValid := valid.checked_params_success _ args s bound incoming params
@@ -91,8 +95,10 @@ theorem all_tail_frame_layer_success (recurse : Recurse) (ctx : EvalContext) (de
         obtain ⟨afterValid,returned,nextHistory⟩ := recursive ctx cfg depth next nextArgs afterBody final values grammar program bodyValid transported tail
         exact ⟨afterValid,returned,paramsHistory.trans (bodyHistory.trans nextHistory)⟩
       | Ret returned =>
-        change Except.ok (returned,afterBody) = Except.ok (values,final) at tail
-        cases tail
+        change Sem.run (GenericCoro.checkedReturn ctx returned) afterBody = .ok (values,final) at tail
+        obtain ⟨same, equal⟩ := checked_return_success ctx returned values afterBody final tail
+        subst final
+        subst values
         exact ⟨bodyValid,transported,paramsHistory.trans bodyHistory⟩
       | Stuck =>
         change Except.error (SemError.ub "reached unreachable") = Except.ok (values,final) at tail

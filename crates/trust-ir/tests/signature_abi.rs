@@ -579,7 +579,7 @@ fn nonvariadic_fixed_count_preserves_untupled_tail_and_hidden_caller_location() 
 }
 
 #[test]
-fn reference_interpreter_refuses_typed_byval_before_shared_pointer_side_effects() {
+fn reference_interpreter_transports_typed_byval_without_shared_pointer_side_effects() {
     use trust_ir::interpret::{InterpretErrorCode, Interpreter};
     use trust_ir::{
         Block, BlockId, Constant, FuncId, FuncTy, Function, Inst, InstrNode, Ty, ValueId,
@@ -683,9 +683,8 @@ fn reference_interpreter_refuses_typed_byval_before_shared_pointer_side_effects(
         interpreter.execute_func(FuncId::new(0), []),
         interpreter.execute_function(&module.functions[0], []),
     ] {
-        let error = result.unwrap_err();
-        assert_eq!(error.code, InterpretErrorCode::UnsupportedCall);
-        assert!(error.message.contains("typed signature ABI transport"));
+        let outcome = result.unwrap();
+        assert_eq!(outcome.returns[0].as_int().unwrap().as_signed(), 7);
     }
     // Mutation control: deleting the record executes ordinary pointer semantics,
     // changing the caller's storage to99. A proper by-value call would leave7.
@@ -695,19 +694,28 @@ fn reference_interpreter_refuses_typed_byval_before_shared_pointer_side_effects(
         .execute_func(FuncId::new(0), [])
         .unwrap();
     assert_eq!(outcome.returns[0].as_int().unwrap().as_signed(), 99);
-    // An unused or function-pointer-only signature must not escape the module
-    // census merely because the selected entry has a legacy signature.
+    // A supported unused/FnPtr-only descriptor is accepted. Its mutation must
+    // still enter the whole-module census before the legacy entry executes.
     module.functions.truncate(1);
     module.functions[0].blocks[0]
         .body
         .retain(|n| !matches!(n.inst, Inst::Call { .. }));
-    assert!(
-        Interpreter::with_module(&module)
-            .execute_func(FuncId::new(0), [])
-            .unwrap_err()
-            .message
-            .contains("typed signature ABI transport")
-    );
+    let unused = Interpreter::with_module(&module)
+        .execute_func(FuncId::new(0), [])
+        .unwrap();
+    assert_eq!(unused.returns[0].as_int().unwrap().as_signed(), 7);
+    module.func_types[mutator_ty.as_usize()]
+        .abi
+        .as_mut()
+        .unwrap()
+        .arguments[0]
+        .bindings[0]
+        .carrier_bytes = 4;
+    let error = Interpreter::with_module(&module)
+        .execute_func(FuncId::new(0), [])
+        .unwrap_err();
+    assert_eq!(error.code, InterpretErrorCode::SignatureMismatch);
+    assert!(error.message.contains("typed ABI"));
 }
 
 /// D1a: a typed signature ABI past its encoding limits is refused by the

@@ -248,3 +248,61 @@ fn unsupported_target_reason_keeps_entire_owned_triple_for_each_physical_field()
         assert!(parts(&error).2.contains(&format!("{triple:?}")));
     }
 }
+
+#[test]
+fn single_inactive_offsets_skip_declared_storage_but_nonempty_rows_are_diagnosed() {
+    let mut m = Module::new("single field component parity");
+    m.target_info = Some(trust_ir::TargetInfo {
+        triple: "aarch64-unknown-linux-gnu".into(),
+        pointer_size: 8,
+        endianness: trust_ir::Endianness::Little,
+        abi: None,
+        struct_passing: Default::default(),
+    });
+    let e = EnumDef::new(
+        EnumId::new(9),
+        "SingleFields",
+        vec![
+            EnumVariant {
+                name: "Dead".into(),
+                fields: vec![Ty::Never],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Live".into(),
+                fields: vec![Ty::U64],
+                field_names: vec![],
+            },
+        ],
+    );
+    let mut d = EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 8,
+        align: 8,
+        variant_field_offsets: vec![vec![], vec![0]],
+    };
+    // The existing run invokes the actual observed fields component and compares
+    // its complete ordered diagnostics with the independent ordinary oracle.
+    assert!(run(&m, &e, &d).0.is_empty());
+    d.variant_field_offsets[0] = vec![0];
+    let errors = run(&m, &e, &d).0;
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        parts(&errors[0]).1,
+        "an empty physical offset row for an inactive single-inhabited variant"
+    );
+    assert_eq!(parts(&errors[0]).2, "variant 0: 1 offsets");
+    // The live row still receives the original bounds/alignment checks.
+    d.variant_field_offsets[0].clear();
+    d.variant_field_offsets[1] = vec![1];
+    let errors = run(&m, &e, &d).0;
+    assert_eq!(errors.len(), 2);
+    assert_eq!(
+        parts(&errors[0]).1,
+        "variant 1 field 0 entirely within size 8"
+    );
+    assert_eq!(
+        parts(&errors[1]).1,
+        "variant 1 field 0 offset aligned to 8 bytes"
+    );
+}

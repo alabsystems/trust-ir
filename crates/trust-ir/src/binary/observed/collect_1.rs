@@ -132,6 +132,12 @@ pub(super) fn observed_collect_strings_into<O: ExecutionObserver>(
 
     for ed in &module.enums {
         out.poll()?;
+        if matches!(
+            ed.layout.as_ref().map(|layout| &layout.encoding),
+            Some(EnumTagEncoding::DirectWithUninhabited { .. })
+        ) {
+            pool.raise_to(UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION);
+        }
         if ed.variants.is_empty()
             || ed.layout.as_ref().is_some_and(|layout| {
                 matches!(layout.encoding, EnumTagEncoding::SingleInhabited { .. })
@@ -299,6 +305,7 @@ pub(super) fn observed_collect_type_identity_strings<O: ExecutionObserver>(
 ) -> R {
     out.poll()?;
     match ty {
+        TyG::FnItem(_) => pool.raise_to(FN_ITEM_IDENTITY_FORMAT_VERSION),
         TyG::Dialect(ty) => {
             pool.raise_to(DIALECT_TYPE_FORMAT_VERSION);
             pool.intern(&ty.namespace, out)?;

@@ -272,3 +272,23 @@ fn deep_nested_paths_and_long_unicode_type_and_field_diagnostics_are_exact() {
     }
     assert_eq!(run(&m, &c, &t).0.len(), 1);
 }
+
+#[test]
+fn nominal_item_constants_preserve_exact_ids_and_actual_header_refusals() {
+    let mut m = fixture();
+    let id = FuncId::new(7001);
+    m.functions
+        .push(Function::new(id, "item", FuncTyId::new(0), BlockId::new(0)));
+    let ty = Ty::FnItem(id);
+    assert!(run(&m, &Constant::FnItem(id), &ty).0.is_empty());
+    assert_eq!(
+        run(&m, &Constant::FnItem(FuncId::new(7002)), &ty).0.len(),
+        1
+    );
+    let row = m.functions.last().unwrap().clone();
+    m.functions.push(row);
+    assert_eq!(run(&m, &Constant::FnItem(id), &ty).0.len(), 1);
+    m.functions.pop();
+    m.functions.last_mut().unwrap().ty = FuncTyId::new(999);
+    assert_eq!(run(&m, &Constant::FnItem(id), &ty).0.len(), 1);
+}

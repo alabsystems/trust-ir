@@ -1701,6 +1701,8 @@ pub fn ty_equivalence_across(a: &Module, ta: &Ty, b: &Module, tb: &Ty) -> TyEqui
     let mut cx = TyEq {
         a,
         b,
+        functions_a: None,
+        functions_b: None,
         in_progress: BTreeSet::new(),
         conflict: None,
     };
@@ -1727,6 +1729,8 @@ enum Nominal {
 struct TyEq<'m> {
     a: &'m Module,
     b: &'m Module,
+    functions_a: Option<ModuleFunctionCatalog<'m>>,
+    functions_b: Option<ModuleFunctionCatalog<'m>>,
     in_progress: BTreeSet<(Nominal, u32, u32)>,
     /// The FIRST one-key-two-shapes contradiction seen in this comparison.
     conflict: Option<TypeOriginConflict>,
@@ -1777,6 +1781,24 @@ impl TyEq<'_> {
             }
             (Ty::Enum(ea), Ty::Enum(eb)) => self.enm(*ea, *eb),
             (Ty::Func(fa), Ty::Func(fb)) => self.func_ty(*fa, *fb),
+            (Ty::FnItem(fa), Ty::FnItem(fb)) => {
+                let (Ok((a, _)), Ok((b, _))) = (
+                    self.functions_a
+                        .get_or_insert_with(|| ModuleFunctionCatalog::new(self.a))
+                        .function_item(*fa),
+                    self.functions_b
+                        .get_or_insert_with(|| ModuleFunctionCatalog::new(self.b))
+                        .function_item(*fb),
+                ) else {
+                    return false;
+                };
+                if core::ptr::eq(self.a, self.b) && fa != fb {
+                    return false;
+                }
+                // IDs are module-local. Match the normative link identity and
+                // actual signature, never a same-shaped anonymous singleton.
+                a.name == b.name && a.calling_conv == b.calling_conv && self.func_ty(a.ty, b.ty)
+            }
             (Ty::Ref(ia), Ty::Ref(ib))
             | (Ty::RefMut(ia), Ty::RefMut(ib))
             | (Ty::PtrConst(ia), Ty::PtrConst(ib))

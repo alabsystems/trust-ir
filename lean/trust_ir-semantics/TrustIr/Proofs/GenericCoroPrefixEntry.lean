@@ -18,16 +18,18 @@ theorem evalLayer_sourceEntry_eq (recurse : Recurse) (ctx : EvalContext) (depth 
       terminator := .CoroSuspend frame slot next value
       terminatorResultDests := termDests }) :
     evalLayer recurse ctx depth cfg pc args strategy = (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
       bindBlockParamsChecked params args
       evalBody recurse ctx depth strategy
         (bodyInstsWithResultDests (bodyPrefix.map ctx.resolveDrop) bodyDests)
-      suspendValues ctx.byteModel frame value slot next) := by
+      let values ← suspendValues ctx.byteModel frame value slot next
+      checkedReturn ctx values) := by
   cases strategy <;>
     simp only [evalLayer, entry, EvalContext.resolveBlock, EvalContext.resolveDrop,
       stepTermWithContext, closureTermWithContext, stepTermUnwind, stepInst,
-      semCoroSuspend, semReturn, suspendValues, List.mapM, List.mapM.loop,
+      semCoroSuspend, semReturn, suspendValues, checkedReturn, List.mapM, List.mapM.loop,
       List.reverse_nil, List.reverse_cons, List.nil_append, List.append_nil,
-      pure_bind, bind_pure, bind_assoc]
+      pure_bind, bind_pure, bind_assoc] <;> rfl
 
 private theorem expandedEntry_resolvedRows (ctx : EvalContext) (names : Names)
     (bodyPrefix : List Inst) (bodyDests : List (List ValueId))
@@ -64,10 +66,12 @@ theorem evalLayer_targetEntry_eq (recurse : Recurse) (ctx : EvalContext) (depth 
       terminator := .CoroSuspend frame slot next value
       terminatorResultDests := termDests })) :
     evalLayer recurse ctx depth cfg pc args strategy = (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
       bindBlockParamsChecked params args
       evalBody recurse ctx depth strategy
         (bodyInstsWithResultDests (bodyPrefix.map ctx.resolveDrop) bodyDests)
-      expandedValues ctx names frame value slot next) := by
+      let values ← expandedValues ctx names frame value slot next
+      checkedReturn ctx values) := by
   trustIrCompilerProof {
     have slotBind (result : ValueId) := bindInstructionResults_single_nonChar
       ctx (.Const .I64 (.int slot)) names.index result .I64
@@ -90,9 +94,9 @@ theorem evalLayer_targetEntry_eq (recurse : Recurse) (ctx : EvalContext) (depth 
         Constant.hasSymbolAddr, constValueAtChecked_i64, constWidthAmbiguous,
         constHasInexactFloat, constPointerFormsSupported, Ty.isInteger,
         Bool.not_true, Bool.false_eq_true, if_false,
-        semReturn, expandedValues, publishFresh, List.mapM, List.mapM.loop,
+        semReturn, expandedValues, checkedReturn, publishFresh, List.mapM, List.mapM.loop,
         List.reverse_nil, List.reverse_cons, List.nil_append, List.append_nil,
-        pure_bind, bind_pure, bind_assoc]
+        pure_bind, bind_pure, bind_assoc] <;> rfl
   } {
     have slotBind (result : ValueId) := bindInstructionResults_single_nonChar
       ctx (.Const .I64 (.int slot)) names.index result .I64
@@ -115,9 +119,9 @@ theorem evalLayer_targetEntry_eq (recurse : Recurse) (ctx : EvalContext) (depth 
         Constant.hasSymbolAddr, constValueAtChecked_i64, constWidthAmbiguous,
         constHasInexactFloat, constPointerFormsSupported, Ty.isInteger,
         Bool.not_true, Bool.false_eq_true, if_false, if_true,
-        semReturn, expandedValues, publishFresh, List.mapM, List.mapM.loop,
+        semReturn, expandedValues, checkedReturn, publishFresh, List.mapM, List.mapM.loop,
         List.reverse_nil, List.reverse_cons, List.nil_append, List.append_nil,
-        pure_bind, bind_pure, bind_assoc]
+        pure_bind, bind_pure, bind_assoc] <;> rfl
   }
 
 end TrustIr.GenericCoro.Prefix

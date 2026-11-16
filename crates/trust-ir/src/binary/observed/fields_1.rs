@@ -153,6 +153,24 @@ pub(super) fn observed_write_enum_def<O: ExecutionObserver>(
                     observed_write_u8(buf, 3)?;
                     observed_write_v32(buf, *variant)?;
                 }
+                EnumTagEncoding::DirectWithUninhabited {
+                    tag_offset,
+                    variants,
+                } => {
+                    observed_write_u8(buf, 4)?;
+                    observed_write_v64(buf, *tag_offset)?;
+                    observed_write_count(buf, "UninhabitedVariantLayout profiles", variants.len())?;
+                    for row in variants {
+                        observed_write_v32(buf, row.variant)?;
+                        observed_write_v64(buf, row.size)?;
+                        observed_write_v64(buf, row.align)?;
+                        observed_write_count(buf, "FieldStorageLayout profiles", row.fields.len())?;
+                        for field in &row.fields {
+                            observed_write_v64(buf, field.size)?;
+                            observed_write_v64(buf, field.align)?;
+                        }
+                    }
+                }
             }
             observed_write_v64(buf, layout.size)?;
             observed_write_v64(buf, layout.align)?;

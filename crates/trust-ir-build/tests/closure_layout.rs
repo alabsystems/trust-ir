@@ -282,9 +282,9 @@ fn declared_frame_cannot_lift_an_apparent_signature_abi_claim() {
     assert!(reasons[0].contains("apparent signature carries typed ABI placement"));
     assert!(!reasons[0].contains("no such row"));
     assert_eq!(run_program(&unclaimed), Ok(24));
-    let unsupported = run_program(&claimed).expect_err("typed ABI execution is unsupported");
-    assert!(unsupported.contains("UnsupportedCall"));
-    assert!(unsupported.contains("typed signature ABI transport is not implemented"));
+    // Ordinary typed transport now executes this valid carrier. That runtime
+    // result does not lift the codegen refusal or confer an ABI proof.
+    assert_eq!(run_program(&claimed), Ok(24));
 }
 
 // ---------------------------------------------------------------------------

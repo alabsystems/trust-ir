@@ -68,13 +68,13 @@ fn sticky_cleanup_drains_every_owned_partial_field_seen_key_batch_and_borrowed_s
         .sum::<usize>();
     // Eight flat Strings are byte-walked; eight diagnostic String fields
     // use the distinct generic header/drop contract. Three one-error child
-    // drains add 6V+8S+3Q+797, including three 259-variant dispatches;
+    // drains add 6V+8S+3Q+794, including three 269-variant dispatches;
     // local/key headers and borrowed rows add20.
     let expected_retired = 8 * text.len()
         + 6 * size_of::<ValidationError>()
         + 8 * size_of::<String>()
         + 3 * size_of::<Vec<ValidationError>>()
-        + 3 * 259
+        + 3 * 269
         + 40;
     assert_eq!(retired, expected_retired);
     assert!(

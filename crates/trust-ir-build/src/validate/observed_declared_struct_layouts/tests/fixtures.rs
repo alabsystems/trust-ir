@@ -47,6 +47,33 @@ pub(super) fn invalid() -> Module {
     m.structs[1].align = Some(0);
     m
 }
+pub(super) fn trailing_function_items() -> Module {
+    let mut m = Module::new("trailing-function-items");
+    let signature = m
+        .add_func_type(trust_ir::FuncTy::unrecorded(vec![], vec![Ty::U64], false))
+        .unwrap();
+    for id in [7, 11] {
+        m.functions.push(Function::new(
+            FuncId::new(id),
+            format!("item_{id}"),
+            signature,
+            BlockId::new(0),
+        ));
+    }
+    let mut row = strukt(
+        0,
+        Some(8),
+        Some(8),
+        vec![
+            field("first", Ty::FnItem(FuncId::new(7)), Some(0)),
+            field("word", Ty::U64, Some(0)),
+            field("last", Ty::FnItem(FuncId::new(11)), Some(8)),
+        ],
+    );
+    row.repr = trust_ir::StructRepr::C;
+    m.structs.push(row);
+    m
+}
 pub(super) fn target(triple: String) -> trust_ir::TargetInfo {
     trust_ir::TargetInfo {
         triple,

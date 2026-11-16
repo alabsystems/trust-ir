@@ -151,7 +151,8 @@ pub(super) fn for_instruction<'a, O: ExecutionObserver>(
         | Inst::PtrMetadata {
             metadata_ty: ty, ..
         }
-        | Inst::PtrFromParts { ptr_ty: ty, .. } => Plan::single(Atom::Borrowed(ty), context),
+        | Inst::PtrFromParts { ptr_ty: ty, .. }
+        | Inst::BoxDeref { ptr_ty: ty, .. } => Plan::single(Atom::Borrowed(ty), context),
         Inst::Cast { dst_ty, .. } => Plan::single(Atom::Borrowed(dst_ty), context),
         Inst::ICmp { ty, .. } | Inst::FCmp { ty, .. } => {
             Plan::single(Atom::Comparison(ty), context)

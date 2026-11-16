@@ -8,7 +8,8 @@ use super::{Batch, Comparison, Oracle, Val, Verdict, differential, oracle, semr_
 use trust_ir::constant::Constant as C;
 use trust_ir::inst::CastOp;
 use trust_ir::ty::{
-    EnumDef, EnumLayoutDescriptor, EnumTagEncoding, EnumTagRepr, EnumVariant, FieldDef, StructDef,
+    EnumDef, EnumLayoutDescriptor, EnumTagEncoding, EnumTagRepr, EnumVariant, FieldDef,
+    FieldStorageLayout, StructDef, UninhabitedVariantLayout,
 };
 use trust_ir::value::{EnumId, FuncId, GlobalId, StructId};
 use trust_ir::{Global, Linkage, Module, TupleLayoutDescriptor, Ty};
@@ -42,8 +43,15 @@ fn aggregate_memory_descriptor_schema_retains_source_layouts() {
         "Packed3 retained for refusal",
         "absent serde default",
         "direct",
+        "direct physical profile retains every extent and offset",
+        "direct physical tag offset refuses u64 overflow",
+        "direct physical variant refuses u32 overflow",
+        "direct physical profile refuses u64 overflow",
+        "direct physical field refuses u64 overflow",
         "untagged",
         "single-inhabited retained selector and rows",
+        "single inhabited selector is u32",
+        "dead field align u64",
         "empty nominal has no fabricated tag or layout",
         "original variant field names retained",
         "selected Never exact full query refusal",
@@ -552,6 +560,336 @@ fn cases(bits: u32) -> (Module, Vec<Case>) {
             fb.make_enum_variant(Ty::Enum(nested_enum), 0, vec![value])
         },
     ));
+    let huge = mb.add_type(Ty::U128);
+    let mut single = EnumDef::new(
+        EnumId::new(5),
+        "SingleInhabited",
+        vec![
+            EnumVariant {
+                name: "Dead".into(),
+                fields: vec![Ty::Never, Ty::Array(huge, 4096)],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Live".into(),
+                fields: vec![Ty::U32],
+                field_names: vec![],
+            },
+        ],
+    )
+    .with_discriminants(vec![Some(7), Some(37)]);
+    single.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0]],
+    });
+    let single = Ty::Enum(mb.add_enum(single));
+    let single_constant = C::Aggregate(vec![C::Int(37), C::Int(0x4433_2211)]);
+    let single_value = Val::Aggregate(vec![int(8, 37), int(32, 0x4433_2211)]);
+    for strict in [false, true] {
+        runs.push(function(
+            &mut mb,
+            format!("single_inhabited_exact_allocation_{strict}"),
+            single.clone(),
+            Expected::Value(single_value.clone()),
+            |fb| {
+                let pointer = fb.alloca(single.clone());
+                let value = fb.const_value(single.clone(), single_constant.clone());
+                if strict {
+                    fb.store_volatile(single.clone(), pointer, value);
+                    fb.load_volatile(single.clone(), pointer)
+                } else {
+                    fb.store(single.clone(), pointer, value);
+                    fb.load(single.clone(), pointer)
+                }
+            },
+        ));
+    }
+    runs.push(function(
+        &mut mb,
+        "single_inhabited_has_only_payload_bytes",
+        Ty::U32,
+        Expected::Value(int(32, 0x4433_2211)),
+        |fb| {
+            let pointer = fb.alloca(single.clone());
+            let value = fb.const_value(single.clone(), single_constant.clone());
+            fb.store(single.clone(), pointer, value);
+            fb.load(Ty::U32, pointer)
+        },
+    ));
+    let mut outer = EnumDef::new(
+        EnumId::new(6),
+        "OptionSingle",
+        vec![
+            EnumVariant {
+                name: "None".into(),
+                fields: vec![],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Some".into(),
+                fields: vec![single],
+                field_names: vec![],
+            },
+        ],
+    );
+    outer.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::Direct { tag_offset: 0 },
+        size: 8,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![4]],
+    });
+    let outer = Ty::Enum(mb.add_enum(outer));
+    for strict in [false, true] {
+        runs.push(roundtrip(
+            &mut mb,
+            "nested_option_single_inhabited",
+            outer.clone(),
+            C::Aggregate(vec![C::Int(1), single_constant.clone()]),
+            Val::Aggregate(vec![int(8, 1), single_value.clone()]),
+            strict,
+        ));
+    }
+    let mut empty = EnumDef::new(
+        EnumId::new(7),
+        "SingleInhabitedEmpty",
+        vec![
+            EnumVariant {
+                name: "Dead".into(),
+                fields: vec![Ty::Never],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Live".into(),
+                fields: vec![],
+                field_names: vec![],
+            },
+        ],
+    );
+    empty.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 0,
+        align: 1,
+        variant_field_offsets: vec![vec![], vec![]],
+    });
+    let empty = Ty::Enum(mb.add_enum(empty));
+    for strict in [false, true] {
+        runs.push(function(
+            &mut mb,
+            format!("single_inhabited_zero_storage_{strict}"),
+            empty.clone(),
+            Expected::Value(Val::Aggregate(vec![int(8, 1)])),
+            |fb| {
+                let pointer = fb.alloca(empty.clone());
+                let value = fb.const_value(empty.clone(), C::Aggregate(vec![C::Int(1)]));
+                if strict {
+                    fb.store_volatile(empty.clone(), pointer, value);
+                    fb.load_volatile(empty.clone(), pointer)
+                } else {
+                    fb.store(empty.clone(), pointer, value);
+                    fb.load(empty.clone(), pointer)
+                }
+            },
+        ));
+    }
+    let infallible = mb.add_enum(EnumDef::new(EnumId::new(8), "Infallible", vec![]));
+    let mut result = EnumDef::new(
+        EnumId::new(9),
+        "ResultU32Infallible",
+        vec![
+            EnumVariant {
+                name: "Ok".into(),
+                fields: vec![Ty::U32],
+                field_names: vec![],
+            },
+            EnumVariant {
+                name: "Err".into(),
+                fields: vec![Ty::Enum(infallible)],
+                field_names: vec![],
+            },
+        ],
+    );
+    result.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 0 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![0], vec![]],
+    });
+    let result = Ty::Enum(mb.add_enum(result));
+    for strict in [false, true] {
+        runs.push(function(
+            &mut mb,
+            format!("single_inhabited_nominal_infallible_{strict}"),
+            result.clone(),
+            Expected::Value(Val::Aggregate(vec![int(8, 0), int(32, 0x5566_7788)])),
+            |fb| {
+                let pointer = fb.alloca(result.clone());
+                let value = fb.const_value(
+                    result.clone(),
+                    C::Aggregate(vec![C::Int(0), C::Int(0x5566_7788)]),
+                );
+                if strict {
+                    fb.store_volatile(result.clone(), pointer, value);
+                    fb.load_volatile(result.clone(), pointer)
+                } else {
+                    fb.store(result.clone(), pointer, value);
+                    fb.load(result.clone(), pointer)
+                }
+            },
+        ));
+    }
+    // Direct images retain their physical tag and reserved dead-row storage.
+    // Source Infallible/dead wrappers remain nominal; no dead value layout is
+    // requested. The large row is the retained Nested physical shape.
+    let mut wrapper = struct_def(2, false);
+    wrapper.name = "DeadWrap".into();
+    wrapper.fields = vec![FieldDef {
+        name: "never".into(),
+        ty: Ty::Enum(infallible),
+        offset: None,
+    }];
+    wrapper.size = None;
+    wrapper.align = None;
+    let wrapper = Ty::Struct(mb.add_struct(wrapper));
+    let wide = mb.add_type(Ty::U128);
+    let nested_dead = Ty::Tuple(vec![Ty::Enum(infallible), Ty::Array(wide, 4096)]);
+    for (id, name, dead, size, align, dead_offset, dead_size, dead_align) in [
+        (10, "DirectInfallible", Ty::Enum(infallible), 8, 4, 4, 0, 1),
+        (11, "DirectWrapped", wrapper, 8, 4, 4, 0, 1),
+        (12, "DirectNested", nested_dead, 65_552, 16, 16, 65_536, 16),
+    ] {
+        let mut definition = EnumDef::new(
+            EnumId::new(id),
+            name,
+            vec![
+                EnumVariant {
+                    name: "Dead".into(),
+                    fields: vec![dead],
+                    field_names: vec![],
+                },
+                EnumVariant {
+                    name: "Live".into(),
+                    fields: vec![Ty::U32],
+                    field_names: vec![],
+                },
+            ],
+        )
+        .with_repr(EnumTagRepr::U32);
+        definition.layout = Some(EnumLayoutDescriptor {
+            encoding: EnumTagEncoding::DirectWithUninhabited {
+                tag_offset: 0,
+                variants: vec![UninhabitedVariantLayout {
+                    variant: 0,
+                    size: if size == 8 { 4 } else { size },
+                    align,
+                    fields: vec![FieldStorageLayout {
+                        size: dead_size,
+                        align: dead_align,
+                    }],
+                }],
+            },
+            size,
+            align,
+            variant_field_offsets: vec![vec![dead_offset], vec![4]],
+        });
+        let ty = Ty::Enum(mb.add_enum(definition));
+        for strict in [false, true] {
+            runs.push(function(
+                &mut mb,
+                format!("{name}_roundtrip_{strict}"),
+                ty.clone(),
+                Expected::Value(Val::Aggregate(vec![int(32, 1), int(32, 0x4433_2211)])),
+                |fb| {
+                    let pointer = fb.alloca(ty.clone());
+                    let value = fb.const_value(
+                        ty.clone(),
+                        C::Aggregate(vec![C::Int(1), C::Int(0x4433_2211)]),
+                    );
+                    if strict {
+                        fb.store_volatile(ty.clone(), pointer, value);
+                        fb.load_volatile(ty.clone(), pointer)
+                    } else {
+                        fb.store(ty.clone(), pointer, value);
+                        fb.load(ty.clone(), pointer)
+                    }
+                },
+            ));
+            runs.push(function(
+                &mut mb,
+                format!("{name}_dead_raw_tag_{strict}"),
+                ty.clone(),
+                Expected::Ub,
+                |fb| {
+                    let pointer = fb.alloca(ty.clone());
+                    let zero = fb.uconst(Ty::U8, 0);
+                    let count = fb.uconst(Ty::Usize, size.into());
+                    fb.memset(pointer, zero, count);
+                    let live =
+                        fb.const_value(ty.clone(), C::Aggregate(vec![C::Int(1), C::Int(42)]));
+                    fb.store(ty.clone(), pointer, live);
+                    let dead_tag = fb.uconst(Ty::U32, 0);
+                    fb.store(Ty::U32, pointer, dead_tag);
+                    if strict {
+                        fb.load_volatile(ty.clone(), pointer)
+                    } else {
+                        fb.load(ty.clone(), pointer)
+                    }
+                },
+            ));
+        }
+        runs.push(function(
+            &mut mb,
+            format!("{name}_live_raw_tag"),
+            ty.clone(),
+            Expected::Value(Val::Aggregate(vec![int(32, 1), int(32, 42)])),
+            |fb| {
+                let pointer = fb.alloca(ty.clone());
+                let tag = fb.uconst(Ty::U32, 1);
+                fb.store(Ty::U32, pointer, tag);
+                let payload = fb.gep_byte_offset(pointer, 4);
+                let value = fb.uconst(Ty::U32, 42);
+                fb.store(Ty::U32, payload, value);
+                fb.load(ty.clone(), pointer)
+            },
+        ));
+        runs.push(function(
+            &mut mb,
+            format!("{name}_payload_offset"),
+            Ty::U32,
+            Expected::Value(int(32, 0x4433_2211)),
+            |fb| {
+                let pointer = fb.alloca(ty.clone());
+                let value = fb.const_value(
+                    ty.clone(),
+                    C::Aggregate(vec![C::Int(1), C::Int(0x4433_2211)]),
+                );
+                fb.store(ty.clone(), pointer, value);
+                let payload = fb.gep_byte_offset(pointer, 4);
+                fb.load(Ty::U32, payload)
+            },
+        ));
+        for one_past in [false, true] {
+            runs.push(function(
+                &mut mb,
+                format!("{name}_allocation_extent_{one_past}"),
+                Ty::U8,
+                if one_past {
+                    Expected::Ub
+                } else {
+                    Expected::Value(int(8, 90))
+                },
+                |fb| {
+                    let pointer = fb.alloca(ty.clone());
+                    let offset = if one_past { size } else { size - 1 };
+                    let edge = fb.gep_byte_offset(pointer, offset);
+                    let byte = fb.uconst(Ty::U8, 90);
+                    fb.store(Ty::U8, edge, byte);
+                    fb.load(Ty::U8, edge)
+                },
+            ));
+        }
+    }
     // Non-partial Undef is UB at construction, including discarded results.
     // Vector/Func controls already have this contextual rule at the base cut.
     for (name, ty) in [
@@ -607,6 +945,14 @@ fn aggregate_memory_source_layout_images_and_function_identities_agree() {
     let mut modules = Vec::new();
     for bits in [32, 64] {
         let (module, cases) = cases(bits);
+        assert_eq!(
+            cases
+                .iter()
+                .filter(|case| case.name.starts_with("Direct"))
+                .count(),
+            24,
+            "all three reserved-storage shapes retain their eight runs on {bits}-bit targets"
+        );
         for (codec, module) in codeced(module) {
             let errors = trust_ir_build::validate_module(&module);
             assert!(errors.is_empty(), "{bits}/{codec}: {errors:?}");
@@ -623,6 +969,14 @@ fn aggregate_memory_source_layout_images_and_function_identities_agree() {
         })
         .collect();
     let reports = differential(exe, &batches);
+    assert_eq!(
+        reports.len(),
+        modules
+            .iter()
+            .map(|(_, _, cases)| cases.len())
+            .sum::<usize>(),
+        "every retained source run must have an outcome"
+    );
     let mut failures = Vec::new();
     for (report, case) in reports
         .iter()

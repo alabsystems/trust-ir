@@ -15,6 +15,14 @@ theorem constValueAtWithDefsIn_eq (ctx : ConstantEvalContext) (ty : Ty) (c : Con
   if !constPointerFormsSupported ty c then
     throw (.typeError "constant requires null pointer spellings and matching inline field census")
   match ty, c with
+  | .FnItem expected, .fnItem held =>
+    if expected != held then throw (.typeError "FnItem: constant identity differs from type")
+    match ctx.functionItems expected with
+    | some (.ok _) => pure (.fnItem expected)
+    | some (.error message) => throw (.typeError message)
+    | none => throw (.typeError "FnItem: original function declaration is absent")
+  | .FnItem _, _ | _, .fnItem _ =>
+    throw (.typeError "FnItem: constant and nominal type must have the same identity")
   | .Closure cid, .closure fn cs => do
     let d ← match ctx.closures cid with
       | some d => pure d

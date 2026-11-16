@@ -32,6 +32,12 @@ def EnumEncodingGeometry (value : Summary) : Prop :=
       ∃ align, value.align = some align ∧
         EnumLaneBounds value.size align offset (tagBits enumeration.tag / 8) (tagBits enumeration.tag / 8) ∧
         EnumTagSeparated enumeration offset (tagBits enumeration.tag / 8)
+    | .directWithUninhabited offset profiles =>
+      ∃ align, value.align = some align ∧
+        EnumLaneBounds value.size align offset (tagBits enumeration.tag / 8) (tagBits enumeration.tag / 8) ∧
+        (∀ profile ∈ profiles, EnumLaneBounds profile.size profile.align offset
+          (tagBits enumeration.tag / 8) (tagBits enumeration.tag / 8)) ∧
+        EnumTagSeparated enumeration offset (tagBits enumeration.tag / 8)
     | .niche untagged start stop first offset repr =>
       ∃ align, value.align = some align ∧
         EnumLaneBounds value.size align offset (tagBits repr / 8) (tagBits repr / 8) ∧
@@ -110,6 +116,12 @@ theorem EnumConstruction.canonical_encoding_geometry {mode : Mode} {definition :
   simp only [Nat.one_mul] at sizeBound
   refine ⟨Nat.zero_mod _, Nat.le_max_left _ _, ?_, ?_⟩ <;> dsimp only <;> omega
 
+private theorem direct_profile_any_false {α : Type} (test : α → Bool) (rows : List α) :
+    rows.any test = false ↔ ∀ row, row ∈ rows → test row = false := by
+  induction rows with
+  | nil => simp
+  | cons first rest ih => simp [List.any_cons, Bool.or_eq_false_iff, ih, List.forall_mem_cons]
+
 theorem Equation.Executes.enum_encoding_geometry {graph : Graph} {output : Summary}
     (mode : Mode) (definition : EnumDef) (uninhabited : List Bool) (nodes : List Nat)
     (run : (enumEquation mode definition uninhabited nodes).Executes graph output) :
@@ -147,6 +159,14 @@ theorem Equation.Executes.enum_encoding_geometry {graph : Graph} {output : Summa
       rw [exactValue, encoding] at separated
       dsimp only [EnumEncodingGeometry]
       exact ⟨descriptor.align, rfl, lane, separated _ rfl⟩
+    | directWithUninhabited offset profiles =>
+      unfold EnumDescriptorChecks at checks
+      rw [encoding] at checks
+      dsimp only [EnumEncodingGeometry]
+      refine ⟨descriptor.align, rfl, checks.1, checks.2.1, ?_⟩
+      intro fields member field present
+      exact (direct_profile_any_false _ fields).mp
+        ((direct_profile_any_false _ _).mp checks.2.2 fields member) field present
     | niche untagged start stop first offset repr =>
       have lane := constructed.niche_lane descriptor authored untagged start stop first offset repr encoding
       have ranges := constructed.niche_range_bounds descriptor authored untagged start stop first offset repr encoding

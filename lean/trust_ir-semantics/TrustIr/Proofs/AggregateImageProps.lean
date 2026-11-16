@@ -258,18 +258,18 @@ theorem inhabited_variant_encodes_with_dead_payload_absent :
     exact by trustIrReduce
   }
 
-theorem covered_dead_tag_is_type_error_before_missing_payload :
+theorem covered_dead_tag_is_ub_before_missing_payload :
     coveredDense variantPlan (some 1 :: List.replicate 15 none) =
-      .error (.typeError "Load: uninhabited enum variant") := by
+      .error (.ub "Load: uninhabited enum variant") := by
   trustIrCompilerProof {
     exact rfl
   } {
     exact by trustIrReduce
   }
 
-theorem initialized_dead_tag_is_type_error :
+theorem initialized_dead_tag_is_ub :
     decodeDense .le64 noFunctions Memory.empty variantPlan (some 1 :: List.replicate 15 (some 0)) =
-      .error (.typeError "Load: uninhabited enum variant") := by
+      .error (.ub "Load: uninhabited enum variant") := by
   trustIrCompilerProof {
     exact rfl
   } {
@@ -285,9 +285,9 @@ theorem dead_value_store_is_type_error :
     exact by trustIrReduce
   }
 
-theorem unknown_tag_remains_type_error :
+theorem unknown_tag_is_ub :
     coveredDense variantPlan (some 2 :: List.replicate 15 (some 0)) =
-      .error (.typeError "Load: enum tag does not name a variant") := by
+      .error (.ub "Load: enum tag does not name a variant") := by
   trustIrCompilerProof {
     exact rfl
   } {
@@ -308,9 +308,9 @@ private def zeroDead : Plan :=
       variants := [[{ ty := .Never, offset := 0, size := 0, align := 1 }]],
       uninhabited := [true] } [none]
 
-theorem zero_byte_untagged_dead_is_type_error :
+theorem zero_byte_untagged_dead_is_ub :
     decodeDense .le64 noFunctions Memory.empty zeroDead [] =
-      .error (.typeError "Load: uninhabited enum variant") := by
+      .error (.ub "Load: uninhabited enum variant") := by
   trustIrCompilerProof {
     exact rfl
   } {

@@ -745,6 +745,7 @@ fn scan(reach: Reach, ty: &Ty, out: &mut Vec<TableReferent>, steps: &mut u64) ->
                     | Ty::Ptr
                     | Ty::FatPtr(_)
                     | Ty::Func(_)
+                    | Ty::FnItem(_)
                     | Ty::Handle(_)
                     | Ty::Dialect(_)
                     | Ty::Set(_, _)
@@ -845,6 +846,7 @@ fn scan_char_value(ty: &Ty, out: &mut Vec<TableReferent>, steps: &mut u64) -> bo
             | Ty::Ptr
             | Ty::FatPtr(_)
             | Ty::Func(_)
+            | Ty::FnItem(_)
             | Ty::Handle(_)
             | Ty::Dialect(_)
             | Ty::Bool
@@ -1114,6 +1116,9 @@ mod char_value_tests {
         }
         // A code pointer's signature is not a by-value child.
         assert!(query.is_storage_free(&Ty::Func(crate::FuncTyId::new(99))));
+        // A nominal item's zero-byte value carries no storage. Its original
+        // header is authenticated by module admission, outside this query.
+        assert!(query.is_storage_free(&Ty::FnItem(crate::FuncId::new(99))));
     }
 
     #[test]

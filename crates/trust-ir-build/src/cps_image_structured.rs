@@ -140,7 +140,7 @@ impl<L: ScopedLocalAllocator> Replay<'_, '_, L> {
                 err.term().clone(),
             ],
         ));
-        let external_checkpoint = self.push_external_scope(&[mapper.clone()])?;
+        let external_checkpoint = self.push_external_scope(std::slice::from_ref(&mapper))?;
         let previous = (
             self.ok.clone(),
             self.err.clone(),
@@ -304,14 +304,16 @@ impl<L: ScopedLocalAllocator> Replay<'_, '_, L> {
         let construction = Some(Box::new(StructuredObservationConstruction {
             observation: observation.clone(),
             step: StructuredObservationStep::Handle {
-                operator: equation
-                    .operator
-                    .ok_or("structured call lost original owned operator")?,
+                operator: Box::new(
+                    equation
+                        .operator
+                        .ok_or("structured call lost original owned operator")?,
+                ),
                 original_arguments: args.clone(),
                 actual_run: a[4].clone(),
                 actual_state: self.frame_state_candidate(&a[5])?,
-                yes: yes_construction,
-                no: no_construction,
+                yes: Box::new(yes_construction),
+                no: Box::new(no_construction),
             },
         }));
         let proof = Expr::apps(

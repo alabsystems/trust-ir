@@ -5,6 +5,224 @@ import TrustIr.Proofs.FrameCastExits
 namespace TrustIr.FrameLifetime
 open GenericCoro GenericCoro.Prefix NoUnwindEffects
 
+private theorem contextual_frame_state_safe (live : List Nat) (counter : Nat) :
+    CallCheckNoUnwind (Sem.setFrameState live counter) := by
+  intro state exception after run
+  cases run
+
+private theorem contextual_handle_safe (frame : ValueId) (op : String) :
+    CallCheckNoUnwind (Sem.frameHandle frame op) := by
+  unfold Sem.frameHandle
+  refine CallCheckNoUnwind.bind _ _ (lookup_safe frame) (fun value => ?_)
+  refine CallCheckNoUnwind.bind _ _ (reject_safe value _) (fun _ => ?_)
+  cases value <;> first | exact pure_safe _ | exact type_safe _
+
+local macro "contextual_frame_safety" : tactic => `(tactic|
+  repeat' first
+    | exact lift_validation_no_unwind _ (binding_frame_types_no_unwind _ _)
+    | exact lift_validation_no_unwind _ (function_item_lanes_no_unwind _ _ _ _)
+    | exact contextual_handle_safe _ _
+    | exact contextual_frame_state_safe _ _
+    | exact close_frame_no_unwind _
+    | exact lookup_safe _
+    | exact reject_safe _ _
+    | exact get_safe
+    | exact fresh_safe _
+    | exact pure_safe _
+    | exact type_safe _
+    | exact ub_safe _
+    | (refine CallCheckNoUnwind.bind _ _ ?_ (fun value => ?_) <;> dsimp only)
+    | split)
+
+private theorem checked_fresh_safe (ctx : EvalContext) (ty : Ty) (value : Value) :
+    CallCheckNoUnwind (α := InstrResult) (do
+      Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) ty value)
+      pure (.value (some (← Sem.bindFresh value)))) :=
+  CallCheckNoUnwind.bind _ _
+    (lift_validation_no_unwind _ (function_item_lanes_no_unwind ctx _ ty value))
+    (fun _ => CallCheckNoUnwind.bind _ _ (fresh_safe value) (fun _ => pure_safe _))
+
+private theorem snapshot_bind_safe (held : Value) (slot : Nat) (value : Value) (message : String) :
+    CallCheckNoUnwind (α := InstrResult) (do
+      let result ← match bindSlot held slot value with
+        | some result => pure result
+        | none => Sem.throwUB message
+      pure (.value (some (← Sem.bindFresh result)))) := by
+  cases found : bindSlot held slot value with
+  | none => simp only [found]; exact ub_safe _
+  | some result =>
+    simp only [found, pure_bind]
+    exact CallCheckNoUnwind.bind _ _ (fresh_safe result) (fun _ => pure_safe _)
+
+private theorem checked_bind_safe (ctx : EvalContext) (held : Value) (slot : Nat)
+    (ty : Ty) (value : Value) (message : String) :
+    CallCheckNoUnwind (α := InstrResult) (do
+      Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) ty value)
+      let result ← match bindSlot held slot value with
+        | some result => pure result
+        | none => Sem.throwUB message
+      pure (.value (some (← Sem.bindFresh result)))) :=
+  CallCheckNoUnwind.bind _ _
+    (lift_validation_no_unwind _ (function_item_lanes_no_unwind ctx _ ty value))
+    (fun _ => snapshot_bind_safe held slot value message)
+
+private theorem ordinary_bind_safe (ctx : EvalContext) (held : Value) (slots : List Value)
+    (slot : Nat) (rhs : ValueId) :
+    CallCheckNoUnwind (α := InstrResult) (do
+      let value ← Sem.lookupValue rhs
+      if slot < slots.length then
+        Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) .Error value)
+        let result ← match bindSlot held slot value with
+          | some result => pure result
+          | none => Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots"
+        pure (.value (some (← Sem.bindFresh result)))
+      else Sem.throwUB s!"BindSlot: slot {slot} out of range for frame of {slots.length} slots") := by
+  refine CallCheckNoUnwind.bind _ _ (lookup_safe rhs) (fun value => ?_)
+  split
+  · exact checked_bind_safe ctx held slot .Error value _
+  · exact ub_safe _
+
+private theorem source_bind_safe (ctx : EvalContext) (held : Value) (slot : Nat) (rhs : ValueId) :
+    CallCheckNoUnwind (α := InstrResult) (do
+      let types ← Sem.fromMemoryExcept (bindingFrameTypes ctx held)
+      let value ← Sem.lookupValue rhs
+      let ty ← match trustIrListGet? types slot with
+        | some ty => pure ty
+        | none => Sem.throwUB "BindSlot: slot out of bounds"
+      Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) ty value)
+      let result ← match bindSlot held slot value with
+        | some result => pure result
+        | none => Sem.throwUB "BindSlot: slot out of bounds"
+      pure (.value (some (← Sem.bindFresh result)))) := by
+  refine CallCheckNoUnwind.bind _ _
+    (lift_validation_no_unwind _ (binding_frame_types_no_unwind ctx held)) (fun types => ?_)
+  refine CallCheckNoUnwind.bind _ _ (lookup_safe rhs) (fun value => ?_)
+  cases found : trustIrListGet? types slot with
+  | none => simp only [found]; exact ub_safe _
+  | some ty => simp only [found, pure_bind]; exact checked_bind_safe ctx held slot ty value _
+
+private theorem ordinary_load_safe (ctx : EvalContext) (slots : List Value) (slot : Nat) :
+    CallCheckNoUnwind (α := InstrResult) (match trustIrListGet? slots slot with
+      | none => Sem.throwUB s!"LoadSlot: slot {slot} out of range for frame of {slots.length} slots"
+      | some value => do
+        Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) .Error value)
+        pure (.value (some (← Sem.bindFresh value)))) := by
+  cases found : trustIrListGet? slots slot with
+  | none => exact ub_safe _
+  | some value => exact checked_fresh_safe ctx .Error value
+
+private theorem source_load_safe (ctx : EvalContext) (held : Value) (slot : Nat) (ty : Ty) :
+    CallCheckNoUnwind (α := InstrResult) (do
+      let types ← Sem.fromMemoryExcept (bindingFrameTypes ctx held)
+      let declared ← match trustIrListGet? types slot with
+        | some declared => pure declared
+        | none => Sem.throwUB "LoadSlot: slot out of bounds"
+      if !(closureTyEq declared ty) then
+        Sem.throwTypeError "LoadSlot: requested type differs from original slot declaration"
+      let value ← match loadSlot held slot with
+        | some value => pure value
+        | none => Sem.throwUB "LoadSlot: slot out of bounds"
+      if value.isUninit then
+        if isPartialLoadTy ty then
+          pure (.value (some (← Sem.bindFresh (.undef ty))))
+        else Sem.throwUB (nonpartialUndefMessage ty)
+      else
+        Sem.fromMemoryExcept (checkFunctionItemLanes ctx (value.depth + 1) ty value)
+        pure (.value (some (← Sem.bindFresh value)))) := by
+  refine CallCheckNoUnwind.bind _ _
+    (lift_validation_no_unwind _ (binding_frame_types_no_unwind ctx held)) (fun types => ?_)
+  cases found : trustIrListGet? types slot with
+  | none => simp only [found]; exact ub_safe _
+  | some declared =>
+    simp only [found, pure_bind]
+    cases typeEq : closureTyEq declared ty with
+    | false =>
+      simp only [typeEq, Bool.not_false, ↓reduceIte]
+      exact type_safe _
+    | true =>
+      simp only [typeEq, Bool.not_true, Bool.false_eq_true, ↓reduceIte, pure_bind]
+      cases loaded : loadSlot held slot with
+      | none => simp only [loaded]; exact ub_safe _
+      | some value =>
+        simp only [loaded, pure_bind]
+        cases unwritten : value.isUninit with
+        | false =>
+          trustIrCompilerProof { simp only [unwritten, ↓reduceIte] } { skip }
+          exact checked_fresh_safe ctx ty value
+        | true =>
+          simp only [unwritten, ↓reduceIte]
+          cases partialTy : isPartialLoadTy ty with
+          | false =>
+            trustIrCompilerProof { simp only [partialTy, ↓reduceIte] } { skip }
+            exact ub_safe _
+          | true =>
+            simp only [partialTy, ↓reduceIte]
+            exact CallCheckNoUnwind.bind _ _ (fresh_safe _) (fun _ => pure_safe _)
+
+set_option smartUnfolding false in
+theorem contextual_open_no_unwind (ctx : EvalContext) (definition : BindingFrameDef) :
+    CallCheckNoUnwind (stepInstWithContext ctx (.OpenFrame definition)) := by
+  cases origin : ctx.currentFunction with
+  | none =>
+    simp only [stepInstWithContext, origin]
+    exact CallCheckNoUnwind.bind _ _ (open_frame_no_unwind definition) (fun _ => pure_safe _)
+  | some function =>
+    cases found : ctx.valueSource.bindingFrame function definition.id with
+    | none =>
+      simp only [stepInstWithContext, origin, found]
+      exact type_safe _
+    | some original =>
+      simp only [stepInstWithContext, origin, found, pure_bind]
+      split
+      · exact type_safe _
+      · try simp only [pure_bind]
+        refine CallCheckNoUnwind.bind _ _ get_safe (fun state => ?_)
+        split
+        · refine CallCheckNoUnwind.bind _ _ (contextual_frame_state_safe _ _) (fun _ => ?_)
+          exact CallCheckNoUnwind.bind _ _ (fresh_safe _) (fun _ => pure_safe _)
+        · exact ub_safe _
+
+set_option smartUnfolding false in
+theorem contextual_bind_no_unwind (ctx : EvalContext) (frame : ValueId) (slot : Nat) (value : ValueId) :
+    CallCheckNoUnwind (stepInstWithContext ctx (.BindSlot frame slot value)) := by
+  unfold stepInstWithContext
+  refine CallCheckNoUnwind.bind _ _ (contextual_handle_safe _ _) (fun pair => ?_)
+  rcases pair with ⟨lineage, slots⟩
+  refine CallCheckNoUnwind.bind _ _ get_safe (fun state => ?_)
+  cases live : state.openFrameLineages.contains lineage with
+  | false =>
+    simp only [live, Bool.not_false, ↓reduceIte]
+    exact ub_safe _
+  | true =>
+    simp only [live, Bool.not_true, Bool.false_eq_true, ↓reduceIte, pure_bind]
+    refine CallCheckNoUnwind.bind _ _ (lookup_safe frame) (fun held => ?_)
+    cases held
+    case frame identity stored => exact ordinary_bind_safe ctx _ slots slot value
+    all_goals exact source_bind_safe ctx _ slot value
+
+set_option smartUnfolding false in
+theorem contextual_load_no_unwind (ctx : EvalContext) (frame : ValueId) (slot : Nat) (ty : Ty) :
+    CallCheckNoUnwind (stepInstWithContext ctx (.LoadSlot frame slot ty)) := by
+  unfold stepInstWithContext
+  refine CallCheckNoUnwind.bind _ _ (contextual_handle_safe _ _) (fun pair => ?_)
+  rcases pair with ⟨lineage, slots⟩
+  refine CallCheckNoUnwind.bind _ _ get_safe (fun state => ?_)
+  cases live : state.openFrameLineages.contains lineage with
+  | false =>
+    simp only [live, Bool.not_false, ↓reduceIte]
+    exact ub_safe _
+  | true =>
+    simp only [live, Bool.not_true, Bool.false_eq_true, ↓reduceIte, pure_bind]
+    refine CallCheckNoUnwind.bind _ _ (lookup_safe frame) (fun held => ?_)
+    cases held
+    case frame identity stored => exact ordinary_load_safe ctx slots slot
+    all_goals exact source_load_safe ctx _ slot ty
+
+theorem contextual_close_no_unwind (ctx : EvalContext) (frame : ValueId) :
+    CallCheckNoUnwind (stepInstWithContext ctx (.CloseFrame frame)) := by
+  unfold stepInstWithContext
+  contextual_frame_safety
+
 /-- Upgrade the original successful instruction law only after establishing
 that its actual contextual primitive cannot manufacture an unwind state. -/
 theorem frame_step_exit_of_no_unwind (ctx : EvalContext) (inst : Inst) (site : FrameInstruction inst)
@@ -107,7 +325,7 @@ theorem cast_body_exit (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (st
     (op : CastOp) (srcTy dstTy : Ty) (operand : ValueId) (dests : List ValueId) :
     FrameActionValid (fun _ _ => True) (evalBodyStep recurse ctx depth strategy (.Cast op srcTy dstTy operand,dests)) := by
   apply frame_body_exit_of_no_unwind recurse ctx depth strategy _ (.cast op srcTy dstTy operand) dests
-  exact CallCheckNoUnwind.bind _ _ (semCast_no_unwind op srcTy dstTy operand ctx.byteModel) (fun _ => pure_safe _)
+  exact contextual_cast_no_unwind ctx op srcTy dstTy operand
 
 theorem copy_body_exit (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (strategy : PanicStrategy)
     (ty : Ty) (operand : ValueId) (dests : List ValueId) :
@@ -138,24 +356,24 @@ theorem open_body_exit (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (st
     (definition : BindingFrameDef) (dests : List ValueId) :
     FrameActionValid (fun _ _ => True) (evalBodyStep recurse ctx depth strategy (.OpenFrame definition,dests)) := by
   apply frame_body_exit_of_no_unwind recurse ctx depth strategy _ (.open definition) dests
-  exact CallCheckNoUnwind.bind _ _ (open_frame_no_unwind definition) (fun _ => pure_safe _)
+  exact contextual_open_no_unwind ctx definition
 
 theorem bind_body_exit (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (strategy : PanicStrategy)
     (frame : ValueId) (slot : Nat) (value : ValueId) (dests : List ValueId) :
     FrameActionValid (fun _ _ => True) (evalBodyStep recurse ctx depth strategy (.BindSlot frame slot value,dests)) := by
   apply frame_body_exit_of_no_unwind recurse ctx depth strategy _ (.bind frame slot value) dests
-  exact CallCheckNoUnwind.bind _ _ (bind_slot_no_unwind frame slot value) (fun _ => pure_safe _)
+  exact contextual_bind_no_unwind ctx frame slot value
 
 theorem load_body_exit (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (strategy : PanicStrategy)
     (frame : ValueId) (slot : Nat) (ty : Ty) (dests : List ValueId) :
     FrameActionValid (fun _ _ => True) (evalBodyStep recurse ctx depth strategy (.LoadSlot frame slot ty,dests)) := by
   apply frame_body_exit_of_no_unwind recurse ctx depth strategy _ (.load frame slot ty) dests
-  exact CallCheckNoUnwind.bind _ _ (load_slot_no_unwind frame slot ty) (fun _ => pure_safe _)
+  exact contextual_load_no_unwind ctx frame slot ty
 
 theorem close_body_exit (recurse : Recurse) (ctx : EvalContext) (depth : Nat) (strategy : PanicStrategy)
     (frame : ValueId) (dests : List ValueId) :
     FrameActionValid (fun _ _ => True) (evalBodyStep recurse ctx depth strategy (.CloseFrame frame,dests)) := by
   apply frame_body_exit_of_no_unwind recurse ctx depth strategy _ (.close frame) dests
-  exact CallCheckNoUnwind.bind _ _ (close_frame_no_unwind frame) (fun _ => pure_safe _)
+  exact contextual_close_no_unwind ctx frame
 
 end TrustIr.FrameLifetime

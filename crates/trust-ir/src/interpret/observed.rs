@@ -212,6 +212,18 @@ impl<'o, O: ExecutionObserver> ObservedSession<'o, O> {
         SessionProgress {
             session: self,
             site,
+            retirement_work: 0,
+        }
+    }
+
+    /// Actual owned ABI image/store cleanup uses the same original observer
+    /// and records every real primitive retirement poll as work, even after
+    /// admission stopped. Existing structural callers keep their exact policy.
+    pub(crate) fn structural_owned(&mut self, site: ExecutionSite) -> SessionProgress<'_, 'o, O> {
+        SessionProgress {
+            session: self,
+            site,
+            retirement_work: 1,
         }
     }
 }
@@ -236,6 +248,7 @@ pub(crate) trait StructuralProgress {
 pub(crate) struct SessionProgress<'s, 'o, O: ExecutionObserver> {
     session: &'s mut ObservedSession<'o, O>,
     site: ExecutionSite,
+    retirement_work: usize,
 }
 
 impl<O: ExecutionObserver> StructuralProgress for SessionProgress<'_, '_, O> {
@@ -254,7 +267,8 @@ impl<O: ExecutionObserver> StructuralProgress for SessionProgress<'_, '_, O> {
     }
 
     fn retirement_poll(&mut self) {
-        self.session.retirement_poll(self.site);
+        self.session
+            .retirement_step(self.site, self.retirement_work);
     }
 }
 

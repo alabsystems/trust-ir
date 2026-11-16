@@ -23,6 +23,7 @@ impl<'m> Frame<'m> {
             | Constant::Float(_)
             | Constant::Bool(_)
             | Constant::FnDef(_)
+            | Constant::FnItem(_)
             | Constant::SymbolAddr { .. }
             | Constant::PhantomData
             | Constant::Uninit

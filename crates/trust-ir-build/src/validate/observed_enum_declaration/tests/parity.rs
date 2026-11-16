@@ -113,3 +113,15 @@ fn returned_full_diagnostics_are_independent_of_subsequent_input_mutation() {
     m.enums[0].variants.clear();
     assert_eq!(out, expected);
 }
+
+#[test]
+fn empty_declaration_none_discriminant_tail_is_still_a_metadata_claim() {
+    let mut m = fixture();
+    m.enums[0].variants.clear();
+    assert!(run(&m, 0).0.is_empty());
+    m.enums[0].discriminants = vec![None];
+    assert!(matches!(
+        &run(&m, 0).0[..],
+        [ValidationError::ConstTypeMismatch { actual, .. }] if actual == "no canonical tag"
+    ));
+}

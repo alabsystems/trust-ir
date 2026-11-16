@@ -202,6 +202,10 @@ lean_exe trustir_eval where
   -- missing SG_READ_ONLY flag", abort at load). Not creating the segment
   -- sidesteps the check; Apple-linker-only, so it is not passed elsewhere.
 
+-- Canonical internally transported ordinary function convention controls.
+lean_exe trustir_indirect_convention where
+  root := `TrustIrEval.IndirectConventionTests
+
 lean_exe trustir_observation_sharing where
   root := `TrustIrEval.ObservationSharingTests
 
@@ -262,3 +266,7 @@ script trustir_native_ownership do
   unless formal.lib.name == `TrustIr do throw (IO.userError "formal root moved into provider")
   IO.println s!"NATIVE_FOUNDATION_OWNERSHIP_PASS compiler={Lean.versionString} foundations={trustIrProviderFoundations.size} formal={formal.lib.name}"
   return 0
+
+-- Independent raw-ingress runtime controls; no model/proof authority.
+lean_exe raw_boundary_controls where
+  root := `TrustIrEval.RawBoundaryControls

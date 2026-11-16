@@ -75,6 +75,7 @@ fn leaf_equal<O: ExecutionObserver>(
         (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
         (Constant::Bool(a), Constant::Bool(b)) => a == b,
         (Constant::FnDef(a), Constant::FnDef(b)) => a == b,
+        (Constant::FnItem(a), Constant::FnItem(b)) => a == b,
         (
             Constant::SymbolAddr {
                 symbol: a,
@@ -85,6 +86,34 @@ fn leaf_equal<O: ExecutionObserver>(
                 addend: ba,
             },
         ) => aa == ba && work.bytes_equal(a.as_bytes(), b.as_bytes())?,
+        (
+            Constant::TensorBlob {
+                digest: a,
+                dims: ad,
+            },
+            Constant::TensorBlob {
+                digest: b,
+                dims: bd,
+            },
+        ) => {
+            if !work.bytes_equal(&a.0, &b.0)? {
+                return Ok(false);
+            }
+            work.admit(2, size_of::<bool>())?;
+            if ad.len() != bd.len() {
+                return Ok(false);
+            }
+            let mut at = 0;
+            while let Some(a) = work.at(ad, at)? {
+                let b = work.at(bd, at)?.ok_or(ObservedValueError::InvalidRange)?;
+                work.admit(1, size_of::<bool>())?;
+                if a != b {
+                    return Ok(false);
+                }
+                work.next(&mut at)?;
+            }
+            true
+        }
         (Constant::PhantomData, Constant::PhantomData) => true,
         _ => false,
     })

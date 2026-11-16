@@ -60,6 +60,10 @@ import TrustIr.Proofs.ClosureProps
 import TrustIr.Proofs.CoroutineProps
 import TrustIr.Proofs.AtomicProps
 import TrustIr.Proofs.MetaTheorems
+import TrustIr.Proofs.UninhabitedDirectProps
+import TrustIr.Proofs.SingleInhabitedCodecProps
+import TrustIr.Proofs.FunctionItemProps
+import TrustIr.Proofs.BindingFrameSourceProps
 import TrustIr.Proofs.MemorySafety
 import TrustIr.Proofs.HeldMemoryFrames
 import TrustIr.Proofs.SSAFreshFrames
@@ -124,11 +128,15 @@ import TrustIr.Proofs.AYTypedRequest
 import TrustIr.Proofs.AYSourceInput
 import TrustIr.Proofs.AYCastTarget
 import TrustIr.Proofs.AYCastReplay
+import TrustIr.Proofs.AYTypedBindingControls
 import TrustIr.Proofs.AYSymbolProps
 import TrustIr.Proofs.AggregateProps
 import TrustIr.Proofs.BindingFrameProps
 import TrustIr.Proofs.FrameLifetimeProps
 import TrustIr.Proofs.FrameValueValidity
+import TrustIr.Proofs.FrameContextualValidity
+import TrustIr.Proofs.FrameContextualControls
+import TrustIr.Proofs.FrameDecodeFreedom
 import TrustIr.Proofs.FrameSlotValidity
 import TrustIr.Proofs.FrameAliasValidity
 import TrustIr.Proofs.FrameUnaryValidity
@@ -255,3 +263,5 @@ import TrustIr.Semantics.CompactArrayFixtures
 import TrustIr.Proofs.ImageMapStepAudit
 
 import TrustIr.Proofs.ImageMapCacheAudit
+
+import TrustIr.Proofs.UnsignedDivisionWpControls

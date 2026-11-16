@@ -603,7 +603,14 @@ fn module_files_strings_are_debug_only() {
                     let rest = &code[at + ".files".len()..];
                     rest.starts_with(".len()") || rest.starts_with(".is_empty()")
                 });
-            let allowed = ALLOWED_FILES.iter().any(|(file, _)| relative == *file)
+            // This checks the borrowed table object, not its path strings.
+            // Match the whole expression so an added string read on this
+            // line cannot inherit the exception.
+            let borrow_identity = relative
+                == "trust-ir-build/src/core_reflection/runtime_fields.rs"
+                && code.trim() == "&& std::ptr::eq(self.files, other.files)";
+            let allowed = borrow_identity
+                || ALLOWED_FILES.iter().any(|(file, _)| relative == *file)
                 || ALLOWED_READS
                     .iter()
                     .any(|(file, fragment, _)| relative == *file && code.contains(fragment));

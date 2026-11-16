@@ -2,6 +2,36 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 use super::*;
 impl<'a> State<'a> {
+    pub(super) fn function_item<O: ExecutionObserver>(
+        &mut self,
+        symbols: &ObservedConstantSymbols<'_, '_>,
+        id: FuncId,
+        work: &mut Work<'_, '_, O>,
+    ) -> R {
+        let function = symbols
+            .functions()
+            .unique_observed(id, work.session, work.site)?;
+        if let Some(function) = function {
+            if work
+                .at(&symbols.module().func_types, function.ty.as_usize())?
+                .is_some()
+            {
+                return Ok(());
+            }
+            work.text("function item func.", &mut self.actual)?;
+            work.unsigned(u128::from(id.index()), &mut self.actual)?;
+            work.text(" has missing signature functy.", &mut self.actual)?;
+            work.unsigned(u128::from(function.ty.index()), &mut self.actual)?;
+        } else {
+            work.text("missing or ambiguous function item func.", &mut self.actual)?;
+            work.unsigned(u128::from(id.index()), &mut self.actual)?;
+        }
+        work.text(
+            "a unique function item with an actual signature",
+            &mut self.expected,
+        )?;
+        self.mismatch_ready(work)
+    }
     pub(super) fn structure<O: ExecutionObserver>(
         &mut self,
         module: &'a Module,

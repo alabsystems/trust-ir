@@ -69,7 +69,7 @@ fn different_depth_reuse_keeps_targets_and_removed_free_dependencies() {
     .unwrap();
     let abstraction = abstract_materialized_cached(
         &scope,
-        &[ty.clone()],
+        std::slice::from_ref(&ty),
         &x,
         &nested,
         &mut work,

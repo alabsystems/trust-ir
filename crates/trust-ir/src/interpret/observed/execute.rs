@@ -5,13 +5,16 @@
 //! to the ordinary interpreter: that would lose the original resource owner.
 
 use super::super::*;
-use super::value::{clone_value, flat_type, retire_values, scalar_type};
+use super::value::{clone_value, clone_value_owned, flat_type, retire_values, scalar_type};
 use super::*;
 use core::mem::size_of;
 
+mod byval;
+mod calls;
 mod memory;
 mod startup;
 mod step;
+mod typed_abi;
 
 pub(super) enum Fault {
     Admission,
@@ -127,6 +130,7 @@ pub(super) fn map_insert<K, V, O: ExecutionObserver>(
 /// failures, including a failed lookup/clone after many successful elements.
 pub(super) fn owned_values<'o, O: ExecutionObserver>(
     capacity: usize,
+    origin: BindOrigin,
     session: &mut ObservedSession<'o, O>,
     site: ExecutionSite,
     build: impl FnOnce(&mut Vec<InterpretValue>, &mut ObservedSession<'o, O>) -> RunResult<()>,
@@ -137,18 +141,22 @@ pub(super) fn owned_values<'o, O: ExecutionObserver>(
     match result {
         Ok(()) => Ok(values),
         Err(error) => {
-            retire_values(values, &mut session.structural(site));
+            origin.retire_values(values, session, site);
             Err(error)
         }
     }
 }
 
 pub(super) fn cloned<O: ExecutionObserver>(
+    origin: BindOrigin,
     value: &InterpretValue,
     session: &mut ObservedSession<'_, O>,
     site: ExecutionSite,
 ) -> RunResult<InterpretValue> {
-    Ok(clone_value(value, &mut session.structural(site))?)
+    Ok(match origin {
+        BindOrigin::Existing => clone_value(value, &mut session.structural(site))?,
+        BindOrigin::OwnedCall => clone_value_owned(value, &mut session.structural_owned(site))?,
+    })
 }
 
 pub(super) fn bind<O: ExecutionObserver>(
@@ -158,11 +166,123 @@ pub(super) fn bind<O: ExecutionObserver>(
     session: &mut ObservedSession<'_, O>,
     site: InstructionSite,
 ) -> RunResult<()> {
+    bind_core(state, node, values, session, site, BindOrigin::Existing)
+}
+
+pub(super) fn bind_call<O: ExecutionObserver>(
+    state: &mut ExecState,
+    node: &InstrNode,
+    values: Vec<InterpretValue>,
+    session: &mut ObservedSession<'_, O>,
+    site: InstructionSite,
+) -> RunResult<()> {
+    bind_core(state, node, values, session, site, BindOrigin::OwnedCall)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BindOrigin {
+    Existing,
+    OwnedCall,
+}
+impl BindOrigin {
+    fn retire_value<O: ExecutionObserver>(
+        self,
+        value: InterpretValue,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) {
+        match self {
+            Self::Existing => {
+                value.retire_observed(session, site).ok();
+            }
+            Self::OwnedCall => {
+                ObservedRopeElem::retire_observed(value, &mut session.structural_owned(site))
+            }
+        }
+    }
+    fn progress<'s, 'o, O: ExecutionObserver>(
+        self,
+        session: &'s mut ObservedSession<'o, O>,
+        site: ExecutionSite,
+    ) -> SessionProgress<'s, 'o, O> {
+        match self {
+            Self::Existing => session.structural(site),
+            Self::OwnedCall => session.structural_owned(site),
+        }
+    }
+    fn retire_values<O: ExecutionObserver>(
+        self,
+        values: Vec<InterpretValue>,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) {
+        let allocated = values.capacity() != 0;
+        self.retire_backing(allocated, session, site);
+        match self {
+            Self::Existing => retire_values(values, &mut session.structural(site)),
+            Self::OwnedCall => retire_values(values, &mut session.structural_owned(site)),
+        }
+    }
+    fn retire_backing<O: ExecutionObserver>(
+        self,
+        allocated: bool,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) {
+        if allocated && matches!(self, Self::OwnedCall) {
+            session.retirement_step(site, 1);
+        }
+    }
+    // These paths previously used an implicit local drop. Only actual new
+    // callee execution selects owned retirement; root legacy policy is exact.
+    fn retire_temporary<O: ExecutionObserver>(
+        self,
+        value: InterpretValue,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) {
+        match self {
+            Self::Existing => drop(value),
+            Self::OwnedCall => self.retire_value(value, session, site),
+        }
+    }
+    fn retire_temporaries<O: ExecutionObserver>(
+        self,
+        values: Vec<InterpretValue>,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) {
+        match self {
+            Self::Existing => drop(values),
+            Self::OwnedCall => self.retire_values(values, session, site),
+        }
+    }
+    fn retire_bytes<O: ExecutionObserver>(
+        self,
+        bytes: Vec<Option<u8>>,
+        session: &mut ObservedSession<'_, O>,
+        site: ExecutionSite,
+    ) {
+        if matches!(self, Self::OwnedCall) {
+            for _ in &bytes {
+                session.retirement_step(site, 1);
+            }
+            self.retire_backing(bytes.capacity() != 0, session, site);
+        }
+        drop(bytes);
+    }
+}
+
+fn bind_core<O: ExecutionObserver>(
+    state: &mut ExecState,
+    node: &InstrNode,
+    values: Vec<InterpretValue>,
+    session: &mut ObservedSession<'_, O>,
+    site: InstructionSite,
+    origin: BindOrigin,
+) -> RunResult<()> {
     if node.results.len() != values.len() {
-        retire_values(
-            values,
-            &mut session.structural(ExecutionSite::Instruction(site)),
-        );
+        origin.retire_values(values, session, ExecutionSite::Instruction(site));
         return Err(Fault::Semantic(err(
             InterpretErrorCode::MalformedInstruction,
             site.block,
@@ -170,6 +290,7 @@ pub(super) fn bind<O: ExecutionObserver>(
         )));
     }
     let at = ExecutionSite::Instruction(site);
+    let allocated = values.capacity() != 0;
     let mut values = values.into_iter();
     for id in &node.results {
         let Some(value) = values.next() else {
@@ -181,29 +302,34 @@ pub(super) fn bind<O: ExecutionObserver>(
             at,
             ExecutionPhase::HostAllocation,
         ) {
-            value.retire_observed(session, at).ok();
+            origin.retire_value(value, session, at);
+            origin.retire_backing(allocated, session, at);
             for remaining in values {
-                remaining.retire_observed(session, at).ok();
+                origin.retire_value(remaining, session, at);
             }
             return Err(error);
         }
         if let Err(error) = check_char_validity(&value, site.block) {
-            value.retire_observed(session, at).ok();
+            origin.retire_value(value, session, at);
+            origin.retire_backing(allocated, session, at);
             for remaining in values {
-                remaining.retire_observed(session, at).ok();
+                origin.retire_value(remaining, session, at);
             }
             return Err(Fault::Semantic(error));
         }
         if let Some(old) = state.values.insert(*id, value) {
-            old.retire_observed(session, at).ok();
+            origin.retire_value(old, session, at);
         }
     }
+    origin.retire_backing(allocated, session, at);
+    drop(values);
     Ok(())
 }
 
 fn fresh_state() -> ExecState {
     ExecState {
         values: BTreeMap::new(),
+        provenance: provenance::State::default(),
         memory: MemoryState::default(),
         globals: BTreeMap::new(),
         frames: BTreeSet::new(),
@@ -220,8 +346,9 @@ fn fresh_state() -> ExecState {
 impl Interpreter<'_> {
     /// Execute under the caller's existing session. Fuel, observer refusal and
     /// cumulative debits are retained over every attempt with that session.
-    /// Calls, hosts, unwinding and non-byte aggregate memory are deliberately
-    /// unsupported in this first observed capability; no fallback is attempted.
+    /// Direct and function-value calls share this same session and owned
+    /// control stack. Hosts, closure application, unwinding and non-byte
+    /// aggregate memory remain unsupported; no ordinary fallback is attempted.
     pub fn execute_func_observed<O: ExecutionObserver>(
         &self,
         function: FuncId,
@@ -232,51 +359,24 @@ impl Interpreter<'_> {
         let entry = ExecutionSite::Entry(function);
         let mut state = fresh_state();
         let mut last = entry;
+        let mut calls_dispatched = false;
         let result = (|| {
             // Fixed diagnostic storage is prepaid before any entry error can
             // allocate its String. Recursive/source-sized diagnostics are not
             // part of this observed closure.
             event(session, entry, ExecutionPhase::HostAllocation, 1, 512)?;
-            let function = startup::prepare(self, function, &arguments, session)?;
+            let (function, abi) = startup::prepare(self, function, &arguments, session)?;
+            calls::preflight(self, session, entry)?;
             state.memory = self.initial_memory(function.entry)?;
-            if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
-                return Err(Fault::Unsupported("multi-block observed execution"));
-            }
-            let block = &function.blocks[0];
-            startup::bind_entry(self, function, block, &mut arguments, &mut state, session)?;
-            for (instruction_index, node) in block.body.iter().enumerate() {
-                let site = InstructionSite {
-                    function: function.id,
-                    block: block.id,
-                    instruction_index,
-                };
-                last = ExecutionSite::Instruction(site);
-                match session.begin_instruction(site) {
-                    Ok(()) => state.steps += 1,
-                    Err(StepStopped::Admission) => return Err(Fault::Admission),
-                    Err(StepStopped::Fuel) => {
-                        return Err(Fault::Semantic(err(
-                            InterpretErrorCode::OutOfFuel,
-                            block.id,
-                            "original observed fuel exhausted",
-                        )));
-                    }
-                }
-                if let Some(returns) = step::execute(self, node, &mut state, session, site)? {
-                    if let Err(error) =
-                        startup::check_returns(self, function, &returns, session, last)
-                    {
-                        retire_values(returns, &mut session.structural(last));
-                        return Err(error);
-                    }
-                    return Ok(returns);
-                }
-            }
-            Err(Fault::Semantic(err(
-                InterpretErrorCode::MalformedInstruction,
-                block.id,
-                "observed block ended without a terminator",
-            )))
+            calls::run(
+                self,
+                function,
+                abi,
+                &mut arguments,
+                &mut state,
+                session,
+                calls::Progress::new(&mut last, &mut calls_dispatched),
+            )
         })();
         // No successful publication precedes retirement of interpreter-owned
         // values, memory runs and borrowed startup scratch. Cleanup polls the
@@ -330,7 +430,11 @@ impl Interpreter<'_> {
             copy_bytes: 0,
         });
         if final_poll.is_err() || session.first_refusal.is_some() {
-            report.retire_observed(session, last).ok();
+            if calls_dispatched {
+                report.retire_owned(session, last).ok();
+            } else {
+                report.retire_observed(session, last).ok();
+            }
             report = ObservedReport {
                 exit: ObservedExit::AdmissionRefused,
                 steps: state.steps,

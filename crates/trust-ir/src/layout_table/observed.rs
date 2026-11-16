@@ -23,6 +23,7 @@ mod cast;
 mod enums;
 mod equality;
 mod inhabit;
+mod references;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -56,6 +57,8 @@ struct Work<'s, 'o, O: ExecutionObserver> {
     open: BTreeSet<Key>,
     definitions: BTreeMap<(u8, u32), usize>,
     scanned: [usize; 2],
+    function_headers: BTreeMap<u32, Option<crate::FuncTyId>>,
+    functions_built: bool,
     spans: BTreeSet<(u64, u64)>,
     value: Option<Arc<TyLayoutShape>>,
 }
@@ -72,6 +75,7 @@ impl<'m> LayoutTable<'m> {
         let canonical_scalars = canonical_target(module, session, site)?;
         let table = Self {
             module,
+            functions: OnceLock::new(),
             pointer_bits: module.pointer_bits(),
             canonical_scalars,
             // No RandomState::new, HashMap::new or cold entropy/TLS setup.
@@ -250,6 +254,8 @@ impl<'s, 'o, O: ExecutionObserver> Work<'s, 'o, O> {
             open: BTreeSet::new(),
             definitions: BTreeMap::new(),
             scanned: [0; 2],
+            function_headers: BTreeMap::new(),
+            functions_built: false,
             spans: BTreeSet::new(),
             value: None,
         })

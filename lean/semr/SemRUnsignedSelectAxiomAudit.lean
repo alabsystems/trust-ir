@@ -114,4 +114,3 @@ set_option format.width 10000
 /-- info: 'SemRUnsignedSelectCheck.selected_poison_return_is_ub' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms SemRUnsignedSelectCheck.selected_poison_return_is_ub
-

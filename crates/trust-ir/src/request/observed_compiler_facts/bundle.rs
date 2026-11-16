@@ -19,6 +19,8 @@ use collections::*;
 #[derive(Default)]
 struct Scratch<'a> {
     functions: BTreeSet<FuncId>,
+    item_headers: BTreeMap<FuncId, Option<crate::FuncTyId>>,
+    item_headers_built: bool,
     obligations: BTreeSet<ProofId>,
     adt_ids: BTreeSet<NativeCompilerFactId>,
     fat_ids: BTreeSet<NativeCompilerFactId>,
@@ -124,6 +126,7 @@ impl<'a> Scratch<'a> {
         site: ExecutionSite,
     ) {
         retire_set(&mut self.functions, session, site);
+        retire_map(&mut self.item_headers, session, site);
         retire_set(&mut self.obligations, session, site);
         retire_set(&mut self.adt_ids, session, site);
         retire_set(&mut self.fat_ids, session, site);

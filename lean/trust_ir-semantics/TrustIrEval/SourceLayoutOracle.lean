@@ -9,6 +9,9 @@ open TrustIr.SourceLayout
 
 private def errorClass : Error → String
   | .missingType _ | .missingStruct _ | .missingEnum _ | .missingClosure _ => "missing"
+  -- Rust maps invalid item headers to UnsupportedTyShape(FnItem); retain
+  -- the more precise declaration error in detail without changing its class.
+  | .missingFunction _ | .ambiguousFunction _ | .missingFunctionSignature _ _ => "unsupported"
   | .missingMetadata _ _ _ => "missing_metadata"
   | .incoherent _ _ => "incoherent"
   | .missingTarget _ | .scalarTarget => "target"

@@ -32,6 +32,12 @@ impl State {
                 ty: Ty::Func(_),
                 value: Constant::FnDef(_),
             } => true,
+            Inst::Cast {
+                op: CastOp::ReifyFnPointer,
+                src_ty: Ty::FnItem(id),
+                dst_ty: Ty::Func(signature),
+                ..
+            } => census::exact_item(module, *id, *signature, work)?,
             Inst::Call { .. }
             | Inst::CallCannotUnwind { .. }
             | Inst::Invoke { .. }
@@ -46,6 +52,7 @@ impl State {
                 work.admit(1, size_of::<bool>())?;
                 match actual {
                     Some(Ty::Func(actual)) if actual == sig => true,
+                    Some(Ty::FnItem(id)) => census::exact_item(module, *id, *sig, work)?,
                     Some(ty) => {
                         // Actual fixed-discriminant original shape predicate; no nested walk.
                         work.admit(1, size_of::<bool>())?;

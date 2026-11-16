@@ -118,6 +118,7 @@ impl State {
                 | Ty::PtrMut(_)
                 | Ty::Isize
                 | Ty::Usize => Some(u64::from(pointer_bytes)),
+                Ty::FnItem(_) => Some(0),
                 Ty::Bool => Some(1),
                 _ => ty
                     .bit_width_observed(w.session, w.site)?

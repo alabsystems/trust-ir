@@ -20,6 +20,7 @@ mutual
     | .Struct id => mix 21 id.index
     | .Array id count => mix (mix 22 id.index) count
     | .Func id => mix 23 id.index
+    | .FnItem id => mix 42 id.index
     | .Unit => 24 | .Never => 25
     | .Tuple fields => mix 26 (typesBucket fields)
     | .Enum id => mix 27 id.index

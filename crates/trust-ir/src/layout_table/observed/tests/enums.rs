@@ -7,6 +7,18 @@ use crate::ty::{EnumLayoutDescriptor, RecordDef};
 
 mod stops;
 
+fn uninhabited_direct() -> Module {
+    crate::layout_table::direct_storage::tests::fixture()
+}
+
+#[test]
+fn uninhabited_direct_full_physical_profiles_and_refusals_match() {
+    equal(&uninhabited_direct());
+    for module in crate::layout_table::direct_storage::tests::invalid_cases() {
+        equal(&module);
+    }
+}
+
 fn variant(fields: Vec<Ty>) -> EnumVariant {
     EnumVariant {
         name: "v".into(),
@@ -345,5 +357,157 @@ fn least_fixpoint_inhabitedness_keeps_all_duplicates_missing_nodes_and_cycles() 
                 table.variant_is_uninhabited(variant)
             );
         }
+    }
+}
+
+// Additive normal/observed query controls: no global module validation precedes them.
+fn single_reference_fixture() -> Module {
+    let mut def = definition(vec![
+        vec![Ty::Never, Ty::Array(TyId::new(0), u64::MAX)],
+        vec![Ty::U32],
+    ]);
+    def.discriminants = vec![Some(-5), Some(17)];
+    def.layout = Some(EnumLayoutDescriptor {
+        encoding: EnumTagEncoding::SingleInhabited { variant: 1 },
+        size: 4,
+        align: 4,
+        variant_field_offsets: vec![vec![], vec![0]],
+    });
+    let mut module = enum_module(def);
+    module.types.push(Ty::U128);
+    module
+}
+
+fn assert_single_reference_refused(module: &Module) {
+    let expected = LayoutError::EnumLayoutUnavailable(EnumId::new(7));
+    assert_eq!(
+        LayoutTable::new(module)
+            .enum_layout(EnumId::new(7))
+            .unwrap_err(),
+        expected
+    );
+    assert_eq!(
+        module.enum_layout_shape(EnumId::new(7)).unwrap_err(),
+        expected
+    );
+    assert_eq!(
+        run(module, &mut Observer::default()).unwrap().unwrap_err(),
+        expected
+    );
+    // The separate public type query must agree as well as enum-layout query.
+    parity(module, &Ty::Enum(EnumId::new(7)));
+}
+
+fn single_missing_payload(ty: Ty) -> Module {
+    let mut module = single_reference_fixture();
+    module.enums[0].variants[0].fields = vec![Ty::Never, ty];
+    module
+}
+
+#[test]
+fn single_dead_row_missing_struct_is_not_hidden_by_never() {
+    assert_single_reference_refused(&single_missing_payload(Ty::Struct(StructId::new(99))));
+}
+#[test]
+fn single_dead_row_missing_enum_is_not_hidden_by_never() {
+    assert_single_reference_refused(&single_missing_payload(Ty::Enum(EnumId::new(99))));
+}
+#[test]
+fn single_dead_row_missing_record_is_not_hidden_by_never() {
+    assert_single_reference_refused(&single_missing_payload(Ty::Record(RecordId::new(99))));
+}
+#[test]
+fn single_dead_row_zero_array_still_checks_element_id() {
+    assert_single_reference_refused(&single_missing_payload(Ty::Array(TyId::new(99), 0)));
+}
+#[test]
+fn single_dead_row_reference_still_checks_referent_id() {
+    assert_single_reference_refused(&single_missing_payload(Ty::Ref(Box::new(Ty::Struct(
+        StructId::new(99),
+    )))));
+}
+#[test]
+fn single_dead_row_closure_still_checks_capture_sequence_id() {
+    let mut module = single_missing_payload(Ty::Closure(ClosureTyId::new(0)));
+    let func = module
+        .add_func_type(crate::FuncTy::unrecorded(vec![], vec![], false))
+        .unwrap();
+    module.closure_types.push(ClosureTy {
+        func,
+        captures: vec![Ty::Sequence(TyId::new(99))],
+    });
+    assert_single_reference_refused(&module);
+}
+#[test]
+fn single_dead_row_function_item_uses_the_current_resolver() {
+    assert_single_reference_refused(&single_missing_payload(Ty::FnItem(FuncId::new(99))));
+}
+
+#[test]
+fn single_valid_dead_overflow_and_cycle_skip_storage_but_keep_references() {
+    let base = single_reference_fixture();
+    let shape = LayoutTable::new(&base).enum_layout(EnumId::new(7)).unwrap();
+    assert_eq!((shape.size_bits, shape.align_bits), (32, 32));
+    assert_eq!(shape.discriminants, vec![-5, 17]);
+    equal(&base);
+    let mut module = base.clone();
+    module.enums.push(EnumDef::new(
+        EnumId::new(8),
+        "cycle",
+        vec![variant(vec![Ty::Enum(EnumId::new(8))])],
+    ));
+    module.enums[0].variants[0].fields = vec![Ty::Never, Ty::Enum(EnumId::new(8))];
+    assert!(
+        LayoutTable::new(&module)
+            .enum_layout(EnumId::new(7))
+            .is_ok()
+    );
+    equal(&module);
+    module.enums[0].variants[0].fields.remove(0);
+    assert_single_reference_refused(&module); // A bare cycle does not prove deadness.
+}
+
+#[test]
+fn single_keeps_current_one_declaration_and_live_zero_size_policy() {
+    let mut module = single_reference_fixture();
+    module.enums[0].variants.remove(0);
+    module.enums[0].discriminants = vec![Some(17)];
+    let desc = module.enums[0].layout.as_mut().unwrap();
+    desc.encoding = EnumTagEncoding::SingleInhabited { variant: 0 };
+    desc.variant_field_offsets.remove(0);
+    assert!(
+        LayoutTable::new(&module)
+            .enum_layout(EnumId::new(7))
+            .is_ok()
+    );
+    equal(&module); // Intentionally retain current >=1 policy.
+    let mut module = single_reference_fixture();
+    module.enums[0].variants[1].fields.clear();
+    let desc = module.enums[0].layout.as_mut().unwrap();
+    desc.size = 0;
+    desc.align = 1;
+    desc.variant_field_offsets[1].clear();
+    let shape = LayoutTable::new(&module)
+        .enum_layout(EnumId::new(7))
+        .unwrap();
+    assert_eq!((shape.size_bits, shape.align_bits), (0, 8));
+    equal(&module);
+}
+
+#[test]
+fn single_reference_query_preserves_observer_stops_at_each_actual_admission() {
+    let module = single_reference_fixture();
+    let mut observer = Observer::default();
+    assert!(run(&module, &mut observer).unwrap().is_ok());
+    assert!(!observer.events.is_empty());
+    for stop in 1..=observer.events.len() {
+        let mut observer = Observer {
+            stop_at: Some(stop),
+            ..Observer::default()
+        };
+        assert!(
+            run(&module, &mut observer).is_err(),
+            "stop {stop} must not become a layout verdict"
+        );
     }
 }

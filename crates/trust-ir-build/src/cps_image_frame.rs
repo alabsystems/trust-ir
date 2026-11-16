@@ -431,10 +431,7 @@ where
                     return Err("structured Frame observation recursor mismatch".into());
                 }
                 let fresh = self.allocator.allocate_local(major_type)?;
-                let mut at_major = args[..args.len() - 1]
-                    .iter()
-                    .map(|e| e.clone())
-                    .collect::<Vec<_>>();
+                let mut at_major = args[..args.len() - 1].to_vec();
                 at_major.push(fresh.term().clone());
                 let motive = fresh.lam(self.goal(Expr::apps(actual_head, at_major)));
                 let mut proof_args = parameters.clone();
@@ -493,7 +490,13 @@ where
             // Lexically local proofs need no separate global helper or
             // repeated dynamic capture abstraction/inventory storage.
             self.parts.spend_context_work(5)?; // let, three child pins, BVar
-            return Ok(Expr::let_(goal, proof, Expr::bvar(0)));
+            return Ok(Expr::let_named(
+                Name::anon(),
+                goal,
+                proof,
+                Expr::bvar(0),
+                false,
+            ));
         }
         self.parts
             .bind_scoped(self.allocator, &self.captures, goal, proof)

@@ -76,7 +76,7 @@
         {
           "needle": "`SemRFrameCaller",
           "replacement": "`FrameAuditAxiomProbe",
-          "count": 5
+          "count": 12
         }
       ],
       "diagnostic": "Frame audit: axiom/opaque declaration"
@@ -91,7 +91,7 @@
         {
           "needle": "`SemRFrameCaller",
           "replacement": "`FrameAuditOpaqueProbe",
-          "count": 5
+          "count": 12
         }
       ],
       "diagnostic": "Frame audit: axiom/opaque declaration"
@@ -106,7 +106,7 @@
         {
           "needle": "`SemRFrameCaller",
           "replacement": "`FrameAuditUnsafeProbe",
-          "count": 5
+          "count": 12
         }
       ],
       "diagnostic": "Frame audit: unsafe/partial declaration"
@@ -121,7 +121,7 @@
         {
           "needle": "`SemRFrameCaller",
           "replacement": "`FrameAuditPartialProbe",
-          "count": 5
+          "count": 12
         }
       ],
       "diagnostic": "Frame audit: unsafe/partial declaration"
@@ -142,7 +142,7 @@
         {
           "needle": "`SemRFrameCaller",
           "replacement": "`FrameAuditTransitiveProbe",
-          "count": 5
+          "count": 12
         }
       ],
       "diagnostic": "Frame audit: forbidden axiom"

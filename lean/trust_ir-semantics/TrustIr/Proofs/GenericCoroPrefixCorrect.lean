@@ -29,11 +29,11 @@ theorem expandedGraph_prefix_runCallEquivalent (header : EvalFunction)
   let target : EvalFunction := {header with
     cfg := cfgOf (expandedGraph (Names.ofTriple names) blocks header.entryBlock),
     localTypes := some targetTypes}
-  apply runCallEquivalent_of_selectedEffects source target rfl
+  apply runCallEquivalent_of_selectedEffects source target rfl rfl
   intro ctx selected fuel
-  apply (evaluator_simulation ctx selected source target rfl rfl ?_ fuel).2
-  intro sourceRecurse targetRecurse effects
-  exact expandedGraph_prefix_layer_effect sourceRecurse targetRecurse ctx
+  apply (evaluator_simulation ctx selected source target rfl rfl rfl ?_ fuel).2
+  intro metadata sourceRecurse targetRecurse effects
+  exact expandedGraph_prefix_layer_effect sourceRecurse targetRecurse (callerContext ctx metadata)
     (withFunction ctx selected source).functions (withFunction ctx selected target).functions
     (headerAgreement_withFunction ctx selected source target rfl rfl) effects
     header blocks names sourceTypes targetTypes params bodyPrefix bodyDests termDests frame value slot next

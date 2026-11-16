@@ -76,6 +76,7 @@ impl Analysis<'_, '_> {
             | Inst::CloseFrame { .. }
             | Inst::LandingPad { .. }
             | Inst::Fence { .. } => Ok(()),
+            Inst::BoxDeref { operand, .. } => self.access(Side::Read, *operand, block, what, work),
             Inst::Load { ptr, .. } | Inst::AtomicLoad { ptr, .. } => {
                 self.access(Side::Read, *ptr, block, what, work)
             }

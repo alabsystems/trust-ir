@@ -185,7 +185,35 @@ impl<O: ExecutionObserver> Work<'_, '_, O> {
         let _ = value;
         self.session.retirement_poll(self.site);
     }
+    pub(super) fn function_item_valid(&mut self, module: &Module, id: crate::FuncId) -> R<bool> {
+        if !self.functions_built {
+            for function in &module.functions {
+                self.poll()?;
+                self.tree::<u32, Option<crate::FuncTyId>>(self.function_headers.len())?;
+                match self.function_headers.entry(function.id.index()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Some(function.ty));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        entry.insert(None);
+                    }
+                }
+            }
+            self.functions_built = true;
+        }
+        self.lookup(self.function_headers.len())?;
+        self.admit(2, size_of::<Option<crate::FuncTyId>>())?;
+        Ok(self
+            .function_headers
+            .get(&id.index())
+            .copied()
+            .flatten()
+            .is_some_and(|signature| module.func_type(signature).is_some()))
+    }
+
     pub(super) fn retire_scratch(&mut self) {
+        let functions = core::mem::take(&mut self.function_headers);
+        self.retire_copy_map(functions);
         if let Some(value) = self.value.take() {
             self.retire_layout(value);
         }

@@ -18,18 +18,6 @@ pub const LOOP_CPS_PREFIX_CONGR: &str = "TrustIR.Eval.Loop.cps_prefix_congr";
 /// Suspension calls `residual`; terminal results call `finish` unchanged.
 pub const LOOP_CPS_PREFIX_FROM_PULSE: &str = "TrustIR.Eval.Loop.cps_prefix_from_pulse";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn finite_cps_prefix_definitions_and_proofs_are_kernel_checked() {
-        let mut env = Environment::default();
-        install_loop_into(&mut env).unwrap();
-        install_cps_loop_into(&mut env).unwrap();
-        assert!(install_cps_loop_into(&mut env).is_err());
-    }
-}
-
 fn cps_prefix(s: &Expr, a: &Expr, step: Expr, residual: Expr, count: Expr) -> Expr {
     Expr::apps(
         c(LOOP_CPS_PREFIX),
@@ -259,4 +247,16 @@ fn cps_from_pulse(env: &mut Environment) -> Result<(), SemanticEvaluationError> 
         proof,
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn finite_cps_prefix_definitions_and_proofs_are_kernel_checked() {
+        let mut env = Environment::default();
+        install_loop_into(&mut env).unwrap();
+        install_cps_loop_into(&mut env).unwrap();
+        assert!(install_cps_loop_into(&mut env).is_err());
+    }
 }

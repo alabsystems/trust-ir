@@ -220,3 +220,44 @@ fn actual_observed_prelude_alignment_matches_all_reprs_and_drives_encoding_check
         }
     }
 }
+
+#[test]
+fn single_encoding_current_policy_and_semantic_refusals_match_the_ordinary_oracle() {
+    let m = strict_single_fixture();
+    assert!(m.layout_table().enum_layout(EnumId::new(9)).is_ok());
+    assert!(run(&m, Stage::Prelude).0.is_empty());
+    assert!(run(&m, Stage::Encoding).0.is_empty());
+
+    // Root's affirmed policy permits one declared inhabited row as well.
+    let mut one = strict_single_fixture();
+    one.enums[0].variants.remove(0);
+    one.enums[0].discriminants = vec![Some(17)];
+    let layout = one.enums[0].layout.as_mut().unwrap();
+    layout.encoding = EnumTagEncoding::SingleInhabited { variant: 0 };
+    layout.variant_field_offsets = vec![vec![0]];
+    assert!(one.layout_table().enum_layout(EnumId::new(9)).is_ok());
+    assert!(run(&one, Stage::Encoding).0.is_empty());
+
+    for which in 0..4 {
+        let mut bad = strict_single_fixture();
+        match which {
+            0 => {
+                bad.enums[0].layout.as_mut().unwrap().encoding =
+                    EnumTagEncoding::SingleInhabited { variant: 2 }
+            }
+            1 => bad.enums[0].variants[0].fields = vec![Ty::U8],
+            2 => bad.enums[0].variants[1].fields = vec![Ty::Never],
+            3 => bad.enums[0].variants[0].fields = vec![Ty::Struct(StructId::new(999))],
+            _ => unreachable!(),
+        }
+        assert!(bad.layout_table().enum_layout(EnumId::new(9)).is_err());
+        let errors = run(&bad, Stage::Encoding).0;
+        assert!(matches!(
+            &errors[..],
+            [ValidationError::ConstTypeMismatch { expected, actual, .. }]
+                if expected == "one selected inhabited variant and only structurally uninhabited inactive variants"
+                    && actual == if which == 0 { "single-inhabited selector 2" }
+                        else { "single-inhabited selector 1" }
+        ));
+    }
+}

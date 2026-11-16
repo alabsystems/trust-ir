@@ -94,6 +94,7 @@ pub(super) fn run(
                     if let Some(nominal_types) = &nominal_types {
                         validate_nominal_instruction_types(
                             module,
+                            &function_catalog,
                             node,
                             &val_ty,
                             nominal_types,

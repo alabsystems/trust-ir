@@ -63,6 +63,7 @@ fn is_integer_variant(ty: &Ty) -> bool {
         | Ty::Struct(_)
         | Ty::Enum(_)
         | Ty::Func(_)
+        | Ty::FnItem(_)
         | Ty::Sequence(_)
         | Ty::Set(_, _)
         | Ty::Record(_)

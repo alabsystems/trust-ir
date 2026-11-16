@@ -97,8 +97,7 @@ fn cps_image_replay_structured_circular_equation_refuses() {
     );
     assert!(
         result
-            .err()
-            .expect("invalid retained original must reject")
+            .expect_err("invalid retained original must reject")
             .contains("literal TO_CPS")
     );
 }

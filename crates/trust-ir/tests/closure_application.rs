@@ -126,6 +126,7 @@ fn build(target_params: Vec<Ty>, captures: Vec<Ty>, apparent_params: Vec<Ty>) ->
 
     // fn add_env(env, x) -> i32 { env + x }
     let mut target = Function::new(FuncId::new(1), "add_env", target_ty, b(0));
+    target.calling_conv = trust_ir::CallingConv::Rust;
     let mut tb = Block::new(b(0));
     let param_count = module.func_types[target_ty.as_usize()].params.len();
     for i in 0..param_count {
@@ -233,6 +234,7 @@ fn zero_capture_closure_applies_with_the_apparent_signature() {
         .expect("Module::try_add_function: test fixture");
 
     let mut id = Function::new(FuncId::new(1), "id", apparent, b(0));
+    id.calling_conv = trust_ir::CallingConv::Rust;
     let mut ib = Block::new(b(0));
     ib.params.push((v(0), Ty::I32));
     ib.body

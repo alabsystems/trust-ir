@@ -299,6 +299,10 @@ pub(crate) fn write_ty_stable(out: &mut Vec<u8>, ty: &Ty) {
             write_u8_stable(out, 21);
             write_func_ty_id_stable(out, *id);
         }
+        Ty::FnItem(id) => {
+            write_u8_stable(out, 42);
+            write_u32_stable(out, id.index());
+        }
         Ty::Ref(inner) => {
             write_u8_stable(out, 22);
             write_ty_stable(out, inner);
@@ -438,6 +442,10 @@ pub(crate) fn write_constant_stable(out: &mut Vec<u8>, constant: &Constant) {
             write_u8_stable(out, 9);
             write_u32_stable(out, func.index());
         }
+        Constant::FnItem(func) => {
+            write_u8_stable(out, 19);
+            write_u32_stable(out, func.index());
+        }
         Constant::SymbolAddr { symbol, addend } => {
             write_u8_stable(out, 12);
             write_str_stable(out, symbol);
@@ -482,6 +490,7 @@ pub(crate) fn write_ty_shape_stable(out: &mut Vec<u8>, shape: TyShape) {
         TyShape::Storage => write_u8_stable(out, 27),
         // PKG-U13a: the next free shape tag.
         TyShape::Tensor => write_u8_stable(out, 28),
+        TyShape::FnItem => write_u8_stable(out, 29),
         TyShape::Int { signed, bits } => {
             write_u8_stable(out, 0);
             write_bool_stable(out, signed);
@@ -574,6 +583,7 @@ pub(crate) fn write_field_offset_shape_stable(out: &mut Vec<u8>, field: &FieldOf
 pub(crate) fn write_ty_layout_kind_stable(out: &mut Vec<u8>, kind: &TyLayoutKind) {
     match kind {
         TyLayoutKind::Storage => write_u8_stable(out, 11),
+        TyLayoutKind::FnItem => write_u8_stable(out, 12),
         TyLayoutKind::Scalar(shape) => {
             write_u8_stable(out, 0);
             write_ty_shape_stable(out, *shape);
@@ -795,6 +805,10 @@ pub(crate) fn write_adapter_input_stable(out: &mut Vec<u8>, input: &NativeAdapte
             write_digest_stable(out, body_digest);
         }
         NativeAdapterInput::TrustIrModule => write_u8_stable(out, 1),
+        NativeAdapterInput::RustThir { source_digest } => {
+            write_u8_stable(out, 2);
+            write_digest_stable(out, source_digest);
+        }
     }
 }
 
@@ -1247,15 +1261,29 @@ pub(crate) fn write_cast_op_stable(out: &mut Vec<u8>, op: CastOp) {
     );
 }
 
-pub(crate) fn write_enum_tag_encoding_stable(out: &mut Vec<u8>, encoding: NativeEnumTagEncoding) {
+pub(crate) fn write_enum_tag_encoding_stable(out: &mut Vec<u8>, encoding: &NativeEnumTagEncoding) {
     write_u8_stable(
         out,
         match encoding {
             NativeEnumTagEncoding::Direct => 0,
             NativeEnumTagEncoding::Niche => 1,
             NativeEnumTagEncoding::Untagged => 2,
+            NativeEnumTagEncoding::DirectWithUninhabited { .. } => 3,
         },
     );
+    if let NativeEnumTagEncoding::DirectWithUninhabited { variants } = encoding {
+        write_len_stable(out, variants.len());
+        for row in variants {
+            write_u32_stable(out, row.variant);
+            write_u64_stable(out, row.size);
+            write_u64_stable(out, row.align);
+            write_len_stable(out, row.fields.len());
+            for field in &row.fields {
+                write_u64_stable(out, field.size);
+                write_u64_stable(out, field.align);
+            }
+        }
+    }
 }
 
 pub(crate) fn write_integer_range_stable(out: &mut Vec<u8>, range: NativeIntegerRange) {
@@ -1299,7 +1327,7 @@ pub(crate) fn write_enum_variant_layout_fact_stable(
 
 pub(crate) fn write_enum_layout_fact_stable(out: &mut Vec<u8>, layout: &NativeEnumLayoutFact) {
     write_enum_id_stable(out, layout.enum_id);
-    write_enum_tag_encoding_stable(out, layout.tag_encoding);
+    write_enum_tag_encoding_stable(out, &layout.tag_encoding);
     write_option_u32_stable(out, layout.tag_bits);
     write_option_u64_stable(out, layout.discriminant_offset_bits);
     write_option_enum_niche_fact_stable(out, layout.niche.as_ref());
@@ -2452,6 +2480,15 @@ pub(crate) fn validate_adt_layout_fact(
                 });
                 return;
             };
+            // An empty declaration retains nominal identity, not a storage image.
+            // The standalone enum helper deliberately has only shape scope.
+            if enum_def.variants.is_empty() {
+                errors.push(NativeVerificationBundleError::InvalidCompilerFact {
+                    fact: NativeCompilerFactRef::AdtLayout(fact.id),
+                    field: "layout",
+                });
+                return;
+            }
             if *variants != enum_def.variants.len() {
                 errors.push(NativeVerificationBundleError::InvalidCompilerFact {
                     fact: NativeCompilerFactRef::AdtLayout(fact.id),
@@ -2476,6 +2513,23 @@ pub(crate) fn validate_adt_layout_fact(
                     fact: NativeCompilerFactRef::AdtLayout(fact.id),
                     field: "enum_layout.variants",
                 });
+            }
+            if matches!(
+                enum_def.layout.as_ref().map(|layout| &layout.encoding),
+                Some(
+                    crate::EnumTagEncoding::SingleInhabited { .. }
+                        | crate::EnumTagEncoding::DirectWithUninhabited { .. }
+                )
+            ) {
+                match layouts.ty_layout(&fact.ty) {
+                    Ok(logical)
+                        if logical.size_bits == fact.layout.size_bits
+                            && logical.align_bits == fact.layout.align_bits => {}
+                    _ => errors.push(NativeVerificationBundleError::InvalidCompilerFact {
+                        fact: NativeCompilerFactRef::AdtLayout(fact.id),
+                        field: "layout",
+                    }),
+                }
             }
             validate_native_enum_layout_fact(fact, enum_layout, enum_def, errors);
         }
@@ -2508,6 +2562,44 @@ pub(crate) fn validate_native_enum_layout_fact(
 
     // Native enum layouts are frontend-supplied rustc facts. TrustIr validates the
     // evidence shape here but still does not derive enum layouts locally.
+    if matches!(
+        enum_def.layout.as_ref().map(|layout| &layout.encoding),
+        Some(crate::EnumTagEncoding::SingleInhabited { .. })
+    ) && enum_layout.tag_encoding != NativeEnumTagEncoding::Untagged
+    {
+        invalid("enum_layout.tag_encoding");
+    }
+    match (
+        enum_def.layout.as_ref().map(|layout| &layout.encoding),
+        &enum_layout.tag_encoding,
+    ) {
+        (
+            Some(crate::EnumTagEncoding::DirectWithUninhabited {
+                tag_offset,
+                variants,
+            }),
+            NativeEnumTagEncoding::DirectWithUninhabited { variants: native },
+        ) => {
+            if variants != native {
+                invalid("enum_layout.tag_encoding");
+            }
+            if tag_offset.checked_mul(8) != enum_layout.discriminant_offset_bits {
+                invalid("enum_layout.discriminant_offset_bits");
+            }
+            if enum_def
+                .canonical_tag_repr()
+                .map(|repr| repr.size_bytes() as u32 * 8)
+                != enum_layout.tag_bits
+            {
+                invalid("enum_layout.tag_bits");
+            }
+        }
+        (Some(crate::EnumTagEncoding::DirectWithUninhabited { .. }), _)
+        | (_, NativeEnumTagEncoding::DirectWithUninhabited { .. }) => {
+            invalid("enum_layout.tag_encoding")
+        }
+        _ => {}
+    }
     let mut seen_variants = BTreeSet::new();
     for variant in &enum_layout.variants {
         if !seen_variants.insert(variant.variant_index) {
@@ -2520,7 +2612,26 @@ pub(crate) fn validate_native_enum_layout_fact(
         if expected.name != variant.name {
             invalid("enum_layout.variant");
         }
-        if variant.fields.len() != expected.fields.len() {
+        if let Some(profile) =
+            crate::layout_table::direct_storage::profile(enum_def, variant.variant_index as usize)
+        {
+            if profile.size.checked_mul(8) != Some(variant.size_bits) {
+                invalid("enum_layout.variant.size_bits");
+            }
+            if profile.align.checked_mul(8) != variant.align_bits {
+                invalid("enum_layout.variant.align_bits");
+            }
+        }
+        let inactive = matches!(enum_def.layout.as_ref().map(|layout| &layout.encoding),
+            Some(crate::EnumTagEncoding::SingleInhabited { variant: selected }) if variant.variant_index != *selected);
+        if inactive {
+            if !variant.fields.is_empty() {
+                invalid("enum_layout.variant.fields");
+            }
+            if variant.size_bits != 0 {
+                invalid("layout.size_bits");
+            }
+        } else if variant.fields.len() != expected.fields.len() {
             invalid("enum_layout.variant.fields");
         }
         for (field_index, field) in variant.fields.iter().enumerate() {
@@ -2533,6 +2644,23 @@ pub(crate) fn validate_native_enum_layout_fact(
             }
             if field.ty_shape != expected_ty.shape() {
                 invalid("enum_layout.variant.fields.ty_shape");
+            }
+            if matches!(
+                enum_def.layout.as_ref().map(|layout| &layout.encoding),
+                Some(crate::EnumTagEncoding::DirectWithUninhabited { .. })
+            ) && enum_def
+                .layout
+                .as_ref()
+                .and_then(|layout| {
+                    layout
+                        .variant_field_offsets
+                        .get(variant.variant_index as usize)
+                })
+                .and_then(|offsets| offsets.get(field_index))
+                .and_then(|offset| offset.checked_mul(8))
+                != field.offset_bits
+            {
+                invalid("enum_layout.variant.fields.offset_bits");
             }
         }
         if variant.size_bits > fact.layout.size_bits {
@@ -2551,8 +2679,8 @@ pub(crate) fn validate_native_enum_layout_fact(
         }
     }
 
-    match enum_layout.tag_encoding {
-        NativeEnumTagEncoding::Direct => {
+    match &enum_layout.tag_encoding {
+        NativeEnumTagEncoding::Direct | NativeEnumTagEncoding::DirectWithUninhabited { .. } => {
             if enum_layout.niche.is_some() {
                 invalid("enum_layout.niche");
             }
@@ -2912,6 +3040,7 @@ pub(crate) fn native_function_value_ty(function: &Function, value: ValueId) -> O
 pub(crate) fn native_inst_result_ty(inst: &Inst) -> Option<Ty> {
     match inst {
         Inst::MakeClosure { ty, .. } => Some(Ty::Closure(*ty)),
+        Inst::BoxDeref { ptr_ty, .. } => Some(ptr_ty.clone()),
         Inst::BinOp { ty, .. } => Some(ty.clone()),
         Inst::UnOp { ty, .. } => Some(ty.clone()),
         Inst::ICmp { ty, .. } | Inst::FCmp { ty, .. } => Some(ty.comparison_result_ty()),
@@ -3625,6 +3754,7 @@ mod nominal_type_identity_tests {
             Ty::Dialect(Box::new(crate::DialectTy::new("example", "value", 1))),
             Ty::handle("Nat", "trust_bignum::Nat"),
             Ty::Tensor(Box::new(Ty::I8), 2),
+            Ty::FnItem(FuncId::new(7)),
         ];
         let mut tags = std::collections::BTreeMap::new();
         for ty in representatives {
@@ -3636,11 +3766,12 @@ mod nominal_type_identity_tests {
                 bytes[0]
             );
         }
-        assert_eq!(tags.len(), 40);
+        assert_eq!(tags.len(), 41);
         assert_eq!(tags[&33], Ty::Isize);
         assert_eq!(tags[&37], Ty::Refine(TyId::new(0), crate::PredId::new(0)));
         assert_eq!(tags[&38], Ty::handle("Nat", "trust_bignum::Nat"));
         assert_eq!(tags[&41], Ty::Tensor(Box::new(Ty::I8), 2));
+        assert_eq!(tags[&42], Ty::FnItem(FuncId::new(7)));
     }
 
     /// The stable request-digest `FatPtrKind` sub-tags are frozen, exactly as

@@ -119,6 +119,7 @@ fn constant_head<'a, O: ExecutionObserver>(
         }
         Constant::Uninit => pool.raise_to(UNINIT_LANE_FORMAT_VERSION),
         Constant::TensorBlob { .. } => pool.raise_to(TENSOR_BLOB_FORMAT_VERSION),
+        Constant::FnItem(_) => pool.raise_to(FN_ITEM_IDENTITY_FORMAT_VERSION),
         _ => {}
     }
     Ok(())
@@ -151,6 +152,10 @@ pub(super) fn observed_collect_inst_strings<O: ExecutionObserver>(
         InstG::TensorGather { .. } | InstG::TensorScatter { .. }
     ) {
         pool.raise_to(TENSOR_GATHER_SCATTER_FORMAT_VERSION);
+    }
+    // v72: Inst tag 77 is read-gated likewise.
+    if matches!(inst, InstG::BoxDeref { .. }) {
+        pool.raise_to(BOX_DEREF_VALIDITY_FORMAT_VERSION);
     }
 
     if matches!(
@@ -291,13 +296,23 @@ fn collect_instruction_types<O: ExecutionObserver>(
             InstG::TensorMap { ty, body, .. } => {
                 observed_collect_type_strings(ty, pool, out)?;
                 for node in body {
-                    for node_ty in node.types() {
+                    // Admit the node projection before inspecting its borrowed
+                    // type fields. The iterator owns no temporary allocation
+                    // that could escape observed retirement on child refusal.
+                    out.admit(1, 2 * core::mem::size_of::<&Ty>())?;
+                    for node_ty in node.iter_types() {
                         observed_collect_type_strings(node_ty, pool, out)?;
                     }
                 }
             }
             InstG::GEP { pointee_ty, .. } => observed_collect_type_strings(pointee_ty, pool, out)?,
             InstG::PtrData { ptr_ty, .. } => observed_collect_type_strings(ptr_ty, pool, out)?,
+            InstG::BoxDeref {
+                ptr_ty, pointee, ..
+            } => {
+                observed_collect_type_strings(ptr_ty, pool, out)?;
+                observed_collect_type_strings(pointee.ty(), pool, out)?;
+            }
             InstG::PtrMetadata {
                 ptr_ty,
                 metadata_ty,

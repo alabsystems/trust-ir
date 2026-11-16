@@ -886,6 +886,113 @@ impl<'a> Parser<'a> {
         Ok((kind, Some(crate::inst::PanicSite { entry, location })))
     }
 
+    /// The fact clauses of a `box_deref`, after its operand: `, site
+    /// HEX:ORDINAL, session JUDGED PRODUCING, evidence [CONJUNCT
+    /// KIND(..), ..], not_claimed [NAME, ..]`. Every clause is required and
+    /// every word is from a closed list; the printer writes exactly this
+    /// spelling. The lists are parsed as written (order, repeats and
+    /// omissions included) so the validator, not the parser, judges them.
+    fn parse_box_validity_fact(
+        &mut self,
+    ) -> Result<crate::box_validity::BoxValidityFact, ParseError> {
+        use crate::box_validity::{
+            BoxDerefSite, BoxFactSession, BoxValidityFact, BoxValidityNonClaim, ConjunctEvidence,
+            JudgedBody, PremiseRoot, ProducingSession, StandingAssumption, ValidityConjunct,
+            ValidityEvidence,
+        };
+        self.expect_str(", site ")?;
+        let item = self.read_hex_bytes::<16>()?;
+        self.expect_str(":")?;
+        let ordinal = self.read_u32()?;
+        self.expect_str(", session ")?;
+        let word = self.read_ident()?;
+        let judged = JudgedBody::from_name(&word)
+            .ok_or_else(|| self.error(format!("unknown box_deref judged body `{word}`")))?;
+        let word = self.read_ident()?;
+        let producing = ProducingSession::from_name(&word)
+            .ok_or_else(|| self.error(format!("unknown box_deref session `{word}`")))?;
+        self.expect_str(", evidence [")?;
+        let mut evidence = Vec::new();
+        if !self.try_str("]") {
+            loop {
+                let word = self.read_ident()?;
+                let conjunct = ValidityConjunct::from_name(&word)
+                    .ok_or_else(|| self.error(format!("unknown validity conjunct `{word}`")))?;
+                let kind = self.read_ident()?;
+                self.expect_char('(')?;
+                let entry = match kind.as_str() {
+                    "premise" => {
+                        let word = self.read_ident()?;
+                        let root = PremiseRoot::from_name(&word)
+                            .ok_or_else(|| self.error(format!("unknown premise root `{word}`")))?;
+                        self.expect_char(';')?;
+                        let mut standing = Vec::new();
+                        if !self.try_str(")") {
+                            loop {
+                                let word = self.read_ident()?;
+                                standing.push(StandingAssumption::from_name(&word).ok_or_else(
+                                    || self.error(format!("unknown standing assumption `{word}`")),
+                                )?);
+                                if !self.try_str(",") {
+                                    break;
+                                }
+                            }
+                            self.expect_char(')')?;
+                        }
+                        ValidityEvidence::Premise { root, standing }
+                    }
+                    "dominating_check" => {
+                        let align = if self.try_str("align ") {
+                            Some(self.read_u64()?)
+                        } else {
+                            None
+                        };
+                        self.expect_char(')')?;
+                        ValidityEvidence::DominatingCheck { align }
+                    }
+                    "obligation" => {
+                        let obligation = ProofId::new(self.read_u32()?);
+                        self.expect_char(')')?;
+                        ValidityEvidence::Obligation { obligation }
+                    }
+                    other => {
+                        return Err(self.error(format!("unknown validity evidence `{other}`")));
+                    }
+                };
+                evidence.push(ConjunctEvidence {
+                    conjunct,
+                    evidence: entry,
+                });
+                if !self.try_str(",") {
+                    break;
+                }
+            }
+            self.expect_char(']')?;
+        }
+        self.expect_str(", not_claimed [")?;
+        let mut not_claimed = Vec::new();
+        if !self.try_str("]") {
+            loop {
+                let word = self.read_ident()?;
+                not_claimed.push(
+                    BoxValidityNonClaim::from_name(&word).ok_or_else(|| {
+                        self.error(format!("unknown validity non-claim `{word}`"))
+                    })?,
+                );
+                if !self.try_str(",") {
+                    break;
+                }
+            }
+            self.expect_char(']')?;
+        }
+        Ok(BoxValidityFact {
+            site: BoxDerefSite { item, ordinal },
+            session: BoxFactSession { judged, producing },
+            evidence,
+            not_claimed,
+        })
+    }
+
     fn read_value_id(&mut self) -> Result<ValueId, ParseError> {
         self.skip_whitespace();
         self.expect_char('%')?;
@@ -1437,6 +1544,12 @@ impl<'a> Parser<'a> {
                     .map_err(|_| self.error(format!("invalid enum id: '{}'", s)))?;
                 Ok(TyG::Enum(crate::value::EnumId::new(id)))
             }
+            s if s.starts_with("fnitem.") => {
+                let id: u32 = s[7..]
+                    .parse()
+                    .map_err(|_| self.error(format!("invalid function item id: '{}'", s)))?;
+                Ok(TyG::FnItem(FuncId::new(id)))
+            }
             s if s.starts_with("functy.") => {
                 let id: u32 = s[7..]
                     .parse()
@@ -1620,7 +1733,15 @@ impl<'a> Parser<'a> {
             });
         }
 
-        // Bare function item: fndef<func.N>
+        // A nominal zero-storage function item is not a reified FnDef pointer.
+        if rem.starts_with("fnitem<func.") {
+            self.advance(12)?;
+            let func_id = self.read_u32()?;
+            self.expect_char('>')?;
+            return Ok(ConstantG::FnItem(FuncId::new(func_id)));
+        }
+
+        // Reified function pointer: fndef<func.N>
         if rem.starts_with("fndef<func.") {
             self.advance(11)?;
             let func_id = self.read_u32()?;
@@ -2426,6 +2547,28 @@ impl<'a> Parser<'a> {
                 self.expect_char(')')?;
             }
             return Ok(InstG::MakeClosure { ty, func, captures });
+        }
+
+        // "box_deref PTR_TY sized POINTEE_TY %op, site HEX:N, session J O,
+        //  evidence [..], not_claimed [..]"
+        if rem.starts_with("box_deref ") {
+            self.advance("box_deref ".len())?;
+            let ptr_ty = self.parse_ty::<X>()?;
+            let shape = self.read_ident()?;
+            if shape != "sized" {
+                return Err(self.error(format!("unknown box_deref pointee shape `{shape}`")));
+            }
+            let pointee = crate::box_validity::BoxPointeeG::Sized {
+                ty: self.parse_ty::<X>()?,
+            };
+            let operand = self.read_value_id()?;
+            let fact = Box::new(self.parse_box_validity_fact()?);
+            return Ok(InstG::BoxDeref {
+                ptr_ty,
+                pointee,
+                operand,
+                fact,
+            });
         }
 
         // "call @func.N(...)"
@@ -3820,7 +3963,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a function definition.
-    fn parse_function<X: ParseExt>(&mut self) -> Result<(FunctionG<X>, FuncTyId), ParseError> {
+    fn parse_function<X: ParseExt>(
+        &mut self,
+    ) -> Result<(FunctionG<X>, FuncTyId, Option<FuncId>), ParseError> {
         self.skip_whitespace();
         // Parse optional linkage and calling convention before 'fn'
         let linkage = self.try_parse_linkage()?;
@@ -3832,12 +3977,23 @@ impl<'a> Parser<'a> {
         self.expect_char('(')?;
         self.expect_str("functy.")?;
         let ft_idx = self.read_u32()?;
+        // Omitted IDs keep their legacy source-position meaning in modules.
+        let explicit_id = if self.try_str(",") {
+            self.expect_str("func.")?;
+            Some(FuncId::new(self.read_u32()?))
+        } else {
+            None
+        };
         self.expect_char(')')?;
         self.expect_char('{')?;
 
         let ft_id = FuncTyId::new(ft_idx);
-        // We need a FuncId but we'll set it later
-        let mut func = FunctionG::new(FuncId::new(0), name, ft_id, BlockId::new(0));
+        let mut func = FunctionG::new(
+            explicit_id.unwrap_or(FuncId::new(0)),
+            name,
+            ft_id,
+            BlockId::new(0),
+        );
         func.linkage = linkage;
         func.calling_conv = calling_conv;
         // v45 symbol directives whose default is a legal stated value
@@ -4088,7 +4244,7 @@ impl<'a> Parser<'a> {
             func.entry = first.id;
         }
 
-        Ok((func, ft_id))
+        Ok((func, ft_id, explicit_id))
     }
 
     /// WS4.4 (F-064): one directive of the function-summary block, after its
@@ -4826,9 +4982,71 @@ impl<'a> Parser<'a> {
     /// the same authority that decides whether the printer may spell it at
     /// all.
     fn parse_enum_layout(&mut self) -> Result<crate::ty::EnumLayoutDescriptor, ParseError> {
-        use crate::ty::{EnumLayoutDescriptor, EnumTagEncoding};
+        use crate::ty::{
+            EnumLayoutDescriptor, EnumTagEncoding, FieldStorageLayout, UninhabitedVariantLayout,
+        };
         self.expect_char('(')?;
-        let encoding = if self.try_str("direct") {
+        let encoding = if self.try_str("direct_uninhabited") {
+            self.expect_str("tag")?;
+            self.expect_char('@')?;
+            let tag_offset = self.read_u64()?;
+            self.expect_str("profiles")?;
+            self.expect_char('=')?;
+            self.expect_char('[')?;
+            let mut variants = Vec::new();
+            self.skip_whitespace();
+            if !self.remaining().starts_with(']') {
+                loop {
+                    self.expect_char('{')?;
+                    self.expect_str("variant")?;
+                    self.expect_char('=')?;
+                    let variant = self.read_u32()?;
+                    self.expect_str("size")?;
+                    self.expect_char('=')?;
+                    let size = self.read_u64()?;
+                    self.expect_str("align")?;
+                    self.expect_char('=')?;
+                    let align = self.read_u64()?;
+                    self.expect_str("fields")?;
+                    self.expect_char('=')?;
+                    self.expect_char('[')?;
+                    let mut fields = Vec::new();
+                    self.skip_whitespace();
+                    if !self.remaining().starts_with(']') {
+                        loop {
+                            self.expect_char('{')?;
+                            self.expect_str("size")?;
+                            self.expect_char('=')?;
+                            let size = self.read_u64()?;
+                            self.expect_str("align")?;
+                            self.expect_char('=')?;
+                            let align = self.read_u64()?;
+                            self.expect_char('}')?;
+                            fields.push(FieldStorageLayout { size, align });
+                            if !self.try_str(",") {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect_char(']')?;
+                    self.expect_char('}')?;
+                    variants.push(UninhabitedVariantLayout {
+                        variant,
+                        size,
+                        align,
+                        fields,
+                    });
+                    if !self.try_str(",") {
+                        break;
+                    }
+                }
+            }
+            self.expect_char(']')?;
+            EnumTagEncoding::DirectWithUninhabited {
+                tag_offset,
+                variants,
+            }
+        } else if self.try_str("direct") {
             self.expect_str("tag")?;
             self.expect_char('@')?;
             EnumTagEncoding::Direct {
@@ -4869,7 +5087,7 @@ impl<'a> Parser<'a> {
             }
         } else {
             return Err(self.error(
-                "expected an enum layout encoding: 'direct', 'niche', 'untagged' or 'single'",
+                "expected an enum layout encoding: 'direct', 'direct_uninhabited', 'niche', 'untagged' or 'single'",
             ));
         };
         self.expect_str("size")?;
@@ -6838,9 +7056,12 @@ fn parse_module_body<X: ParseExt>(p: &mut Parser<'_>) -> Result<ModuleG<X>, Pars
 
     // Parse struct defs, enum defs, record defs, function type defs, closure tys,
     // globals, functions, obligations, certificates.
-    // Functions are numbered in text order by the one fresh-id rule; a text
-    // with more functions than `FuncId` can name is refused, never wrapped.
+    // Implicit IDs remain source ordinals, including after an explicit ID.
+    // No sparse declaration can silently renumber a legacy header. The old
+    // all-implicit path needs no second index; start collision tracking only
+    // when an explicit identity occurs.
     let mut func_ids = crate::value::FreshIds::<FuncId>::new();
+    let mut used_func_ids: Option<std::collections::BTreeSet<FuncId>> = None;
 
     // Helper: keywords that can start a function definition (linkage or cc prefixes)
     fn is_func_prefix(s: &str) -> bool {
@@ -7131,10 +7352,25 @@ fn parse_module_body<X: ParseExt>(p: &mut Parser<'_>) -> Result<ModuleG<X>, Pars
             let g = p.parse_global()?;
             module.globals.push(g);
         } else if is_func_prefix(rem) {
-            let (mut func, _ft_id) = p.parse_function()?;
-            func.id = func_ids
+            let (mut func, _ft_id, explicit_id) = p.parse_function()?;
+            let ordinal = func_ids
                 .take()
                 .map_err(|exhausted| p.error(exhausted.to_string()))?;
+            func.id = explicit_id.unwrap_or(ordinal);
+            if explicit_id.is_some() && used_func_ids.is_none() {
+                used_func_ids = Some(
+                    module
+                        .functions
+                        .iter()
+                        .map(|function| function.id)
+                        .collect(),
+                );
+            }
+            if let Some(ids) = &mut used_func_ids
+                && !ids.insert(func.id)
+            {
+                return Err(p.error(format!("duplicate function id func.{}", func.id.index())));
+            }
             // Raw push, NOT `Module::add_function`: parsing RECONSTRUCTS an
             // existing module text-faithfully. `add_function`'s obligation
             // synthesis (roadmap §1.1) must not inject entries the source
@@ -7178,7 +7414,7 @@ fn parse_module_body<X: ParseExt>(p: &mut Parser<'_>) -> Result<ModuleG<X>, Pars
 /// Parse a single function from text format.
 pub fn parse_function(input: &str) -> Result<Function, ParseError> {
     let mut p = Parser::new(input);
-    let (func, _) = p.parse_function()?;
+    let (func, _, _) = p.parse_function()?;
     Ok(func)
 }
 

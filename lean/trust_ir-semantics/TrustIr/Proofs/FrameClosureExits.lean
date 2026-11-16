@@ -24,74 +24,6 @@ private theorem unsupported_safe {α : Type} (feature : UnsupportedFeature) (mes
   intro exception after run
   cases run
 
-theorem ExceptNoUnwind.forIn {α β : Type} (items : List α) (initial : β)
-    (action : α → β → Except SemError (ForInStep β))
-    (safe : ∀ item value, ExceptNoUnwind (action item value)) :
-    ExceptNoUnwind (forIn items initial action) := by
-  induction items generalizing initial with
-  | nil => exact ok_safe _
-  | cons item rest ih =>
-    rw [List.forIn_cons]
-    apply ExceptNoUnwind.bind _ _ (safe item initial)
-    intro step
-    cases step with
-    | done value => exact ok_safe _
-    | yield value => exact ih value
-
-theorem ExceptNoUnwind.forM {α : Type} (items : List α) (action : α → Except SemError Unit)
-    (safe : ∀ item, ExceptNoUnwind (action item)) : ExceptNoUnwind (items.forM action) := by
-  induction items with
-  | nil => exact ok_safe _
-  | cons item rest ih =>
-    change ExceptNoUnwind (action item >>= fun _ => rest.forM action)
-    exact ExceptNoUnwind.bind _ _ (safe item) (fun _ => ih)
-
-private theorem leaf_range_no_unwind {α : Type} (check : α → Except SemError Unit)
-    (safe : ∀ value, ExceptNoUnwind (check value)) {size : Nat} (leaf : CompactArray.Leaf α size)
-    (offset count : Nat) : ExceptNoUnwind (leaf.checkRangeSpec check offset count) := by
-  induction leaf generalizing offset count with
-  | nil => simp only [CompactArray.Leaf.checkRangeSpec]; split <;> exact ok_safe _
-  | cons head tail ih =>
-    rw [CompactArray.Leaf.checkRangeSpec]
-    split
-    · exact ok_safe _
-    · split
-      · exact ExceptNoUnwind.bind _ _ (safe head) (fun _ => ih 0 (count-1))
-      · exact ih (offset-1) count
-
-/-- Pure compressed-array validation propagates only callback errors, including
-clipped periodic windows; it cannot invent a runtime throw state. -/
-theorem tree_range_no_unwind {α : Type} (check : α → Except SemError Unit)
-    (safe : ∀ value, ExceptNoUnwind (check value)) {size : Nat} (tree : CompactArray.Tree α size)
-    (offset count : Nat) : ExceptNoUnwind (tree.checkRangeSpec check offset count) := by
-  induction tree generalizing offset count with
-  | uniform n value =>
-    rw [CompactArray.Tree.checkRangeSpec]
-    split
-    · exact ok_safe _
-    · exact safe value
-  | dense small values =>
-    rw [CompactArray.Tree.checkRangeSpec]
-    split
-    · exact ok_safe _
-    · exact leaf_range_no_unwind check safe values _ _
-  | split large left right ihl ihr =>
-    rw [CompactArray.Tree.checkRangeSpec]
-    split
-    · exact ok_safe _
-    · exact ExceptNoUnwind.bind _ _ (ihl _ _) (fun _ => ihr _ _)
-  | periodic unit positive phase n ih =>
-    rw [CompactArray.Tree.checkRangeSpec]
-    split
-    · exact ok_safe _
-    · exact ExceptNoUnwind.bind _ _ (ih _ _) (fun _ => ih _ _)
-
-theorem tree_stored_no_unwind {α : Type} (check : α → Except SemError Unit)
-    (safe : ∀ value, ExceptNoUnwind (check value)) {size : Nat} (tree : CompactArray.Tree α size) :
-    ExceptNoUnwind (tree.checkStored check) := by
-  rw [← tree.checkRangeSpec_full]
-  exact tree_range_no_unwind check safe tree 0 size
-
 private theorem float_no_unwind (ty : Ty) (value : Float) : ExceptNoUnwind (checkFloatAt ty value) := by
   unfold checkFloatAt
   repeat' first
@@ -113,6 +45,7 @@ theorem closure_value_at_no_unwind (ctx : EvalContext) (fuel : Nat) (ty : Ty) (v
       | exact type_safe _
       | exact ub_safe _
       | exact unsupported_safe _ _
+      | exact function_item_declaration_no_unwind ctx _
       | exact float_no_unwind _ _
       | exact ih _ _
       | exact ExceptNoUnwind.forM _ _ (fun value => ih _ value)
@@ -140,7 +73,15 @@ local macro "closure_validation_leaves" : tactic => `(tactic|
 theorem closure_contract_no_unwind (ctx : EvalContext) (cid : ClosureTyId) (fn : FuncId) :
     ExceptNoUnwind (closureContract ctx cid fn) := by
   unfold closureContract
-  closure_validation_leaves
+  repeat' first
+    | exact ok_safe _
+    | exact type_safe _
+    | exact unsupported_safe _ _
+    | exact closure_value_no_unwind _ _ _
+    | (rw [HistoryEffects.conditional_property_iff ExceptNoUnwind]; constructor <;> intro selected)
+    | (refine ExceptNoUnwind.forM _ _ (fun input => ?_); cases input <;> dsimp only)
+    | (refine ExceptNoUnwind.bind _ _ ?_ (fun input => ?_) <;> dsimp only)
+    | split
 
 theorem make_closure_no_unwind (ctx : EvalContext) (cid : ClosureTyId) (fn : FuncId) (captures : List Value) :
     ExceptNoUnwind (makeClosureValue ctx cid fn captures) := by

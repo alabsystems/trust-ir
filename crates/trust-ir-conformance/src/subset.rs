@@ -54,7 +54,7 @@ use trust_ir::{Function, Module};
 /// could carry.
 /// v5 (2026-10-20) selects the proved wasm32 byte model as well as the
 /// unchanged default64 model. No construct name or unrelated condition moves.
-pub const SUBSET_VERSION: u32 = 5;
+pub const SUBSET_VERSION: u32 = 6;
 
 /// `Inst` variants a conforming frontend may emit (54 of 58).
 ///
@@ -325,6 +325,19 @@ pub const TY_ALLOWLIST_V5: &[&str] = TY_ALLOWLIST_V4;
 pub const CASTOP_ALLOWLIST_V5: &[&str] = CASTOP_ALLOWLIST_V4;
 pub const DIALECT_OP_ALLOWLIST_V5: &[&str] = DIALECT_OP_ALLOWLIST_V3;
 pub const PROOF_ALLOWLIST_V5: &[&str] = PROOF_ALLOWLIST_V3;
+
+/// v6 adds nominal, authenticated zero-byte function-item values. Existing
+/// instruction/cast/target exclusions retain their v5 meanings.
+pub const INST_ALLOWLIST_V6: &[&str] = INST_ALLOWLIST_V5;
+pub const TY_ALLOWLIST_V6: &[&str] = &[
+    "Array", "Bool", "Char", "Closure", "Enum", "F32", "F64", "FatPtr", "FnItem", "Func", "I128",
+    "I16", "I32", "I64", "I8", "Isize", "Never", "Ptr", "PtrConst", "PtrMut", "Rc", "Record",
+    "Ref", "RefMut", "Sequence", "Set", "Struct", "Tuple", "U128", "U16", "U32", "U64", "U8",
+    "Unit", "Usize", "Vector",
+];
+pub const CASTOP_ALLOWLIST_V6: &[&str] = CASTOP_ALLOWLIST_V5;
+pub const DIALECT_OP_ALLOWLIST_V6: &[&str] = DIALECT_OP_ALLOWLIST_V5;
+pub const PROOF_ALLOWLIST_V6: &[&str] = PROOF_ALLOWLIST_V5;
 
 /// Fully-qualified dialect ops (`dialect.op`) a conforming frontend may emit.
 ///
@@ -924,6 +937,7 @@ pub fn ty_name(ty: &Ty) -> &'static str {
         Ty::Struct(_) => "Struct",
         Ty::Enum(_) => "Enum",
         Ty::Func(_) => "Func",
+        Ty::FnItem(_) => "FnItem",
         Ty::Sequence(_) => "Sequence",
         Ty::Set(_, _) => "Set",
         Ty::Record(_) => "Record",
@@ -954,7 +968,7 @@ pub fn ty_name(ty: &Ty) -> &'static str {
 /// subsumes it, so a type check needs no target parameters.
 fn check_ty(ty: &Ty, at: &str, out: &mut Vec<String>) {
     let name = ty_name(ty);
-    if !allow(TY_ALLOWLIST_V5, name) {
+    if !allow(TY_ALLOWLIST_V6, name) {
         out.push(format!(
             "{at}: Ty::{name} is outside lowering-target subset v{SUBSET_VERSION}"
         ));
@@ -1025,6 +1039,7 @@ pub fn inst_name(inst: &Inst) -> &'static str {
         Inst::InsertField { .. } => "InsertField",
         Inst::MakeAggregate { .. } => "MakeAggregate",
         Inst::MakeClosure { .. } => "MakeClosure",
+        Inst::BoxDeref { .. } => "BoxDeref",
         Inst::ArraySplat { .. } => "ArraySplat",
         Inst::ExtractElement { .. } => "ExtractElement",
         Inst::InsertElement { .. } => "InsertElement",
@@ -1159,7 +1174,7 @@ fn check_inst(
     out: &mut Vec<String>,
 ) {
     let name = inst_name(inst);
-    if !allow(INST_ALLOWLIST_V5, name) {
+    if !allow(INST_ALLOWLIST_V6, name) {
         out.push(format!(
             "{at}: Inst::{name} is outside lowering-target subset v{SUBSET_VERSION}"
         ));
@@ -1210,7 +1225,7 @@ fn check_inst(
             op, src_ty, dst_ty, ..
         } => {
             let op_name = castop_name(*op);
-            if !allow(CASTOP_ALLOWLIST_V5, op_name) {
+            if !allow(CASTOP_ALLOWLIST_V6, op_name) {
                 out.push(format!(
                     "{at}: CastOp::{op_name} is outside lowering-target subset v{SUBSET_VERSION}"
                 ));
@@ -1404,7 +1419,16 @@ fn check_function(
 /// (`proof_obligations`, certificates, lineage) are verification metadata,
 /// not emitted IR, and are not subset-restricted.
 pub fn module_subset_violations(module: &Module) -> Vec<String> {
+    module_subset_violations_at_version(module, SUBSET_VERSION)
+}
+
+/// Check a pinned receipt without treating a future epoch as implemented.
+/// Historical old-type behavior is retained; FnItem first appears in v6.
+pub fn module_subset_violations_at_version(module: &Module, requested: u32) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(reason) = trust_ir::bridge::module_subset_epoch_violation(module, requested) {
+        out.push(format!("module: {reason}"));
+    }
     // Structural condition 5 (v3) is a WHOLE-MODULE property: reported once,
     // before any construct, and even for a module with no functions (its type
     // table and globals are still laid out against a byte model the proven

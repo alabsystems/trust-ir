@@ -5,15 +5,15 @@
 // constructed `Instance` (def_id + GenericArgsRef) so every `Ty` the pass sees
 // is concrete -> trust_ir::Ty.
 
-// M5.7a NESTED-CONSTRUCTOR match patterns (`App(box Lam(_), _)`, the canonical
-// β-redex shape). The nested ctor sits on a `Box<Term>` FIELD, so matching it
-// requires the `box` pattern keyword (the only stable-syntax way to nest a
-// constructor through a `Box` field) — hence `box_patterns`. The shape
-// `Term::App(Term::Lam(_), _)` from the design note does NOT typecheck (a
-// `Box<Term>` field cannot be matched by a bare `Term::Lam(_)` ctor); `box`
-// is required and yields the SAME THIR `DerefPattern{Variant}` the lowering
-// targets.
-#![feature(box_patterns)]
+// M5.7a NESTED-CONSTRUCTOR match patterns (`App(deref!(Lam(_)), _)`, the
+// canonical β-redex shape). The nested ctor sits on a `Box<Term>` FIELD;
+// current Rust spells this explicit nested dereference with `deref!` under
+// `deref_patterns`. Keep the nested pattern rather than splitting it into
+// sequential matches: the frontend must still classify the outer App field's
+// dereference and inner Lam constructor together. A bare `Term::Lam(_)` cannot
+// match a `Box<Term>` field. The pinned compiler lowers the explicit deref
+// pattern to THIR `DerefPattern`, which the existing frontend handles.
+#![feature(deref_patterns)]
 
 // --- 1. A small generic identity over a primitive / scalar -------------------
 // Lower TWO instantiations: id::<u32> and id::<i64>. Each is a distinct concrete
@@ -254,10 +254,10 @@ pub fn eval(v: &Val) -> i64 {
 // first child's inner tag, compares it to `Lam`'s discriminant, and `condbr`s to
 // the arm body (match) or the catch-all (mismatch, first-match fallthrough).
 //
-// NOTE: the field is `Box<Term>`, so the nested ctor MUST be written `box Term::Lam`
-// (the `box` pattern keyword). `Term::App(Term::Lam(_), _)` does not typecheck (a
-// `Box<Term>` field can't be matched by a bare `Term` ctor). `box` yields the SAME
-// THIR `DerefPattern{Variant}` shape the lowering targets.
+// NOTE: the field remains `Box<Term>`, so the nested constructor is written
+// `deref!(Term::Lam(..))`. This explicit dereference retains the one-level
+// nested constructor, including the inner payload binding in the second case;
+// it does not replace that case with a flat match or a separate helper call.
 pub enum Term {
     Var(i64),
     Lam(Box<Term>),
@@ -265,10 +265,10 @@ pub enum Term {
 }
 
 // The CORE M5.7a proof: redex detection via a one-level nested constructor. No
-// inner binding — `box Term::Lam(_)` is a nested ctor whose own field is `_`.
+// inner binding — `deref!(Term::Lam(_))` is a nested ctor whose own field is `_`.
 pub fn is_beta_redex(t: &Term) -> bool {
     match t {
-        Term::App(box Term::Lam(_), _) => true,
+        Term::App(deref!(Term::Lam(_)), _) => true,
         _ => false,
     }
 }
@@ -281,7 +281,7 @@ pub fn is_beta_redex(t: &Term) -> bool {
 // match on that bound pointer.
 pub fn redex_body_is_var(t: &Term) -> bool {
     match t {
-        Term::App(box Term::Lam(b), _) => match &**b {
+        Term::App(deref!(Term::Lam(b)), _) => match &**b {
             Term::Var(_) => true,
             _ => false,
         },

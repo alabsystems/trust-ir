@@ -317,8 +317,9 @@ pub enum TextLoss {
     /// A name the text grammar cannot carry: an empty definition-site symbol
     /// or an unsupported name inside a constant or operation (see [`NameKind`]).
     UnspellableName { kind: NameKind, index: u32 },
-    /// `Function.id` differs from its position: the parser numbers functions
-    /// densely in text order. `index` is the position.
+    /// Historical: a non-positional function ID was lost. Module text now
+    /// carries an optional `, func.N` header identity; no longer reported.
+    /// Retained for consumers of earlier loss reports.
     FunctionId { index: u32, id: FuncId },
     /// `Function.entry` is not the first printed block (or `bb0` for a
     /// bodyless function): the parser takes the first block as the entry.
@@ -357,6 +358,8 @@ pub enum TextLoss {
     /// `Module.spec_modules`. (`ProofKind::CleanTheorem` and the obligation
     /// `spec` backref were carried already.)
     SpecCarrier { machine: u32 },
+    /// Duplicate explicit declaration identities are refused by the parser.
+    DuplicateFunctionId { index: u32, id: FuncId },
 }
 
 /// The fieldless discriminant of a [`TextLoss`] — the unit the conformance
@@ -385,6 +388,7 @@ pub enum TextLossKind {
     UnspellableFloat,
     KernelGoal,
     SpecCarrier,
+    DuplicateFunctionId,
 }
 
 impl TextLoss {
@@ -413,6 +417,7 @@ impl TextLoss {
             TextLoss::UnspellableFloat { .. } => TextLossKind::UnspellableFloat,
             TextLoss::KernelGoal { .. } => TextLossKind::KernelGoal,
             TextLoss::SpecCarrier { .. } => TextLossKind::SpecCarrier,
+            TextLoss::DuplicateFunctionId { .. } => TextLossKind::DuplicateFunctionId,
         }
     }
 }
@@ -478,6 +483,13 @@ impl fmt::Display for TextLoss {
             }
             TextLoss::FunctionId { index, id } => {
                 write!(f, "function-id(position {index} id {})", id.index())
+            }
+            TextLoss::DuplicateFunctionId { index, id } => {
+                write!(
+                    f,
+                    "duplicate-function-id(position {index} id {})",
+                    id.index()
+                )
             }
             TextLoss::EntryBlock { func } => write!(f, "entry-block(fn {})", func.index()),
             TextLoss::ParamAttrsTail { func } => {
@@ -626,7 +638,8 @@ pub fn enum_layout_text_refusal<X>(ed: &EnumDefG<X>) -> Option<&'static str> {
         }
     }
     match encoding {
-        EnumTagEncoding::Direct { tag_offset } => {
+        EnumTagEncoding::Direct { tag_offset }
+        | EnumTagEncoding::DirectWithUninhabited { tag_offset, .. } => {
             // The tag's WIDTH is not a descriptor field: it comes from the
             // enum's canonical tag repr. When the enum has none the layout is
             // uncomputable for a different reason, and the lane bound is
@@ -676,6 +689,46 @@ pub fn enum_layout_text_refusal<X>(ed: &EnumDefG<X>) -> Option<&'static str> {
                 .is_none_or(|index| index >= ed.variants.len())
             {
                 return Some("a single-inhabited enum selector must name a declared variant");
+            }
+        }
+    }
+    if let EnumTagEncoding::DirectWithUninhabited { variants, .. } = encoding {
+        let mut previous = None;
+        for row in variants {
+            if previous.is_some_and(|index| index >= row.variant) {
+                return Some("uninhabited enum storage profiles must be sorted and unique");
+            }
+            previous = Some(row.variant);
+            let Some(source) = ed.variants.get(row.variant as usize) else {
+                return Some("an uninhabited enum storage profile names no source variant");
+            };
+            if row.align == 0
+                || !row.align.is_power_of_two()
+                || !row.size.is_multiple_of(row.align)
+                || row.size > *size
+                || row.align > *align
+                || row.fields.len() != source.fields.len()
+            {
+                return Some("an uninhabited enum storage profile has invalid dimensions");
+            }
+            for (field, offset) in row
+                .fields
+                .iter()
+                .zip(&variant_field_offsets[row.variant as usize])
+            {
+                if field.align == 0
+                    || !field.align.is_power_of_two()
+                    || !field.size.is_multiple_of(field.align)
+                    || field.align > row.align
+                    || !offset.is_multiple_of(field.align)
+                    || offset
+                        .checked_add(field.size)
+                        .is_none_or(|end| end > row.size)
+                {
+                    return Some(
+                        "an uninhabited enum field storage profile has invalid dimensions",
+                    );
+                }
             }
         }
     }
@@ -729,7 +782,22 @@ pub fn text_losses<X: crate::level::Extension>(module: &ModuleG<X>) -> Vec<TextL
     for (index, global) in globals.iter().enumerate() {
         global_losses(index, global, &mut losses);
     }
+    // Canonical dense identities are already unique; allocate the extra
+    // collision index only for a module that actually has explicit IDs.
+    let mut function_ids = functions
+        .iter()
+        .enumerate()
+        .any(|(index, function)| u64::from(function.id.index()) != index as u64)
+        .then(std::collections::BTreeSet::new);
     for (index, func) in functions.iter().enumerate() {
+        if let Some(ids) = &mut function_ids
+            && !ids.insert(func.id)
+        {
+            losses.push(TextLoss::DuplicateFunctionId {
+                index: position(index),
+                id: func.id,
+            });
+        }
         function_losses(index, func, &mut losses);
     }
     for obligation in proof_obligations {
@@ -966,6 +1034,7 @@ fn constant_is_spellable<X: crate::level::Extension>(constant: &ConstantG<X>) ->
         | ConstantG::Float(_)
         | ConstantG::Bool(_)
         | ConstantG::FnDef(_)
+        | ConstantG::FnItem(_)
         | ConstantG::PhantomData
         // Crystal lane (E3b): `uninit` is a bare keyword the parser reads back.
         | ConstantG::Uninit
@@ -1000,6 +1069,7 @@ fn constant_has_unspellable_float<X: crate::level::Extension>(constant: &Constan
         | ConstantG::Bytes { .. }
         | ConstantG::Bool(_)
         | ConstantG::FnDef(_)
+        | ConstantG::FnItem(_)
         | ConstantG::SymbolAddr { .. }
         | ConstantG::PhantomData
         | ConstantG::Uninit
@@ -1046,12 +1116,6 @@ fn function_losses<X: crate::level::Extension>(
         visibility: _,        // carried: `; #visibility:` (v45)
         retained: _,          // carried: `; #retained:` (v45)
     } = func;
-    if *id != FuncId::new(position(index)) {
-        losses.push(TextLoss::FunctionId {
-            index: position(index),
-            id: *id,
-        });
-    }
     if name.is_empty() {
         losses.push(TextLoss::UnspellableName {
             kind: NameKind::Function,
@@ -1260,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_function_id_and_foreign_entry_are_losses() {
+    fn explicit_function_id_is_carried_but_foreign_entry_is_a_loss() {
         let mut m = Module::new("m");
         let ft = m
             .add_func_type(FuncTy {
@@ -1274,15 +1338,9 @@ mod tests {
             .push(Function::new(FuncId::new(7), "f", ft, BlockId::new(3)));
         assert_eq!(
             text_losses(&m),
-            vec![
-                TextLoss::FunctionId {
-                    index: 0,
-                    id: FuncId::new(7)
-                },
-                TextLoss::EntryBlock {
-                    func: FuncId::new(7)
-                },
-            ]
+            vec![TextLoss::EntryBlock {
+                func: FuncId::new(7)
+            }]
         );
     }
 }

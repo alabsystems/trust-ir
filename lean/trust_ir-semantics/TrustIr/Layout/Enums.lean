@@ -47,6 +47,47 @@ private def validLane (id size align offset laneSize laneAlign : Nat) : Result U
   if offset % laneAlign != 0 || laneAlign > align || endOffset > size then
     throw (.incoherent "enum" id)
 
+private def profileTagLanes (id offset width : Nat) : List UninhabitedVariantLayout → Result Unit
+  | [] => pure ()
+  | profile :: rest => do
+    validLane id profile.size profile.align offset width width
+    profileTagLanes id offset width rest
+
+/-- Sorted, unique profiles cover exactly the least-fixed-point dead rows.
+    Rejection is an initial enum check, before any child storage is solved. -/
+def directProfilesCover (definition : EnumDef) (dead : List Bool)
+    (profiles : List UninhabitedVariantLayout) : Bool :=
+  definition.variants.length < 2 ^ 32 && profiles.length < 2 ^ 32 &&
+  dead.length == definition.variants.length &&
+  profiles.map (·.variant) == (numbered dead).filterMap
+    (fun (impossible, position) => if impossible then some position else none)
+
+/-- Validate physical extents without querying the impossible source types.
+    These fields retain their source identity but never acquire a value codec. -/
+def uninhabitedVariant (mode : Mode) (id : Nat) (descriptor : EnumLayoutDescriptor)
+    (profile : UninhabitedVariantLayout) (types : List Ty) : Result Summary := do
+  let reject : Result Summary := .error (.incoherent "enum" id)
+  if profile.variant ≥ 2 ^ 32 || profile.fields.length ≥ 2 ^ 32 ||
+      !powerOfTwo profile.align || profile.size % profile.align != 0 ||
+      profile.align > descriptor.align || profile.size > descriptor.size then
+    return ← reject
+  let offsets ← match trustIrListGet? descriptor.variantFieldOffsets profile.variant with
+    | some offsets => pure offsets | none => throw (.incoherent "enum" id)
+  if offsets.length != types.length || profile.fields.length != types.length then
+    return ← reject
+  let fields := ((types.zip offsets).zip profile.fields).map
+    (fun ((ty, offset), storage) =>
+      ({ ty, offset, size := storage.size, align := storage.align } : Field))
+  for field in fields do
+    let _ ← checked field.size
+    let _ ← checked field.align
+    let limit ← checked (field.offset + field.size)
+    if !powerOfTwo field.align || field.size % field.align != 0 || field.offset % field.align != 0 ||
+        field.align > profile.align || limit > profile.size then
+      return ← reject
+  if hasOverlap fields then return ← reject
+  finish mode { size := profile.size, align := some profile.align, fields }
+
 /-- Place canonical variant-relative fields in the shared payload region. -/
 def placePayload (offset : Nat) (variants : List Summary) : List (List Field) :=
   variants.map (fun variant => variant.fields.map (fun field => { field with offset := offset + field.offset }))
@@ -95,6 +136,11 @@ private def makeEnum (mode : Mode) (definition : EnumDef) (tag : EnumTagRepr)
       if !singleInhabitedValid definition descriptor uninhabited selected then return ← reject
     | .direct offset =>
       validLane id descriptor.size descriptor.align offset tagSize tagSize
+      if variantFields.any (fun fields => fields.any (fun field =>
+          overlap offset tagSize field.offset field.size)) then return ← reject
+    | .directWithUninhabited offset profiles =>
+      validLane id descriptor.size descriptor.align offset tagSize tagSize
+      profileTagLanes id offset tagSize profiles
       if variantFields.any (fun fields => fields.any (fun field =>
           overlap offset tagSize field.offset field.size)) then return ← reject
     | .niche untagged start stop first offset repr =>
@@ -151,6 +197,25 @@ private theorem validLane_bounds (id size align offset laneSize laneAlign : Nat)
         simp [bad] at run
     exact ⟨aligned, capped, by omega, exactExtent.2⟩
 
+private theorem profileTagLanes_bounds (id offset width : Nat)
+    (profiles : List UninhabitedVariantLayout)
+    (run : profileTagLanes id offset width profiles = .ok ()) :
+    ∀ profile ∈ profiles, EnumLaneBounds profile.size profile.align offset width width := by
+  induction profiles with
+  | nil => simp
+  | cons first rest later =>
+    simp only [profileTagLanes, Bind.bind, Except.bind] at run
+    cases lane : validLane id first.size first.align offset width width with
+    | error error => simp [lane] at run
+    | ok unit =>
+      cases unit
+      simp only [lane] at run
+      intro profile member
+      rcases List.mem_cons.mp member with equal | member
+      · cases equal
+        exact validLane_bounds _ _ _ _ _ _ lane
+      · exact later run profile member
+
 /-- Boolean outcomes are retained exactly, including structural-fact and
 inactive-row checks; they do not authenticate caller-supplied child layouts. -/
 def EnumDescriptorChecks (definition : EnumDef) (tag : EnumTagRepr) (uninhabited : List Bool)
@@ -161,6 +226,10 @@ def EnumDescriptorChecks (definition : EnumDef) (tag : EnumTagRepr) (uninhabited
   | .singleInhabited selected => singleInhabitedValid definition descriptor uninhabited selected = true
   | .direct offset =>
       EnumLaneBounds descriptor.size descriptor.align offset (tagBits tag / 8) (tagBits tag / 8) ∧
+      fields.any (fun row => row.any (fun field => overlap offset (tagBits tag / 8) field.offset field.size)) = false
+  | .directWithUninhabited offset profiles =>
+      EnumLaneBounds descriptor.size descriptor.align offset (tagBits tag / 8) (tagBits tag / 8) ∧
+      (∀ profile ∈ profiles, EnumLaneBounds profile.size profile.align offset (tagBits tag / 8) (tagBits tag / 8)) ∧
       fields.any (fun row => row.any (fun field => overlap offset (tagBits tag / 8) field.offset field.size)) = false
   | .niche untagged start stop first offset repr =>
       (variants.length ≥ 2 ^ 32 || untagged ≥ variants.length || start > stop || stop ≥ variants.length ||
@@ -220,6 +289,24 @@ theorem EnumConstruction.descriptor_checks {mode : Mode} {definition : EnumDef} 
         cases h : (variants.map (·.fields)).any (fun row => row.any
             (fun field => overlap offset (tagBits tag / 8) field.offset field.size)) <;> simp_all
       exact ⟨validLane_bounds _ _ _ _ _ _ lane, noOverlap⟩
+  | directWithUninhabited offset profiles =>
+    simp only [encoding] at constructed ⊢
+    cases lane : validLane definition.id.index descriptor.size descriptor.align offset (tagBits tag / 8) (tagBits tag / 8) with
+    | error error => simp [lane] at constructed
+    | ok unit =>
+      cases unit
+      simp only [lane] at constructed
+      cases checkedProfiles : profileTagLanes definition.id.index offset (tagBits tag / 8) profiles with
+      | error error => simp [checkedProfiles] at constructed
+      | ok unit =>
+        cases unit
+        simp only [checkedProfiles] at constructed
+        have noOverlap : (variants.map (·.fields)).any (fun row => row.any
+            (fun field => overlap offset (tagBits tag / 8) field.offset field.size)) = false := by
+          cases h : (variants.map (·.fields)).any (fun row => row.any
+              (fun field => overlap offset (tagBits tag / 8) field.offset field.size)) <;> simp_all
+        exact ⟨validLane_bounds _ _ _ _ _ _ lane,
+          profileTagLanes_bounds _ _ _ _ checkedProfiles, noOverlap⟩
   | niche untagged start stop first offset repr =>
     simp only [encoding] at constructed ⊢
     have ranges : (variants.length ≥ 2 ^ 32 || untagged ≥ variants.length || start > stop || stop ≥ variants.length ||
@@ -280,10 +367,93 @@ theorem EnumConstruction.canonical_view {mode : Mode} {definition : EnumDef} {ta
         simp only [rounded] at constructed
         exact ⟨offset, extent, size, rfl, bounded, rounded, constructed⟩
 
+private def enumHeaderInvalid (definition : EnumDef) (uninhabited : List Bool)
+    (count : Nat) (descriptor : EnumLayoutDescriptor) : Bool :=
+  !powerOfTwo descriptor.align || descriptor.size % descriptor.align != 0 ||
+    descriptor.variantFieldOffsets.length != count ||
+    (match descriptor.encoding with
+      | .singleInhabited selected => !singleInhabitedValid definition descriptor uninhabited selected
+      | _ => false)
+
+private def descriptorInitial (mode : Mode) (definition : EnumDef) (tag : EnumTagRepr)
+    (uninhabited : List Bool) (count : Nat) (referencesValid : Bool)
+    (descriptor : EnumLayoutDescriptor) : Result (List Summary) := do
+  let id := definition.id.index
+  if enumHeaderInvalid definition uninhabited count descriptor then
+    throw (.incoherent "enum" id)
+  match descriptor.encoding with
+  | .directWithUninhabited offset profiles =>
+    let _ ← checked descriptor.size
+    let _ ← checked descriptor.align
+    validLane id descriptor.size descriptor.align offset (tagBits tag / 8) (tagBits tag / 8)
+    if !referencesValid || !directProfilesCover definition uninhabited profiles then
+      throw (.incoherent "enum" id)
+    for profile in profiles do
+      let source ← match trustIrListGet? definition.variants profile.variant with
+        | some source => pure source | none => throw (.incoherent "enum" id)
+      let storage ← uninhabitedVariant mode id descriptor profile source.fields
+      validLane id profile.size profile.align offset (tagBits tag / 8) (tagBits tag / 8)
+      if storage.fields.any (fun field =>
+          overlap offset (tagBits tag / 8) field.offset field.size) then
+        throw (.incoherent "enum" id)
+  | _ => pure ()
+  pure []
+
+private theorem descriptorInitial_view (mode : Mode) (definition : EnumDef) (tag : EnumTagRepr)
+    (uninhabited : List Bool) (count : Nat) (referencesValid : Bool)
+    (descriptor : EnumLayoutDescriptor) (state : List Summary)
+    (run : descriptorInitial mode definition tag uninhabited count referencesValid descriptor = .ok state) :
+    enumHeaderInvalid definition uninhabited count descriptor = false ∧ state = [] := by
+  have header : enumHeaderInvalid definition uninhabited count descriptor = false := by
+    cases invalid : enumHeaderInvalid definition uninhabited count descriptor with
+    | false => rfl
+    | true =>
+      unfold descriptorInitial at run
+      rw [invalid] at run
+      cases run
+  refine ⟨header, ?_⟩
+  -- Each successful check preserves the initializer's exact empty state.
+  -- The profile loop contributes its actual result without unfolding its body.
+  have completed : ∀ checks : Result Unit,
+      (do let _ ← checks; pure ([] : List Summary)) = .ok state → state = [] := by
+    intro checks success
+    cases checks with
+    | error error => cases success
+    | ok unit => cases success; rfl
+  unfold descriptorInitial at run
+  rw [header] at run
+  dsimp only at run
+  cases encoding : descriptor.encoding with
+  | direct offset => rw [encoding] at run; cases run; rfl
+  | niche selected first last start offset ty => rw [encoding] at run; cases run; rfl
+  | untagged => rw [encoding] at run; cases run; rfl
+  | singleInhabited selected => rw [encoding] at run; cases run; rfl
+  | directWithUninhabited offset profiles =>
+    rw [encoding] at run
+    dsimp only at run
+    cases sizeCheck : checked descriptor.size with
+    | error error => rw [sizeCheck] at run; cases run
+    | ok size =>
+      rw [sizeCheck] at run
+      cases alignCheck : checked descriptor.align with
+      | error error => rw [alignCheck] at run; cases run
+      | ok align =>
+        rw [alignCheck] at run
+        cases laneCheck : validLane definition.id.index descriptor.size descriptor.align offset
+            (tagBits tag / 8) (tagBits tag / 8) with
+        | error error => rw [laneCheck] at run; cases run
+        | ok unit =>
+          rw [laneCheck] at run
+          cases references : (!referencesValid || !directProfilesCover definition uninhabited profiles) with
+          | true => rw [references] at run; cases run
+          | false =>
+            rw [references] at run
+            exact completed (forIn profiles PUnit.unit _) run
+
 /-- Variant nodes finish their own field checks before the next variant is
     requested. Tag and niche placement then use the complete source plan. -/
 def enumEquation (mode : Mode) (definition : EnumDef) (uninhabited : List Bool)
-    (variants : List Nat) : Equation :=
+    (variants : List Nat) (referencesValid : Bool := true) : Equation :=
   let id := definition.id.index
   match canonicalTag definition, discriminants definition with
   | some tag, some values =>
@@ -291,12 +461,7 @@ def enumEquation (mode : Mode) (definition : EnumDef) (uninhabited : List Bool)
       initial := match definition.layout with
         | none => .ok []
         | some descriptor =>
-          if !powerOfTwo descriptor.align || descriptor.size % descriptor.align != 0 ||
-              descriptor.variantFieldOffsets.length != variants.length ||
-              (match descriptor.encoding with
-                | .singleInhabited selected => !singleInhabitedValid definition descriptor uninhabited selected
-                | _ => false) then
-            .error (.incoherent "enum" id) else .ok []
+          descriptorInitial mode definition tag uninhabited variants.length referencesValid descriptor
       steps := variants.map (fun child => .child child fun value state => .ok (value :: state))
       finish := fun state => makeEnum mode definition tag values uninhabited state.reverse }
   | _, _ => .done (.error (.incoherent "enum" id))
@@ -381,11 +546,7 @@ theorem Equation.Executes.descriptorEnum_view {graph : Graph} {output : Summary}
     | some values =>
       have selected : enumEquation mode definition uninhabited nodes =
           { kind := .variants
-            initial := if !powerOfTwo descriptor.align || descriptor.size % descriptor.align != 0 ||
-                descriptor.variantFieldOffsets.length != nodes.length ||
-                (match descriptor.encoding with
-                  | .singleInhabited selected => !singleInhabitedValid definition descriptor uninhabited selected
-                  | _ => false) then .error (.incoherent "enum" definition.id.index) else .ok []
+            initial := descriptorInitial mode definition tag uninhabited nodes.length true descriptor
             steps := nodes.map (fun child => .child child fun value state => .ok (value :: state))
             finish := fun state => makeEnum mode definition tag values uninhabited state.reverse } := by
         unfold enumEquation
@@ -394,18 +555,9 @@ theorem Equation.Executes.descriptorEnum_view {graph : Graph} {output : Summary}
         rw [authored]
       rw [selected] at run
       rcases run with ⟨first, last, initial, steps, finished⟩
-      have admitted : (!powerOfTwo descriptor.align || descriptor.size % descriptor.align != 0 ||
-          descriptor.variantFieldOffsets.length != nodes.length ||
-          (match descriptor.encoding with
-            | .singleInhabited selected => !singleInhabitedValid definition descriptor uninhabited selected
-            | _ => false)) = false := by
-        cases h : (!powerOfTwo descriptor.align || descriptor.size % descriptor.align != 0 ||
-          descriptor.variantFieldOffsets.length != nodes.length ||
-          (match descriptor.encoding with
-            | .singleInhabited selected => !singleInhabitedValid definition descriptor uninhabited selected
-            | _ => false)) <;> simp_all
-      simp only [admitted, Bool.false_eq_true, ite_false] at initial
-      cases initial
+      obtain ⟨admitted, empty⟩ := descriptorInitial_view mode definition tag uninhabited
+        nodes.length true descriptor first initial
+      cases empty
       exact ⟨tag, values, last, rfl, rfl, admitted, steps, finished⟩
 
 /-- Every successful enum construction passes its actual final summary through

@@ -1159,7 +1159,7 @@ fn check_correlated_raw_result_with_copies(
     let mut candidate = replay_image_with_structured_call_equations(
         &env,
         &mut scope,
-        &[flag.clone()],
+        std::slice::from_ref(&flag),
         &[],
         ImageTypes {
             state: state_type(),
@@ -1289,9 +1289,8 @@ fn cps_image_replay_structured_frame_canonical_metadata_normalization_keeps_fini
         &mut parts,
         &[],
     );
-    let error = result
-        .err()
-        .expect("producer must refuse an exhausted finite kernel normalization budget");
+    let error =
+        result.expect_err("producer must refuse an exhausted finite kernel normalization budget");
     assert!(error.contains("kernel budget"), "{error}");
     assert_eq!(parts.counts().0, 0);
     assert!(parts.counts().3 <= 1_000_000);

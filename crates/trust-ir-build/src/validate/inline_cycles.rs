@@ -105,6 +105,7 @@ fn inline_nodes(module: &Module, ty: &Ty, out: &mut Vec<Node>) {
             | Ty::PtrMut(_)
             | Ty::Rc(_)
             | Ty::Func(_)
+            | Ty::FnItem(_)
             | Ty::Sequence(_)
             | Ty::Set(..)
             // The tensor region: a tensor's extents are run-time values, so

@@ -5,6 +5,7 @@
 -- Whole-program refinement with recursive calls and full outcomes.
 
 import TrustIr.Proofs.TransformRefinementCtx
+import TrustIr.Proofs.GenericCoroPrefixBody
 
 namespace TrustIr
 
@@ -44,9 +45,26 @@ private theorem ProgramRunRelation.samePrefix {α β : Type} (common : Sem α)
     ProgramRunRelation (common >>= targetNext) (common >>= sourceNext) :=
   ProgramRunRelation.seq (ProgramRunRelation.refl _) hNext
 
+private theorem ProgramRunRelation.lookupBind {α : Type} (id : ValueId)
+    (targetNext sourceNext : Value → Sem α)
+    (next : ∀ value, ProgramRunRelation (targetNext value) (sourceNext value)) :
+    ProgramRunRelation (Sem.lookupValue id >>= targetNext) (Sem.lookupValue id >>= sourceNext) :=
+  ProgramRunRelation.samePrefix _ next
+
 private theorem ProgramRunRelation.of_ub {α : Type} {target source : Sem α}
     (h : ∀ s, ∃ message, Sem.run source s = .error (.ub message)) :
     ProgramRunRelation target source := ⟨RunsLikeUnlessUB.of_ub h⟩
+
+/-- An identical complete error erases both continuations before their
+    recursive evaluator contexts need to be compared. -/
+private theorem ProgramRunRelation.errorBind {α β : Type} (error : SemError)
+    (targetNext sourceNext : α → Sem β) :
+    ProgramRunRelation ((throw error : Sem α) >>= targetNext)
+      ((throw error : Sem α) >>= sourceNext) := ⟨fun _ => Or.inl rfl⟩
+
+private theorem ProgramRunRelation.sameError {α : Type} (error : SemError) :
+    ProgramRunRelation (throw error : Sem α) (throw error : Sem α) :=
+  ProgramRunRelation.refl _
 
 /-- An error stops before either continuation, including the hypothetical
     callee returned by a missing raw lookup. -/
@@ -113,7 +131,7 @@ private theorem ProgramRunRelation.functionLookup {α : Type}
 private theorem ProgramRunRelation.functionCases {α : Type}
     (transform : CFG → CFG) (ctx : EvalContext) (id : FuncId)
     {targetNone sourceNone : Sem α} {targetSome sourceSome : EvalFunction → Sem α}
-    (hNone : ProgramRunRelation targetNone sourceNone)
+    (hNone : ctx.functions id = none → ProgramRunRelation targetNone sourceNone)
     (hSome : ∀ function, ProgramRunRelation
       (targetSome { function with cfg := transform function.cfg }) (sourceSome function)) :
     ProgramRunRelation
@@ -122,43 +140,90 @@ private theorem ProgramRunRelation.functionCases {α : Type}
       (match ctx.functions id with
        | some function => sourceSome function | none => sourceNone) := by
   cases hFunction : ctx.functions id with
-  | none => simpa only [mapFunctionCFGs, hFunction, Option.map] using hNone
+  | none => simpa only [mapFunctionCFGs, hFunction, Option.map] using hNone hFunction
   | some function =>
     simpa only [mapFunctionCFGs, hFunction, Option.map] using hSome function
+
+/-- Nominal resolution returns the genuinely mapped callee, while every
+    undefined/bodyless/retained-error result is preserved exactly. -/
+private theorem resolvedItem_map (transform : CFG → CFG) (ctx : EvalContext) (id : FuncId) :
+    resolveFunctionItemBody (mapFunctionCFGs transform ctx) id =
+      (resolveFunctionItemBody ctx id).map (fun function => {function with cfg := transform function.cfg}) := by
+  cases present : ctx.functions id with
+  | some function => simp only [resolveFunctionItemBody, mapFunctionCFGs, present, Option.map, Except.map]
+  | none =>
+    simp only [resolveFunctionItemBody, mapFunctionCFGs, present, Option.map]
+    cases failed : ctx.functionErrors id with
+    | some error => rfl
+    | none =>
+      dsimp only
+      split <;> rfl
+
+private theorem ProgramRunRelation.itemLookup {α : Type}
+    (transform : CFG → CFG) (ctx : EvalContext) (id : FuncId)
+    {targetNext sourceNext : EvalFunction → Sem α}
+    (next : ∀ function, ProgramRunRelation
+      (targetNext {function with cfg := transform function.cfg}) (sourceNext function)) :
+    ProgramRunRelation
+      (Sem.fromMemoryExcept (resolveFunctionItemBody (mapFunctionCFGs transform ctx) id) >>= targetNext)
+      (Sem.fromMemoryExcept (resolveFunctionItemBody ctx id) >>= sourceNext) := by
+  rw [resolvedItem_map]
+  cases result : resolveFunctionItemBody ctx id with
+  | error error => exact ProgramRunRelation.errorBind error _ _
+  | ok function => simpa only [Except.map, Sem.fromMemoryExcept, pure_bind] using next function
+
+private theorem missingItem_not_ok (ctx : EvalContext) (id : FuncId)
+    (missing : ctx.functions id = none) :
+    ∀ function, resolveFunctionItemBody ctx id ≠ .ok function := by
+  intro function
+  cases failed : ctx.functionErrors id with
+  | some error =>
+    simp only [resolveFunctionItemBody, missing, failed]
+    intro impossible
+    cases impossible
+  | none =>
+    simp only [resolveFunctionItemBody, missing, failed]
+    split <;> intro impossible <;> cases impossible
+
+/-- A real absent-row branch cannot invent a successful callee. Erase both
+    continuations using that branch fact and retain the complete error. -/
+private theorem ProgramRunRelation.missingItemLookup {α : Type}
+    (ctx : EvalContext) (id : FuncId) (missing : ctx.functions id = none)
+    (targetNext sourceNext : EvalFunction → Sem α) :
+    ProgramRunRelation
+      (Sem.fromMemoryExcept (resolveFunctionItemBody (mapFunctionCFGs unreachableToReturn ctx) id) >>= targetNext)
+      (Sem.fromMemoryExcept (resolveFunctionItemBody ctx id) >>= sourceNext) := by
+  rewrite [resolvedItem_map]
+  cases result : resolveFunctionItemBody ctx id with
+  | error error => exact ProgramRunRelation.sameError error
+  | ok function => exact False.elim (missingItem_not_ok ctx id missing function result)
 
 /-- Discharge the evaluator's instruction dispatch with abstract handlers.
     Constructor reduction keeps its large continuations out of generated
     matcher-equation declarations. -/
-private theorem ProgramRunRelation.instCases {α : Type} (inst : Inst)
-    {targetCall sourceCall : FuncId → List ValueId → Sem α}
-    {targetIndirect sourceIndirect : ValueId → FuncTyId → List ValueId → CallingConv → Sem α}
-    {targetAssert sourceAssert targetOther sourceOther : Sem α}
-    {targetPad sourcePad : Bool → List Nat → Sem α}
-    (hCall : ∀ callee args, ProgramRunRelation (targetCall callee args) (sourceCall callee args))
-    (hIndirect : ∀ callee sig args conv,
+private theorem ProgramRunRelation.bodyDispatch (inst : Inst)
+    (targetCall sourceCall : FuncId → List ValueId → Sem (ForInStep Unit))
+    (targetIndirect sourceIndirect : ValueId → FuncTyId → List ValueId → CallingConv → Sem (ForInStep Unit))
+    (targetAssert sourceAssert : Sem (ForInStep Unit))
+    (targetPad sourcePad : Bool → List Nat → Sem (ForInStep Unit))
+    (targetOther sourceOther : Sem (ForInStep Unit))
+    (calls : ∀ callee args, inst = .Call callee args →
+      ProgramRunRelation (targetCall callee args) (sourceCall callee args))
+    (indirect : ∀ callee sig args conv, inst = .CallIndirect callee sig args conv →
       ProgramRunRelation (targetIndirect callee sig args conv) (sourceIndirect callee sig args conv))
-    (hAssert : ProgramRunRelation targetAssert sourceAssert)
-    (hPad : ∀ cleanup clauses, ProgramRunRelation (targetPad cleanup clauses) (sourcePad cleanup clauses))
-    (hOther : ProgramRunRelation targetOther sourceOther) :
+    (assertion : ProgramRunRelation targetAssert sourceAssert)
+    (pad : ∀ cleanup clauses, inst = .LandingPad cleanup clauses →
+      ProgramRunRelation (targetPad cleanup clauses) (sourcePad cleanup clauses))
+    (other : ProgramRunRelation targetOther sourceOther) :
     ProgramRunRelation
-      (match inst with
-       | .Call callee args => targetCall callee args
-       | .CallIndirect callee sig args conv => targetIndirect callee sig args conv
-       | .Assert _ _ _ => targetAssert
-       | .LandingPad cleanup clauses => targetPad cleanup clauses
-       | _ => targetOther)
-      (match inst with
-       | .Call callee args => sourceCall callee args
-       | .CallIndirect callee sig args conv => sourceIndirect callee sig args conv
-       | .Assert _ _ _ => sourceAssert
-       | .LandingPad cleanup clauses => sourcePad cleanup clauses
-       | _ => sourceOther) := by
+      (GenericCoro.Prefix.bodyDispatch targetCall targetIndirect targetAssert targetPad targetOther inst)
+      (GenericCoro.Prefix.bodyDispatch sourceCall sourceIndirect sourceAssert sourcePad sourceOther inst) := by
   cases inst <;> first
-    | exact hCall _ _
-    | exact hIndirect _ _ _ _
-    | exact hAssert
-    | exact hPad _ _
-    | exact hOther
+    | exact calls _ _ rfl
+    | exact indirect _ _ _ _ rfl
+    | exact assertion
+    | exact pad _ _ rfl
+    | exact other
 
 private theorem checkClosureValue_mapFunctionCFGs (transform : CFG → CFG)
     (ctx : EvalContext) (ty : Ty) (v : Value) :
@@ -213,6 +278,25 @@ private theorem ProgramRunRelation.pad (transform : CFG → CFG) (ctx : EvalCont
   rw [semLandingPadWith_mapFunctionCFGs]
   exact ProgramRunRelation.refl _
 
+/-- Preserve an opaque instruction action before considering its result
+    continuation. No opcode, value or successful result is excluded. -/
+private theorem ProgramRunRelation.stepInstBind {α : Type} (transform : CFG → CFG)
+    (ctx : EvalContext) (inst : Inst) (targetNext sourceNext : InstrResult → Sem α)
+    (next : ∀ result, ProgramRunRelation (targetNext result) (sourceNext result)) :
+    ProgramRunRelation
+      (stepInstWithContext (mapFunctionCFGs transform ctx) inst >>= targetNext)
+      (stepInstWithContext ctx inst >>= sourceNext) :=
+  ProgramRunRelation.seq (ProgramRunRelation.stepInst transform ctx inst) next
+
+private theorem ProgramRunRelation.raiseStepBind {α : Type} (transform : CFG → CFG)
+    (ctx : EvalContext) (inst : Inst) (targetNext sourceNext : InstrResult → Sem α)
+    (next : ∀ result, ProgramRunRelation (targetNext result) (sourceNext result)) :
+    ProgramRunRelation
+      (raiseIfUnwind .abort (stepInstWithContext (mapFunctionCFGs transform ctx) inst)
+        ctx.byteModel >>= targetNext)
+      (raiseIfUnwind .abort (stepInstWithContext ctx inst) ctx.byteModel >>= sourceNext) :=
+  ProgramRunRelation.seq (ProgramRunRelation.raiseStep transform ctx inst) next
+
 private theorem ProgramRunRelation.invokeAbortBind {α : Type}
     {target source : Sem (List Value)}
     {targetNext sourceNext : (List Value ⊕ (Addr × MachineState)) → Sem α}
@@ -238,6 +322,32 @@ private theorem mapFunctionCFGs_funcTys (transform : CFG → CFG) (ctx : EvalCon
 private theorem mapFunctionCFGs_maxCallDepth (transform : CFG → CFG) (ctx : EvalContext) :
     (mapFunctionCFGs transform ctx).maxCallDepth = ctx.maxCallDepth := rfl
 
+private theorem mapFunctionCFGs_returnTypes (transform : CFG → CFG) (ctx : EvalContext) :
+    (mapFunctionCFGs transform ctx).functionReturnTypes = ctx.functionReturnTypes := rfl
+
+private theorem mapFunctionCFGs_currentFunction (transform : CFG → CFG) (ctx : EvalContext) :
+    (mapFunctionCFGs transform ctx).currentFunction = ctx.currentFunction := rfl
+
+/-- Nominal validation is a pure prefix; compare it while continuations
+    remain abstract instead of searching inside the evaluator walk. -/
+private theorem ProgramRunRelation.itemValuesBind {α : Type} (ctx : EvalContext)
+    (types : List Ty) (values : List Value) (targetNext sourceNext : Unit → Sem α)
+    (next : ∀ result, ProgramRunRelation (targetNext result) (sourceNext result)) :
+    ProgramRunRelation
+      (Sem.fromMemoryExcept (checkFunctionItemValues (mapFunctionCFGs unreachableToReturn ctx) types values) >>= targetNext)
+      (Sem.fromMemoryExcept (checkFunctionItemValues ctx types values) >>= sourceNext) := by
+  rewrite [checkFunctionItemValues_mapFunctionCFGs]
+  exact ProgramRunRelation.samePrefix _ next
+
+private theorem ProgramRunRelation.itemCalleeBind {α : Type} (ctx : EvalContext)
+    (operand : ValueId) (value : Value) (targetNext sourceNext : Unit → Sem α)
+    (next : ∀ result, ProgramRunRelation (targetNext result) (sourceNext result)) :
+    ProgramRunRelation
+      (Sem.fromMemoryExcept (checkFunctionItemCalleeType (mapFunctionCFGs unreachableToReturn ctx) operand value) >>= targetNext)
+      (Sem.fromMemoryExcept (checkFunctionItemCalleeType ctx operand value) >>= sourceNext) := by
+  rewrite [checkFunctionItemCalleeType_mapFunctionCFGs]
+  exact ProgramRunRelation.samePrefix _ next
+
 /-- Expose only the changed terminator, so the instruction loop is proved
     once before splitting on whether the block ends in Unreachable. -/
 private def resolvedUnreachableToReturnTerm (ctx : EvalContext) : Inst → Inst
@@ -256,6 +366,63 @@ private theorem resolveBlock_unreachableToReturnBlock (ctx : EvalContext)
 private theorem ProgramRunRelation.stuck {α : Type} (target : Sem α) (message : String) :
     ProgramRunRelation target (Sem.throwUB message) :=
   ProgramRunRelation.of_ub (fun _ => ⟨message, rfl⟩)
+
+/-- Walk already-outlined monadic handlers. The actual evaluator, source
+    contexts and exact recursive hypothesis remain the only inputs. -/
+macro "program_walk " ctx:term " using " ih:term : tactic =>
+  `(tactic| repeat' (first
+          | intro _
+          | with_reducible exact ProgramRunRelation.sameError _
+          | with_reducible exact ProgramRunRelation.typeErrorBind _ _ _
+          | with_reducible refine ProgramRunRelation.missingItemLookup $ctx _ (by assumption) _ _
+          | with_reducible exact ProgramRunRelation.errorBind _ _ _
+          | with_reducible exact $ih _ _ _ _ _
+          | with_reducible refine ProgramRunRelation.itemLookup unreachableToReturn $ctx _ ?_
+          | with_reducible refine ProgramRunRelation.directLookup unreachableToReturn $ctx _ _ _ ?_
+          | with_reducible refine ProgramRunRelation.functionLookup unreachableToReturn $ctx _ _ ?_
+          | with_reducible refine ProgramRunRelation.functionCases unreachableToReturn $ctx _ ?_ ?_
+          | with_reducible refine ProgramRunRelation.stepInstBind unreachableToReturn $ctx _ _ _ ?_
+          | with_reducible refine ProgramRunRelation.raiseStepBind unreachableToReturn $ctx _ _ _ ?_
+          | with_reducible refine ProgramRunRelation.itemValuesBind $ctx _ _ _ _ ?_
+          | with_reducible refine ProgramRunRelation.itemCalleeBind $ctx _ _ _ _ ?_
+          | rewrite [lookupFunctionHeader_mapFunctionCFGs]
+          | rewrite [checkFunctionItemValues_mapFunctionCFGs]
+          | rewrite [checkFunctionItemCalleeType_mapFunctionCFGs]
+          | rewrite [functionItemCall_mapFunctionCFGs]
+          | rewrite [checkSeqMapElement_mapFunctionCFGs]
+          | rewrite [memoryLayout_mapFunctionCFGs]
+          | rewrite [storeMemoryValue_mapFunctionCFGs]
+          | rewrite [loadMemoryValue_mapFunctionCFGs]
+          | rewrite [functionErrors_mapFunctionCFGs]
+          | rewrite [functionHeader_matches_mapCFG]
+          | rewrite [bindCallResults_mapFunctionCFGs]
+          | rewrite [bindInstructionResults_mapFunctionCFGs]
+          | with_reducible refine ProgramRunRelation.samePrefix _ ?_
+          | with_reducible exact ProgramRunRelation.refl _
+          | dsimp only [semPureBind, mapFunctionCFGs_byteModel, mapFunctionCFGs_funcPtrs,
+              mapFunctionCFGs_functionOrder,
+              mapFunctionCFGs_funcTys, mapFunctionCFGs_returnTypes,
+              mapFunctionCFGs_currentFunction, resolveDrop_map_def]
+          | (rw [forFunction_mapFunctionCFGs]; dsimp only [EvalContext.forFunction])
+          | rewrite [functionCallWithConvention_mapFunctionCFGs]
+          | rewrite [closureCall_mapFunctionCFGs]
+          | (rw [forFunction_mapFunctionCFGs]; dsimp only [EvalContext.forFunction])
+          | rewrite [checkClosureValue_mapFunctionCFGs]
+          | with_reducible exact ProgramRunRelation.stepInst unreachableToReturn $ctx _
+          | with_reducible exact ProgramRunRelation.raiseStep unreachableToReturn $ctx _
+          | with_reducible exact ProgramRunRelation.pad unreachableToReturn $ctx _ _
+          | simp only [bind_assoc]
+          | refine ProgramRunRelation.directLookup unreachableToReturn $ctx _ _ _ ?_
+          | refine ProgramRunRelation.functionCases unreachableToReturn $ctx _ ?_ ?_
+          | refine ProgramRunRelation.functionLookup unreachableToReturn $ctx _ _ ?_
+          | with_reducible refine ProgramRunRelation.seq ?_ ?_
+          | with_reducible refine ProgramRunRelation.loop _ _ ?_
+          | with_reducible refine ProgramRunRelation.loopAux ?_ _ _
+          | intro _
+          | dsimp only
+          | refine ProgramRunRelation.functionCases unreachableToReturn $ctx _ ?_ ?_
+          | refine ProgramRunRelation.functionLookup unreachableToReturn $ctx _ _ ?_
+          | split))
 
 set_option maxRecDepth 20000 in
 set_option maxHeartbeats 4000000 in
@@ -277,7 +444,9 @@ private theorem stepNWithContext_mapUnreachableToReturn_aux (ctx : EvalContext) 
   | succ n ih =>
     intro depth cfg pc args
     have hTarget : (unreachableToReturn cfg) pc = (cfg pc).map unreachableToReturnBlock := rfl
-    unfold stepNWithContext
+    rewrite [GenericCoro.Prefix.stepNWithContext_succ_layer,
+      GenericCoro.Prefix.stepNWithContext_succ_layer]
+    unfold GenericCoro.Prefix.evalLayer
     rw [hTarget]
     cases _hBlock : cfg pc with
     | none => exact ProgramRunRelation.refl _
@@ -285,55 +454,43 @@ private theorem stepNWithContext_mapUnreachableToReturn_aux (ctx : EvalContext) 
       dsimp (config := { zeta := false }) only [Option.map, resolveBlock_map_def]
       rw [resolveBlock_unreachableToReturnBlock]
       dsimp only
+      rw [checkFunctionItemValues_mapFunctionCFGs]
+      refine ProgramRunRelation.samePrefix _ ?_
+      intro _
       refine ProgramRunRelation.seq (ProgramRunRelation.refl _) ?_
       intro _
       refine ProgramRunRelation.seq ?_ ?_
-      · -- Share the instruction handlers before walking their continuations.
+      · -- Use the exact outlined handlers, with constructor identity kept
+        -- in the dispatch premise instead of inferred from a huge match.
+        unfold GenericCoro.Prefix.evalBody
         refine ProgramRunRelation.loop _ _ ?_
         intro bodyInst _acc
         rcases bodyInst with ⟨inst, resultDests⟩
-        dsimp only
-        refine ProgramRunRelation.instCases inst ?_ ?_ ?_ ?_ ?_
-        all_goals repeat' (first
-          | with_reducible exact ProgramRunRelation.typeErrorBind _ _ _
-          | with_reducible exact ih _ _ _ _ _
-          | with_reducible refine ProgramRunRelation.directLookup unreachableToReturn ctx _ _ _ ?_
-          | with_reducible refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_
-          | with_reducible refine ProgramRunRelation.functionCases unreachableToReturn ctx _ ?_ ?_
-          | rw [lookupFunctionHeader_mapFunctionCFGs]
-          | rw [checkSeqMapElement_mapFunctionCFGs]
-          | rw [memoryLayout_mapFunctionCFGs]
-          | rw [storeMemoryValue_mapFunctionCFGs]
-          | rw [loadMemoryValue_mapFunctionCFGs]
-          | rw [functionErrors_mapFunctionCFGs]
-          | rw [functionHeader_matches_mapCFG]
-          | rw [bindCallResults_mapFunctionCFGs]
-          | rw [bindInstructionResults_mapFunctionCFGs]
-          | with_reducible refine ProgramRunRelation.samePrefix _ ?_
-          | with_reducible exact ProgramRunRelation.refl _
-          | dsimp only [semPureBind, mapFunctionCFGs_byteModel, mapFunctionCFGs_funcPtrs,
-              mapFunctionCFGs_functionOrder,
-              mapFunctionCFGs_funcTys, resolveDrop_map_def]
-          | (rw [forFunction_mapFunctionCFGs]; dsimp only [EvalContext.forFunction])
-          | rw [functionCall_mapFunctionCFGs]
-          | rw [closureCall_mapFunctionCFGs]
-          | (rw [forFunction_mapFunctionCFGs]; dsimp only [EvalContext.forFunction])
-            | rw [checkClosureValue_mapFunctionCFGs]
-          | with_reducible exact ProgramRunRelation.stepInst unreachableToReturn ctx _
-          | with_reducible exact ProgramRunRelation.raiseStep unreachableToReturn ctx _
-          | with_reducible exact ProgramRunRelation.pad unreachableToReturn ctx _ _
-          | simp only [bind_assoc]
-          | refine ProgramRunRelation.directLookup unreachableToReturn ctx _ _ _ ?_
-          | refine ProgramRunRelation.functionCases unreachableToReturn ctx _ ?_ ?_
-          | refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_
-          | with_reducible refine ProgramRunRelation.seq ?_ ?_
-          | with_reducible refine ProgramRunRelation.loop _ _ ?_
-          | with_reducible refine ProgramRunRelation.loopAux ?_ _ _
-          | intro _
-          | dsimp only
-          | refine ProgramRunRelation.functionCases unreachableToReturn ctx _ ?_ ?_
-          | refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_
-          | split)
+        rewrite [GenericCoro.Prefix.evalBodyStep_dispatch,
+          GenericCoro.Prefix.evalBodyStep_dispatch]
+        apply ProgramRunRelation.bodyDispatch inst
+        · intro callee callArgs constructor
+          subst inst
+          unfold GenericCoro.Prefix.bodyCall GenericCoro.callFrame GenericCoro.finishCall
+          program_walk ctx using ih
+        · intro callee signature callArgs convention constructor
+          subst inst
+          unfold GenericCoro.Prefix.bodyIndirect
+          refine ProgramRunRelation.lookupBind _ _ _ ?_
+          intro held
+          refine ProgramRunRelation.itemCalleeBind ctx _ held _ _ ?_
+          intro _
+          cases held <;> dsimp only [GenericCoro.Prefix.indirectAddress,
+            GenericCoro.Prefix.deferredIndirectArguments, GenericCoro.Prefix.indirectArguments,
+            GenericCoro.Prefix.rawIndirectArguments]
+          all_goals unfold GenericCoro.Prefix.callFrameWith GenericCoro.Prefix.finishCalleeWith GenericCoro.Prefix.checkReturns
+          all_goals program_walk ctx using ih
+        · program_walk ctx using ih
+        · intro cleanup clauses constructor
+          subst inst
+          program_walk ctx using ih
+        · unfold GenericCoro.Prefix.producedStep GenericCoro.Prefix.seqMapStep
+          program_walk ctx using ih
       · intro _
         unfold resolvedUnreachableToReturnTerm
         split
@@ -343,31 +500,41 @@ private theorem stepNWithContext_mapUnreachableToReturn_aux (ctx : EvalContext) 
           exact ProgramRunRelation.stuck _ _
         · dsimp only [EvalContext.resolveBlock, resolveDrop_map_def]
           repeat' (first
+            | intro _
+            | with_reducible exact ProgramRunRelation.sameError _
             | with_reducible exact ProgramRunRelation.typeErrorBind _ _ _
+            | with_reducible refine ProgramRunRelation.missingItemLookup ctx _ (by assumption) _ _
+            | with_reducible exact ProgramRunRelation.errorBind _ _ _
             | with_reducible exact ih _ _ _ _ _
             | with_reducible exact ProgramRunRelation.abortTerm unreachableToReturn ctx _ _ _ _
+            | with_reducible refine ProgramRunRelation.itemLookup unreachableToReturn ctx _ ?_
             | with_reducible refine ProgramRunRelation.directLookup unreachableToReturn ctx _ _ _ ?_
             | with_reducible refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_
             | with_reducible refine ProgramRunRelation.functionCases unreachableToReturn ctx _ ?_ ?_
-            | rw [lookupFunctionHeader_mapFunctionCFGs]
-            | rw [checkSeqMapElement_mapFunctionCFGs]
-            | rw [memoryLayout_mapFunctionCFGs]
-            | rw [storeMemoryValue_mapFunctionCFGs]
-            | rw [loadMemoryValue_mapFunctionCFGs]
-            | rw [functionErrors_mapFunctionCFGs]
-            | rw [functionHeader_matches_mapCFG]
-            | rw [bindCallResults_mapFunctionCFGs]
-            | rw [bindInstructionResults_mapFunctionCFGs]
+            | with_reducible refine ProgramRunRelation.stepInstBind unreachableToReturn ctx _ _ _ ?_
+            | with_reducible refine ProgramRunRelation.raiseStepBind unreachableToReturn ctx _ _ _ ?_
+            | with_reducible refine ProgramRunRelation.itemValuesBind ctx _ _ _ _ ?_
+            | with_reducible refine ProgramRunRelation.itemCalleeBind ctx _ _ _ _ ?_
+            | rewrite [lookupFunctionHeader_mapFunctionCFGs]
+            | rewrite [checkFunctionItemValues_mapFunctionCFGs]
+            | rewrite [checkFunctionItemCalleeType_mapFunctionCFGs]
+            | rewrite [functionItemCall_mapFunctionCFGs]
+            | rewrite [checkSeqMapElement_mapFunctionCFGs]
+            | rewrite [functionErrors_mapFunctionCFGs]
+            | rewrite [functionHeader_matches_mapCFG]
+            | rewrite [bindCallResults_mapFunctionCFGs]
+            | rewrite [bindInstructionResults_mapFunctionCFGs]
             | with_reducible refine ProgramRunRelation.samePrefix _ ?_
             | with_reducible exact ProgramRunRelation.refl _
             | dsimp only [semPureBind, mapFunctionCFGs_byteModel, mapFunctionCFGs_funcPtrs,
                 mapFunctionCFGs_functionOrder,
-                mapFunctionCFGs_funcTys, resolveDrop_map_def]
+                mapFunctionCFGs_funcTys, mapFunctionCFGs_returnTypes,
+              mapFunctionCFGs_currentFunction, resolveDrop_map_def]
             | (rw [forFunction_mapFunctionCFGs]; dsimp only [EvalContext.forFunction])
-            | rw [checkClosureValue_mapFunctionCFGs]
+            | rewrite [checkClosureValue_mapFunctionCFGs]
             | with_reducible refine ProgramRunRelation.invokeAbortBind ?_ ?_
             | exact ProgramRunRelation.abortTerm unreachableToReturn ctx _ _ _ _
-                | simp only [bind_assoc]
+            | simp only [bind_assoc]
             | refine ProgramRunRelation.directLookup unreachableToReturn ctx _ _ _ ?_
             | refine ProgramRunRelation.functionCases unreachableToReturn ctx _ ?_ ?_
             | refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_
@@ -379,7 +546,6 @@ private theorem stepNWithContext_mapUnreachableToReturn_aux (ctx : EvalContext) 
             | refine ProgramRunRelation.functionCases unreachableToReturn ctx _ ?_ ?_
             | refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_
             | split)
-
 /-- The full evaluator relation for the function-table rewrite. The target
     rewrites both the current CFG and every callee's CFG. -/
 theorem stepNWithContext_mapUnreachableToReturn (ctx : EvalContext)
@@ -405,10 +571,13 @@ theorem evalFunctionInContext_mapUnreachableToReturn (ctx : EvalContext)
     unfold evalFunctionInContext
     simp only [pure_bind]
     refine ProgramRunRelation.functionCases unreachableToReturn ctx entry ?_ ?_
-    · exact ProgramRunRelation.refl _
+    · intro _
+      exact ProgramRunRelation.refl _
     intro function
     repeat' (first
+      | rw [checkFunctionItemValues_mapFunctionCFGs]
       | with_reducible exact ProgramRunRelation.refl _
+      | with_reducible exact ProgramRunRelation.errorBind _ _ _
       | with_reducible exact ProgramRunRelation.typeErrorBind _ _ _
       | with_reducible exact stepNWithContext_mapUnreachableToReturn_aux _ _ _ _ _ _
       | with_reducible refine ProgramRunRelation.functionLookup unreachableToReturn ctx _ _ ?_

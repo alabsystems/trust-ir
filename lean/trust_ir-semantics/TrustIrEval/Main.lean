@@ -15,7 +15,7 @@
 -- list was produced; 2 on a usage or I/O error.
 
 import TrustIrRuntime
-import TrustIrEval.Run
+import TrustIrEval.RawBoundary
 import TrustIrEval.RecordKeysChecks
 import TrustIrEval.EnumAdmissionReplay
 
@@ -25,13 +25,8 @@ def main (argv : List String) : IO UInt32 := do
   match argv with
   | [path] =>
     let text ← IO.FS.readFile path
-    match Lean.Json.parse text with
-    | .error e =>
-      IO.println (Lean.Json.compress (obj [("error", jstr s!"request is not JSON: {e}")]))
-      pure 0
-    | .ok j =>
-      IO.println (Lean.Json.compress (runRequest j))
-      pure 0
+    IO.println (Lean.Json.compress (RawBoundary.runText text))
+    pure 0
   | _ =>
     IO.eprintln "usage: trustir_eval <request.json>"
     pure 2

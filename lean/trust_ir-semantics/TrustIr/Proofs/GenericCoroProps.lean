@@ -49,6 +49,7 @@ def operandIds : Inst → List ValueId
   | .Assume value | .Borrow value | .BorrowMut value | .EndBorrow value
   | .Retain value | .Release value | .IsUnique value | .Dealloc value
   | .Drop _ value | .LoadSlot value _ _ | .CloseFrame value | .Resume value => [value]
+  | .BoxDeref _ _ value _ => [value]
   | .Store _ pointer value _ _ | .AtomicStore _ pointer value _
   | .AtomicRMW _ _ pointer value _ | .PtrFromParts _ _ pointer value
   | .InsertField _ pointer _ value | .BindSlot pointer _ value => [pointer, value]
@@ -331,6 +332,115 @@ inductive EffectRelation :
       (world : callerWorld source = callerWorld target) :
       EffectRelation (.ok (values, source)) (.ok (values, target))
 
+/-- Nominal lane validation reads exactly the constant-context projection:
+    source type/nominal tables, byte model and actual function-item headers.
+    It does not read executable bodies, local types or return declarations. -/
+private theorem itemLanes_constantContext (source target : EvalContext)
+    (tables : source.constantContext = target.constantContext) :
+    ∀ fuel ty value, checkFunctionItemLanes source fuel ty value =
+      checkFunctionItemLanes target fuel ty value := by
+  have model := congrArg ConstantEvalContext.byteModel tables
+  have valueSource := congrArg ConstantEvalContext.valueSource tables
+  have metadata : ({ source with
+      byteModel := target.byteModel
+      valueSource := target.valueSource } : EvalContext) = source := by
+    rw [show target.byteModel = source.byteModel from model.symm,
+      show target.valueSource = source.valueSource from valueSource.symm]
+  have layer (recurse : Ty → Value → Except SemError Unit) :
+      checkFunctionItemLayer source recurse = checkFunctionItemLayer target recurse := by
+    calc
+      _ = checkFunctionItemLayer { source with
+          byteModel := target.byteModel
+          valueSource := target.valueSource } recurse :=
+        congrArg (fun ctx => checkFunctionItemLayer ctx recurse) metadata.symm
+      _ = _ := rfl
+  intro fuel
+  induction fuel with
+  | zero => intro ty value; rfl
+  | succ fuel ih =>
+    intro ty value
+    have next : checkFunctionItemLanes source fuel = checkFunctionItemLanes target fuel :=
+      funext (fun ty => funext (fun value => ih ty value))
+    simp only [checkFunctionItemLanes, next, layer]
+
+/-- The complete bounded lane visitor has the same declaration projection as
+    the list-level visitor. This exposes the already-proved recursive law for
+    exact instruction leaves without unfolding their pure checks. -/
+theorem itemLanes_constantContext_eq (source target : EvalContext)
+    (tables : source.constantContext = target.constantContext) (fuel : Nat) (ty : Ty) (value : Value) :
+    checkFunctionItemLanes source fuel ty value = checkFunctionItemLanes target fuel ty value :=
+  itemLanes_constantContext source target tables fuel ty value
+
+theorem itemValues_constantContext (source target : EvalContext)
+    (tables : source.constantContext = target.constantContext) (types : List Ty) (values : List Value) :
+    checkFunctionItemValues source types values = checkFunctionItemValues target types values := by
+  simp only [checkFunctionItemValues, itemLanes_constantContext source target tables]
+
+/-- Exact return-validation tail of the operational Ret branch. -/
+def checkedReturn (ctx : EvalContext) (values : List Value) : Sem (List Value) := do
+  if let some expected := ctx.functionReturnTypes then
+    let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx expected values)
+    pure values
+  else pure values
+
+private def returnCheck (ctx : EvalContext) (values : List Value) : Except SemError Unit :=
+  match ctx.functionReturnTypes with
+  | some expected => checkFunctionItemValues ctx expected values
+  | none => .ok ()
+
+theorem checkedReturn_congr (source target : EvalContext)
+    (tables : source.constantContext = target.constantContext)
+    (returns : source.functionReturnTypes = target.functionReturnTypes) (values : List Value) :
+    checkedReturn source values = checkedReturn target values := by
+  simp only [checkedReturn, returns, itemValues_constantContext source target tables]
+
+private def postcheck (check : List Value → Except SemError Unit)
+    (outcome : Except SemError (List Value × MachineState)) :
+    Except SemError (List Value × MachineState) := do
+  let (values, state) ← outcome
+  let _ ← check values
+  pure (values, state)
+
+private theorem postcheck_relation (check : List Value → Except SemError Unit)
+    {left right : Except SemError (List Value × MachineState)} (related : EffectRelation left right) :
+    EffectRelation (postcheck check left) (postcheck check right) := by
+  cases related with
+  | error error => exact .error error
+  | returned values source target world =>
+    cases checked : check values with
+    | error error =>
+      simpa only [postcheck, Bind.bind, Pure.pure, checked, Except.bind] using EffectRelation.error error
+    | ok unit =>
+      cases unit
+      simpa only [postcheck, Bind.bind, Pure.pure, checked, Except.bind] using
+        EffectRelation.returned values source target world
+
+private theorem run_checkedReturn (ctx : EvalContext) (first : Sem (List Value)) (state : MachineState) :
+    Sem.run (do let values ← first; checkedReturn ctx values) state =
+      postcheck (returnCheck ctx) (Sem.run first state) := by
+  rw [Sem.run_bind]
+  cases result : Sem.run first state with
+  | error error => rfl
+  | ok pair =>
+    rcases pair with ⟨values, after⟩
+    cases returns : ctx.functionReturnTypes with
+    | none => simp only [checkedReturn, returnCheck, returns, postcheck, Bind.bind, Pure.pure, Except.bind]; rfl
+    | some expected =>
+      cases checked : checkFunctionItemValues ctx expected values <;>
+        simp only [checkedReturn, returnCheck, returns, postcheck, Bind.bind, Pure.pure, Except.bind,
+          Sem.fromMemoryExcept, checked] <;> rfl
+
+/-- The exact return-validation suffix preserves the complete error and
+    non-SSA world relation, including a failed nominal lane check. -/
+theorem checkedReturn_effect (ctx : EvalContext) (source target : Sem (List Value))
+    (sourceState targetState : MachineState)
+    (related : EffectRelation (Sem.run source sourceState) (Sem.run target targetState)) :
+    EffectRelation
+      (Sem.run (do let values ← source; checkedReturn ctx values) sourceState)
+      (Sem.run (do let values ← target; checkedReturn ctx values) targetState) := by
+  rw [run_checkedReturn, run_checkedReturn]
+  exact postcheck_relation _ related
+
 /-- The complete intrinsic body, including the post-store yield lookup. -/
 def suspendValues (model : ByteModel) (frame value : ValueId)
     (slot : Nat) (next : Int) : Sem (List Value) := do
@@ -357,15 +467,17 @@ theorem sourceEntry_eq (ctx : EvalContext) (fuel depth : Nat) (cfg : CFG) (pc : 
       terminator := .CoroSuspend frame slot next value
       terminatorResultDests := termDests }) :
     stepNWithContext ctx (fuel + 1) depth cfg pc args strategy = (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
       bindBlockParamsChecked params args
-      suspendValues ctx.byteModel frame value slot next) := by
+      let values ← suspendValues ctx.byteModel frame value slot next
+      checkedReturn ctx values) := by
   cases strategy <;>
     simp only [stepNWithContext, entry, EvalContext.resolveBlock, EvalContext.resolveDrop,
       List.map_nil, bodyInstsWithResultDests, List.forIn_nil, List.forIn_cons,
       stepTermWithContext, closureTermWithContext, stepTermUnwind, stepInst,
-      semCoroSuspend, semReturn, suspendValues, List.mapM, List.mapM.loop,
+      semCoroSuspend, semReturn, suspendValues, checkedReturn, List.mapM, List.mapM.loop,
       List.reverse_nil, List.reverse_cons, List.nil_append, List.append_nil,
-      pure_bind, bind_pure, bind_assoc]
+      pure_bind, bind_pure, bind_assoc] <;> rfl
 
 theorem restoreFrame_callerWorld (state : MachineState) (frame : StackFrame)
     (values : List Value) : restoreFrame (callerWorld state) frame values = restoreFrame state frame values := by
@@ -983,8 +1095,10 @@ theorem targetEntry_eq (ctx : EvalContext) (fuel depth : Nat) (cfg : CFG) (pc : 
       terminator := .CoroSuspend frame slot next value
       terminatorResultDests := termDests })) :
     stepNWithContext ctx (fuel + 1) depth cfg pc args strategy = (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
       bindBlockParamsChecked params args
-      expandedValues ctx names frame value slot next) := by
+      let values ← expandedValues ctx names frame value slot next
+      checkedReturn ctx values) := by
   trustIrCompilerProof {
     have slotBind (result : ValueId) := bindInstructionResults_single_nonChar
       ctx (.Const .I64 (.int slot)) names.index result .I64
@@ -1005,9 +1119,9 @@ theorem targetEntry_eq (ctx : EvalContext) (fuel depth : Nat) (cfg : CFG) (pc : 
         bindInstructionResults_store, Constant.hasSymbolAddr, constValueAtChecked_i64,
         constWidthAmbiguous, constHasInexactFloat, constPointerFormsSupported, Ty.isInteger,
         Bool.not_true, Bool.false_eq_true, if_false,
-        semReturn, expandedValues, publishFresh, List.mapM, List.mapM.loop,
+        semReturn, expandedValues, checkedReturn, publishFresh, List.mapM, List.mapM.loop,
         List.reverse_nil, List.reverse_cons, List.nil_append, List.append_nil,
-        pure_bind, bind_pure, bind_assoc]
+        pure_bind, bind_pure, bind_assoc] <;> rfl
   } {
     have slotBind (result : ValueId) := bindInstructionResults_single_nonChar
       ctx (.Const .I64 (.int slot)) names.index result .I64
@@ -1028,9 +1142,9 @@ theorem targetEntry_eq (ctx : EvalContext) (fuel depth : Nat) (cfg : CFG) (pc : 
         bindInstructionResults_store, Constant.hasSymbolAddr, constValueAtChecked_i64,
         constWidthAmbiguous, constHasInexactFloat, constPointerFormsSupported, Ty.isInteger,
         Bool.not_true, Bool.false_eq_true, if_false, if_true,
-        semReturn, expandedValues, publishFresh, List.mapM, List.mapM.loop,
+        semReturn, expandedValues, checkedReturn, publishFresh, List.mapM, List.mapM.loop,
         List.reverse_nil, List.reverse_cons, List.nil_append, List.append_nil,
-        pure_bind, bind_pure, bind_assoc]
+        pure_bind, bind_pure, bind_assoc] <;> rfl
   }
 
 def publishState (state : MachineState) (dest : ValueId) (value : Value) : MachineState :=
@@ -1247,8 +1361,11 @@ theorem GraphNames.different_original (blocks : List (BlockId × BasicBlock))
 
 /-- Full callee outcomes from the actual cleared Call frame. Parameter
     arity/Char failures and fuel exhaustion are matching branches, not
-    successful-input assumptions. Every non-SSA field is retained exactly. -/
+    successful-input assumptions. Every non-SSA field is retained exactly.
+    Both contexts must preserve the actual nominal declaration projection:
+    byte-model equality alone cannot equate a present and missing item header. -/
 theorem expandedGraph_effect (sourceCtx targetCtx : EvalContext) (models : sourceCtx.byteModel = targetCtx.byteModel)
+    (tables : sourceCtx.constantContext = targetCtx.constantContext)
     (header : EvalFunction)
     (blocks : List (BlockId × BasicBlock)) (names : GraphNames blocks)
     (sourceTypes targetTypes : LocalTypeTable)
@@ -1278,6 +1395,7 @@ theorem expandedGraph_effect (sourceCtx targetCtx : EvalContext) (models : sourc
   | zero => exact .error .outOfFuel
   | succ fuel =>
     let temps := Names.ofTriple names
+    let source : EvalFunction := {header with cfg := cfgOf blocks, localTypes := some sourceTypes}
     let target : EvalFunction := {header with
       cfg := cfgOf (expandedGraph temps blocks header.entryBlock)
       localTypes := some targetTypes}
@@ -1295,23 +1413,46 @@ theorem expandedGraph_effect (sourceCtx targetCtx : EvalContext) (models : sourc
         bodyDests termDests frame value slot next strategy targetTypes rfl indexType pointerType stateType targetFound]
     rw [show (sourceCtx.forFunction {header with cfg := cfgOf blocks, localTypes := some sourceTypes}).byteModel =
       (targetCtx.forFunction target).byteModel from models]
-    simp only [Sem.run_bind]
-    cases parameterRun : Sem.run (bindBlockParamsChecked params args) (callerWorld world) with
-    | error error => exact .error error
-    | ok bound =>
-      rcases bound with ⟨unit, afterParams⟩
+    rw [itemValues_constantContext (sourceCtx.forFunction source) (targetCtx.forFunction target) tables]
+    have returns : checkedReturn (sourceCtx.forFunction source) =
+        checkedReturn (targetCtx.forFunction target) :=
+      funext (checkedReturn_congr (sourceCtx.forFunction source) (targetCtx.forFunction target) tables rfl)
+    dsimp only [source] at returns
+    simp only [returns]
+    cases checked : checkFunctionItemValues (targetCtx.forFunction target) (params.map (·.snd)) args with
+    | error error =>
+      simp only [checked, Sem.fromMemoryExcept, Sem.run_bind, Except.bind]
+      exact .error error
+    | ok unit =>
       cases unit
-      have fresh := SSAFreshFrames.bindBlockParamsChecked_preserves_fresh params args
-        (callerWorld world) afterParams (SSAFreshFrames.cleared_fresh world) parameterRun
-      have operands := suspend_entry_operands blocks header.entryBlock params bodyDests termDests
-        frame value slot next found
-      have frameFree := GraphNames.different_original blocks names frame operands.1
-      have valueFree := GraphNames.different_original blocks names value operands.2
-      have pointerState : temps.pointer ≠ temps.state := by
-        intro same
-        exact names.secondThird (congrArg ValueId.index same)
-      exact expandedValues_effect (targetCtx.forFunction target) targetTypes temps frame value slot next
-        rfl indexType pointerState frameFree.1 valueFree.1 valueFree.2.1 valueFree.2.2 afterParams fresh
+      simp only [checked, Sem.fromMemoryExcept, pure_bind]
+      simp only [Sem.run_bind]
+      cases parameterRun : Sem.run (bindBlockParamsChecked params args) (callerWorld world) with
+      | error error => exact .error error
+      | ok bound =>
+        rcases bound with ⟨unit, afterParams⟩
+        cases unit
+        have fresh := SSAFreshFrames.bindBlockParamsChecked_preserves_fresh params args
+          (callerWorld world) afterParams (SSAFreshFrames.cleared_fresh world) parameterRun
+        have operands := suspend_entry_operands blocks header.entryBlock params bodyDests termDests
+          frame value slot next found
+        have frameFree := GraphNames.different_original blocks names frame operands.1
+        have valueFree := GraphNames.different_original blocks names value operands.2
+        have pointerState : temps.pointer ≠ temps.state := by
+          intro same
+          exact names.secondThird (congrArg ValueId.index same)
+        dsimp only [Except.bind]
+        change EffectRelation
+          (Sem.run (do
+            let values ← suspendValues (targetCtx.forFunction target).byteModel frame value slot next
+            checkedReturn (targetCtx.forFunction target) values) afterParams)
+          (Sem.run (do
+            let values ← expandedValues (targetCtx.forFunction target) temps frame value slot next
+            checkedReturn (targetCtx.forFunction target) values) afterParams)
+        rw [run_checkedReturn, run_checkedReturn]
+        apply postcheck_relation
+        exact expandedValues_effect (targetCtx.forFunction target) targetTypes temps frame value slot next
+          rfl indexType pointerState frameFree.1 valueFree.1 valueFree.2.1 valueFree.2.2 afterParams fresh
 
 private theorem bind_congr {α β : Type} (first : Sem α) {left right : α → Sem β}
     (tails : ∀ value, left value = right value) : first >>= left = first >>= right :=
@@ -1325,6 +1466,7 @@ theorem callEntry_succ (ctx : EvalContext) (fuel depth : Nat) (cfg : CFG) (pc : 
     (argIds : List ValueId) (strategy : PanicStrategy)
     (found : cfg pc = some {params := params, body := [], terminator := .Call callee argIds}) :
     stepNWithContext ctx (fuel + 1) (depth + 1) cfg pc args strategy = (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
       bindBlockParamsChecked params args
       let values ← argIds.mapM Sem.lookupValue
       runCallReq ctx fuel depth callee values strategy) := by
@@ -1334,6 +1476,7 @@ theorem callEntry_succ (ctx : EvalContext) (fuel depth : Nat) (cfg : CFG) (pc : 
       stepTermWithContext, closureTermWithContext, stepTermUnwind, stepInst,
       runCallReq, EvalContext.lookupDirectCallee, pure_bind, bind_assoc]
   all_goals
+    refine bind_congr _ fun _ => ?_
     refine bind_congr _ fun _ => ?_
     refine bind_congr _ fun values => ?_
     cases lookup : ctx.functions callee with
@@ -1349,6 +1492,7 @@ theorem callEntry_zero_depth (ctx : EvalContext) (fuel : Nat) (cfg : CFG) (pc : 
     (argIds : List ValueId) (strategy : PanicStrategy)
     (found : cfg pc = some {params := params, body := [], terminator := .Call callee argIds}) :
     stepNWithContext ctx (fuel + 1) 0 cfg pc args strategy = (do
+      let _ ← Sem.fromMemoryExcept (checkFunctionItemValues ctx (params.map (·.snd)) args)
       bindBlockParamsChecked params args
       let _ ← argIds.mapM Sem.lookupValue
       throw SemError.outOfFuel) := by
@@ -1365,12 +1509,15 @@ theorem withFunction_found (ctx : EvalContext) (id : FuncId) (function : EvalFun
   simp only [withFunction, beq_self_eq_true, if_true]
 
 /-- Exact real-Call equality, including arbitrary caller bindings and both
-    zero-budget branches. The only premise is a complete anchored Call-helper
-    equality; it is supplied below by actual graph preparation and simulation. -/
+    zero-budget branches. Caller nominal-declaration metadata and the complete
+    anchored Call helper agree. Helper equality alone cannot remove an earlier
+    caller-item refusal (for example, a header present only in one context).
+    Actual body replacement preserves the metadata projection by construction. -/
 theorem callEntry_eq_of_runCallReq (sourceCtx targetCtx : EvalContext)
     (callee : FuncId) (cfg : CFG) (pc : BlockId) (params : List (ValueId × Ty))
     (args : List Value) (argIds : List ValueId) (strategy : PanicStrategy)
     (found : cfg pc = some {params := params, body := [], terminator := .Call callee argIds})
+    (tables : sourceCtx.constantContext = targetCtx.constantContext)
     (calls : ∀ fuel depth values, runCallReq sourceCtx fuel depth callee values strategy =
       runCallReq targetCtx fuel depth callee values strategy) (fuel depth : Nat) :
     stepNWithContext sourceCtx fuel depth cfg pc args strategy =
@@ -1379,12 +1526,15 @@ theorem callEntry_eq_of_runCallReq (sourceCtx targetCtx : EvalContext)
   | zero => rfl
   | succ fuel =>
     cases depth with
-    | zero => rw [callEntry_zero_depth _ _ _ _ _ _ _ _ strategy found,
-        callEntry_zero_depth _ _ _ _ _ _ _ _ strategy found]
+    | zero =>
+      rw [callEntry_zero_depth _ _ _ _ _ _ _ _ strategy found,
+        callEntry_zero_depth _ _ _ _ _ _ _ _ strategy found,
+        itemValues_constantContext sourceCtx targetCtx tables]
     | succ depth =>
       rw [callEntry_succ _ fuel depth _ _ _ _ _ _ strategy found,
         callEntry_succ _ fuel depth _ _ _ _ _ _ strategy found]
-      exact bind_congr _ (fun _ => bind_congr _ (fun values => calls fuel depth values))
+      rw [itemValues_constantContext sourceCtx targetCtx tables]
+      exact bind_congr _ (fun _ => bind_congr _ (fun _ => bind_congr _ (fun values => calls fuel depth values)))
 
 /-- Equality of the shared helper actually used by body Call/CallIndirect
     and their contextual evaluator paths. This quantifies the whole Sem
@@ -1435,7 +1585,7 @@ theorem expandedGraph_runCallEquivalent (header : EvalFunction)
     fuel depth callee values strategy source target
     (withFunction_found ctx callee source) (withFunction_found ctx callee target) rfl
   intro world
-  exact expandedGraph_effect (withFunction ctx callee source) (withFunction ctx callee target) rfl
+  exact expandedGraph_effect (withFunction ctx callee source) (withFunction ctx callee target) rfl rfl
     header blocks names sourceTypes targetTypes params bodyDests termDests frame value slot next
     found indexType pointerType stateType fuel depth values strategy world
 
@@ -1458,7 +1608,12 @@ theorem expandedGraph_callEquivalent (header : EvalFunction)
         cfg := cfgOf (expandedGraph (Names.ofTriple names) blocks header.entryBlock)
         localTypes := some targetTypes} := by
   intro ctx callee callerCFG pc callerParams args argIds strategy callerEntry fuel depth
-  apply callEntry_eq_of_runCallReq _ _ callee callerCFG pc callerParams args argIds strategy callerEntry
+  apply callEntry_eq_of_runCallReq
+    (withFunction ctx callee {header with cfg := cfgOf blocks, localTypes := some sourceTypes})
+    (withFunction ctx callee {header with
+      cfg := cfgOf (expandedGraph (Names.ofTriple names) blocks header.entryBlock)
+      localTypes := some targetTypes})
+    callee callerCFG pc callerParams args argIds strategy callerEntry rfl
     (fuel := fuel) (depth := depth)
   intro calleeFuel calleeDepth values
   exact expandedGraph_runCallEquivalent header blocks names sourceTypes targetTypes params bodyDests

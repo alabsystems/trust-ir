@@ -123,6 +123,7 @@ const CORPUS: &[(&str, Builder)] = corpus![
     build_inst_vector_dialect,
     build_inst_vector_crosslane,
     build_inst_memory,
+    build_storage_only,
     build_inst_control,
     build_inst_atomic,
     build_inst_borrow_arc,
@@ -162,9 +163,13 @@ const CORPUS: &[(&str, Builder)] = corpus![
     build_tensor_map_reduce_view,
     build_tensor_gather_scatter,
     build_tensor_weight_blob,
+    build_box_deref,
     build_nominal_type_origin,
     build_certificate_binding,
     build_param_pointee_place,
+    build_single_inhabited_enums,
+    build_storage_only,
+    build_closure_frame_origin,
 ];
 
 fn corpus() -> Vec<(&'static str, Module)> {

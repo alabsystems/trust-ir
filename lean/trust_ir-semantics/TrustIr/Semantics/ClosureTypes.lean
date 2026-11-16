@@ -4,6 +4,17 @@ import TrustIr.CompilerCompat
 
 namespace TrustIr
 
+private theorem closureSyntax_size_step (left right : Nat) : right < 1 + left + right := by
+  have first : right < 1 + right := (Nat.add_comm right 1) ▸ Nat.lt_succ_self right
+  exact Nat.lt_of_lt_of_le first (Nat.add_le_add_right (Nat.le_add_right 1 left) right)
+
+private theorem closureSyntax_list_size (types : List Ty) : Ty._sizeOf_2 types = sizeOf types := by
+  induction types with
+  | nil => rfl
+  | cons first rest ih =>
+    change 1 + sizeOf first + Ty._sizeOf_2 rest = 1 + sizeOf first + sizeOf rest
+    exact congrArg (fun count => 1 + sizeOf first + count) ih
+
 /- The legacy derived recursive BEq for Ty is opaque to the Lean 4.8 kernel.
    Closure call contracts need executable, kernel-reducible structural equality.
    This comparator preserves every constructor and nominal ID; it performs no
@@ -37,6 +48,7 @@ mutual
     | .Struct a => match rhs with | .Struct b => a.index == b.index | _ => false
     | .Array a n => match rhs with | .Array b m => a.index == b.index && n == m | _ => false
     | .Func a => match rhs with | .Func b => a.index == b.index | _ => false
+    | .FnItem a => match rhs with | .FnItem b => a.index == b.index | _ => false
     | .Tuple a => match rhs with | .Tuple b => closureTyListEq a b | _ => false
     | .Enum a => match rhs with | .Enum b => a.index == b.index | _ => false
     | .Vector n a => match rhs with | .Vector m b => n == m && closureTyEq a b | _ => false
@@ -53,10 +65,26 @@ mutual
     | .Dialect a n v => match rhs with | .Dialect b m w => a == b && n == m && v == w | _ => false
     | .Storage a n => match rhs with | .Storage b m => a == b && n == m | _ => false
     | .Handle a n => match rhs with | .Handle b m => a == b && n == m | _ => false
+  termination_by sizeOf lhs
+  decreasing_by
+    · change sizeOf a < 1 + Ty._sizeOf_2 a
+      rw [closureSyntax_list_size a]
+      exact closureSyntax_size_step 0 (sizeOf a)
+    · change sizeOf a < 1 + sizeOf n + sizeOf a
+      exact closureSyntax_size_step (sizeOf n) (sizeOf a)
+    all_goals
+      change sizeOf a < 1 + sizeOf a
+      exact closureSyntax_size_step 0 (sizeOf a)
   def closureTyListEq : List Ty → List Ty → Bool
     | [], [] => true
     | a :: as, b :: bs => closureTyEq a b && closureTyListEq as bs
     | _, _ => false
+  termination_by lhs rhs => sizeOf lhs
+  decreasing_by
+    · change sizeOf a < 1 + sizeOf a + sizeOf as
+      exact Nat.lt_add_right (sizeOf as) (closureSyntax_size_step 0 (sizeOf a))
+    · change sizeOf as < 1 + sizeOf a + sizeOf as
+      exact closureSyntax_size_step (sizeOf a) (sizeOf as)
 end
 
 set_option maxHeartbeats 4000000 in
@@ -85,12 +113,14 @@ mutual
       exact closureTyEq_refl t
     | .I8 | .I16 | .I32 | .I64 | .I128 | .U8 | .U16 | .U32 | .U64 | .U128
     | .Isize | .Usize | .Char | .Error | .F16 | .F32 | .F64 | .Bool | .Ptr
-    | .Unit | .Never => rfl
-    | .FatPtr _ | .Struct _ | .Array _ _ | .Func _ | .Enum _ | .Set _ _
+    | .Unit | .Never => by
+      trustIrCompilerProof { rfl } { rw [closureTyEq] }
+    | .FatPtr _ | .Struct _ | .Array _ _ | .Func _ | .FnItem _ | .Enum _ | .Set _ _
     | .Sequence _ | .Record _ | .Closure _ | .Refine _ _ | .Dialect _ _ _ | .Storage _ _ | .Handle _ _ =>
       by rw [closureTyEq]; simp
   theorem closureTyListEq_refl : (tys : List Ty) → closureTyListEq tys tys = true
-    | [] => rfl
+    | [] => by
+      trustIrCompilerProof { rfl } { rw [closureTyListEq] }
     | t :: ts => by
       rw [closureTyListEq, closureTyEq_refl t, closureTyListEq_refl ts]
       rfl
@@ -116,6 +146,7 @@ mutual
     case Struct.Struct a b => cases a; cases b; simp_all
     case Array.Array a n b m => cases a; cases b; simp_all
     case Func.Func a b => cases a; cases b; simp_all
+    case FnItem.FnItem a b => cases a; cases b; simp_all
     case Tuple.Tuple a b => exact congrArg Ty.Tuple (closureTyListEq_sound a b h)
     case Enum.Enum a b => cases a; cases b; simp_all
     case Vector.Vector n a m b =>
@@ -150,21 +181,23 @@ end
 
 /-- The executable comparison accepts exactly structural type equality. -/
 theorem closureTyEq_iff (a b : Ty) : closureTyEq a b = true ↔ a = b := by
+  apply Iff.symm
   constructor
-  · exact closureTyEq_sound a b
   · intro h
     cases h
     exact closureTyEq_refl a
+  · exact closureTyEq_sound a b
 
 /-- Physical parameter lists have the same exact equality contract. -/
 theorem closureTyListEq_iff (a b : List Ty) : closureTyListEq a b = true ↔ a = b := by
+  apply Iff.symm
   constructor
-  · exact closureTyListEq_sound a b
   · intro h
     cases h
     exact closureTyListEq_refl a
+  · exact closureTyListEq_sound a b
 
 end TrustIr
 
-#trustIrAxiomsPinned TrustIr.closureTyEq == [propext, Classical.choice, Quot.sound] modern []
-#trustIrAxiomsPinned TrustIr.closureTyListEq == [propext, Classical.choice, Quot.sound] modern []
+#trustIrAxiomsPinned TrustIr.closureTyEq == [] modern []
+#trustIrAxiomsPinned TrustIr.closureTyListEq == [] modern []

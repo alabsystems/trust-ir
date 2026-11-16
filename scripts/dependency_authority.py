@@ -56,34 +56,95 @@ def api(repository: str, suffix: str) -> dict:
     return result
 
 
+class MissingManifest(ValueError):
+    """An authenticated complete tree has no requested path entry."""
+
+
+class ManifestAuthority:
+    """Read exact dependency manifests through one authenticated commit tree.
+
+    Package versions can be independent of the workspace version. Resolve
+    their manifests from the same immutable revision, never checkout bytes.
+    Cached trees and blobs are data for this instance's fixed revision only.
+    """
+
+    def __init__(self, repository: str, revision: str) -> None:
+        remote(repository, revision)
+        commit = api(repository, f"git/commits/{revision}")
+        require(commit.get("sha") == revision, "commit response identity mismatch")
+        self.root = commit.get("tree", {}).get("sha", "")
+        exact_revision(self.root)
+        self.repository = repository
+        self.revision = revision
+        self.trees: dict[str, list[dict]] = {}
+        self.manifests: dict[str, tuple[bytes, str]] = {}
+        self.absent: set[str] = set()
+
+    def tree(self, oid: str) -> list[dict]:
+        exact_revision(oid)
+        if oid not in self.trees:
+            tree = api(self.repository, f"git/trees/{oid}")
+            require(tree.get("sha") == oid and tree.get("truncated") is False,
+                    "incomplete or mismatched root tree")
+            entries = tree.get("tree")
+            require(isinstance(entries, list) and all(isinstance(e, dict) for e in entries),
+                    "invalid manifest tree entries")
+            self.trees[oid] = entries
+        return self.trees[oid]
+
+    def read(self, path: str) -> tuple[bytes, str]:
+        require(isinstance(path, str) and len(path) <= 4096,
+                "invalid manifest path")
+        parts = path.split("/")
+        require(1 <= len(parts) <= 32 and parts[-1] == "Cargo.toml"
+                and all(p not in ("", ".", "..") and "\\" not in p
+                        and not any(ord(c) < 32 or ord(c) == 127 for c in p) for p in parts),
+                "expected canonical repository-relative Cargo.toml path")
+        if path in self.manifests:
+            return self.manifests[path]
+        if path in self.absent:
+            raise MissingManifest("missing authority manifest: " + path)
+        tree = self.root
+        for index, part in enumerate(parts):
+            entries = [e for e in self.tree(tree) if e.get("path") == part]
+            if not entries:
+                self.absent.add(path)
+                raise MissingManifest("missing authority manifest: " + path)
+            require(len(entries) == 1, "expected one authority manifest path entry: " + path)
+            entry = entries[0]
+            oid = entry.get("sha", "")
+            exact_revision(oid)
+            if index < len(parts) - 1:
+                require(entry.get("type") == "tree" and entry.get("mode") == "040000",
+                        "authority manifest ancestor must be a tracked directory")
+                tree = oid
+                continue
+            require(entry.get("type") == "blob" and entry.get("mode") == "100644",
+                    "authority manifest must be an ordinary tracked file")
+            blob = api(self.repository, f"git/blobs/{oid}")
+            size = blob.get("size")
+            require(blob.get("sha") == oid and blob.get("encoding") == "base64"
+                    and type(size) is int and 0 <= size <= MAX_MANIFEST,
+                    "invalid manifest blob metadata")
+            content = blob.get("content")
+            require(isinstance(content, str), "missing raw blob content")
+            data = base64.b64decode("".join(content.split()), validate=True)
+            require(len(data) == size, "manifest byte length mismatch")
+            require(hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + data).hexdigest() == oid,
+                    "manifest Git blob digest mismatch")
+            self.manifests[path] = data, oid
+        return self.manifests[path]
+
+    def optional(self, path: str) -> tuple[bytes, str] | None:
+        """Workspace discovery may skip absence, never malformed authority."""
+        try:
+            return self.read(path)
+        except MissingManifest:
+            return None
+
+
 def manifest(repository: str, revision: str) -> bytes:
-    remote(repository, revision)
-    commit = api(repository, f"git/commits/{revision}")
-    require(commit.get("sha") == revision, "commit response identity mismatch")
-    root = commit.get("tree", {}).get("sha", "")
-    exact_revision(root)
-    tree = api(repository, f"git/trees/{root}")
-    require(tree.get("sha") == root and tree.get("truncated") is False,
-            "incomplete or mismatched root tree")
-    entries = [e for e in tree.get("tree", []) if e.get("path") == "Cargo.toml"]
-    require(len(entries) == 1, "expected one root Cargo.toml")
-    entry = entries[0]
-    require(entry.get("type") == "blob" and entry.get("mode") == "100644",
-            "authority manifest must be an ordinary tracked file")
-    oid = entry.get("sha", "")
-    exact_revision(oid)
-    blob = api(repository, f"git/blobs/{oid}")
-    size = blob.get("size")
-    require(blob.get("sha") == oid and blob.get("encoding") == "base64"
-            and type(size) is int and 0 <= size <= MAX_MANIFEST,
-            "invalid manifest blob metadata")
-    content = blob.get("content")
-    require(isinstance(content, str), "missing raw blob content")
-    data = base64.b64decode("".join(content.split()), validate=True)
-    require(len(data) == size, "manifest byte length mismatch")
-    require(hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + data).hexdigest() == oid,
-            "manifest Git blob digest mismatch")
-    return data
+    return ManifestAuthority(repository, revision).read("Cargo.toml")[0]
 
 
 def offline_manifest(cache: Path, revision: str) -> bytes:

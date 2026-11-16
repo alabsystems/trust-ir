@@ -161,6 +161,7 @@ pub(super) fn for_instruction(instruction: &Inst) -> Plan<'_> {
             first: core::slice::from_ref(src),
             second: coords,
         },
+        Inst::BoxDeref { operand, .. } => Plan::One(*operand),
         Inst::ExtractField { aggregate, .. } => Plan::One(*aggregate),
         Inst::InsertField {
             aggregate, value, ..
