@@ -193,6 +193,15 @@ pub(super) fn cases() -> Vec<(ValidationError, usize)> {
             1,
         ),
         (
+            ValidationError::BoxDerefConjunctUnestablished {
+                function: String::from("owned λ\0"),
+                block: 17u32,
+                inst_index: 17u32,
+                conjunct: "borrowed static",
+            },
+            1,
+        ),
+        (
             ValidationError::BoxDerefObligationUnbound {
                 function: String::from("owned λ\0"),
                 block: 17u32,

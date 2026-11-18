@@ -152,6 +152,13 @@ def renderOut (pointerBits : Nat) : Out → String
   | .unsupported f => "{\"unsupported\":" ++ jstr f ++ "}"
   | .outOfFuel => "{\"out_of_fuel\":true}"
   | .panic m => "{\"panic\":" ++ jstr m ++ "}"
+  | .globalDivPanic p =>
+    let msg := match p.kind with
+      | .divByZero => "attempt to divide by zero"
+      | .remByZero => "attempt to calculate the remainder with a divisor of zero"
+    "{\"panic\":" ++ jstr msg ++ ",\"site\":{\"entry\":" ++ toString p.entry ++
+      ",\"location\":{\"global\":" ++ toString p.global ++ ",\"offset\":" ++
+      toString p.offset ++ "}}}"
   | .outOfMemory => "{\"out_of_memory\":true}"
 
 def runLine (m : Except DErr Module) (line : String) : String :=
@@ -197,6 +204,7 @@ def instName : Inst → String
   | .nullPtr => "nullPtr"
   | .unreachable => "unreachable"
   | .assert _ _ => "assert"
+  | .assertSitedDiv _ _ _ => "assertSitedDiv"
   | .call _ _ => "call"
   | .makeClosure _ _ _ => "makeClosure"
   | .br _ _ => "br"
@@ -395,6 +403,11 @@ def instSummary : Inst → String × List Nat
   | .nullPtr => ("nullptr", [])
   | .unreachable => ("unreachable", [])
   | .assert c k => (s!"assert.{kindStr k}", [c])
+  | .assertSitedDiv c k site =>
+    let kind := match k with
+      | .divByZero => "div_by_zero"
+      | .remByZero => "rem_by_zero"
+    (s!"quoted.assert_sited.{kind}.entry{site.entry}.global{site.global}", [c])
   | .call f xs => (s!"call.{f}", xs)
   | .makeClosure cid target captures => (s!"makeClosure.{cid}.{target}", captures)
   | .br t xs => (s!"br.{t}", xs)

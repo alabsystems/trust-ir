@@ -15,6 +15,7 @@ mod variant_shape;
 pub mod alloc_bound;
 pub mod analysis;
 pub mod blob;
+pub mod borrowed_closure_readback;
 pub mod box_validity;
 pub mod bridge;
 pub mod build_info;
@@ -135,6 +136,7 @@ pub use level::{Extension, NoExt, TemplateRef};
 pub use node::{InstrNode, InstrNodeG};
 #[cfg(feature = "clean-expr")]
 pub use proof::ExprObligation;
+pub use type_walk::TypeOccurrence;
 // The real Clean-kernel `CleanCicRechecker` a kernel-capable orchestrator injects
 // into `obligation_has_kernel_rechecked_clean_cic` to close the trusted-on-read
 // surface (decode + kernel-re-check the certificate's proof term). Only exists in

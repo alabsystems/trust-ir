@@ -9,17 +9,19 @@ open SSAFreshStep
 
 private theorem loadMemoryValue_equivariant (ctx : EvalContext) (ty : Ty) (pointer : Value) :
     HeldMemoryFrames.Equivariant (ctx.loadMemoryValue ty pointer) := by
-  unfold EvalContext.loadMemoryValue
-  cases ctx.memoryServiceFor ty with
-  | some service => exact HeldMemoryFrames.aggregateLoadValue_eqv _ _ _ _ _ _ _
-  | none => exact HeldMemoryFrames.semLoadValueUsing_eqv _ _ _ _ _ _
+  unfold EvalContext.loadMemoryValue EvalContext.loadMemoryValueAligned
+  cases ctx.memoryRoute ty with
+  | original closure service => exact HeldMemoryFrames.originalClosureLoadValue_eqv _ _ _ _ _ _ _
+  | descriptor service => exact HeldMemoryFrames.aggregateLoadValue_eqv _ _ _ _ _ _ _
+  | scalar => exact HeldMemoryFrames.semLoadValueUsing_eqv _ _ _ _ _ _
 
 private theorem storeMemoryValue_equivariant (ctx : EvalContext) (ty : Ty) (pointer value : Value) :
     HeldMemoryFrames.Equivariant (ctx.storeMemoryValue ty pointer value) := by
-  unfold EvalContext.storeMemoryValue
-  cases ctx.memoryServiceFor ty with
-  | some service => exact HeldMemoryFrames.aggregateStoreValue_eqv _ _ _ _ _ _ _ _
-  | none => exact HeldMemoryFrames.semStoreValueUsing_eqv _ _ _ _ _ _ _ _
+  unfold EvalContext.storeMemoryValue EvalContext.storeMemoryValueAligned
+  cases ctx.memoryRoute ty with
+  | original closure service => exact HeldMemoryFrames.originalClosureStoreValue_eqv _ _ _ _ _ _ _ _
+  | descriptor service => exact HeldMemoryFrames.aggregateStoreValue_eqv _ _ _ _ _ _ _ _
+  | scalar => exact HeldMemoryFrames.semStoreValueUsing_eqv _ _ _ _ _ _ _ _
 
 /-- The allocator's identity writer leaves initialization to the actual
     typed store. No SSA alias or synthetic byte image is introduced. -/

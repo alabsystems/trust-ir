@@ -87,8 +87,10 @@ usage: scripts/bump-dep-pin.sh <clean|ay> <40-hex-sha> [version] [options]
                           leg. Required when target Clean changes its seven
                           co-owned AY dependency requirements.
 
-  --offline               skip the remote-existence probe (the frontend lock
-                          refresh still needs the network for a clean bump)
+  --offline               skip the explicit remote-existence probe; require
+                          Clean's manifest in the local object repository.
+                          Other package-manifest reads still use Agh. Lock
+                          resolution follows Targo's offline configuration.
   --allow-sibling-ahead   deprecated compatibility no-op; immutable target
                           commits, never sibling HEADs, are authoritative
   --no-guard-test         skip the compiled Rust guard test. The toolchain-

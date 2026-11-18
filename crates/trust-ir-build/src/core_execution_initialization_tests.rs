@@ -35,14 +35,14 @@ fn fixture(scope: &mut Scope, arity: usize) -> Fixture {
         parameters.push(local.clone());
         local.term().clone()
     };
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_entry_context"),
-        providers: constant("test_entry_providers"),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_entry_context"),
+        constant("test_entry_providers"),
+    );
     let entry = EntryTarget {
         target: CallTarget {
-            context: model.context.clone(),
+            context: model.context().clone(),
             function_id: nat(41),
             binding: constant("test_entry_binding"),
             signature: constant("test_entry_signature"),
@@ -133,7 +133,7 @@ fn initialization_retains_actual_arguments_and_symbolic_historical_owner() {
         let world = app(
             "IRByteWorldV1.mk",
             [
-                fixture.model.world_type.clone(),
+                fixture.model.world_type().clone(),
                 fixture.memory.clone(),
                 fixture.host.clone(),
                 list("Nat", std::slice::from_ref(&owner)),
@@ -151,7 +151,7 @@ fn initialization_retains_actual_arguments_and_symbolic_historical_owner() {
         let running = app(
             "IRByteConfigV1.running",
             [
-                fixture.model.world_type.clone(),
+                fixture.model.world_type().clone(),
                 machine.clone(),
                 world.clone(),
             ],
@@ -165,8 +165,8 @@ fn initialization_retains_actual_arguments_and_symbolic_historical_owner() {
             app(
                 "ir_byte_init_v1",
                 [
-                    fixture.model.world_type.clone(),
-                    fixture.model.context.clone(),
+                    fixture.model.world_type().clone(),
+                    fixture.model.context().clone(),
                     nat(41),
                     fixture.arguments.clone(),
                     fixture.memory.clone(),
@@ -178,7 +178,7 @@ fn initialization_retains_actual_arguments_and_symbolic_historical_owner() {
             initialized.valid().left,
             app(
                 "ir_byte_world_valid_v1",
-                [fixture.model.world_type.clone(), machine, world,]
+                [fixture.model.world_type().clone(), machine, world,]
             )
         );
         assert_eq!(initialized.valid().right, constant("Bool.true"));
@@ -214,7 +214,13 @@ fn initialization_refuses_mismatched_context_or_precondition_endpoints() {
         let mut scope = Scope::new();
         let mut fixture = fixture(&mut scope, 2);
         match mutation {
-            0 => fixture.model.context = constant("other_context"),
+            0 => {
+                fixture.model = MachineModel::from_terms(
+                    fixture.model.world_type().clone(),
+                    constant("other_context"),
+                    fixture.model.providers().clone(),
+                )
+            }
             1 => fixture.initial_memory.ty = constant("Nat"),
             2 => fixture.initial_memory.left = constant("other_memory_guard"),
             3 => fixture.initial_memory.right = constant("Bool.false"),

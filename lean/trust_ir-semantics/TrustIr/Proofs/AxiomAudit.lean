@@ -18,6 +18,7 @@ import TrustIr.Proofs.ScalarAdmissionControls
 import TrustIr.Proofs.EncodedAdmissionControls
 import TrustIr.Proofs.FunctionReadbackControls
 import TrustIr.Proofs.SourceRecursiveReadback
+import TrustIr.Proofs.SourceLeafEncodeExistence
 import TrustIr.Proofs.SourceIntegerReadback
 import TrustIr.Proofs.SourcePreparedReferences
 import TrustIr.Proofs.SourceLayoutReferenceBounds
@@ -46,6 +47,8 @@ import TrustIr.Proofs.SourceEnumPayload
 import TrustIr.Proofs.SourceInhabitSound
 import TrustIr.Proofs.SourceNodeMeaning
 import TrustIr.Proofs.SourceValueMembership
+import TrustIr.Proofs.InitializedCarriers
+import TrustIr.Proofs.UnsignedRemainderWp
 import TrustIr.Proofs.SourceLayoutCombinators
 import TrustIr.Proofs.SourceLayoutSession
 import TrustIr.Proofs.SourceLayoutDerivation
@@ -671,13 +674,13 @@ open TrustIr.VectorDialect
 
 #trustIrAxiomsPinned TrustIr.dealloc_zero_size_frees_itself == [] modern []
 
-#trustIrAxiomsPinned TrustIr.dealloc_one_past_end_is_ub == [propext, Classical.choice, Quot.sound] modern [propext, Quot.sound]
+#trustIrAxiomsPinned TrustIr.dealloc_one_past_end_is_ub == [propext, Classical.choice, Quot.sound] modern [propext]
 
 #trustIrAxiomsPinned TrustIr.aligned_store_after_byte_local_ok == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice]
 
-#trustIrAxiomsPinned TrustIr.load_one_past_end_is_ub == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+#trustIrAxiomsPinned TrustIr.load_one_past_end_is_ub == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice]
 
-#trustIrAxiomsPinned TrustIr.load_misaligned_without_declared_align_is_ub == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice, Quot.sound]
+#trustIrAxiomsPinned TrustIr.load_misaligned_without_declared_align_is_ub == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice]
 
 #trustIrAxiomsPinned TrustIr.gep_keeps_no_provenance == [propext, Classical.choice, Quot.sound] modern [propext, Classical.choice]
 
@@ -6119,6 +6122,28 @@ trustIrCanonicalOnly
 #trustIrAxiomsPinned TrustIr.Value.Initialized.not_poison == [] modern []
 
 #trustIrAxiomsPinned TrustIr.Value.Initialized.aggregate_child == [] modern []
+
+#trustIrAxiomsPinned TrustIr.Value.Initialized.frame_child == [] modern []
+
+#trustIrAxiomsPinned TrustIr.Value.Initialized.sourceFrame_child == [] modern []
+
+#trustIrAxiomsPinned TrustIr.Value.Initialized.sourceFrame_iff_children == [] modern []
+
+#trustIrAxiomsPinned TrustIr.Value.Initialized.sourceFrame_iff_frame == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.function_item_initialized == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.initialized_item_still_checks_original_declaration == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.source_frame_unwritten_not_initialized == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.source_frame_poison_not_initialized == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.source_frame_nested_unwritten_not_initialized == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.initialized_source_frame_need_not_be_minted == [] modern []
+
+#trustIrAxiomsPinned TrustIr.InitializedCarriers.frame_identity_validity_is_not_initialization == [] modern []
 
 #trustIrAxiomsPinned TrustIr.Value.Initialized.array_child == [] modern []
 

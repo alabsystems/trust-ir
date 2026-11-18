@@ -209,6 +209,26 @@ const ROWS: &[(&str, Build)] = &[
         Build::Module(generate::build_refuse_box_deref_premise_mixed_roots),
     ),
     (
+        "box_deref_unestablished_parameter",
+        Build::Module(generate::build_refuse_box_deref_unestablished_parameter),
+    ),
+    (
+        "box_deref_unestablished_null_operand",
+        Build::Module(generate::build_refuse_box_deref_unestablished_null_operand),
+    ),
+    (
+        "box_deref_unestablished_freed_operand",
+        Build::Module(generate::build_refuse_box_deref_unestablished_freed_operand),
+    ),
+    (
+        "box_deref_unestablished_loaded_operand",
+        Build::Module(generate::build_refuse_box_deref_unestablished_loaded_operand),
+    ),
+    (
+        "blob_box_deref_unestablished_below_its_version",
+        Build::Bytes(generate::build_refuse_bytes_blob_box_deref_unestablished_below_its_version),
+    ),
+    (
         "blob_box_deref_below_its_version",
         Build::Bytes(generate::build_refuse_bytes_blob_box_deref_below_its_version),
     ),
@@ -1436,6 +1456,7 @@ fn box_error_variant(rule: BoxDerefValidationRule) -> &'static str {
         BoxDerefValidationRule::NonClaimsNotPinned => "BoxDerefNonClaimsNotPinned",
         BoxDerefValidationRule::PremiseContradicted => "BoxDerefPremiseContradicted",
         BoxDerefValidationRule::EvidenceBelowFloor => "BoxValidityEvidenceBelowFloor",
+        BoxDerefValidationRule::ConjunctUnestablished => "BoxDerefConjunctUnestablished",
     }
 }
 

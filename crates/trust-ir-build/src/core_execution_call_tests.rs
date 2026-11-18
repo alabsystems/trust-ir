@@ -28,14 +28,14 @@ struct Fixture {
 }
 
 fn fixture(scope: &mut Scope, args: usize, results: usize, indirect: bool) -> Fixture {
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_call_context"),
-        providers: constant("test_call_providers"),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_call_context"),
+        constant("test_call_providers"),
+    );
     let target = InternalTarget {
         target: CallTarget {
-            context: model.context.clone(),
+            context: model.context().clone(),
             function_id: nat(41),
             binding: constant("test_call_binding"),
             signature: constant("test_call_signature"),
@@ -63,7 +63,7 @@ fn fixture(scope: &mut Scope, args: usize, results: usize, indirect: bool) -> Fi
         app("IRInst.call", [nat(41), ids.clone()])
     };
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(80),
             block: BlockId::new(29),
@@ -496,11 +496,11 @@ fn internal_call_curried_prevalidity_eta_lift_replays_the_actual_kernel_predicat
         .try_local(app("IRByteWorldV1", [world_type.term().clone()]))
         .unwrap();
     let other_world = scope.try_local(world.ty().clone()).unwrap();
-    let model = MachineModel {
-        world_type: world_type.term().clone(),
-        context: constant("prevalidity_unused_context"),
-        providers: constant("prevalidity_unused_providers"),
-    };
+    let model = MachineModel::from_terms(
+        world_type.term().clone(),
+        constant("prevalidity_unused_context"),
+        constant("prevalidity_unused_providers"),
+    );
     let mut policy = limits();
     policy.max_operations = 1_000;
     policy.max_locals = 100;

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# pre-push: refuse a push whose new commits carry report archives or oversized
+# blobs. Git keeps every blob a pushed commit reaches, so this judges each
+# commit the push uploads, not the tip tree: scripts/check_object_budget.py,
+# the same check gate 0 runs on origin/main..HEAD. GitHub enforces nothing
+# here, so the hook is the push-time half of the guard. Install it once per
+# clone (it replaces .git/hooks for that clone):
+#
+#   git config core.hooksPath scripts/hooks
+#
+# Git passes the remote's name and URL as arguments and one
+# "<local ref> <local sha> <remote ref> <remote sha>" line per updated ref. A
+# deletion uploads nothing. Otherwise the range is the local commit minus every
+# commit the remote advertises now (`git ls-remote <url>`) that this clone
+# has: what the push can upload. Remote-tracking refs are never used: a stale
+# one, or another remote's, records what this clone once saw, not what this
+# remote holds. A remote whose refs cannot be read refuses the push.
+set -uo pipefail
+
+checker="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/check_object_budget.py"
+root="$(git rev-parse --show-toplevel)" || exit 1
+url="${2:-${1:-}}"
+zero='^0+$'
+updates=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [[ -n "${local_sha:-}" ]] || continue
+    [[ "$local_sha" =~ $zero ]] && continue
+    updates+=("$local_ref" "$local_sha" "$remote_ref")
+done
+[[ ${#updates[@]} -gt 0 ]] || exit 0
+if [[ -z "$url" ]]; then
+    printf 'pre-push: git named no remote, so the object budget cannot tell what this push uploads. Nothing was pushed.\n' >&2
+    exit 1
+fi
+if ! advertised="$(git ls-remote "$url")"; then
+    printf 'pre-push: the refs of %s cannot be read, so the object budget cannot tell what this push uploads. Nothing was pushed.\n' \
+        "$url" >&2
+    exit 1
+fi
+status=0
+for ((i = 0; i < ${#updates[@]}; i += 3)); do
+    if ! python3 -B "$checker" --root "$root" --tip "${updates[i + 1]}" --advertised - <<<"$advertised"; then
+        printf 'pre-push: %s -> %s refused by the object budget (above). Nothing was pushed.\n' \
+            "${updates[i]}" "${updates[i + 2]}" >&2
+        status=1
+    fi
+done
+exit "$status"

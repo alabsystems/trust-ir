@@ -2108,6 +2108,7 @@ fn codec_tag_census() -> Vec<TagRow> {
             crate::box_validity::ValidityEvidence::Obligation {
                 obligation: ProofId::new(0),
             },
+            crate::box_validity::ValidityEvidence::Unestablished,
         ],
         &|buf, _, evidence| write_validity_evidence(buf, evidence),
     ));

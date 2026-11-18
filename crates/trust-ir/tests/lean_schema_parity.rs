@@ -1888,6 +1888,7 @@ fn parse_semr_quoted(text: &str) -> Result<Vec<(String, String, String, String)>
                 "closure_types",
                 "quoted-closure",
             ] => true,
+            ["assertSitedDiv", "Assert", "globals", "quoted-sited-div"] => true,
             _ => false,
         };
         if fields.len() != 4 || !ident(fields[0]) || !ident(fields[1]) || !boundary_matches_scope {

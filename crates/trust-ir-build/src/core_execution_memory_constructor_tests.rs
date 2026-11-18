@@ -20,11 +20,11 @@ fn limits() -> Limits {
 }
 
 fn model(world_type: Expr) -> MachineModel {
-    MachineModel {
-        world_type,
-        context: constant("memory_normalization_unused_context"),
-        providers: constant("memory_normalization_unused_providers"),
-    }
+    MachineModel::from_terms(
+        world_type.clone(),
+        constant("memory_normalization_unused_context"),
+        constant("memory_normalization_unused_providers"),
+    )
 }
 
 fn explicit(world_type: Expr, memory: Expr, host: Expr, owners: Expr, next: Expr) -> Expr {

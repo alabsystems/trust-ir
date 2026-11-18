@@ -12,6 +12,8 @@ import TrustIr.Semantics.LocalTypes
 import TrustIr.Semantics.CharValidity
 import TrustIr.Semantics.FunctionItemPresence
 import TrustIr.Semantics.AggregateAccess
+import TrustIr.Semantics.OriginalClosureMemory
+import TrustIr.ModuleSyntax
 import TrustIr.StringCompat
 
 namespace TrustIr
@@ -35,25 +37,6 @@ For terminating programs with sufficient fuel, `outOfFuel` is never
 produced. Proofs about total correctness prove sufficient fuel exists.
 Proofs about partial correctness ignore the fuel parameter.
 -/
-
-/-- A basic block: parameters, body instructions, and terminator. -/
-structure BasicBlock where
-  params     : List (ValueId × Ty)     -- Block parameters
-  body       : List Inst               -- Non-terminator instructions
-  /-- Result destinations for `body`, positionally mirroring Rust
-      `InstrNode.results`.  Older Lean fixtures that only rely on fresh
-      sequential SSA ids leave this empty. -/
-  bodyResultDests : List (List ValueId) := []
-  terminator : Inst                    -- Terminator instruction
-  /-- Result destinations for a value-producing TERMINATOR (`Inst.Invoke`:
-      the callee's returns bind the invoke node's own results on the normal
-      edge), mirroring Rust `InstrNode.results`. Empty for ordinary
-      terminators. -/
-  terminatorResultDests : List ValueId := []
-  deriving Repr
-
-/-- A control flow graph: mapping from BlockId to BasicBlock. -/
-def CFG := BlockId → Option BasicBlock
 
 /-- Bind block parameters to incoming values. -/
 def bindBlockParams (params : List (ValueId × Ty)) (args : List Value) : Sem Unit := do
@@ -259,15 +242,6 @@ def EvalFunction.header (function : EvalFunction) : FunctionHeader :=
         abi := function.body.abi }
     callingConv := function.callingConv }
 
-/-- A module-level global's definition (type + optional initializer), carried by
-    the evaluator context so `GlobalAddr` can reserve the global's TRUE byte size
-    and write its initializer with full storage fidelity. Mirrors Rust `Global`. -/
-structure GlobalDef where
-  ty          : Ty
-  initializer : Option Constant
-  /-- The DECLARED over-alignment (`Global.align`), if any. -/
-  align       : Option Nat := none
-
 /-- GlobalId -> definition lookup, mirroring `Module.globals`. -/
 def GlobalsTable := GlobalId → Option GlobalDef
 
@@ -281,6 +255,9 @@ structure EvalContext where
   /-- Original source layouts and statically prepared image roots. Actual
       decoded modules always install this; manual scalar contexts may omit it. -/
   memoryService : Option AggregateMemory.Service := none
+  /-- Exact original source for direct nominal storage. Its private preparer
+      retains the same module and authentic capture memory compiler. -/
+  originalClosureMemory : Option OriginalClosureMemory.Service := none
   /-- Active function's declarations; calls replace this lexical context. -/
   localTypes : Option LocalTypeTable := none
   functionReturnTypes : Option (List Ty) := none
@@ -342,6 +319,17 @@ def memoryLayout (ctx : EvalContext) (ty : Ty) : Except SemError MemoryTypeLayou
   match ctx.memoryServiceFor ty with
   | some service => AggregateMemory.layoutQuery service ctx.byteModel ty
   | none => scalarMemoryLayout ctx.byteModel ty
+
+/-- Stack allocation alone can consume nominal storage geometry from the
+same held source service. The original memoryLayout and byte-image operations
+keep their execution-layout boundary; no service still means no fallback. -/
+def allocationLayout (ctx : EvalContext) (ty : Ty) : Except SemError MemoryTypeLayout :=
+  match ty with
+  | .Closure _ =>
+    match ctx.memoryServiceFor ty with
+    | some service => AggregateMemory.allocationLayoutQuery service ctx.byteModel ty
+    | none => ctx.memoryLayout ty
+  | _ => ctx.memoryLayout ty
 
 /-- Canonical leaves use the original held-value arithmetic for every
     context, including arbitrary aggregate services and every error path. -/
@@ -1671,6 +1659,66 @@ def semGlobalAddrInContext (ctx : EvalContext) (global : GlobalId) : Sem ValueId
         globals := (global, address, allocation) :: state.globals }
       Sem.bindFresh (.ptr address (some allocation))
 
+/-- Select the original-source nominal route separately from ordinary image
+plans. Allocation/layout selection remains unchanged. -/
+def EvalContext.originalClosureFor (ctx : EvalContext) (ty : Ty) :
+    Option (ClosureTyId × OriginalClosureMemory.Service) :=
+  match ty, ctx.originalClosureMemory with
+  | .Closure closure, some service => some (closure, service)
+  | _, _ => none
+
+/-- The actual execution route, distinct from a geometry-service lookup. -/
+inductive MemoryExecutionRoute where
+  | original (closure : ClosureTyId) (service : OriginalClosureMemory.Service)
+  | descriptor (service : AggregateMemory.Service)
+  | scalar
+
+def EvalContext.memoryRoute (ctx : EvalContext) (ty : Ty) : MemoryExecutionRoute :=
+  match ctx.originalClosureFor ty with
+  | some (closure, service) => .original closure service
+  | none => match ctx.memoryServiceFor ty with
+    | some service => .descriptor service
+    | none => .scalar
+
+theorem EvalContext.memoryRoute_descriptor_source (ctx : EvalContext) (ty : Ty)
+    (service : AggregateMemory.Service) (selected : ctx.memoryRoute ty = .descriptor service) :
+    ctx.memoryServiceFor ty = some service := by
+  cases original : ctx.originalClosureFor ty <;>
+    cases ordinary : ctx.memoryServiceFor ty <;>
+    simp_all [EvalContext.memoryRoute]
+
+theorem EvalContext.memoryRoute_canonical (ctx : EvalContext) (ty : Ty)
+    (canonical : ty.hasCanonicalMemoryLayout = true) : ctx.memoryRoute ty = .scalar := by
+  have absent : ctx.originalClosureFor ty = none := by
+    cases ty <;> try rfl
+    simp [Ty.hasCanonicalMemoryLayout] at canonical
+  simp only [memoryRoute, absent, memoryServiceFor, canonical, if_true]
+
+def EvalContext.loadMemoryValueAligned (ctx : EvalContext) (ty : Ty) (pointer : Value)
+    (strict : Bool) (align : Option Nat) : Sem Value :=
+  match ctx.memoryRoute ty with
+  | .original closure service => OriginalClosureMemory.loadValue service ctx.functionOrder closure pointer strict align ctx.byteModel
+  | .descriptor service => AggregateMemory.loadValue service ctx.functionOrder ty pointer strict align ctx.byteModel
+  | .scalar => semLoadValueUsing
+      (fun memory bytes => decodeMemoryWithFunctions ctx.byteModel ctx.functionOrder memory ty bytes)
+      ty pointer strict align ctx.byteModel
+
+def EvalContext.storeMemoryValueAligned (ctx : EvalContext) (ty : Ty) (pointer value : Value)
+    (strict : Bool) (align : Option Nat) : Sem Unit :=
+  match ctx.memoryRoute ty with
+  | .original closure service => OriginalClosureMemory.storeValue service ctx.functionOrder closure pointer value strict align ctx.byteModel
+  | .descriptor service => AggregateMemory.storeValue service ctx.functionOrder ty pointer value strict align ctx.byteModel
+  | .scalar => semStoreValueUsing (scalarMemoryLayout ctx.byteModel)
+      (encodeMemoryWithFunctions ctx.byteModel ctx.functionOrder ty) ty pointer value strict align ctx.byteModel
+
+def EvalContext.loadMemoryValue (ctx : EvalContext) (ty : Ty) (pointer : Value)
+    (strict : Bool := false) : Sem Value :=
+  ctx.loadMemoryValueAligned ty pointer strict none
+
+def EvalContext.storeMemoryValue (ctx : EvalContext) (ty : Ty) (pointer value : Value)
+    (strict : Bool := false) : Sem Unit :=
+  ctx.storeMemoryValueAligned ty pointer value strict none
+
 /-- Dispatch a body instruction WITH module context: memory consumers use the
     source-order Func codec, and globals retain their full initializer image;
     an aggregate `Const` lowers its lanes
@@ -1771,7 +1819,7 @@ def stepInstWithContext (ctx : EvalContext) (inst : Inst) :
       semCloseFrame frame
       pure (.value none)
   | .Alloca ty count align =>
-    let id ← semAllocaUsing ctx.memoryLayout ctx.carrierIntegerOperand
+    let id ← semAllocaUsing ctx.allocationLayout ctx.carrierIntegerOperand
       ty count align ctx.byteModel
     pure (.value (some id))
   | .HeapAlloc ty count align origin =>
@@ -1851,14 +1899,14 @@ def stepInstWithContext (ctx : EvalContext) (inst : Inst) :
     let vid ← semGlobalAddrInContext ctx global
     pure (.value (some vid))
   | .Load ty ptr strict align =>
-    let vid ← match ctx.memoryServiceFor ty with
-      | some service => AggregateMemory.load service ctx.functionOrder ty ptr strict align ctx.byteModel
-      | none => semLoadUsing (fun mem bytes => decodeMemoryWithFunctions ctx.byteModel ctx.functionOrder mem ty bytes) ty ptr strict align ctx.byteModel
+    let pointer ← Sem.lookupValue ptr
+    let value ← ctx.loadMemoryValueAligned ty pointer strict align
+    let vid ← Sem.bindFresh value
     pure (.value (some vid))
   | .Store ty ptr value strict align =>
-    match ctx.memoryServiceFor ty with
-    | some service => AggregateMemory.store service ctx.functionOrder ty ptr value strict align ctx.byteModel
-    | none => semStoreUsing (encodeMemoryWithFunctions ctx.byteModel ctx.functionOrder ty) ty ptr value strict align ctx.byteModel
+    let pointer ← Sem.lookupValue ptr
+    let value ← Sem.lookupValue value
+    ctx.storeMemoryValueAligned ty pointer value strict align
     pure (.value none)
   | .AtomicLoad ty ptr ordering =>
     let vid ← match ctx.memoryServiceFor ty with
@@ -2267,23 +2315,6 @@ def FunctionHeader.matches (header : FunctionHeader) (function : EvalFunction) :
     closureTyListEq header.signature.returns function.body.returnTys &&
     header.signature.isVararg == function.body.isVararg &&
     header.callingConv == function.callingConv
-
-def EvalContext.loadMemoryValue (ctx : EvalContext) (ty : Ty) (pointer : Value)
-    (strict : Bool := false) : Sem Value :=
-  match ctx.memoryServiceFor ty with
-  | some service => AggregateMemory.loadValue service ctx.functionOrder ty pointer strict none ctx.byteModel
-  | none =>
-    semLoadValueUsing
-      (fun memory bytes => decodeMemoryWithFunctions ctx.byteModel ctx.functionOrder memory ty bytes)
-      ty pointer strict none ctx.byteModel
-
-def EvalContext.storeMemoryValue (ctx : EvalContext) (ty : Ty) (pointer value : Value)
-    (strict : Bool := false) : Sem Unit :=
-  match ctx.memoryServiceFor ty with
-  | some service => AggregateMemory.storeValue service ctx.functionOrder ty pointer value strict none ctx.byteModel
-  | none =>
-    semStoreValueUsing (scalarMemoryLayout ctx.byteModel)
-      (encodeMemoryWithFunctions ctx.byteModel ctx.functionOrder ty) ty pointer value strict none ctx.byteModel
 
 /-- Original SSA/element declarations retain nominal identity and signedness
     where values do not. A populated table missing a row never falls back to

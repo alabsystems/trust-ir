@@ -13,11 +13,11 @@ use clean_kernel::BinderInfo;
 mod tests;
 
 fn model([world, context, providers]: [u32; 3]) -> MachineModel {
-    MachineModel {
-        world_type: Expr::bvar(world),
-        context: Expr::bvar(context),
-        providers: Expr::bvar(providers),
-    }
+    MachineModel::from_terms(
+        Expr::bvar(world),
+        Expr::bvar(context),
+        Expr::bvar(providers),
+    )
 }
 
 pub(super) fn closed_candidate() -> Expr {
@@ -52,7 +52,7 @@ pub(super) fn closed_candidate() -> Expr {
     let cases = Expr::apps(
         Expr::const_(Name::from_string("IRByteConfigV1.rec"), vec![Level::zero()]),
         [
-            outer.world_type,
+            outer.world_type().clone(),
             motive,
             case("IRByteConfigV1.running", "IRMachine"),
             case("IRByteConfigV1.halted", "IROutcome"),

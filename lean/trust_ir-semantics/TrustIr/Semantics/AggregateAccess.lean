@@ -30,6 +30,13 @@ def layoutQuery (service : Service) (model : ByteModel) (ty : Ty) : Except SemEr
   if model == service.model then service.queryLayout ty
   else .error (.typeError "memory: source layout target does not match evaluator target")
 
+/-- Allocation-only geometry retains the same held service/model equality
+check. Load/Store continue to consume checkedPlan and its original codec. -/
+def allocationLayoutQuery (service : Service) (model : ByteModel) (ty : Ty) :
+    Except SemError MemoryTypeLayout := do
+  if model == service.model then service.queryAllocationLayout ty
+  else .error (.typeError "memory: source layout target does not match evaluator target")
+
 /-- Holding values performs no private SSA publication. The caller supplies
     the actual source-layout service and source-order function namespace. -/
 def loadValue (service : Service) (order : FunctionAddressOrder) (ty : Ty) (pointer : Value)

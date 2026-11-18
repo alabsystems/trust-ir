@@ -22,9 +22,9 @@
 //!    `Dereferenceable`; `MetadataValid` on it is refused.
 //! 4. **Premise** ([`ValidationError::BoxDerefPremiseNotPinned`]): a premise
 //!    names exactly the pinned standing assumptions, in canonical order.
-//! 5. **Session** ([`ValidationError::BoxDerefSessionRefused`]): the fact
-//!    states that it was produced in a proof session and judged on the
-//!    verification snapshot. The producer decides validity in its verifier,
+//! 5. **Session** ([`ValidationError::BoxDerefSessionRefused`]): a fact that
+//!    offers evidence states that it was produced in a proof session and
+//!    judged on the verification snapshot. The producer decides validity in its verifier,
 //!    so no fact of any root or evidence kind exists outside that session.
 //! 6. **Dominating check**
 //!    ([`ValidationError::BoxDerefDominatingCheckInvalid`]): REFUSED wherever
@@ -38,6 +38,14 @@
 //! 9. **Premise sanity** ([`ValidationError::BoxDerefPremiseContradicted`]):
 //!    the premises of one fact name one root, and the function does not
 //!    visibly contradict it (the list is at [`premise_contradictions`]).
+//! 10. **No evidence** ([`ValidationError::BoxDerefConjunctUnestablished`],
+//!     wire v75): every `Unestablished` entry is reported, on every
+//!     admission and at every floor. Nothing in this repository discharges
+//!     it. A consumer may discharge it only for a conjunct it RE-DERIVES
+//!     itself from the instruction's own function, under its own named
+//!     contract; every other consumer refuses the instruction. Rule 5 does
+//!     not judge the session of a fact whose every entry is `Unestablished`:
+//!     such a fact offers nothing a session could stand behind.
 //!
 //! The site id is carried and never judged: inlining copies a cast, so one
 //! id may label many instructions of a module, each with its own fact. A
@@ -365,9 +373,12 @@ pub(super) fn box_deref_errors(module: &Module) -> Vec<ValidationError> {
                     });
                 }
 
-                // Rule 5: the session. Both halves are reported when both
-                // are false.
-                if fact.session.producing != ProducingSession::ProofSession {
+                // Rule 5: the session of a fact that offers evidence. Both
+                // halves are reported when both are false. A fact whose every
+                // entry is `Unestablished` offers nothing, so its session is
+                // carried and not judged (rule 10 reports every entry).
+                let judges_session = !fact.offers_no_evidence();
+                if judges_session && fact.session.producing != ProducingSession::ProofSession {
                     errors.push(ValidationError::BoxDerefSessionRefused {
                         function: at.function(),
                         block: at.block(),
@@ -376,7 +387,7 @@ pub(super) fn box_deref_errors(module: &Module) -> Vec<ValidationError> {
                                  verifier did not run, so it holds no verdict for this site",
                     });
                 }
-                if fact.session.judged != JudgedBody::VerificationSnapshot {
+                if judges_session && fact.session.judged != JudgedBody::VerificationSnapshot {
                     errors.push(ValidationError::BoxDerefSessionRefused {
                         function: at.function(),
                         block: at.block(),
@@ -420,6 +431,17 @@ pub(super) fn box_deref_errors(module: &Module) -> Vec<ValidationError> {
                                 obligation: obligation.index(),
                                 reason: "obligation evidence is not admitted in this version: \
                                          nothing compares the row's formula with the conjunct",
+                            });
+                        }
+                        ValidityEvidence::Unestablished => {
+                            // Rule 10: no evidence, reported on every
+                            // admission. Only a consumer that re-derives
+                            // the conjunct itself may discharge it.
+                            errors.push(ValidationError::BoxDerefConjunctUnestablished {
+                                function: at.function(),
+                                block: at.block(),
+                                inst_index: at.inst(),
+                                conjunct: entry.conjunct.name(),
                             });
                         }
                     }

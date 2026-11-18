@@ -2,16 +2,16 @@
   "packages": [
     {
       "manifest": {
-        "git_blob": "d5461dc7afeb3f4fb35ed6fa2f90d23702b22775",
+        "git_blob": "552362125abd3033a6670ee58200be7da5c759e7",
         "path": "crates/ay/Cargo.toml",
-        "sha256": "772942e85b3685e185d9bbdd7e422f84100843018d585f4df322e0b85d0cbcfd"
+        "sha256": "0c15fda294a15b9d03730c9c01fe5cdb35968063a4276210f4c298f30062c1d6"
       },
       "name": "ay",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -21,11 +21,11 @@
         "sha256": "ff5579f948316e42d143f7852a2c475ef20fc8dc0937982d105224e6703514eb"
       },
       "name": "ay-allsat",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -35,11 +35,11 @@
         "sha256": "ab667ba47baf8cfc1a2122280dc7f05b34d206bd115302846e2c10e7ba863e7c"
       },
       "name": "ay-arrays",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -49,11 +49,11 @@
         "sha256": "8c005668dfa6d8832d61bc7043fb5e73d3192083786eff40777dbc51858e1b06"
       },
       "name": "ay-bv",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -63,11 +63,11 @@
         "sha256": "52f508aad4f1cc969805c31df02aa8091cef66c0966e0f986210fbe8e0cb4e42"
       },
       "name": "ay-cdclt",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -77,11 +77,11 @@
         "sha256": "a552dc3e71f62492fbb2a078a87651e85d096f1348f3194fdc7d59373484de03"
       },
       "name": "ay-chc",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -91,25 +91,11 @@
         "sha256": "42d6fbae4061cfcd76f96620edbc596dc17d64f7fab5825678870a01a123447f"
       },
       "name": "ay-core",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
-      }
-    },
-    {
-      "manifest": {
-        "git_blob": "6bbbb4a822cb837d6fe939d92225e86d34b0eb38",
-        "path": "crates/ay-count/Cargo.toml",
-        "sha256": "18bc88bff45d16b8136d4b8b721fd207ebe92779979f0a5e36574dc5c6692120"
-      },
-      "name": "ay-count",
-      "version": "0.28.2",
-      "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
-        "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -119,11 +105,11 @@
         "sha256": "b6a4f80ccf508548aea17327054df9c855e8d56f83591b5d3c5b06cd7cfee2a4"
       },
       "name": "ay-diff-logic",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -133,25 +119,25 @@
         "sha256": "b543d57d97518270d6f0057dcfd4384464b868d06de0b5a0aca2d15bc465b188"
       },
       "name": "ay-dispatch",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
       "manifest": {
-        "git_blob": "066504417d2f8225c9cd4003807a7ce47303f012",
+        "git_blob": "31a49f1bce8eda54101054c0eb58db81f539bf8a",
         "path": "crates/ay-dpll/Cargo.toml",
-        "sha256": "32a050dce22295d45c420ae0fe187515d5047d36292fb5c041ac951bd9730479"
+        "sha256": "33ba9685a1bf4232aee9706fa7b40146ec96329010dd28651637c46527d96059"
       },
       "name": "ay-dpll",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -161,11 +147,11 @@
         "sha256": "13ca08c64c2a38b390dd19e7a2d46b28f6dab7fc89eed5f4ea2cbd96c23f495b"
       },
       "name": "ay-drat-check",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -175,11 +161,11 @@
         "sha256": "b56b77affff4e1ef36f606028e25154996408e378a8fe5b915ab0a0468c834fe"
       },
       "name": "ay-dt",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -189,11 +175,11 @@
         "sha256": "f174d03e7b92789e6b8431ce5e0e602b1276bd17445bb8b1ae66a05bedf74516"
       },
       "name": "ay-euf",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -203,11 +189,11 @@
         "sha256": "9a2b2234871bb43750a50b7f990f824a096e53ab9a11aa0a0c16a896e7288b34"
       },
       "name": "ay-fp",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -217,11 +203,11 @@
         "sha256": "585d52238cdffbc02a5ae534ac5696951d729db0c5171db3e964a155b81d9bd6"
       },
       "name": "ay-frontend",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -231,11 +217,11 @@
         "sha256": "1272c5ca3164c71550aaf37f2a89fdd7b0c66c1ca59ce7add1c54ffc843d5d66"
       },
       "name": "ay-intsat",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -245,11 +231,11 @@
         "sha256": "df1deb8090452aeed91357cfd8d9bdc510ae92e23e44f9fc6fffe99564fb4b84"
       },
       "name": "ay-jit",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -259,11 +245,11 @@
         "sha256": "f789c1064de0a487b7ca0e9f8f7c846e56ab0a3c2b52220fe231b3326d2363aa"
       },
       "name": "ay-lia",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -273,11 +259,11 @@
         "sha256": "f8f0986994ef199d83b06beef34e92c4622cf3fc75ab3c339c85ce94d0f14800"
       },
       "name": "ay-lra",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -287,25 +273,11 @@
         "sha256": "37e06f3f302d67f0f4603d60fead8888085d21d0eda771b8e58726ee689d1bb7"
       },
       "name": "ay-map",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
-      }
-    },
-    {
-      "manifest": {
-        "git_blob": "8b0995c8bae0e4661e77c1841c00f1a13ff5d3c4",
-        "path": "crates/ay-milp/Cargo.toml",
-        "sha256": "1139f6565e2a517b4f6b5d20901b144bc98d42509d713e66e0aa826ce6fa5c66"
-      },
-      "name": "ay-milp",
-      "version": "0.28.2",
-      "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
-        "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -315,11 +287,11 @@
         "sha256": "bd8ab4842ebdc19d9d8209db6613dcbfaf5c95d6b564843de49ea93436f249d0"
       },
       "name": "ay-model-check",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -329,11 +301,11 @@
         "sha256": "170b935417681241fb1836b0936b562618b54466497b3f15f198f3b56c7658eb"
       },
       "name": "ay-multiset",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -343,11 +315,11 @@
         "sha256": "d64404e00a1957e84c8cbca75ffec7cbd30601a1236c6561c9cb437fd691d085"
       },
       "name": "ay-nia",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -357,11 +329,11 @@
         "sha256": "c0907210008885fa95a1348effbbcbd7d24637df6b632695a640cb6035ecb7f1"
       },
       "name": "ay-nonlinear-common",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -371,25 +343,11 @@
         "sha256": "dc977fc85a3eb10f335ffb6d519f4bbf70c70c4defcb2df4b611c70a6d150ffe"
       },
       "name": "ay-nra",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
-      }
-    },
-    {
-      "manifest": {
-        "git_blob": "ad6256b5bc8fa81b3e8e710cca118f9b3d6f4db4",
-        "path": "crates/ay-pb-core/Cargo.toml",
-        "sha256": "c324db7e0757335144323b84d807a238627123c0eef1227ebdd41cd41c09cb98"
-      },
-      "name": "ay-pb-core",
-      "version": "0.28.2",
-      "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
-        "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -399,11 +357,11 @@
         "sha256": "091dd0568a224e7072149673db1f8a952f4314476812ddc4ddc2440ef47bf515"
       },
       "name": "ay-prefetch",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -413,11 +371,11 @@
         "sha256": "35f37ed388e09bc27314b6c94b96153f22e81019d0bcea1c7126e28d98ffd189"
       },
       "name": "ay-proof",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -427,11 +385,11 @@
         "sha256": "77f195ddec37612f2e4ef784b8bdf4da0ad4d40027a504eabd341cfed5d7917f"
       },
       "name": "ay-proof-common",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -441,11 +399,11 @@
         "sha256": "fbbd21b9dd40ea05ed6dd131ece39b99ef1adc1eff028e26650cd9ae3a0e0fc7"
       },
       "name": "ay-sat",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -455,11 +413,11 @@
         "sha256": "b38166e61d7033aa2346050ada12c6d0703783caf8d5d5f582905385933e92ca"
       },
       "name": "ay-sat-congruence-core",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -469,11 +427,11 @@
         "sha256": "d9425072abc2e0d4f38254cbe06f9854cc6b76b1f359e897a5f761836c415a06"
       },
       "name": "ay-seq",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -483,11 +441,11 @@
         "sha256": "3110aecb2e951c64ef97d89577e90051a7e73060126aa015cb7b2de9a0f2e0e4"
       },
       "name": "ay-set",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -497,11 +455,11 @@
         "sha256": "9f1cda7c4a20d340a0e5cb571b7406a3f5414e67355038ce5ffd41b5da8ada41"
       },
       "name": "ay-strings",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -511,11 +469,11 @@
         "sha256": "f4750b2c5cb4f62b6b8e26f6a17f6a05de024aa630764b252441dcfc2f606214"
       },
       "name": "ay-sys",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -525,11 +483,11 @@
         "sha256": "f1f89950bc692bd04287602ab6f90e0408c4bf4c9cc1ba8428619611189d6088"
       },
       "name": "ay-translate",
-      "version": "0.28.2",
+      "version": "0.28.4",
       "version_source": {
-        "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+        "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
         "path": "Cargo.toml",
-        "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+        "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
       }
     },
     {
@@ -548,12 +506,12 @@
     }
   ],
   "repository": "https://github.com/alabsystems/ay.git",
-  "revision": "8bbc43108643d475a81a89b2b4f262e817ee1724",
+  "revision": "12d411d420e27eea05099f8cd277eb288e8622c9",
   "schema": 1,
   "workspace_manifest": {
-    "git_blob": "2138a2c65606f59fa1d1a3220ad8b35cba72d195",
+    "git_blob": "4fe4ae81f5261cc31fc6e317313c328b81178564",
     "path": "Cargo.toml",
-    "sha256": "813bfd5e5dc49f3e0dc12c842e848bc58e297eeb65f20afcfa35b425339c9e5e"
+    "sha256": "d2121d6ff00d9cd017bb29eeb0031e65bc84f5908679ad16391dd40fbf04463a"
   },
-  "workspace_version": "0.28.2"
+  "workspace_version": "0.28.4"
 }

@@ -158,8 +158,11 @@ fn mint(m: &Module, i: &IslandEnvironment) -> trust_ir_build::SourceBoundCallCer
     .unwrap()
 }
 fn certified() -> (Module, ProofLineageManifest) {
+    certified_in(&island(false))
+}
+fn certified_in(island: &IslandEnvironment) -> (Module, ProofLineageManifest) {
     let mut m = module();
-    let rows = mint(&m, &island(false));
+    let rows = mint(&m, island);
     let manifest = ProofLineageManifest {
         schema_version: ProofLineageManifest::SCHEMA_VERSION,
         roots: rows.nodes.iter().map(|n| n.id).collect(),
@@ -677,7 +680,7 @@ fn existing_binary_transport_preserves_and_replays_the_complete_family() {
 }
 
 #[test]
-fn a_real_trusted_arith_proof_is_refused_by_the_shared_rooted_audit() {
+fn raw_trusted_arith_certificate_is_refused_by_the_marker_free_anchor() {
     use trust_ir_build::clean_kernel::{ExprKind, Level};
     let (mut m, _) = certified();
     let ProofEvidence::CleanCic { term, context, .. } = &mut m.proof_certificates[0].evidence
@@ -702,7 +705,59 @@ fn a_real_trusted_arith_proof_is_refused_by_the_shared_rooted_audit() {
     );
     *term = encode_clean_expr_v1(&forged).unwrap();
     rekey(&mut m);
-    refused(&m, "rooted certification audit");
+    // The production prelude deliberately contains no admission marker.
+    // Preserve this earlier refusal instead of pretending it reached audit.
+    let errors = format!("{:?}", validate_module(&m));
+    assert!(
+        errors.contains("UnknownConst") && errors.contains("trustedArith"),
+        "{errors}"
+    );
+}
+
+#[test]
+fn checked_definition_with_a_forbidden_marker_name_is_refused_by_rooted_audit() {
+    use trust_ir_build::clean_kernel::{ExprKind, Level};
+    let (original, _) = certified();
+    let ProofEvidence::CleanCic { term, context, .. } = &original.proof_certificates[0].evidence
+    else {
+        panic!()
+    };
+    let proof = trust_ir::proof::decode_clean_expr_v1(term).unwrap();
+    let ExprKind::App(refl_ty, target) = proof.kind() else {
+        panic!()
+    };
+    let ExprKind::App(_, ty) = refl_ty.kind() else {
+        panic!()
+    };
+    let source = trust_ir::proof::decode_clean_expr_v1(context).unwrap();
+    let goal = Expr::apps(
+        Expr::const_(Name::from_string("Eq"), vec![Level::succ(Level::zero())]),
+        [ty.as_ref().clone(), target.as_ref().clone(), source],
+    );
+    let mut declarations =
+        trust_ir::proof::decode_island_declarations_v1(&island(false).declarations).unwrap();
+    // A genuine checked DEFINITION, with the original reflexivity proof:
+    // no axiom, opaque body or production environment initialization is added.
+    // Its forbidden marker identity must still be rejected when actually used.
+    declarations.push(Declaration::Definition {
+        name: Name::from_string("trustedArith"),
+        level_params: vec![],
+        type_: goal,
+        value: proof,
+        is_reducible: true,
+    });
+    let carried = IslandEnvironment::new(encode_island_declarations_v1(&declarations).unwrap());
+    let (mut m, _) = certified_in(&carried);
+    let ProofEvidence::CleanCic { term, .. } = &mut m.proof_certificates[0].evidence else {
+        panic!()
+    };
+    *term = encode_clean_expr_v1(&Expr::const_str("trustedArith")).unwrap();
+    rekey(&mut m);
+    let errors = format!("{:?}", validate_module(&m));
+    assert!(
+        errors.contains("rooted certification audit") && errors.contains("trustedArith"),
+        "{errors}"
+    );
 }
 #[test]
 fn discharged_callee_does_not_become_source_bound_kernel_authority() {

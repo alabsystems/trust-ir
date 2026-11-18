@@ -941,6 +941,7 @@ pub(super) fn observed_write_box_validity_fact<O: ExecutionObserver>(
                 observed_write_u8(buf, 2)?;
                 observed_write_proof_id(buf, *obligation)?;
             }
+            ValidityEvidence::Unestablished => observed_write_u8(buf, 3)?,
         }
     }
     observed_write_count(buf, "validity non-claim list", fact.not_claimed.len())?;

@@ -1,6 +1,7 @@
 -- Copyright 2026 Andrew Yates | Apache-2.0
 -- Prepared lookup views of actual decoded source and executable rows.
 import TrustIr.DecodedModule
+import TrustIr.Semantics.Eval
 
 namespace TrustIrEval.FunctionLookup
 open TrustIr

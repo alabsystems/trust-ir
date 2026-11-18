@@ -1,0 +1,110 @@
+{
+  "scope": "Genuine maintained scalar producer DATA; full ordinary unverified consumer tests, no proof of Rust/ABI/native/machine or full-CI claim",
+  "producer_repository": "alabsystems/clean",
+  "producer_commit": "2cda1d4b088f9f1cc8562cce660046b3596ae9b2",
+  "actual_exit": 0,
+  "command": [
+    "targo",
+    "--unverified",
+    "test",
+    "--locked",
+    "-p",
+    "clean-reflect",
+    "--lib",
+    "--tests",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "$HOME/clean-i1-module-mount-claim",
+  "environment": {
+    "CLEAN_SCALAR_SOURCE_EQUATION_EXPORT_DIR": "$HOME/.ubd/i1-module-mount-20261117/c0-scalar-source-equations-20261117T1416",
+    "CARGO_TARGET_DIR": "$HOME/.ubd/targets/root-i1-c0-consumers-20261117"
+  },
+  "admission": {
+    "build_slot_cpus": 4,
+    "heavy_gate_gb": 47,
+    "elapsed": "1m39s",
+    "peak_gb": 2.36
+  },
+  "results": {
+    "library": 137,
+    "fused_overflow": 6,
+    "increment1_overflow": 8,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0
+  },
+  "unchanged_original_payloads": {
+    "source_declaration": 9,
+    "theorem": 9
+  },
+  "changed_source_and_equation_closure_cases": 4,
+  "module_delta": "closure_layouts: [] added; every other Module field identical",
+  "exact_selected_inputs": {
+    "Cargo.toml": {
+      "sha256": "886336995762de4515bbc9296b0b627002a3bf33fc7c2128e5318271368374a6",
+      "bytes": 49970
+    },
+    "Cargo.lock": {
+      "sha256": "2bf2679502a5ce26fe0d460256a26e9286174ce9521b11407d648d48effbe67f",
+      "bytes": 127824
+    },
+    "rust-toolchain.toml": {
+      "sha256": "e743f6e66aaf9aa3c58068ce5bdba4fa88a2b041033e5a1c46ce8708129379e6",
+      "bytes": 924
+    },
+    ".cargo/config.toml": {
+      "sha256": "db796bff6252910692d3809434e983568663247ac56c1ecbf9cf6b67b8ee98b1",
+      "bytes": 5441
+    },
+    "crates/clean-kernel/Cargo.toml": {
+      "sha256": "1ee007af577fb402d760187854c8e67aeb66846099b8ec2d93686e5ff4112a74",
+      "bytes": 9143
+    },
+    "crates/clean-reflect/Cargo.toml": {
+      "sha256": "1fec1a879c1e7282ca2b66a794e44e336b14a415002915ccdbf1c0655a864341",
+      "bytes": 1750
+    },
+    "crates/clean-reflect/src/source_equation/scalar/export.rs": {
+      "sha256": "c7ccc413ef268d952bd14c369b25a2613e09fb1d968a41489e7611b262d473f6",
+      "bytes": 2880
+    },
+    "crates/clean-reflect/src/source_equation/scalar/tests.rs": {
+      "sha256": "c91f313638a5f20813908b7152288b7b79dcf141010d055116f75d16566e4e29",
+      "bytes": 13367
+    },
+    "crates/clean-reflect/src/source_equation/scalar/mixed_tests.rs": {
+      "sha256": "f6a9de94eb1d27776e91eda3e6cf6f08095533a88811906df6271e2bacf05ec6",
+      "bytes": 6296
+    }
+  },
+  "raw_and_comparison_custody": {
+    "c0-scalar-producer-first.log": {
+      "sha256": "d0da7b9351d28a00a3bf2665707cbbff15ed8381b240cd09c5ee821e049794d8",
+      "bytes": 15745
+    },
+    "c0-scalar-producer-field-comparison.json": {
+      "sha256": "7d9d4f8715abb61f9e3f0bfa4acf6fc6971c2a29f804ba8e992cc46176b84167",
+      "bytes": 7117
+    },
+    "c0-scalar-producer-module-comparison.json": {
+      "sha256": "50c1de84688a6708ef496a6bd201e604b677294aab70ea5429129270f61e437c",
+      "bytes": 2044
+    },
+    "c0-scalar-producer-targo-post-version.log": {
+      "sha256": "451ee14ac693dbfb45bdfd79ab799915d34761ffb01daa9c8afdc228eb21c7aa",
+      "bytes": 67
+    },
+    "c0-scalar-producer-trustc-post-version.log": {
+      "sha256": "76dd7442f72c698b4a8ce544fc4d9056ad55b5c4d9b8b9dce0629a4f675179a6",
+      "bytes": 255
+    }
+  },
+  "tool_observation": "Version logs observed after this run only; no independent before/after executable conservation claim",
+  "not_run": [
+    "fresh clean-reflect Tippy",
+    "full just ci",
+    "compiler-mounted path",
+    "IR independent replay (owned by next_alignment_theory)"
+  ]
+}

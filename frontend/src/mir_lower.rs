@@ -1843,7 +1843,7 @@ pub fn referenced_item_callees<'tcx>(
                         Some(Instance::resolve_closure(
                             cx.tcx,
                             *def_id,
-                            args,
+                            *args,
                             ty::ClosureKind::FnOnce,
                         ))
                     } else {
@@ -4943,8 +4943,8 @@ fn custom_dst_unsize_len<'tcx>(cx: &Cx<'tcx, '_>, src: Ty<'tcx>, dst: Ty<'tcx>) 
                 let variant = d1.non_enum_variant();
                 let mut differing: Option<(Ty<'tcx>, Ty<'tcx>)> = None;
                 for f in variant.fields.iter() {
-                    let a = cx.normalize_ty(f.ty(cx.tcx, s1));
-                    let b = cx.normalize_ty(f.ty(cx.tcx, s2));
+                    let a = cx.normalize_ty(f.ty(cx.tcx, *s1));
+                    let b = cx.normalize_ty(f.ty(cx.tcx, *s2));
                     // Skip ZST fields (rustc's `unsize_ptr` skips 1-ZSTs): a
                     // `PhantomData<[T; N]>` vs `PhantomData<[T]>` pair also
                     // "differs" but carries no data — the REAL unsizing field
@@ -5141,7 +5141,7 @@ fn build_dyn_vtable_global<'tcx>(
         ));
     }
     let size = layout.size.bytes();
-    let align = layout.align.abi.bytes();
+    let align = layout.align.bytes();
 
     let entries = cx.tcx.vtable_entries(trait_ref);
     // Emit each pointer-width INTEGER metadata slot (size / align / null drop /
@@ -5294,7 +5294,7 @@ fn lower_fat_subslice_reborrow<'tcx>(
                 .tcx
                 .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(cx.mono(*el)))
                 .map_err(|e| format!("subslice element layout_of failed: {e:?}"))?;
-            tal.size.align_to(tal.align.abi).bytes()
+            tal.size.align_to(tal.align).bytes()
         }
         other => return Err(format!("subslice reborrow of non-slice pointee: {other:?}")),
     };
@@ -8655,7 +8655,7 @@ fn resolve_call_callee<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Option<
 /// declaration order — `atomic_cxchg`/`atomic_cxchgweak` carry TWO (success,
 /// failure); every other atomic intrinsic carries one.
 fn atomic_orderings_from_args<'tcx>(
-    args: ty::GenericArgsRef<'tcx>,
+    args: ty::GenericArgs<'tcx>,
 ) -> Result<Vec<TIROrdering>, String> {
     let mut out = Vec::new();
     for a in args.iter() {
@@ -8701,7 +8701,7 @@ fn atomic_int_lane<'tcx>(cx: &Cx<'tcx, '_>, t: Ty<'tcx>) -> Result<(TIRTy, bool)
     Ok((leaf, false))
 }
 
-fn atomic_ordering_from_args<'tcx>(args: ty::GenericArgsRef<'tcx>) -> Result<TIROrdering, String> {
+fn atomic_ordering_from_args<'tcx>(args: ty::GenericArgs<'tcx>) -> Result<TIROrdering, String> {
     let ord_const = args
         .iter()
         .find_map(|a| a.as_const())
@@ -8999,7 +8999,7 @@ fn arc_deref_inline_offset<'tcx>(cx: &Cx<'tcx, '_>, func: &Operand<'tcx>) -> Opt
         return None;
     }
     let ptr_size = cx.tcx.data_layout.pointer_size().bytes();
-    let pointee_align = pointee_layout.align.abi.bytes();
+    let pointee_align = pointee_layout.align.bytes();
     // ArcInner data offset = align_up(2 * pointer_size, align_of::<T>()).
     let two_words = 2 * ptr_size;
     let offset = two_words.next_multiple_of(pointee_align);
@@ -9103,7 +9103,7 @@ fn arc_new_inner_layout<'tcx>(
     }
     let ptr_size = cx.tcx.data_layout.pointer_size().bytes();
     let data_size = pointee_layout.size.bytes();
-    let data_align = pointee_layout.align.abi.bytes();
+    let data_align = pointee_layout.align.bytes();
     // `ArcInner<()>` is two `AtomicUsize` (each `pointer_size`, align `pointer_size`).
     // `arcinner_layout_for_value_layout` = `Layout::new::<ArcInner<()>>().extend(T)
     // .pad_to_align()`: data at `align_up(2*ptr_size, align_of::<T>)`, total padded to
@@ -9453,7 +9453,7 @@ fn collect_scalar_leaves<'tcx>(
             let variant = adt.non_enum_variant();
             for (i, field) in variant.fields.iter().enumerate() {
                 let off = base + layout.fields.offset(i).bytes();
-                let fty = cx.normalize_ty(field.ty(cx.tcx, adt_args));
+                let fty = cx.normalize_ty(field.ty(cx.tcx, *adt_args));
                 collect_scalar_leaves(cx, fty, off, out)?;
             }
             Ok(())
@@ -9514,7 +9514,7 @@ fn iter_elem_layout<'tcx>(cx: &Cx<'tcx, '_>, elem: Ty<'tcx>) -> Result<(u64, u64
         return Err(format!("iterator element is unsized: {}", ty_family(elem)));
     }
     let size = layout.size.bytes();
-    let align = layout.align.abi.bytes();
+    let align = layout.align.bytes();
     let stride = size.next_multiple_of(align.max(1));
     Ok((stride, size, align))
 }
@@ -9962,7 +9962,7 @@ fn str_inline_op<'tcx>(
                 .map_err(|e| format!("into_iter identity: layout_of failed: {e:?}"))?;
             Ok(Some(StrInlineOp::IterIdentity {
                 size: layout.size.bytes(),
-                align: layout.align.abi.bytes(),
+                align: layout.align.bytes(),
             }))
         }
     }
@@ -10064,7 +10064,7 @@ fn box_new_uninit_inline<'tcx>(
     }
     Ok(Some(BoxNewUninitLayout {
         total_size: layout.size.bytes(),
-        align: layout.align.abi.bytes(),
+        align: layout.align.bytes(),
     }))
 }
 
@@ -10893,7 +10893,7 @@ fn memory_layout_size_align<'tcx>(cx: &Cx<'tcx, '_>, ty: Ty<'tcx>) -> Result<(u6
         ));
     }
     let size = layout.size.bytes();
-    let align = layout.align.abi.bytes();
+    let align = layout.align.bytes();
     if size == 0 {
         return Err(format!("memory local is zero-sized: {}", ty_family(ty)));
     }
@@ -11240,7 +11240,7 @@ fn walk_projection_address<'tcx>(
                     // Aggregate element: GEP by the byte stride `idx * stride`.
                     // Multiply in the index local's own target-width integer lane,
                     // so the `mul` operand types match (the validator checks this).
-                    let stride = elem_layout.size.align_to(elem_layout.align.abi).bytes();
+                    let stride = elem_layout.size.align_to(elem_layout.align).bytes();
                     let stride_c = fb.iconst(idx_ty.clone(), stride as i128);
                     let byte = fb.mul(idx_ty, idx_val, stride_c);
                     addr = fb.gep(TIRTy::I8, addr, vec![byte]);
@@ -11262,7 +11262,7 @@ fn walk_projection_address<'tcx>(
                     byte_offset = 0;
                 }
                 let elem_layout = element_layout(cx, &lcx, &cur_layout)?;
-                let stride = elem_layout.size.align_to(elem_layout.align.abi).bytes();
+                let stride = elem_layout.size.align_to(elem_layout.align).bytes();
                 if !*from_end {
                     byte_offset += offset * stride;
                 } else {
@@ -11308,7 +11308,7 @@ fn walk_projection_address<'tcx>(
             // fat-REBORROW lowering — this walk only addresses).
             ProjectionElem::Subslice { from, to, from_end } => {
                 let elem_layout = element_layout(cx, &lcx, &cur_layout)?;
-                let stride = elem_layout.size.align_to(elem_layout.align.abi).bytes();
+                let stride = elem_layout.size.align_to(elem_layout.align).bytes();
                 byte_offset += from * stride;
                 match cur_layout.ty.kind() {
                     ty::Array(el, _) => {
@@ -11792,7 +11792,7 @@ fn materialize_const_ref<'tcx>(
                 return Err(format!("const-ref pointee is unsized: {}", ty_family(p)));
             }
             if layout.size.bytes() == 0 {
-                let addr = layout.align.abi.bytes().max(1);
+                let addr = layout.align.bytes().max(1);
                 let iv = fb.iconst(pointer_int_ty(cx.tcx, false)?, addr as i128);
                 return Ok(fb.cast(
                     CastOp::IntToPtr,
@@ -12430,7 +12430,7 @@ fn lower_cast<'tcx>(
                 "ClosureFnPointer destination is not a thin fn pointer: {dst_ty:?}"
             ));
         }
-        let instance = Instance::resolve_closure(cx.tcx, *def_id, args, ty::ClosureKind::FnOnce);
+        let instance = Instance::resolve_closure(cx.tcx, *def_id, *args, ty::ClosureKind::FnOnce);
         let name = cx.tcx.symbol_name(instance).name.to_string();
         return Ok(fb.const_value(TIRTy::Ptr, Constant::symbol_addr(name)));
     }

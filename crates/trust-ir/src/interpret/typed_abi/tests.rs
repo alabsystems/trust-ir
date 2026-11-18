@@ -140,6 +140,74 @@ fn identity(ty: Ty, bytes: u64, bits: u16) -> Module {
 }
 
 #[test]
+fn shared_typed_module_checks_keep_panic_strategy_and_fuel_local() {
+    let module = identity(Ty::U8, 1, 8);
+    let owner = InterpreterModule::new(&module);
+    for _ in 0..3 {
+        let interpreter = owner.interpreter();
+        assert_eq!(
+            interpreter.execute_func(f(0), [integer(Ty::U8, 7)]).unwrap().returns,
+            vec![integer(Ty::U8, 7)]
+        );
+        let consumed = std::cell::Cell::new(false);
+        let arguments = std::iter::from_fn(|| { consumed.set(true); None });
+        let unwind = interpreter.clone().with_options(InterpretOptions {
+            panic_strategy: PanicStrategy::Unwind,
+            ..InterpretOptions::default()
+        }).execute_func(f(0), arguments).unwrap_err();
+        assert_eq!(unwind.code, InterpretErrorCode::UnsupportedCall);
+        assert!(!consumed.get(), "no-unwind refusal must precede argument consumption");
+        let exhausted = interpreter.with_options(InterpretOptions {
+            fuel: 0,
+            ..InterpretOptions::default()
+        }).execute_func(f(0), [integer(Ty::U8, 7)]).unwrap_err();
+        assert_eq!(exhausted.code, InterpretErrorCode::OutOfFuel);
+    }
+}
+
+#[test]
+fn shared_typed_module_success_never_authorizes_a_foreign_header() {
+    let module = identity(Ty::U8, 1, 8);
+    let owner = InterpreterModule::new(&module);
+    let interpreter = owner.interpreter();
+    interpreter.execute_func(f(0), [integer(Ty::U8, 7)]).unwrap();
+    let mut foreign = module.functions[0].clone();
+    foreign.ty = FuncTyId::new(u32::MAX);
+    foreign.entry = BlockId::new(91);
+    let expected = Interpreter::with_module(&module)
+        .execute_function(&foreign, [integer(Ty::U8, 7)]).unwrap_err();
+    let consumed = std::cell::Cell::new(false);
+    let arguments = std::iter::from_fn(|| { consumed.set(true); None });
+    let actual = interpreter.execute_function(&foreign, arguments).unwrap_err();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.code, InterpretErrorCode::SignatureMismatch);
+    assert!(!consumed.get());
+}
+
+#[test]
+fn a_new_module_borrow_rechecks_unused_typed_descriptors() {
+    let mut module = identity(Ty::U8, 1, 8);
+    {
+        let owner = InterpreterModule::new(&module);
+        owner.interpreter().execute_func(f(0), [integer(Ty::U8, 7)]).unwrap();
+    }
+    let mut unused = module.func_types[0].clone();
+    unused.abi.as_mut().unwrap().arguments[0].align = 3;
+    module.func_types.push(unused);
+    let owner = InterpreterModule::new(&module);
+    for entry in [0, 92] {
+        let mut supplied = module.functions[0].clone();
+        supplied.entry = BlockId::new(entry);
+        let consumed = std::cell::Cell::new(false);
+        let arguments = std::iter::from_fn(|| { consumed.set(true); None });
+        let error = owner.interpreter().execute_function(&supplied, arguments).unwrap_err();
+        assert_eq!(error.code, InterpretErrorCode::SignatureMismatch);
+        assert_eq!(error.block, Some(supplied.entry));
+        assert!(!consumed.get(), "unused malformed ABI must refuse before execution setup");
+    }
+}
+
+#[test]
 fn actual_typed_entry_matches_legacy_for_every_integer_width_and_boolean() {
     for (signed, ty, bytes) in [
         (true, Ty::I8, 1),
@@ -5294,4 +5362,139 @@ fn cached_typed_abi_preflight_checks_foreign_supplied_attributes_before_effects(
     assert_eq!(recovered.returns, vec![integer(Ty::I32, 3)]);
     assert_eq!(*cached_logger.values.lock().unwrap(), vec![1, 3]);
     assert_eq!(*uncached_logger.values.lock().unwrap(), vec![1, 3]);
+}
+
+#[test]
+fn cached_typed_storage_is_local_and_keeps_abi_refusal_priority() {
+    let valid = identity(Ty::I32, 4, 32);
+    let mut invalid = valid.clone();
+    invalid
+        .types
+        .push(Ty::Storage(crate::StorageLayout::new(3, 2)));
+    let valid_owner = crate::interpret::InterpreterModule::new(&valid);
+    let invalid_owner = crate::interpret::InterpreterModule::new(&invalid);
+
+    // Same names, IDs, bodies and ABI descriptors; only the independently
+    // borrowed module's unused storage row differs. Warm both owners twice.
+    for bad in [true, false, true, false] {
+        let (module, owner) = if bad {
+            (&invalid, &invalid_owner)
+        } else {
+            (&valid, &valid_owner)
+        };
+        let cached_consumed = std::cell::Cell::new(0);
+        let uncached_consumed = std::cell::Cell::new(0);
+        let actual = owner.interpreter().execute_func(
+            f(0),
+            cache_probe_arguments(integer(Ty::I32, 19), &cached_consumed),
+        );
+        let expected = Interpreter::with_module(module).execute_func(
+            f(0),
+            cache_probe_arguments(integer(Ty::I32, 19), &uncached_consumed),
+        );
+        assert_eq!(actual, expected);
+        assert_eq!(cached_consumed.get(), usize::from(!bad));
+        assert_eq!(uncached_consumed.get(), cached_consumed.get());
+        if let Ok(outcome) = actual {
+            assert_eq!(outcome.returns, vec![integer(Ty::I32, 19)]);
+            assert_eq!(outcome.steps, 1);
+            assert_eq!(outcome.host_calls, 0);
+        }
+    }
+
+    // A cached storage rejection must not preempt this call's earlier ABI
+    // refusal, consume arguments, or change the diagnostic's source block.
+    let options = InterpretOptions {
+        panic_strategy: PanicStrategy::Unwind,
+        ..Default::default()
+    };
+    let consumed = std::cell::Cell::new(0);
+    let actual = invalid_owner
+        .interpreter()
+        .with_options(options)
+        .execute_func(f(0), cache_probe_arguments(integer(Ty::I32, 20), &consumed))
+        .unwrap_err();
+    let expected = Interpreter::with_module(&invalid)
+        .with_options(options)
+        .execute_func(f(0), [integer(Ty::I32, 20)])
+        .unwrap_err();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.code, InterpretErrorCode::UnsupportedCall);
+    assert_eq!(actual.block, Some(b()));
+    assert_eq!(consumed.get(), 0);
+}
+
+#[test]
+fn direct_module_cache_preserves_clone_options_foreign_bodies_and_run_state() {
+    let module = logger_module(false);
+    let logger = Logger::default();
+    let reference_logger = Logger::default();
+    let interpreter = Interpreter::with_module(&module).with_host(&logger);
+    let warm = interpreter
+        .execute_func(f(0), [integer(Ty::I32, 1)])
+        .unwrap();
+    assert_eq!(
+        warm,
+        Interpreter::with_module(&module)
+            .with_host(&reference_logger)
+            .execute_func(f(0), [integer(Ty::I32, 1)])
+            .unwrap()
+    );
+
+    let consumed = std::cell::Cell::new(0);
+    let options = InterpretOptions {
+        panic_strategy: PanicStrategy::Unwind,
+        ..Default::default()
+    };
+    let actual = interpreter
+        .clone()
+        .with_options(options)
+        .execute_func(f(0), cache_probe_arguments(integer(Ty::I32, 2), &consumed))
+        .unwrap_err();
+    let expected = Interpreter::with_module(&module)
+        .with_host(&reference_logger)
+        .with_options(options)
+        .execute_func(f(0), [integer(Ty::I32, 2)])
+        .unwrap_err();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.code, InterpretErrorCode::UnsupportedCall);
+    assert_eq!(actual.block, Some(b()));
+    assert_eq!(consumed.get(), 0);
+
+    let mut supplied = module.functions[1].clone();
+    supplied.entry = BlockId::new(29);
+    supplied.attrs.params = vec![crate::ParamAttrs {
+        ext: crate::ArgExt::ZeroExt,
+        ..Default::default()
+    }];
+    let actual = interpreter
+        .execute_function(
+            &supplied,
+            cache_probe_arguments(integer(Ty::I32, 2), &consumed),
+        )
+        .unwrap_err();
+    let expected = Interpreter::with_module(&module)
+        .with_host(&reference_logger)
+        .execute_function(&supplied, [integer(Ty::I32, 2)])
+        .unwrap_err();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.block, Some(BlockId::new(29)));
+    assert_eq!(consumed.get(), 0);
+    assert_eq!(*logger.values.lock().unwrap(), vec![1]);
+    assert_eq!(*reference_logger.values.lock().unwrap(), vec![1]);
+
+    let recovered = interpreter
+        .execute_func(f(0), [integer(Ty::I32, 3)])
+        .unwrap();
+    assert_eq!(
+        recovered,
+        Interpreter::with_module(&module)
+            .with_host(&reference_logger)
+            .execute_func(f(0), [integer(Ty::I32, 3)])
+            .unwrap()
+    );
+    assert_eq!(recovered.returns, vec![integer(Ty::I32, 3)]);
+    assert_eq!(recovered.host_calls, 1);
+    assert_eq!(*logger.values.lock().unwrap(), vec![1, 3]);
+    assert_eq!(*reference_logger.values.lock().unwrap(), vec![1, 3]);
 }

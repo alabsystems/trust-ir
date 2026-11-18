@@ -17,11 +17,11 @@ pub(super) fn original_normalize_memory_world(
     world: &Expr,
     memory: Expr,
 ) -> Result<PendingEquality> {
-    let ty = app("IRByteWorldV1", [model.world_type.clone()]);
+    let ty = app("IRByteWorldV1", [model.world_type().clone()]);
     let expected = app(
         "IRByteWorldV1.mk",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             memory.clone(),
             projection(model, world, "host"),
             projection(model, world, "owners"),
@@ -33,13 +33,13 @@ pub(super) fn original_normalize_memory_world(
             ty,
             app(
                 "ir_byte_with_memory_v1",
-                [model.world_type.clone(), world.clone(), memory],
+                [model.world_type().clone(), world.clone(), memory],
             ),
             expected,
         );
     }
     let eta = calling::world_eta(assembler, model, world.clone())?;
-    let changed = world_mapper::replace_memory(assembler, &model.world_type, eta, memory)?;
+    let changed = world_mapper::replace_memory(assembler, model.world_type(), eta, memory)?;
     let normalized = assembler.conversion(ty, changed.right.clone(), expected)?;
     assembler.compose(changed, normalized)
 }
@@ -56,18 +56,18 @@ fn limits() -> Limits {
 }
 
 fn model(world_type: Expr) -> MachineModel {
-    MachineModel {
-        world_type,
-        context: constant("memory_mapper_unused_context"),
-        providers: constant("memory_mapper_unused_providers"),
-    }
+    MachineModel::from_terms(
+        world_type.clone(),
+        constant("memory_mapper_unused_context"),
+        constant("memory_mapper_unused_providers"),
+    )
 }
 
 fn expected(model: &MachineModel, world: &Expr, memory: Expr) -> Expr {
     app(
         "IRByteWorldV1.mk",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             memory,
             projection(model, world, "host"),
             projection(model, world, "owners"),
@@ -84,10 +84,10 @@ fn independent(
     term: Expr,
 ) -> PendingEquality {
     PendingEquality::candidate(
-        app("IRByteWorldV1", [model.world_type.clone()]),
+        app("IRByteWorldV1", [model.world_type().clone()]),
         app(
             "ir_byte_with_memory_v1",
-            [model.world_type.clone(), world.clone(), memory],
+            [model.world_type().clone(), world.clone(), memory],
         ),
         right,
         term,
@@ -270,7 +270,7 @@ fn opaque_memory_mapper_retains_all_fields_and_refuses_forged_proof() {
         changed[field] = replacement;
         let right = app(
             "IRByteWorldV1.mk",
-            std::iter::once(model.world_type.clone()).chain(changed),
+            std::iter::once(model.world_type().clone()).chain(changed),
         );
         let false_endpoint = independent(
             &model,

@@ -4,7 +4,7 @@
 use super::*;
 impl<O: ExecutionObserver> Work<'_, '_, O> {
     pub(super) fn error(&mut self, value: ValidationError) {
-        self.step(269);
+        self.step(270);
         match value {
             ValidationError::InvalidStorageUse { location, detail } => {
                 self.string(location);
@@ -1051,6 +1051,17 @@ impl<O: ExecutionObserver> Work<'_, '_, O> {
                 self.fixed(inst_index);
                 self.fixed(conjunct);
                 self.fixed(reason);
+            }
+            ValidationError::BoxDerefConjunctUnestablished {
+                function,
+                block,
+                inst_index,
+                conjunct,
+            } => {
+                self.string(function);
+                self.fixed(block);
+                self.fixed(inst_index);
+                self.fixed(conjunct);
             }
             ValidationError::BoxDerefObligationUnbound {
                 function,

@@ -328,4 +328,19 @@ theorem aggregate_unwritten_decode_frame_exit (model : ByteModel) (order : Funct
     (AggregateMemory.decodeUnwritten_valid (MintedValue 0) BlockDecodeError frame_decode_rules model order memory plan image)
 
 
+/-- The existing capture-field decoder creates no runtime frame identity. -/
+theorem closure_capture_decode_frame_exit (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (fields : List (Nat × AggregateMemory.Plan)) (image : ByteImage) :
+    DecodeFrameExit (fun values => ∀ value ∈ values, MintedValue 0 value)
+      (AggregateMemory.decodeCaptureImage model order memory fields image) :=
+  (block_result_frame_iff _ _).1
+    (AggregateMemory.decodeCaptureImage_valid (MintedValue 0) BlockDecodeError frame_decode_rules
+      model order memory fields image)
+
+theorem closure_capture_covered_no_unwind (fields : List (Nat × AggregateMemory.Plan)) (image : ByteImage) :
+    ExceptNoUnwind (AggregateMemory.coveredCaptureImage fields image) := by
+  have held := AggregateMemory.coveredCaptureImage_errors BlockDecodeError
+    (fun _ => True.intro) (fun _ => True.intro) fields image
+  exact DecodeFrameExit.no_unwind (fun _ => True) _ ((block_result_frame_iff _ _).1 held)
+
 end TrustIr.FrameLifetime

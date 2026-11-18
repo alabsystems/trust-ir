@@ -9,7 +9,7 @@
 // Two capabilities, both built on real stage1 rustc APIs (no hand-faked types):
 //
 //  1. GENERIC FUNCTION, lowered per instantiation.
-//     Mechanism: from a monomorphic `ty::Instance` (def_id + GenericArgsRef),
+//     Mechanism: from a monomorphic `ty::Instance` (def_id + GenericArgs),
 //     read the GENERIC THIR for the def (`tcx.thir_body`), and SUBSTITUTE the
 //     generic types using the instance args during lowering via
 //     `tcx.instantiate_and_normalize_erasing_regions(args, typing_env,
@@ -174,7 +174,7 @@ fn ir_ty_is_signed(ir_ty: &trust_ir::ty::Ty) -> LResult<bool> {
     }
 }
 
-/// M5.7d: build the `GenericArgsRef` for `def_id` that substitutes its N TYPE
+/// M5.7d: build the `GenericArgs` for `def_id` that substitutes its N TYPE
 /// parameters, POSITIONALLY, with `concretes[0..N]` (and keeps the identity for
 /// any leading parent/Self args). The i-th *type* param of the fn binds to
 /// `concretes[i]`. Fails LOUD on:
@@ -189,7 +189,7 @@ fn args_for_type_params<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
     concretes: &[ty::Ty<'tcx>],
-) -> LResult<ty::GenericArgsRef<'tcx>> {
+) -> LResult<ty::GenericArgs<'tcx>> {
     let generics = tcx.generics_of(def_id);
     // Count the fn's OWN (own_params, i.e. excluding parent) generic params by
     // kind, so we can validate arity AND reject const generics with a clear msg.
@@ -232,7 +232,7 @@ fn args_for_type_params<'tcx>(
     Ok(args)
 }
 
-/// Build the `GenericArgsRef` for `def_id` that substitutes its type
+/// Build the `GenericArgs` for `def_id` that substitutes its type
 /// parameter(s) with `concrete` (and fills any leading parent/self args with the
 /// identity). For the M3 generics (`id<T>`, `double<T>`) the only param is `T`;
 /// for a NON-generic root (`pick`, `count_succ`, the trait/predicate callers)
@@ -248,7 +248,7 @@ fn args_for_single_type_param<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
     concrete: ty::Ty<'tcx>,
-) -> ty::GenericArgsRef<'tcx> {
+) -> ty::GenericArgs<'tcx> {
     // `for_item` walks ALL params (incl. parent/Self) in order; we replace each
     // *type* param with `concrete` and keep the identity for anything else.
     ty::GenericArgs::for_item(tcx, def_id, |param, _| match param.kind {
@@ -264,7 +264,7 @@ struct MonoCx<'a, 'tcx> {
     thir: &'a Thir<'tcx>,
     /// The instance's concrete generic args — what makes the generic THIR
     /// concrete. Threaded into every `concretize`.
-    args: ty::GenericArgsRef<'tcx>,
+    args: ty::GenericArgs<'tcx>,
     typing_env: TypingEnv<'tcx>,
     /// THIR param `LocalVarId` -> the trust-ir SSA value of that parameter.
     params: std::collections::HashMap<rustc_middle::thir::LocalVarId, ValueId>,
@@ -683,13 +683,13 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
 #[derive(Clone)]
 struct MonoInstance<'tcx> {
     def: LocalDefId,
-    args: ty::GenericArgsRef<'tcx>,
+    args: ty::GenericArgs<'tcx>,
 }
 
 /// Equality is the actual local declaration and its substituted, interned
 /// generic arguments in THIS compiler context, never a display/debug spelling
 /// or the erased IR signature. The key cannot outlive its owning TyCtxt.
-type InstanceKey<'tcx> = (LocalDefId, ty::GenericArgsRef<'tcx>);
+type InstanceKey<'tcx> = (LocalDefId, ty::GenericArgs<'tcx>);
 type InstanceMap<'tcx> = std::collections::HashMap<InstanceKey<'tcx>, u32>;
 
 impl<'tcx> MonoInstance<'tcx> {
@@ -758,7 +758,7 @@ fn arith_binop_of<'tcx>(
 fn resolve_user_call<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: TypingEnv<'tcx>,
-    current_args: ty::GenericArgsRef<'tcx>,
+    current_args: ty::GenericArgs<'tcx>,
     callee_ty: ty::Ty<'tcx>,
 ) -> LResult<Option<MonoInstance<'tcx>>> {
     let (did, callee_generic_args) = match callee_ty.kind() {
@@ -774,15 +774,15 @@ fn resolve_user_call<'tcx>(
     }
     // Current rustc keeps late-bound arguments on the function-item type.
     // This monomorphic worklist has no binder-instantiation semantics: do not
-    // erase a bound type/const/region merely to obtain a GenericArgsRef.
+    // erase a bound type/const/region merely to obtain GenericArgs.
     let callee_generic_args = callee_generic_args.no_bound_vars().ok_or_else(|| {
         LowerError(format!(
             "M4 late-bound function arguments are unsupported for {did:?}"
         ))
     })?;
     // Substitute the callee's generic args through THIS instance's args — the
-    // monomorphization step (mirrors `MonoCx::concretize` for a GenericArgsRef).
-    let mono_args: ty::GenericArgsRef<'tcx> = tcx
+    // monomorphization step (mirrors `MonoCx::concretize` for GenericArgs).
+    let mono_args: ty::GenericArgs<'tcx> = tcx
         .try_instantiate_and_normalize_erasing_regions(
             current_args,
             typing_env,
@@ -844,7 +844,7 @@ fn collect_calls_in_body<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: TypingEnv<'tcx>,
     thir: &Thir<'tcx>,
-    current_args: ty::GenericArgsRef<'tcx>,
+    current_args: ty::GenericArgs<'tcx>,
     expr: ExprId,
     out: &mut Vec<MonoInstance<'tcx>>,
 ) -> LResult<()> {
@@ -2179,11 +2179,11 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     /// The CONCRETE generic args of the scrutinee's enum ADT (for resolving a
     /// payload field's true type). For a non-generic enum (`Level`) these are the
     /// identity/empty args; for a generic one they carry the instantiation.
-    fn scrutinee_enum_args(&self, scrutinee: ExprId) -> Option<ty::GenericArgsRef<'tcx>> {
+    fn scrutinee_enum_args(&self, scrutinee: ExprId) -> Option<ty::GenericArgs<'tcx>> {
         let scrut_ty = self.concretize(self.thir[scrutinee].ty);
         let peeled = peel_ref_ty(scrut_ty);
         if let TyKind::Adt(_, args) = peeled.kind() {
-            return Some(args);
+            return Some(*args);
         }
         None
     }
@@ -2199,7 +2199,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     fn adt_field_rustc_ty(
         &self,
         did: DefId,
-        enum_args: ty::GenericArgsRef<'tcx>,
+        enum_args: ty::GenericArgs<'tcx>,
         vidx: VariantIdx,
         field: usize,
     ) -> LResult<ty::Ty<'tcx>> {
@@ -2634,7 +2634,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         fb: &mut FunctionBuilder<'_>,
         base_ptr: ValueId,
         did: DefId,
-        enum_args: ty::GenericArgsRef<'tcx>,
+        enum_args: ty::GenericArgs<'tcx>,
         vidx: VariantIdx,
         field: usize,
     ) -> LResult<ValueId> {
@@ -2747,11 +2747,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     /// M5.7e: the (byte offset, rustc type) of sub-field `i` of an aggregate type
     /// `agg_ty` (a tuple or struct), read FAITHFULLY from `tcx.layout_of`. Bails
     /// loud on a non-aggregate type or an out-of-range sub-field index.
-    fn aggregate_subfield(
-        &self,
-        agg_ty: ty::Ty<'tcx>,
-        i: usize,
-    ) -> LResult<(i128, ty::Ty<'tcx>)> {
+    fn aggregate_subfield(&self, agg_ty: ty::Ty<'tcx>, i: usize) -> LResult<(i128, ty::Ty<'tcx>)> {
         use rustc_middle::ty::layout::LayoutCx;
         let agg_ty = self.concretize(agg_ty);
         // The sub-field's TYPE: tuple element `i`, or struct field `i` (single
@@ -2770,7 +2766,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
                     ))
                 })?;
                 self.tcx
-                    .normalize_erasing_regions(self.typing_env, fdef.ty(self.tcx, args))
+                    .normalize_erasing_regions(self.typing_env, fdef.ty(self.tcx, *args))
             }
             other => {
                 return bail(format!(
@@ -2800,13 +2796,13 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
     /// corpus enums are non-generic (identity args), so this reads the AdtDef's own
     /// identity args; a generic enum would need the scrutinee's args (out of scope —
     /// the recursive corpus enums carry no type params).
-    fn enum_args_for_did(&self, did: DefId) -> Option<ty::GenericArgsRef<'tcx>> {
+    fn enum_args_for_did(&self, did: DefId) -> Option<ty::GenericArgs<'tcx>> {
         let enum_ty = self.tcx.normalize_erasing_regions(
             self.typing_env,
             self.tcx.type_of(did).instantiate_identity(),
         );
         match enum_ty.kind() {
-            TyKind::Adt(_, args) => Some(args),
+            TyKind::Adt(_, args) => Some(*args),
             _ => None,
         }
     }
@@ -2830,7 +2826,7 @@ impl<'a, 'tcx> MonoCx<'a, 'tcx> {
         candidate_block: BlockId,
         scrut_ptr: ValueId,
         did: DefId,
-        enum_args: ty::GenericArgsRef<'tcx>,
+        enum_args: ty::GenericArgs<'tcx>,
         outer_vidx: VariantIdx,
         nf: NestedCtorField,
         arm_block: BlockId,

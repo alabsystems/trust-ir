@@ -94,17 +94,17 @@ const CLEAN_REPOSITORY: &str = "https://github.com/alabsystems/clean.git";
 // is TrustIR's exact local Clean authority. The cross-repository graph is an
 // SCC: predecessor backedges intentionally need not resolve this same commit.
 // The final epoch receipt attests those predecessor/successor identities.
-const CLEAN_REVISION: &str = "fae0c94829740c9ffe527eeeb4ea472f9c08001b";
-const CLEAN_VERSION: &str = "0.9.2";
+const CLEAN_REVISION: &str = "e86b4b61e665f73b4737dd360773677561462f7e";
+const CLEAN_VERSION: &str = "0.9.4";
 const AY_REPOSITORY: &str = "https://github.com/alabsystems/ay.git";
-const AY_REVISION: &str = "8bbc43108643d475a81a89b2b4f262e817ee1724";
-const AY_VERSION: &str = "0.28.2";
+const AY_REVISION: &str = "12d411d420e27eea05099f8cd277eb288e8622c9";
+const AY_VERSION: &str = "0.28.4";
 /// The AY workspace version whose lock carries `trust-exec-policy` 0.13.0 as
 /// its one independently versioned package. The rules below accept that owner
 /// only at this version, so moving the AY pin re-reviews it. Publication
 /// transform T6 moves it with the public AY pin, after the public AY's own
 /// manifests show the same owner.
-const AY_POLICY_OWNER_VERSION: &str = "0.28.2";
+const AY_POLICY_OWNER_VERSION: &str = "0.28.4";
 
 const TRUST_IR_MANIFEST: &str = include_str!("../Cargo.toml");
 const TRUST_IR_AY_MANIFEST: &str = include_str!("../../trust-ir-ay/Cargo.toml");

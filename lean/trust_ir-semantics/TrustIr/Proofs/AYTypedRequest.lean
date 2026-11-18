@@ -277,7 +277,26 @@ inventories. This keeps all legacy BV admission facts, not just examples. -/
 theorem sortedBindingsConsistent_bv_iff (bindings : List (Nat × String)) :
     sortedBindingsConsistent (bindings.map (fun (bits, name) => (SMTSort.bv bits, name))) ↔
       typedBindingsConsistent bindings := by
-  simp [sortedBindingsConsistent, typedBindingsConsistent]
+  trustIrCompilerProof {
+    simp [sortedBindingsConsistent, typedBindingsConsistent]
+  } {
+    constructor
+    · rintro consistent ⟨leftWidth, leftName⟩ leftMember
+        ⟨rightWidth, rightName⟩ rightMember sameName
+      apply SMTSort.bv.inj
+      exact consistent (.bv leftWidth, leftName)
+        (List.mem_map.mpr ⟨(leftWidth, leftName), leftMember, rfl⟩)
+        (.bv rightWidth, rightName)
+        (List.mem_map.mpr ⟨(rightWidth, rightName), rightMember, rfl⟩) sameName
+    · intro consistent left leftMember right rightMember sameName
+      rcases List.mem_map.mp leftMember with ⟨⟨leftWidth, leftName⟩, leftOriginal, leftEq⟩
+      rcases List.mem_map.mp rightMember with ⟨⟨rightWidth, rightName⟩, rightOriginal, rightEq⟩
+      cases leftEq
+      cases rightEq
+      exact congrArg SMTSort.bv
+        (consistent (leftWidth, leftName) leftOriginal
+          (rightWidth, rightName) rightOriginal sameName)
+  }
 
 def SMTTerm.typedScript {sort : SMTSort} (term : SMTTerm sort) (bindings : List (Nat × String))
     (boolBindings : List String := []) : String :=

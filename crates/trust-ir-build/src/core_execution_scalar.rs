@@ -67,7 +67,7 @@ fn bad_field(model: &MachineModel, current: &Current) -> Expr {
     app(
         "IRByteConfigV1.halted",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             app("IROutcome.type_error", [constant("IRFault.bad_field")]),
             current.world.clone(),
         ],
@@ -108,7 +108,9 @@ impl FetchedSite {
         current: &Current,
         value: Expr,
     ) -> Result<ScalarChecks> {
-        require_same(&self.context, &model.context, "scalar fetched context")?;
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
+        require_same(&self.context, model.context(), "scalar fetched context")?;
         let fields = self.instruction.get_app_args();
         let ExprKind::Const(name, _) = self.instruction.get_app_fn().kind() else {
             return Err("scalar assembler requires an actual instruction constructor".into());
@@ -117,7 +119,7 @@ impl FetchedSite {
         let fit = |ty: &Expr, id: &Expr| {
             app(
                 "ir_byte_value_matches_v1",
-                [model.context.clone(), ty.clone(), read(id)],
+                [model.context().clone(), ty.clone(), read(id)],
             )
         };
         let (evaluation, operands) = match (name.to_string().as_str(), fields.as_slice()) {
@@ -135,7 +137,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_extract_field_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         self.site.clone(),
                         (*ty).clone(),
                         (*source).clone(),
@@ -148,7 +150,7 @@ impl FetchedSite {
             ("IRInst.copy", [ty, operand]) => (
                 app(
                     "ir_byte_copy_eval_v1",
-                    [model.context.clone(), (*ty).clone(), read(operand)],
+                    [model.context().clone(), (*ty).clone(), read(operand)],
                 ),
                 // The byte evaluator checks the complete canonical carrier;
                 // the legacy cell model's shape-only Copy is not authoritative.
@@ -157,7 +159,7 @@ impl FetchedSite {
             ("IRInst.ptrdata", [ty, operand]) => (
                 app(
                     "ir_byte_ptrdata_eval_v1",
-                    [model.context.clone(), (*ty).clone(), read(operand)],
+                    [model.context().clone(), (*ty).clone(), read(operand)],
                 ),
                 constant("Bool.true"),
             ),
@@ -165,7 +167,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_ptrmetadata_eval_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         (*ty).clone(),
                         (*metadata_ty).clone(),
                         read(operand),
@@ -177,7 +179,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_ptrfromparts_eval_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         (*ty).clone(),
                         (*metadata_ty).clone(),
                         read(data),
@@ -193,7 +195,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_cast_eval_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         (*op).clone(),
                         (*src).clone(),
                         (*dst).clone(),
@@ -249,6 +251,8 @@ impl FetchedSite {
         value: Expr,
         premises: ScalarPremises,
     ) -> Result<ScalarTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let checks = self.scalar_checks(model, current, value.clone())?;
         premises.evaluated.endpoints(
@@ -276,8 +280,8 @@ impl FetchedSite {
         let bound = app(
             "ir_byte_bind_values_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 self.results.clone(),
@@ -291,8 +295,8 @@ impl FetchedSite {
         let scalar_result = app(
             "ir_byte_scalar_result_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 self.results.clone(),
@@ -436,7 +440,7 @@ fn branch_argument_transport(
     // ir_bind_params on the actual nil parameter list ignores values. Keep
     // the endpoint conversion; the kernel, not the recognizer, establishes
     // that this constant mapper is the real destination-frame transport.
-    let function = empty_branch_mapper(model.world_type.clone(), map(list("IRScalar", &[])));
+    let function = empty_branch_mapper(model.world_type().clone(), map(list("IRScalar", &[])));
     let proof = assembler.congruence_function(equality, model.config_type(), function)?;
     assembler.convert_endpoints(proof, left, right)
 }
@@ -520,8 +524,8 @@ impl FetchedSite {
         target: &BranchTarget,
         taken: Option<bool>,
     ) -> Result<BranchChecks> {
-        require_same(&self.context, &model.context, "branch fetched context")?;
-        require_same(&target.context, &model.context, "branch target context")?;
+        require_same(&self.context, model.context(), "branch fetched context")?;
+        require_same(&target.context, model.context(), "branch target context")?;
         if target.function != self.coordinate.function {
             return Err("branch destination belongs to a different function".into());
         }
@@ -582,6 +586,8 @@ impl FetchedSite {
         taken: Option<bool>,
         premises: BranchPremises,
     ) -> Result<BranchTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let checks = self.branch_checks(model, current, target, taken)?;
         let actual_values = app("ir_resolve", [current.machine(), checks.arguments.clone()]);
@@ -597,8 +603,8 @@ impl FetchedSite {
         let jump = app(
             "ir_byte_jump_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 nat(u64::from(target.block_id.index())),
@@ -708,8 +714,8 @@ impl FetchedSite {
             app(
                 "ir_byte_jump_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.machine(),
                     current.world.clone(),
                     target.clone(),
@@ -720,14 +726,14 @@ impl FetchedSite {
         let failure = app(
             "IRByteConfigV1.halted",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 app("IROutcome.type_error", [constant("IRFault.not_bool")]),
                 current.world.clone(),
             ],
         );
         assembler.charge()?;
         Ok(condition_mapper(
-            model.world_type.clone(),
+            model.world_type().clone(),
             jump(yes, yes_args),
             jump(no, no_args),
             failure,

@@ -393,11 +393,12 @@ pub enum BoxDerefValidationRule {
     NonClaimsNotPinned,
     PremiseContradicted,
     EvidenceBelowFloor,
+    ConjunctUnestablished,
 }
 
 impl BoxDerefValidationRule {
     /// Every Box validation rule in declaration order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::TypeMismatch,
         Self::PointeeOutOfScope,
         Self::ConjunctCover,
@@ -408,6 +409,7 @@ impl BoxDerefValidationRule {
         Self::NonClaimsNotPinned,
         Self::PremiseContradicted,
         Self::EvidenceBelowFloor,
+        Self::ConjunctUnestablished,
     ];
 }
 
@@ -1975,6 +1977,22 @@ pub enum ValidationError {
         block: u32,
         inst_index: u32,
         reason: &'static str,
+    },
+    /// `Inst::BoxDeref` rule 10 (wire v75): the fact offers NO evidence for a
+    /// conjunct (`ValidityEvidence::Unestablished`). Reported on every
+    /// admission, whatever floor is set; no premise, session or floor
+    /// discharges it. A consumer may discharge it only for a conjunct it
+    /// re-derives itself from the instruction's own function; every other
+    /// consumer refuses. Corpus rows
+    /// `refuse/box_deref_unestablished_parameter`,
+    /// `refuse/box_deref_unestablished_null_operand`,
+    /// `refuse/box_deref_unestablished_freed_operand` and
+    /// `refuse/box_deref_unestablished_loaded_operand`.
+    BoxDerefConjunctUnestablished {
+        function: String,
+        block: u32,
+        inst_index: u32,
+        conjunct: &'static str,
     },
     /// Codegen policy `require_box_validity_evidence`: a conjunct of an
     /// `Inst::BoxDeref` is backed by evidence below the consumer's floor.
@@ -4715,6 +4733,15 @@ impl core::fmt::Display for ValidationError {
                 f,
                 "fn {function}: bb{block}#{inst_index}: box_deref fact does not state exactly the pinned non-claims (uniqueness, pointee_validity, allocator)"
             ),
+            ValidationError::BoxDerefConjunctUnestablished {
+                function,
+                block,
+                inst_index,
+                conjunct,
+            } => write!(
+                f,
+                "fn {function}: bb{block}#{inst_index}: box_deref offers no evidence for {conjunct}: the producer holds no fact for it, so it holds only where a consumer re-derives it from this function"
+            ),
             ValidationError::BoxDerefPremiseContradicted {
                 function,
                 block,
@@ -5628,6 +5655,9 @@ impl ValidationError {
             Self::BoxDerefPremiseContradicted { .. } => BoxDerefValidationRule::PremiseContradicted,
             Self::BoxValidityEvidenceBelowFloor { .. } => {
                 BoxDerefValidationRule::EvidenceBelowFloor
+            }
+            Self::BoxDerefConjunctUnestablished { .. } => {
+                BoxDerefValidationRule::ConjunctUnestablished
             }
             _ => return None,
         })
@@ -23118,6 +23148,12 @@ fn expected_clean_cic_module(anchor: &str) -> Option<&'static str> {
         trust_ir::proof::KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1 => {
             Some("CleanCompiler.ReadonlyCallsV1")
         }
+        trust_ir::proof::KERNEL_ANCHOR_CLEAN_BACKEND_BYTE_ENTRY_V1 => {
+            Some("CleanCompiler.ByteEntryV1")
+        }
+        trust_ir::proof::KERNEL_ANCHOR_CLEAN_BACKEND_WORD_STATUS_ENTRY_V1 => {
+            Some("CleanCompiler.WordStatusEntryV1")
+        }
         KERNEL_ANCHOR_FARKAS_CONSTRUCTIVE | KERNEL_ANCHOR_SLACKCERTZ => {
             Some("Crownproof.SlackCertZ")
         }
@@ -25118,8 +25154,8 @@ mod clean_cic_kernel {
 
 mod source_bound_calls;
 pub use source_bound_calls::{
-    SourceBoundCallCertificates, certify_source_bound_call_family,
-    certify_source_bound_readonly_call_family,
+    SourceBoundCallCertificates, certify_source_bound_byte_entry, certify_source_bound_call_family,
+    certify_source_bound_readonly_call_family, certify_source_bound_word_status_entry,
 };
 
 /// In-process re-checker for the **clean-backend translation-validation**
@@ -28761,6 +28797,24 @@ fn validate_enum_lane_access(
 struct NominalCensus {
     dialect: bool,
     handle: bool,
+}
+
+/// Validate detached source type roots with the SAME error/vector/reference
+/// rules as module signature roots. No synthetic signature or source mutation
+/// is needed. This is not whole-module validation or proof/admission authority.
+pub fn validate_type_roots(module: &Module, roots: &[Ty]) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    let functions = ModuleFunctionCatalog::new(module);
+    let registry = HandleRegistry::pinned();
+    for (index, root) in roots.iter().enumerate() {
+        let location = format!("extra type root {index}");
+        check_module_error_ty_absent(&mut errors, &location, root);
+        check_module_vector_type_well_formed(&mut errors, &location, root);
+        root.visit_types(|ty| {
+            check_ty_reference_node(module, &functions, registry, ty, &location, &mut errors);
+        });
+    }
+    errors
 }
 
 fn validate_type_table_references(
@@ -43441,12 +43495,30 @@ mod certified_evidence_tests {
     fn lowering_resolution_escape_hatch_axiom_is_rejected_body() {
         use clean_kernel::env::Declaration;
         use clean_kernel::name::Name;
-        use clean_kernel::{Expr, Level};
+        use clean_kernel::{BinderInfo, Expr, Level};
         use trust_ir::proof::KERNEL_ANCHOR_TRUSTCG_LOWERING_RESOLUTION;
         use trust_ir::proof::satres::SATRES_CERT_UNSAT_THEOREM;
 
         let mut env = clean_cic_kernel::build_anchor_env(KERNEL_ANCHOR_TRUSTCG_LOWERING_RESOLUTION)
             .expect("build lowering-resolution anchor env");
+
+        // The production anchor no longer installs this escape hatch. Add
+        // the malicious axiom only to this private adversarial environment,
+        // so the negative still reaches the rooted trust-marker audit rather
+        // than failing earlier merely because the constant is absent.
+        let escape_name = Name::from_string("trustedArith");
+        assert!(env.get_const(&escape_name).is_none());
+        let universe = Name::from_string("u");
+        env.add_decl(Declaration::Axiom {
+            name: escape_name,
+            level_params: vec![universe.clone()],
+            type_: Expr::pi(
+                BinderInfo::Implicit,
+                Expr::sort(Level::param(universe)),
+                Expr::bvar(0),
+            ),
+        })
+        .expect("private test-only polymorphic escape-hatch axiom");
 
         // Statement: `Clean.Res.Unsat (List.nil (List Nat))` — the right SHAPE
         // of claim for this anchor, "proved" by the escape hatch instead of
@@ -43481,9 +43553,16 @@ mod certified_evidence_tests {
             err.is_err(),
             "escape-hatch-backed ground theorem must be rejected"
         );
+        let reason = err.unwrap_err();
         assert!(
-            err.unwrap_err().contains("trustedArith"),
+            reason.contains("trustedArith"),
             "rejection must cite the trustedArith dependency"
+        );
+        assert!(
+            !reason.contains("UnknownConst")
+                && !reason.contains("BudgetExhausted")
+                && !reason.contains("HeartbeatExceeded"),
+            "the well-typed adversarial theorem must reach the trust-marker audit: {reason}"
         );
     }
 

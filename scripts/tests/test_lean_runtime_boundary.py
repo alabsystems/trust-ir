@@ -323,6 +323,107 @@ class LogicalExternNamesTests(unittest.TestCase):
             with self.subTest(scope=scope), self.assertRaises(boundary.BoundaryError):
                 self.names(scope + "\n" + self.HOOK + "def entry : Nat := 0\nend\n")
 
+    def test_character_literal_cannot_pair_with_a_later_string(self):
+        # A string-only scan pairs the `"` of `'"'` with the next string, hiding the
+        # `end` / `namespace` commands between them.
+        text = ("namespace TrustIr\ndef q := '\"'\nend TrustIr\nnamespace TrustIr.Inner\n"
+                'def s := "x"\n' + self.HOOK + "def entry : Nat := 0\nend TrustIr.Inner\n")
+        self.assertEqual(self.names(text), ["TrustIr.Inner.entry"])
+
+    def test_raw_string_cannot_change_scope(self):
+        text = ('namespace TrustIr\ndef j := r#"\n"\nend\n"#\n'
+                + self.HOOK + "def entry : Nat := 0\nend TrustIr\n")
+        self.assertEqual(self.names(text), ["TrustIr.entry"])
+
+
+class LeanLexerTests(unittest.TestCase):
+    """The guard's one Lean lexer: comments go, literal and identifier extents stay."""
+
+    def lexed(self, text):
+        cleaned = boundary.comments_removed(text)
+        self.assertEqual(len(cleaned), len(text))
+        self.assertEqual([i for i, ch in enumerate(cleaned) if ch == "\n"],
+                         [i for i, ch in enumerate(text) if ch == "\n"])
+        return cleaned
+
+    def test_island_end_preserves_offsets_and_stops_before_following_rust(self):
+        prefix = 'not Lean "'
+        bodies = ['-- } "\n', '/- } /- nested -/ -/', 'def s := "}"',
+                  'def s := r##"}"##', "def c := '}'", 'def «}» := { x := 1 }']
+        for body in bodies:
+            with self.subTest(body=body):
+                source = prefix + body + '} fn f<\'a>() { "unterminated'
+                self.assertEqual(boundary.island_end(source, len(prefix)),
+                                 len(prefix) + len(body) + 1)
+
+    def test_character_literals_and_escapes_keep_one_extent(self):
+        for literal in ("'\"'", r"'\''", r"'\\'", r"'\"'", r"'\n'", r"'\r'",
+                        r"'\t'", r"'\x41'", r"'\u03B1'", r"'\u{1F600}'", "'-'", "'/'",
+                        "'\u00ab'", "' '"):
+            with self.subTest(literal=literal):
+                comment = f'-- {literal} " /-'
+                text = f'def c := {literal} {comment}\ndef s := "-- kept" /- gone -/\n'
+                self.assertEqual(self.lexed(text),
+                                 f'def c := {literal} {" " * len(comment)}\n'
+                                 f'def s := "-- kept" {" " * 10}\n')
+                self.assertEqual(boundary.code_only(f"x {literal} y"),
+                                 f"x {' ' * len(literal)} y")
+
+    def test_primed_identifiers_are_not_character_literals(self):
+        text = ("theorem foo' (x' : Nat) (h'' : x' = 0) : x' = 0 := h''\n"
+                "def \u03b1' := 1 -- c'\n"
+                "def x\u2081' := \u03b1' /- 'a -/\n"
+                "def get!' := f x\u2081'\"s -- kept\" a'b' \u00abx'\u00bb\n")
+        expected = (text.replace(" -- c'\n", "      \n", 1)
+                    .replace(" /- 'a -/\n", " " * 9 + "\n", 1))
+        self.assertEqual(self.lexed(text), expected)
+        self.assertEqual(boundary.code_only("a'b' x' h''"), "a'b' x' h''")
+
+    def test_core_primed_tokens_are_not_character_literals(self):
+        text = ("def a := xs[i]'(by omega) -- c\n"
+                "abbrev P := (_ : Nat) \u00d7' Nat\n"
+                "abbrev Q := \u03a3' n : Nat, n = 0\n"
+                "def i := f '' s\n")
+        expected = text.replace(" -- c\n", "     \n", 1)
+        self.assertEqual(self.lexed(text), expected)
+        self.assertEqual(boundary.code_only(expected), expected)
+
+    def test_raw_strings_end_at_their_own_hash_count(self):
+        text = (r'def a := r"\" -- c' "\n"
+                r'def b := r#"x"-- kept"# -- gone' "\n"
+                r'''def c := r##"{"k":"'"}"#"## /- gone -/''' "\n")
+        expected = (text.replace(" -- c\n", "     \n", 1)
+                    .replace(" -- gone\n", " " * 8 + "\n", 1)
+                    .replace(" /- gone -/\n", " " * 11 + "\n", 1))
+        self.assertEqual(self.lexed(text), expected)
+        self.assertEqual(boundary.code_only('x r#"a"b"# y'), "x " + " " * len('r#"a"b"#') + " y")
+
+    def test_identifier_escapes_are_names(self):
+        text = 'def \u00aba"b\u00bb := 1 -- c\ndef \u00abx -- y\u00bb := \u00aba\'b\u00bb\n'
+        self.assertEqual(self.lexed(text), text.replace(" -- c\n", "     \n", 1))
+
+    def test_unterminated_or_malformed_tokens_refuse(self):
+        cases = [
+            ('def s := "abc', "unterminated Lean comment or string"),
+            ('def s := "abc\\', "unterminated Lean comment or string"),
+            ("/- a /- b -/", "unterminated Lean comment or string"),
+            ('def s := r#"abc"', "unterminated Lean comment or string"),
+            ("def c := 'ab'", "unterminated Lean character literal"),
+            ("def c := 'a", "unterminated Lean character literal"),
+            ("def c := (f x)' y", "unterminated Lean character literal"),
+            ("def c := '", "malformed Lean character literal"),
+            (r"def c := '\q'", "malformed Lean character literal"),
+            (r"def c := '\x4'", "malformed Lean character literal"),
+            (r"def c := '\u12'", "malformed Lean character literal"),
+            (r"def c := '\u{}'", "malformed Lean character literal"),
+            ("def \u00ababc := 1", "unterminated Lean identifier escape"),
+        ]
+        for text, message in cases:
+            for lex in (boundary.comments_removed, boundary.code_only):
+                with self.subTest(text=text, lex=lex.__name__), \
+                        self.assertRaisesRegex(boundary.BoundaryError, message):
+                    lex(text)
+
 
 if __name__ == "__main__":
     unittest.main()

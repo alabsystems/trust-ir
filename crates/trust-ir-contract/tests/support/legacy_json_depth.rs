@@ -10,7 +10,6 @@ fn is_recursion_limit_error(error: &serde_json::Error) -> bool {
 /// Measure the maximum `[`/`{` nesting depth of `json` in one linear scan,
 /// ignoring structural characters inside string literals (escape-aware).
 #[must_use]
-
 pub fn json_nesting_depth(json: &str) -> usize {
     let mut depth = 0usize;
     let mut max_depth = 0usize;
@@ -43,7 +42,6 @@ pub fn json_nesting_depth(json: &str) -> usize {
 /// `serde_json::from_str` with a bounded deep-recursion fallback.
 ///
 /// See the module docs for the exact bounds and failure behavior.
-
 pub fn from_str_deep<T>(json: &str) -> Result<T, serde_json::Error>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
@@ -63,7 +61,6 @@ where
 /// [`from_str_deep`] over bytes: `serde_json::from_slice`, and on its recursion-limit error
 /// the same bounded re-parse (T3 L4, C09d). Bytes that are not UTF-8 keep the original error,
 /// as `from_slice` would have refused them anyway.
-
 fn deep_parse_on_dedicated_stack<T>(json: &str) -> Result<T, Option<serde_json::Error>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,

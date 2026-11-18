@@ -148,6 +148,8 @@ mod pointer_observation_cases;
 mod scalar_bool_binop_cases;
 #[path = "common/scalar_memory.rs"]
 mod scalar_memory_cases;
+#[path = "common/sited_quoted_boundary.rs"]
+mod sited_quoted_boundary;
 #[path = "common/ssa_char_validity.rs"]
 mod ssa_char_validity_cases;
 
@@ -2082,6 +2084,68 @@ fn typed_array_splat_reader_refuses_noncanonical_lengths() {
             ),
             other => panic!("unexpected noncanonical splat decoder verdict: {other:?}"),
         }
+    }
+}
+
+/// The public recursive constant reader must keep a child refusal through
+/// every container layer, rather than replacing the child with a default.
+#[test]
+fn recursive_constant_reader_preserves_nested_refusals() {
+    let mut mb = ModuleBuilder::new("recursive_constant_child_refusals");
+    let sig = mb.add_func_type(vec![], vec![Ty::U8]);
+    let mut fb = mb.function("program", sig);
+    let entry = fb.create_block();
+    fb.switch_to_block(entry);
+    let one = fb.iconst(Ty::U8, 1);
+    fb.ret(vec![one]);
+    let root = fb.build();
+    let module = mb.build().expect("constant reader fixture");
+    assert!(trust_ir_build::validate_module(&module).is_empty());
+    let original = serde_json::to_value(&module).expect("constant reader JSON");
+    assert_eq!(
+        original["functions"][0]["blocks"][0]["body"][0]["inst"]["Const"]["value"],
+        serde_json::to_value(trust_ir::constant::Constant::Int(1)).unwrap(),
+        "mutation starts from the actual original Const value"
+    );
+    let unknown = json!({"Unknown": null});
+    let cases = [
+        ("array", json!({"Array": [unknown.clone()]})),
+        ("record", json!({"Record": [["value", unknown.clone()]]})),
+        (
+            "closure",
+            json!({"Closure": {"func": root.0, "captures": [unknown.clone()]}}),
+        ),
+        ("splat", json!({"Splat": {"elem": unknown, "len": 2}})),
+    ];
+    let Oracle::Ready(exe) = oracle() else { return };
+    let scratch = SemrScratch::new("recursive-constant-child");
+    for (name, constant) in cases {
+        let mut mutated = original.clone();
+        mutated["functions"][0]["blocks"][0]["body"][0]["inst"]["Const"]["value"] = constant;
+        assert!(
+            serde_json::from_value::<Module>(mutated.clone()).is_err(),
+            "Rust reader accepted unknown child in {name}"
+        );
+        let request = json!({"fuel": FUEL, "call_depth": CALL_DEPTH, "batches": [{
+            "module": mutated, "runs": [{"function": root.0, "args": []}],
+        }]});
+        let path = scratch.0.join(format!("{name}.json"));
+        fs::write(&path, serde_json::to_vec(&request).unwrap()).expect("child refusal request");
+        let output = Command::new(exe)
+            .arg(&path)
+            .output()
+            .expect("run public constant reader");
+        assert!(output.status.success(), "{name}: {output:?}");
+        let reply: Json = serde_json::from_slice(&output.stdout).expect("child refusal JSON");
+        let batches = reply.as_array().expect("one refused batch");
+        assert_eq!(batches.len(), 1, "{name}: {reply}");
+        let rows = batches[0].as_array().expect("one refused run");
+        assert_eq!(rows.len(), 1, "{name}: {reply}");
+        assert_eq!(
+            lean_verdict(&rows[0]),
+            Verdict::Unsupported("constant.Unknown".into()),
+            "public recursive reader lost the {name} child refusal: {reply}"
+        );
     }
 }
 
@@ -8653,8 +8717,10 @@ const SEMR_UNSUPPORTED_LEDGER: usize = 0;
 /// obligation records: 96 agree (85 `ok`, 4 `panic`, 7 `ub`), zero mismatches
 /// and zero vacuous runs. Each `semr:` row is a
 /// construct SemR does not decode, so the whole fixture is refused: globals,
-/// explicit struct size metadata, the declared-type table and compound types
-/// remain outside the fragment; metadata-free flat scalar structs decode. Typed
+/// nominal struct origins, the declared-type table and compound types
+/// remain outside the fragment; flat scalar structs retain physical metadata.
+/// The same four struct runs now reach their unsupported origin after their
+/// size is retained; this relabels a refusal and adds no execution coverage. Typed
 /// obligation bindings, proof certificates, the obligation-diagnostics sidecar,
 /// function summaries,
 /// module imports and evidenced body gates are proof sidecars SemR does not
@@ -8680,7 +8746,7 @@ const SEMR_FIXTURE_UNSUPPORTED_LEDGER: &[(&str, usize)] = &[
     ("semr:obligation.binding_sort", 4),
     ("semr:obligation_diagnostics", 4),
     ("semr:proof_certificates", 4),
-    ("semr:struct.size", 4),
+    ("semr:struct.origin", 4),
     ("semr:ty.char", 4),
     ("semr:ty.compound", 12),
 ];
@@ -8689,7 +8755,7 @@ const SEMR_FIXTURE_UNSUPPORTED_LEDGER: &[(&str, usize)] = &[
 /// Clean's reference-entry fixture has its own historical revision and digest;
 /// this local source check does not establish identity with that fixture or
 /// transfer an independent kernel-replay receipt to a changed source.
-const SEMR_SOURCE_SHA256: &str = "91eba0576bb0fb6d8d8120b5227155bf660e6a336b0d3b68c2666195557329e0";
+const SEMR_SOURCE_SHA256: &str = "643d48951f18937d1e11decc46476762280849a0c6e4473dcd1a07dbee033ff5";
 
 fn semr_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lean/semr")
@@ -9216,9 +9282,9 @@ fn semr_subset_fixtures_agree_with_the_interpreter() {
     );
 }
 
-/// Metadata-free flat structs already admitted by SemR retain nominal types
-/// in the decoder summary, through an actual call boundary and field updates.
-/// Explicit physical layout metadata keeps its named decoder refusal.
+/// Flat structs retain their logical types through decode, actual calls and
+/// field updates. Original physical layout options are now retained too;
+/// canonical contextual geometry checks live in SemRStructLayoutChecks.
 #[test]
 fn semr_flat_scalar_structs_preserve_decode_and_runtime() {
     use trust_ir::constant::Constant;
@@ -9337,12 +9403,12 @@ fn semr_flat_scalar_structs_preserve_decode_and_runtime() {
         let blob = trust_ir::binary::serialize_module(&with_layout).expect("layout wire image");
         assert_eq!(
             semr_decode(exe, std::slice::from_ref(&blob)),
-            vec![json!({"unsupported": boundary})],
+            vec![json!({"decoded": semr_summary_of(&with_layout)})],
             "{boundary}"
         );
         images.push((boundary, blob));
     }
-    // Preserve exact new positive/refusal bytes when the qualification driver
+    // Preserve exact new positive bytes when the qualification driver
     // requests evidence. This does not alter any decoder or verdict policy.
     if let Some(directory) = std::env::var_os("TRUST_IR_ORACLE_EVIDENCE_DIR") {
         let directory = PathBuf::from(directory);
@@ -13226,6 +13292,7 @@ fn quoted_model_decoder_boundary_controls() {
             "closure_types",
             "quoted-closure",
         ),
+        ("assertSitedDiv", "Assert", "globals", "quoted-sited-div"),
     ];
     let controlled: BTreeSet<Vec<String>> = controls
         .iter()
@@ -13236,6 +13303,14 @@ fn quoted_model_decoder_boundary_controls() {
         "every quoted-only row has an exact native boundary control"
     );
     for (constructor, wire, boundary, scope) in controls {
+        if scope == "quoted-sited-div" {
+            assert_eq!(
+                (constructor, wire, boundary),
+                ("assertSitedDiv", "Assert", "globals")
+            );
+            sited_quoted_boundary::check(exe);
+            continue;
+        }
         if scope == "quoted-closure" {
             use trust_ir::constant::Constant;
             use trust_ir::ty::{ClosureTy, FuncTy};

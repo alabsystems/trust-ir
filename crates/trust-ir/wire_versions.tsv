@@ -113,3 +113,4 @@
 72	shipped	uninhabited-direct-storage: UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION	self	codex/direct-main-integration-20261113
 73	shipped	fn-item-identity: FN_ITEM_IDENTITY_FORMAT_VERSION	self	codex/fn-item-main-integration-20261113
 74	shipped	box-deref-validity: BOX_DEREF_VALIDITY_FORMAT_VERSION	self	main
+75	shipped	box-deref-unestablished: BOX_DEREF_UNESTABLISHED_FORMAT_VERSION	self	lane/box-deref-consumer-site-20261117

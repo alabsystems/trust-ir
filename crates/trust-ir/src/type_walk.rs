@@ -6,6 +6,7 @@
 //! module tables are visited once, independently of their reference graph.
 
 use crate::{Inst, InstG, Module, Ty, TyG};
+use core::ops::ControlFlow;
 
 impl<X> TyG<X> {
     /// Visit this type and every recursively embedded inline child in preorder.
@@ -15,10 +16,27 @@ impl<X> TyG<X> {
     }
 
     fn visit_types_with<'a>(&'a self, visit: &mut impl FnMut(&'a TyG<X>)) {
-        let mut pending: Vec<std::slice::Iter<'a, TyG<X>>> = Vec::new();
+        let _ = self.try_visit_types(|ty, _| {
+            visit(ty);
+            ControlFlow::<core::convert::Infallible>::Continue(())
+        });
+    }
+
+    /// Visit inline types in preorder, with the root at depth zero.
+    ///
+    /// A break returns immediately, before inspecting this node's children or
+    /// advancing to another node. Only borrowed sibling iterators are kept;
+    /// neither wide tuples nor unary chains allocate a work item per child.
+    /// References into module tables are not followed.
+    pub fn try_visit_types<'a, B>(
+        &'a self,
+        mut visit: impl FnMut(&'a TyG<X>, usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        let mut pending: Vec<(std::slice::Iter<'a, TyG<X>>, usize)> = Vec::new();
         let mut current = self;
+        let mut depth = 0;
         loop {
-            visit(current);
+            visit(current, depth)?;
             match current {
                 TyG::Storage(_) => {}
                 TyG::Vector(inner, _)
@@ -29,14 +47,16 @@ impl<X> TyG<X> {
                 | TyG::PtrMut(inner)
                 | TyG::Rc(inner) => {
                     current = inner;
+                    depth += 1;
                     continue;
                 }
                 TyG::Tuple(types) => {
                     if let Some((first, rest)) = types.split_first() {
                         if !rest.is_empty() {
-                            pending.push(rest.iter());
+                            pending.push((rest.iter(), depth + 1));
                         }
                         current = first;
+                        depth += 1;
                         continue;
                     }
                 }
@@ -77,11 +97,12 @@ impl<X> TyG<X> {
                 TyG::Ext(_) => {}
             }
             loop {
-                let Some(siblings) = pending.last_mut() else {
-                    return;
+                let Some((siblings, sibling_depth)) = pending.last_mut() else {
+                    return ControlFlow::Continue(());
                 };
                 if let Some(next) = siblings.next() {
                     current = next;
+                    depth = *sibling_depth;
                     break;
                 }
                 pending.pop();
@@ -116,27 +137,50 @@ impl<X> InstG<X> {
     /// dialect op carries at every level ([`TypeOccurrence::Ground`]). Table
     /// references are not followed.
     pub fn visit_type_occurrences<'a>(&'a self, mut visit: impl FnMut(TypeOccurrence<'a, X>)) {
-        self.visit_type_root_occurrences(|root| match root {
+        let _ = self.try_visit_type_occurrences(|ty, _| {
+            visit(ty);
+            ControlFlow::<core::convert::Infallible>::Continue(())
+        });
+    }
+
+    /// Fallible full occurrence traversal in the same order as
+    /// [`Self::visit_type_occurrences`]. Each actual root starts at depth zero.
+    /// A break stops before another child or instruction field is inspected.
+    pub fn try_visit_type_occurrences<'a, B>(
+        &'a self,
+        mut visit: impl FnMut(TypeOccurrence<'a, X>, usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        self.try_visit_type_root_occurrences(|root| match root {
             TypeOccurrence::Spelled(ty) => {
-                ty.visit_types_with(&mut |t| visit(TypeOccurrence::Spelled(t)))
+                ty.try_visit_types(|ty, depth| visit(TypeOccurrence::Spelled(ty), depth))
             }
             TypeOccurrence::Ground(ty) => {
-                ty.visit_types_with(&mut |t| visit(TypeOccurrence::Ground(t)))
+                ty.try_visit_types(|ty, depth| visit(TypeOccurrence::Ground(ty), depth))
             }
-        });
+        })
     }
 
     /// Borrow each actual type root without interpreting pointer pointees as
     /// separately transported values. The original full visitor expands these
     /// same roots; there is only one exhaustive instruction-field projection.
     pub fn visit_type_root_occurrences<'a>(&'a self, mut visit: impl FnMut(TypeOccurrence<'a, X>)) {
-        let mut roots: Vec<&'a TyG<X>> = Vec::new();
-        let mut ground: Vec<&'a Ty> = Vec::new();
-        let mut root = |ty: &'a TyG<X>| roots.push(ty);
+        let _ = self.try_visit_type_root_occurrences(|ty| {
+            visit(ty);
+            ControlFlow::<core::convert::Infallible>::Continue(())
+        });
+    }
+
+    /// Borrow roots in field order, stopping immediately when the callback
+    /// breaks. No complete root list or list of sibling children is allocated.
+    pub fn try_visit_type_root_occurrences<'a, B>(
+        &'a self,
+        mut visit: impl FnMut(TypeOccurrence<'a, X>) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        let mut root = |ty| visit(TypeOccurrence::Spelled(ty));
         match self {
             // Trust (wave-DS): the dropped type is spelled here and must be walked, or a
             // splice would not remap a struct/enum id occurring only in a drop.
-            InstG::Drop { ty, .. } | InstG::DropInvoke { ty, .. } => root(ty),
+            InstG::Drop { ty, .. } | InstG::DropInvoke { ty, .. } => root(ty)?,
             InstG::BinOp { ty, .. }
             | InstG::SeqMapAddK { ty, .. }
             | InstG::SeqMapNot { ty, .. }
@@ -168,30 +212,30 @@ impl<X> InstG<X> {
             | InstG::Undef { ty }
             | InstG::Copy { ty, .. }
             | InstG::Select { ty, .. }
-            | InstG::LoadSlot { ty, .. } => root(ty),
+            | InstG::LoadSlot { ty, .. } => root(ty)?,
             InstG::Cast { src_ty, dst_ty, .. } => {
-                root(src_ty);
-                root(dst_ty);
+                root(src_ty)?;
+                root(dst_ty)?;
             }
             // PKG-U13c: the result type, then each body node's types in
             // node order (a cast node spells two).
             InstG::TensorMap { ty, body, .. } => {
-                root(ty);
+                root(ty)?;
                 for node in body {
-                    for node_ty in node.types() {
-                        root(node_ty);
+                    for node_ty in node.iter_types() {
+                        root(node_ty)?;
                     }
                 }
             }
-            InstG::GEP { pointee_ty, .. } => root(pointee_ty),
-            InstG::PtrData { ptr_ty, .. } => root(ptr_ty),
+            InstG::GEP { pointee_ty, .. } => root(pointee_ty)?,
+            InstG::PtrData { ptr_ty, .. } => root(ptr_ty)?,
             // The pointer type, then the pointee type the validity fact is
             // about.
             InstG::BoxDeref {
                 ptr_ty, pointee, ..
             } => {
-                root(ptr_ty);
-                root(pointee.ty());
+                root(ptr_ty)?;
+                root(pointee.ty())?;
             }
             InstG::PtrMetadata {
                 ptr_ty,
@@ -203,21 +247,21 @@ impl<X> InstG<X> {
                 metadata_ty,
                 ..
             } => {
-                root(ptr_ty);
-                root(metadata_ty);
+                root(ptr_ty)?;
+                root(metadata_ty)?;
             }
             InstG::OpenFrame { def } => {
                 for slot in &def.slots {
-                    ground.push(&slot.ty);
+                    visit(TypeOccurrence::Ground(&slot.ty))?;
                 }
             }
             InstG::DialectOp(op) => {
                 for ty in &op.result_tys {
-                    ground.push(ty);
+                    visit(TypeOccurrence::Ground(ty))?;
                 }
                 for attr in &op.attrs {
                     if let crate::dialect::AttrValue::Ty(ty) = &attr.value {
-                        ground.push(ty);
+                        visit(TypeOccurrence::Ground(ty))?;
                     }
                 }
             }
@@ -255,12 +299,7 @@ impl<X> InstG<X> {
             | InstG::Resume { .. }
             | InstG::AssertInvoke { .. } => {}
         }
-        for ty in roots {
-            visit(TypeOccurrence::Spelled(ty));
-        }
-        for ty in ground {
-            visit(TypeOccurrence::Ground(ty));
-        }
+        ControlFlow::Continue(())
     }
 }
 
@@ -272,6 +311,27 @@ pub enum TypeOccurrence<'a, X> {
 }
 
 impl Inst {
+    /// Fallible level-R root traversal; see
+    /// [`Self::try_visit_type_root_occurrences`].
+    pub fn try_visit_type_roots<'a, B>(
+        &'a self,
+        mut visit: impl FnMut(&'a Ty) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        self.try_visit_type_root_occurrences(|occurrence| match occurrence {
+            TypeOccurrence::Spelled(ty) | TypeOccurrence::Ground(ty) => visit(ty),
+        })
+    }
+
+    /// Fallible level-R inline preorder; each actual root has depth zero.
+    pub fn try_visit_types<'a, B>(
+        &'a self,
+        mut visit: impl FnMut(&'a Ty, usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        self.try_visit_type_occurrences(|occurrence, depth| match occurrence {
+            TypeOccurrence::Spelled(ty) | TypeOccurrence::Ground(ty) => visit(ty, depth),
+        })
+    }
+
     /// Each spelled type root, without descending through pointer pointees.
     pub fn visit_type_roots<'a>(&'a self, mut visit: impl FnMut(&'a Ty)) {
         self.visit_type_root_occurrences(|occurrence| match occurrence {

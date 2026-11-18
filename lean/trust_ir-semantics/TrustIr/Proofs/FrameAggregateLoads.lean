@@ -78,6 +78,77 @@ theorem aggregate_load_value_frame_exit (service : AggregateMemory.Service)
     | split
     | (dsimp only; split)
 
+private theorem capture_decode_frame_action (result : Except SemError (List Value))
+    (safe : DecodeFrameExit (fun values => ∀ value ∈ values, MintedValue 0 value) result) :
+    FrameActionValid (fun bound values => ∀ value ∈ values, MintedValue bound value)
+      (Sem.fromMemoryExcept result) := by
+  intro state valid
+  cases result with
+  | ok values =>
+    exact ⟨valid, fun value member => (safe value member).mono (Nat.zero_le _), .refl _⟩
+  | error error => cases error <;> first | exact True.intro | exact False.elim safe
+
+private theorem original_check_frame_action {α : Type} (result : Except SemError α)
+    (safe : ByteImage.BlockResult (fun _ => True) BlockDecodeError result) :
+    FrameActionValid (fun _ _ => True) (Sem.fromMemoryExcept result) :=
+  memory_check_frame_action result
+    (DecodeFrameExit.no_unwind _ _ ((block_result_frame_iff _ _).1 safe))
+
+/-- The new original-source route preserves frame identities through its actual
+binding, geometry, capture plans, allocation checks and canonical field decode.
+This proves no allocation embedding, callee rely or machine/SP placement. -/
+theorem original_closure_load_value_frame_exit (service : OriginalClosureMemory.Service)
+    (order : FunctionAddressOrder) (closure : ClosureTyId) (pointer : Value)
+    (strict : Bool) (align : Option Nat) (model : ByteModel) :
+    FrameActionValid MintedValue
+      (OriginalClosureMemory.loadValue service order closure pointer strict align model) := by
+  intro state valid
+  unfold OriginalClosureMemory.loadValue
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ state
+    (original_check_frame_action _
+      (OriginalClosureMemory.binding_errors BlockDecodeError (fun _ => True.intro)
+        (fun _ => True.intro) service model closure) state valid)
+  intro held before beforeValid _
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (original_check_frame_action _
+      (OriginalClosureMemory.layout_errors BlockDecodeError (fun _ => True.intro) _) before beforeValid)
+  intro storage before beforeValid _
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (original_check_frame_action _
+      (OriginalClosureMemory.capturePlans_errors BlockDecodeError (fun _ => True.intro)
+        (fun _ => True.intro) service _ _ _ _) before beforeValid)
+  intro fields before beforeValid _
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (memory_check_frame_action _ (checked_alignment_no_unwind storage.alignment align) before beforeValid)
+  intro alignment before beforeValid _
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (reject_partial_frame_action pointer "Load" before beforeValid)
+  intro unit before beforeValid _
+  cases unit
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (expect_pointer_frame_action pointer "Load" before beforeValid)
+  intro pair before beforeValid _
+  obtain ⟨address,allocation⟩ := pair
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (checked_access_frame_action "Load" address allocation storage.size alignment model before beforeValid)
+  intro address before beforeValid _
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ before
+    (show FrameActionExit (fun _ _ => True) before (Sem.run Sem.getState before) from
+      ⟨beforeValid,True.intro,.refl _⟩)
+  intro snapshot after afterValid _
+  apply FrameActionExit.bind (fun _ _ => True) MintedValue _ _ after
+    (memory_check_frame_action _ (closure_capture_covered_no_unwind _ _) after afterValid)
+  intro missing after afterValid _
+  dsimp only
+  split
+  · exact True.intro
+  · simp only [pure_bind]
+    apply FrameActionExit.bind
+      (fun bound values => ∀ value ∈ values, MintedValue bound value) MintedValue _ _ after
+      (capture_decode_frame_action _ (closure_capture_decode_frame_exit _ _ _ _ _) after afterValid)
+    intro captures final finalValid incoming
+    exact ⟨finalValid, (mintedValue_iff_shape _ _).2 incoming, .refl _⟩
+
 /-- Every aggregate service selected by this context has a proved static
 error policy. Scalar fallback remains covered without a service premise. -/
 def MemoryContextErrors (ctx : EvalContext) : Prop :=
@@ -95,35 +166,41 @@ theorem prepared_memory_context_errors (ctx : EvalContext) (source : SourceLayou
     cases selected
     exact prepared_memory_error_policy source roots
 
+theorem context_load_aligned_frame_exit (ctx : EvalContext) (safe : MemoryContextErrors ctx)
+    (ty : Ty) (pointer : Value) (strict : Bool) (align : Option Nat) :
+    FrameActionValid MintedValue (ctx.loadMemoryValueAligned ty pointer strict align) := by
+  unfold EvalContext.loadMemoryValueAligned
+  cases selected : ctx.memoryRoute ty with
+  | scalar => exact scalar_load_value_frame_exit ctx ty pointer strict align
+  | descriptor service =>
+    exact aggregate_load_value_frame_exit service
+      (safe ty service (ctx.memoryRoute_descriptor_source ty service selected)) _ _ _ _ _ _
+  | original closure service =>
+    exact original_closure_load_value_frame_exit service _ _ _ _ _ _
+
 theorem context_load_value_frame_exit (ctx : EvalContext) (safe : MemoryContextErrors ctx)
     (ty : Ty) (pointer : Value) (strict : Bool) :
-    FrameActionValid MintedValue (ctx.loadMemoryValue ty pointer strict) := by
-  unfold EvalContext.loadMemoryValue
-  cases selected : ctx.memoryServiceFor ty with
-  | none => exact scalar_load_value_frame_exit ctx ty pointer strict none
-  | some service => exact aggregate_load_value_frame_exit service (safe ty service selected) _ _ _ _ _ _
+    FrameActionValid MintedValue (ctx.loadMemoryValue ty pointer strict) :=
+  context_load_aligned_frame_exit ctx safe ty pointer strict none
 
-/-- Both contextual load implementations preserve frame identities through
-the actual fresh SSA binding. No successful pointer lookup is assumed. -/
+/-- All actual contextual routes preserve frame identities through the single
+fresh SSA publication. No successful lookup or native-memory premise is assumed. -/
 theorem context_load_step_frame_exit (ctx : EvalContext) (safe : MemoryContextErrors ctx)
     (ty : Ty) (pointer : ValueId) (strict : Bool) (align : Option Nat) :
     FrameActionValid (fun _ result => BodyValueResult result)
       (stepInstWithContext ctx (.Load ty pointer strict align)) := by
-  cases selected : ctx.memoryServiceFor ty with
-  | none => exact scalar_load_step_frame_exit ctx ty pointer strict align selected
-  | some service =>
-    intro state valid
-    simp only [stepInstWithContext,selected,AggregateMemory.load,bind_assoc]
-    apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
-      (lookup_value_frame_action pointer state valid)
-    intro pointer before beforeValid _
-    apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ before
-      (aggregate_load_value_frame_exit service (safe ty service selected) _ _ _ _ _ _ before beforeValid)
-    intro value loaded loadedValid incoming
-    apply FrameActionExit.bind (fun _ _ => True) (fun _ result => BodyValueResult result) _ _ loaded
-      (fresh_minted_frame_exit value loaded loadedValid incoming)
-    intro id after afterValid _
-    exact ⟨afterValid,True.intro,.refl _⟩
+  intro state valid
+  simp only [stepInstWithContext,bind_assoc]
+  apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
+    (lookup_value_frame_action pointer state valid)
+  intro pointer before beforeValid _
+  apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ before
+    (context_load_aligned_frame_exit ctx safe ty pointer strict align before beforeValid)
+  intro value loaded loadedValid incoming
+  apply FrameActionExit.bind (fun _ _ => True) (fun _ result => BodyValueResult result) _ _ loaded
+    (fresh_minted_frame_exit value loaded loadedValid incoming)
+  intro id after afterValid _
+  exact ⟨afterValid,True.intro,.refl _⟩
 
 theorem context_load_body_frame_exit (recurse : GenericCoro.Prefix.Recurse) (ctx : EvalContext)
     (safe : MemoryContextErrors ctx) (depth : Nat) (strategy : PanicStrategy)

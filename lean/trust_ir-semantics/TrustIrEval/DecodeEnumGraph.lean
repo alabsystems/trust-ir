@@ -17,7 +17,7 @@ theorem decoded_session_enum_capture_flag_false (document : Lean.Json) (decoded 
     (initialized : (Value.aggregate values).Initialized)
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ tag payload position variant, values = tag :: payload ∧ EnumTagSelects definition tag position ∧
-      definition.variants.get? position = some variant ∧ enumeration.uninhabited.get? position = some false :=
+      (trustIrListGet? definition.variants position) = some variant ∧ (trustIrListGet? enumeration.uninhabited position) = some false :=
   history.query_enum_capture_active_flag_false ctx
     (decoded_context_capture_source document decoded parsed maxDepth ctx prepared)
     (enumAdmission_decoded_true document decoded parsed admitted) mode id definition resolved value enumeration
@@ -32,7 +32,7 @@ theorem decoded_query_enum_capture_flag_false (document : Lean.Json) (decoded : 
     (fuel : Nat) (values : List Value) (initialized : (Value.aggregate values).Initialized)
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ tag payload position variant, values = tag :: payload ∧ EnumTagSelects definition tag position ∧
-      definition.variants.get? position = some variant ∧ enumeration.uninhabited.get? position = some false :=
+      (trustIrListGet? definition.variants position) = some variant ∧ (trustIrListGet? enumeration.uninhabited position) = some false :=
   query_enum_capture_active_flag_false _ ctx
     (decoded_context_capture_source document decoded parsed maxDepth ctx prepared)
     (enumAdmission_decoded_true document decoded parsed admitted) mode id definition resolved value enumeration
@@ -40,10 +40,18 @@ theorem decoded_query_enum_capture_flag_false (document : Lean.Json) (decoded : 
 
 end TrustIrEval
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_session_enum_capture_flag_false' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_session_enum_capture_flag_false
+-/
+#print axioms TrustIrEval.decoded_session_enum_capture_flag_false
+#trustIrAxiomsPinned TrustIrEval.decoded_session_enum_capture_flag_false == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_query_enum_capture_flag_false' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_query_enum_capture_flag_false
+-/
+#print axioms TrustIrEval.decoded_query_enum_capture_flag_false
+#trustIrAxiomsPinned TrustIrEval.decoded_query_enum_capture_flag_false == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]

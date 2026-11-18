@@ -8,6 +8,8 @@
 //! context, matches the frozen full claim, then checks the root and dependencies.
 //! The artifact and its measurements are untrusted until replay succeeds.
 
+#[path = "proof_components_complete_export.rs"]
+mod complete_export;
 #[path = "proof_components_dependencies.rs"]
 mod dependencies;
 #[path = "proof_components_plan.rs"]
@@ -19,9 +21,10 @@ mod wire;
 
 pub(crate) use plan::{ConstructedObservation, ExternalContext, ObservationReferences};
 
+pub use complete_export::{ClosedScopedProofTerms, ScopedProofExportWork};
 pub use plan::{
     InstantiatedScopedCandidate, OwnedDefinitionAlias, OwnedProofCapture, OwnedScopedDefinition,
-    ProofComponents, SealedScopedDefinition,
+    ProofComponents, ScopedMaterializationContext, SealedScopedDefinition,
 };
 pub use scoped::{
     ReplayedProofComponents, ScopedBuildWork, ScopedProofComponentBundle, ScopedProofDeclaration,

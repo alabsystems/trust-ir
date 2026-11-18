@@ -173,14 +173,25 @@ private theorem context_Cast_fresh (ctx : EvalContext) (op : CastOp) (srcTy dstT
 private theorem context_Load_fresh (ctx : EvalContext) (ty : Ty) (ptr : ValueId) (volatile : Bool) (align : Option Nat) :
     KeepsFresh (stepInstWithContext ctx (.Load ty ptr volatile align)) := by
   simp only [stepInstWithContext]
-  context_leaves
-  all_goals context_leaves
+  refine bind_fresh _ _ (lookup_fresh ptr) (fun pointer => ?_)
+  refine bind_fresh _ _ ?_ (fun result => bind_fresh _ _ (bindFresh_fresh result) (fun _ => pure_fresh _))
+  unfold EvalContext.loadMemoryValueAligned
+  cases ctx.memoryRoute ty with
+  | original closure service => exact equivariant_fresh _ (HeldMemoryFrames.originalClosureLoadValue_eqv _ _ _ _ _ _ _)
+  | descriptor service => exact SSAFreshAggregate.loadValue_fresh _ _ _ _ _ _ _
+  | scalar => exact equivariant_fresh _ (HeldMemoryFrames.semLoadValueUsing_eqv _ _ _ _ _ _)
 
 private theorem context_Store_fresh (ctx : EvalContext) (ty : Ty) (ptr : ValueId) (value : ValueId) (volatile : Bool) (align : Option Nat) :
     KeepsFresh (stepInstWithContext ctx (.Store ty ptr value volatile align)) := by
   simp only [stepInstWithContext]
-  context_leaves
-  all_goals context_leaves
+  refine bind_fresh _ _ (lookup_fresh ptr) (fun pointer => ?_)
+  refine bind_fresh _ _ (lookup_fresh value) (fun input => ?_)
+  refine bind_fresh _ _ ?_ (fun _ => pure_fresh _)
+  unfold EvalContext.storeMemoryValueAligned
+  cases ctx.memoryRoute ty with
+  | original closure service => exact equivariant_fresh _ (HeldMemoryFrames.originalClosureStoreValue_eqv _ _ _ _ _ _ _ _)
+  | descriptor service => exact SSAFreshAggregate.storeValue_fresh _ _ _ _ _ _ _ _
+  | scalar => exact equivariant_fresh _ (HeldMemoryFrames.semStoreValueUsing_eqv _ _ _ _ _ _ _ _)
 
 private theorem context_Alloca_fresh (ctx : EvalContext) (ty : Ty) (count : Option ValueId) (align : Option Nat) :
     KeepsFresh (stepInstWithContext ctx (.Alloca ty count align)) := by

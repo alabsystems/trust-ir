@@ -81,6 +81,8 @@ impl Assembler<'_> {
         frame: PendingEquality,
         before: PendingEquality,
     ) -> Result<FrameTransport> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         self.charge()?;
         frame.endpoints(&constant("IRFrame"), &current.frame, &frame.right)?;
         before.endpoints(
@@ -90,11 +92,11 @@ impl Assembler<'_> {
         )?;
         let after = Current {
             frame: frame.right.clone(),
-            ..current.clone()
+            ..Current::clone(current)
         };
         let (configuration_helper, valid_helper) = self.frame_transport_candidates()?;
         let arguments = [
-            model.world_type.clone(),
+            model.world_type().clone(),
             current.frame.clone(),
             frame.right,
             current.tail.clone(),

@@ -1,6 +1,7 @@
 -- Copyright 2026 Andrew Yates | Apache-2.0
 import TrustIr.Basic
 import TrustIr.Semantics.NatIndexTree
+import TrustIr.StringAppend
 
 namespace TrustIr.FunctionItemPresence
 
@@ -87,12 +88,46 @@ private def Index.recordDef (index : Index) (id : RecordId) : Option RecordDef :
 private def Index.closureTy (index : Index) (id : ClosureTyId) : Option ClosureTy :=
   trustIrArrayGet? index.closures id.index
 
+private def functionItemAmbiguityMessage (id : FuncId) : String :=
+  StringCompat.append (StringCompat.append "FnItem: function " (toString id.index))
+    " has ambiguous declarations"
+
+private theorem functionItemAmbiguityMessage_eq_standard (id : FuncId) :
+    functionItemAmbiguityMessage id = s!"FnItem: function {id.index} has ambiguous declarations" := by
+  unfold functionItemAmbiguityMessage
+  trustIrCompilerProof { rfl } {
+    rw [StringCompat.append_eq_standard, StringCompat.append_eq_standard]
+    rfl
+  }
+
+#trustIrAxiomsExact functionItemAmbiguityMessage == []
+trustIrString48 #trustIrAxiomsExact functionItemAmbiguityMessage_eq_standard == []
+trustIrString430 #trustIrAxiomsExact functionItemAmbiguityMessage_eq_standard == [propext]
+
 private def Index.functionItem (index : Index) (id : FuncId) :
     Option (Except String FunctionItemHeader) :=
   match index.functions.find id.index with
   | none => none
-  | some none => some (.error s!"FnItem: function {id.index} has ambiguous declarations")
+  | some none => some (.error (functionItemAmbiguityMessage id))
   | some (some row) => some row.header
+
+/-- The exact original lookup, including ambiguity and malformed-header
+errors, is unchanged for every finite index and function identifier. -/
+private theorem Index.functionItem_eq_standard (index : Index) (id : FuncId) :
+    index.functionItem id =
+      match index.functions.find id.index with
+      | none => none
+      | some none => some (.error s!"FnItem: function {id.index} has ambiguous declarations")
+      | some (some row) => some row.header := by
+  unfold Index.functionItem
+  cases index.functions.find id.index with
+  | none => rfl
+  | some row =>
+    cases row with
+    | none =>
+      exact congrArg (fun message => some (Except.error message))
+        (functionItemAmbiguityMessage_eq_standard id)
+    | some declaration => rfl
 
 private def Index.bindingFrame (index : Index) (function : FuncId) (frame : BindingFrameId) :
     Option BindingFrameDef :=
@@ -328,6 +363,8 @@ def Prepared.bindingFrame (prepared : Prepared) (function : FuncId) (frame : Bin
 def Prepared.functionItem (prepared : Prepared) (id : FuncId) :
     Option (Except String FunctionItemHeader) := prepared.compiled.index.functionItem id
 
+#trustIrAxiomsExact Prepared.functionItem == []
+
 theorem Prepared.bindingFrame_eq_source (prepared : Prepared) (function : FuncId) (frame : BindingFrameId) :
     prepared.bindingFrame function frame = prepared.source.bindingFrame function frame := by
   unfold Prepared.bindingFrame Source.bindingFrame
@@ -455,6 +492,22 @@ theorem Prepared.hasFnItem_signature (prepared : Prepared) (signature : FuncTyId
 
 -- Kernel controls exercise the actual source -> finite fixed point -> query.
 -- Their counts are source positions, not an arbitrary recursion allowance.
+/-- An unsigned scalar has no nominal function-item lanes, independently of
+all other declarations in the original prepared module. -/
+theorem Prepared.hasFnItem_u64 (prepared : Prepared) :
+    prepared.hasFnItem .U64 = false := by
+  unfold Prepared.hasFnItem
+  trustIrCompilerProof {
+    conv => lhs; delta typeRule typeRule._mutual; rw [WellFounded.fix_eq]
+    rfl
+  } {
+    conv => lhs; delta typeRule typeRule._mutual WellFounded.Nat.fix
+    simp only [WellFounded.Nat.eager_eq]
+    rfl
+  }
+
+#trustIrAxiomsExact TrustIr.FunctionItemPresence.Prepared.hasFnItem_u64 == []
+
 example : (prepare { types := [some (.FnItem ⟨7⟩)] }).hasFnItem (.Array ⟨0⟩ 0) = true := by
   trustIrReduce
 

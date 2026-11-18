@@ -19,11 +19,11 @@ fn limits() -> Limits {
 }
 
 fn model(world_type: Expr) -> MachineModel {
-    MachineModel {
-        world_type,
-        context: constant("owner_mapper_unused_context"),
-        providers: constant("owner_mapper_unused_providers"),
-    }
+    MachineModel::from_terms(
+        world_type.clone(),
+        constant("owner_mapper_unused_context"),
+        constant("owner_mapper_unused_providers"),
+    )
 }
 
 fn direct(world_type: Expr, config: Expr, world: Expr) -> Expr {
@@ -46,8 +46,8 @@ fn independent(
 ) -> PendingEquality {
     PendingEquality::candidate(
         model.config_type(),
-        direct(model.world_type.clone(), config.clone(), left),
-        direct(model.world_type.clone(), config, right),
+        direct(model.world_type().clone(), config.clone(), left),
+        direct(model.world_type().clone(), config, right),
         term,
     )
 }
@@ -164,7 +164,7 @@ fn closed_call_owner_mapper_replays_opaque_polymorphic_endpoints_without_hot_loc
     let eta = world_eta(&mut assembler, &f.model, f.world.term().clone()).unwrap();
     assert_eq!(assembler.locals, 7);
     assert_eq!(assembler.operations(), 8);
-    let function = push_world_mapper(&f.model.world_type, f.config.term().clone());
+    let function = push_world_mapper(f.model.world_type(), f.config.term().clone());
     for iteration in 0..32 {
         let mapped = assembler
             .congruence_function(eta.clone(), f.model.config_type(), function.clone())
@@ -191,7 +191,7 @@ fn closed_call_owner_mapper_rejects_forged_eta_and_changed_config_world_type_end
     let f = fixture(&mut scope);
     let mut assembler = Assembler::new(&mut scope, limits()).unwrap();
     let eta = world_eta(&mut assembler, &f.model, f.world.term().clone()).unwrap();
-    let function = push_world_mapper(&f.model.world_type, f.config.term().clone());
+    let function = push_world_mapper(f.model.world_type(), f.config.term().clone());
     let mapped = assembler
         .congruence_function(eta.clone(), f.model.config_type(), function)
         .unwrap();
@@ -205,12 +205,12 @@ fn closed_call_owner_mapper_rejects_forged_eta_and_changed_config_world_type_end
     replay(assembler.local_scope(), &f.parameters, &genuine, true);
     let changed = [
         direct(
-            f.model.world_type.clone(),
+            f.model.world_type().clone(),
             f.other_config.term().clone(),
             eta.right().clone(),
         ),
         direct(
-            f.model.world_type.clone(),
+            f.model.world_type().clone(),
             f.config.term().clone(),
             f.other_world.term().clone(),
         ),
@@ -218,7 +218,7 @@ fn closed_call_owner_mapper_rejects_forged_eta_and_changed_config_world_type_end
         app(
             "ir_byte_lift_v1",
             [
-                f.model.world_type.clone(),
+                f.model.world_type().clone(),
                 eta.right().clone(),
                 f.config.term().clone(),
             ],
@@ -260,7 +260,7 @@ fn closed_call_owner_mapper_rejects_forged_eta_and_changed_config_world_type_end
             .congruence_function(
                 corrupt.clone(),
                 f.model.config_type(),
-                push_world_mapper(&f.model.world_type, f.config.term().clone()),
+                push_world_mapper(f.model.world_type(), f.config.term().clone()),
             )
             .unwrap();
         let claim = independent(
@@ -274,7 +274,7 @@ fn closed_call_owner_mapper_rejects_forged_eta_and_changed_config_world_type_end
     }
     for function in [
         push_world_mapper(&constant("Bool"), f.config.term().clone()),
-        push_world_mapper(&f.model.world_type, f.world.term().clone()),
+        push_world_mapper(f.model.world_type(), f.world.term().clone()),
     ] {
         let proof = assembler
             .congruence_function(eta.clone(), f.model.config_type(), function)
@@ -299,7 +299,7 @@ fn closed_call_owner_mapper_does_not_capture_independent_external_type_config_wo
     let config = Expr::bvar(3);
     let world = Expr::bvar(1);
     let eta = world_eta(&mut assembler, &model, world.clone()).unwrap();
-    let function = push_world_mapper(&model.world_type, config.clone());
+    let function = push_world_mapper(model.world_type(), config.clone());
     let proof = assembler
         .congruence_function(eta.clone(), model.config_type(), function)
         .unwrap();
@@ -315,24 +315,28 @@ fn closed_call_owner_mapper_does_not_capture_independent_external_type_config_wo
     for (right, accepted) in [
         (
             direct(
-                model.world_type.clone(),
+                model.world_type().clone(),
                 config.clone(),
                 eta.right().clone(),
             ),
             true,
         ),
         (
-            direct(model.world_type.clone(), Expr::bvar(2), eta.right().clone()),
+            direct(
+                model.world_type().clone(),
+                Expr::bvar(2),
+                eta.right().clone(),
+            ),
             false,
         ),
         (
-            direct(model.world_type.clone(), config.clone(), Expr::bvar(0)),
+            direct(model.world_type().clone(), config.clone(), Expr::bvar(0)),
             false,
         ),
     ] {
         let claim = PendingEquality::candidate(
             model.config_type(),
-            direct(model.world_type.clone(), config.clone(), world.clone()),
+            direct(model.world_type().clone(), config.clone(), world.clone()),
             right,
             proof.term().clone(),
         );
@@ -416,13 +420,13 @@ fn closed_call_owner_mapper_does_not_supply_world_validity_or_escape_source_worl
         .congruence_function(
             eta,
             f.model.config_type(),
-            push_world_mapper(&f.model.world_type, f.config.term().clone()),
+            push_world_mapper(f.model.world_type(), f.config.term().clone()),
         )
         .unwrap();
     let validity = app(
         "ir_byte_world_valid_v1",
         [
-            f.model.world_type.clone(),
+            f.model.world_type().clone(),
             f.machine.term().clone(),
             f.world.term().clone(),
         ],

@@ -39,7 +39,7 @@ import gate_select as gs  # noqa: E402
 import host_scale as hs  # noqa: E402
 
 
-WHOLE_TREE = {"enforcement-links", "internal-gate-tests", "wire-allocation-owners"}
+WHOLE_TREE = {"enforcement-links", "internal-gate-tests", "wire-allocation-owners", "object-budget"}
 _REAL: Dict[str, object] = {}
 FAKE_TOOLCHAIN = {name: "fixture-" + name for name in (
     "host", "python3", "python3-file", "git", "git-file", "cc", "cc-file",
@@ -309,7 +309,7 @@ class SelectorHolds(unittest.TestCase):
 
     def test_an_empty_change_runs_only_what_follows_outside_inputs(self):
         sel = selected([])
-        self.assertEqual({n for n, u in sel.units.items() if u["run"]}, {"wire-allocation-owners"})
+        self.assertEqual({n for n, u in sel.units.items() if u["run"]}, {"wire-allocation-owners", "object-budget"})
 
     def test_the_runner_and_the_plan_name_the_same_targets(self):
         # ci_gates.sh's crate_tests names trust-ir-cli's targets from the
@@ -614,6 +614,19 @@ class FasterChecksSayTheSame(unittest.TestCase):
         "",
     ]
 
+    def test_literal_kind_metadata_preserves_existing_lexer_outputs(self):
+        source = r'''"\x73" r"\x73" br#"raw"# c"cooked" '\"' /* r"comment" */'''
+        kinds = []
+        result = gs.lex_rust3(source, raw_literals=kinds)
+        self.assertEqual(result, gs.lex_rust3(source))
+        self.assertEqual(result[0], [r'\x73', r'\x73', 'raw', 'cooked'])
+        self.assertEqual(kinds, [False, True, True, False])
+        for edge in self.EDGE:
+            kinds = []
+            actual = gs.lex_rust3(edge, raw_literals=kinds)
+            self.assertEqual(actual, gs.lex_rust3(edge))
+            self.assertEqual(len(kinds), len(actual[0]))
+
     def test_mask_matches_the_reference_on_the_tree(self):
         import check_no_ignored_rust as c
 
@@ -879,6 +892,52 @@ class ReadsTheTestsCanMake(unittest.TestCase):
         before = {"docs": True, "CLAUDE.md": True}
         after = {"docs": True, "CLAUDE.md": False}
         self.assertEqual(gs.existence_flips(units, before.get, after.get), ["CLAUDE.md"])
+
+    def test_escaped_include_paths_are_compiled_byte_inputs(self):
+        package = "crates/p"
+        source = package + "/lib.rs"
+        fixture = "lean/semr/fixtures/input.bin"
+        literal = r'"\x2e\x2e/\u{2e}\u{2e}/lean/semr/fixtures/input.bin"'
+        target = gs.Target("p", "lib", "p", source, True)
+        packages = {package: gs.Package("p", package, "root", [], [target])}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_repo(root, {source: "", fixture: "fixture", gs.READS_FILE:
+                             f"{source}\texists:{fixture}\tAlso checked for presence\n"})
+            for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+                with self.subTest(opening=opening):
+                    (root / source).write_text(
+                        f"const FIXTURE: &[u8] = include_bytes!{opening}{literal}{closing};\n")
+                    graph = gs.Graph(root, gs.Tree(root), packages)
+                    patterns, _ = graph.target_inputs(package, target, test_run=False, run=False)
+                    self.assertIn(fixture, patterns)
+                    self.assertTrue(gs.select({"u": gs.Unit("u", patterns)}, [fixture], set()).units["u"]["run"])
+
+    def test_escaped_existence_paths_keep_existence_only_keys(self):
+        package = "crates/p"
+        source = package + "/lib.rs"
+        fixture = "lean/semr/fixtures/optional.bin"
+        literal = r'"\x2e\x2e/\x2e\x2e/lean/semr/fixtures/optional.bin"'
+        target = gs.Target("p", "lib", "p", source, True)
+        packages = {package: gs.Package("p", package, "root", [], [target])}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_repo(root, {source: f"fn present() -> bool {{ std::path::Path::new({literal}).exists() }}\n",
+                             fixture: "before", gs.READS_FILE: f"{source}\texists:{fixture}\tOnly checks presence\n"})
+
+            def key():
+                tree = gs.Tree(root)
+                graph = gs.Graph(root, tree, packages)
+                patterns, history = graph.target_inputs(package, target, test_run=True)
+                self.assertIn(gs.EXISTS + fixture, patterns)
+                self.assertNotIn(fixture, patterns)
+                return gs.unit_key(tree, "u", "test", patterns, gs.KeyContext({}, {}, {}, [], {}), history)
+
+            before = key()
+            (root / fixture).write_text("edited fixture")
+            self.assertEqual(key(), before)
+            (root / fixture).unlink()
+            self.assertNotEqual(key(), before)
 
     def test_the_survey_ledger_check_reads_every_file_a_row_names(self):
         units, _, graph = real()

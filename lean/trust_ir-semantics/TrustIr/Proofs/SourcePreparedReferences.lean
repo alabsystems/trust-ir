@@ -304,11 +304,31 @@ set_option maxHeartbeats 2000000 in
 in both modes, plus both validators, independently of the completeness proof. -/
 theorem mixed_reserved_lookups :
     (List.range 12).all (fun node => ((prepare mixedSource).graph.nodes.find node).isSome) = true := by
-  trustIrCompilerProof {
-    exact rfl
-  } {
-    exact by trustIrReduce
-  }
+  have indexCount : (Index.ofEnvironment mixedSource).count = 5 := by decide
+  have finiteBounds : (List.range 12).all (fun node => decide (node < 12)) = true := by decide
+  apply List.all_eq_true.mpr
+  intro node member
+  have below : node < 12 := of_decide_eq_true (List.all_eq_true.mp finiteBounds node member)
+  apply Option.isSome_iff_exists.mpr
+  change (prepare mixedSource).graph.Present node
+  by_cases sourceNode : node < 10
+  · by_cases shapeNode : node < 5
+    · have present := prepare_reserved_present mixedSource .shape node (by rw [indexCount]; exact shapeNode)
+      change (prepare mixedSource).graph.Present (0 + node) at present
+      simpa only [Nat.zero_add] using present
+    · have present := prepare_reserved_present mixedSource .execution (node - 5) (by rw [indexCount]; omega)
+      change (prepare mixedSource).graph.Present
+        ((Index.ofEnvironment mixedSource).count + (node - 5)) at present
+      rw [indexCount] at present
+      have destination : 5 + (node - 5) = node := by omega
+      rw [destination] at present
+      exact present
+  · have validators := prepare_validators_present mixedSource
+    change (prepare mixedSource).graph.Present 10 ∧ (prepare mixedSource).graph.Present 11 at validators
+    have either : node = 10 ∨ node = 11 := by omega
+    rcases either with same | same
+    · rw [same]; exact validators.1
+    · rw [same]; exact validators.2
 
 theorem mixed_complete : (prepare mixedSource).graph.Complete := prepare_complete mixedSource
 

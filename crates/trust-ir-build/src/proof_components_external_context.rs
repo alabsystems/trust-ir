@@ -8,9 +8,23 @@ pub(crate) struct ExternalContext {
     inventory: OwnedExternalContext,
 }
 
+/// A fixed external inventory for repeated same-owner materialization.
+///
+/// Construct this context with
+/// [`ProofComponents::prepare_scoped_materialization_context`]. Its inventory
+/// cannot be extended or restored through the public API, and another component
+/// or scope cannot use it. Reuse supplies no typing or proof authority: complete
+/// original declarations, frozen claims, wire checks and replay remain required.
+pub struct ScopedMaterializationContext {
+    context: ExternalContext,
+}
+
 #[cfg(test)]
 #[path = "proof_components_equation_root_tests.rs"]
 mod equation_root_tests;
+#[cfg(test)]
+#[path = "proof_components_materialization_facade_tests.rs"]
+mod facade_tests;
 #[cfg(test)]
 #[path = "proof_components_inner_prefix_tests.rs"]
 mod inner_prefix_tests;
@@ -28,6 +42,37 @@ impl ExternalContext {
 }
 
 impl ProofComponents {
+    /// Prepare one fixed external inventory with ordinary-graph reuse enabled.
+    ///
+    /// Preparation and every later materialization spend this component's
+    /// existing work ledger. The context carries no caller-supplied allowance
+    /// and cannot reset a failed attempt or transfer ownership.
+    pub fn prepare_scoped_materialization_context(
+        &mut self,
+        scope: &LocalScope,
+        external: &[ScopedLocal],
+    ) -> Result<ScopedMaterializationContext, String> {
+        let mut context = self.charged_external_context(scope, external)?;
+        self.charged_enable_external_materialization_reuse(scope, &mut context)?;
+        Ok(ScopedMaterializationContext { context })
+    }
+
+    /// Fully materialize the current roots under this fixed owned inventory.
+    ///
+    /// Exact unchanged ordinary subgraphs may reuse their completed checks;
+    /// unknown or changed graphs descend through the existing canonical walker.
+    /// Complete heights, owner checks, failure poisoning and ambient ordinary
+    /// bound-variable semantics are unchanged. Returned terms are candidates,
+    /// not proof authority, and complete original replay remains mandatory.
+    pub fn materialize_scoped_terms_in_context(
+        &mut self,
+        scope: &LocalScope,
+        context: &ScopedMaterializationContext,
+        roots: &[Expr],
+    ) -> Result<Vec<Expr>, String> {
+        self.charged_materialize_external_context_fully(scope, &context.context, roots)
+    }
+
     pub(super) fn external_ordinary_view<'a>(
         &self,
         scope: &LocalScope,

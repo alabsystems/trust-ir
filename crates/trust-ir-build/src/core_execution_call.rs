@@ -107,7 +107,7 @@ impl InternalTarget {
 }
 
 fn world_fields(model: &MachineModel, world: Expr) -> [Expr; 4] {
-    world_fields_at(&model.world_type, world)
+    world_fields_at(model.world_type(), world)
 }
 
 fn world_fields_at(world_type: &Expr, world: Expr) -> [Expr; 4] {
@@ -120,7 +120,7 @@ fn world_fields_at(world_type: &Expr, world: Expr) -> [Expr; 4] {
 }
 
 fn world_constructor(model: &MachineModel, fields: [Expr; 4]) -> Expr {
-    world_constructor_at(&model.world_type, fields)
+    world_constructor_at(model.world_type(), fields)
 }
 
 fn world_constructor_at(world_type: &Expr, fields: [Expr; 4]) -> Expr {
@@ -171,7 +171,7 @@ pub(super) fn is_explicit_world(model: &MachineModel, world: &Expr) -> bool {
     };
     matches!(constructor.kind(), ExprKind::Const(name, levels)
         if name == &Name::from_string("IRByteWorldV1.mk") && levels.is_empty())
-        && world_type.as_ref() == &model.world_type
+        && world_type.as_ref() == model.world_type()
 }
 
 /// Constructor reconstruction by checked conversion for an explicit world,
@@ -183,7 +183,7 @@ pub(super) fn world_eta(
     world: Expr,
 ) -> Result<PendingEquality> {
     assembler.charge()?;
-    let ty = app("IRByteWorldV1", [model.world_type.clone()]);
+    let ty = app("IRByteWorldV1", [model.world_type().clone()]);
     let rebuilt = world_constructor(model, world_fields(model, world.clone()));
     if is_explicit_world(model, &world) {
         // Projections of the actual constructor reduce to its own fields.
@@ -194,7 +194,7 @@ pub(super) fn world_eta(
         return Ok(PendingEquality::candidate(ty, world, rebuilt, proof));
     }
     let helper = world_eta_helper(assembler)?;
-    let proof = Expr::apps(helper, [model.world_type.clone(), world.clone()]);
+    let proof = Expr::apps(helper, [model.world_type().clone(), world.clone()]);
     Ok(PendingEquality::candidate(ty, world, rebuilt, proof))
 }
 
@@ -249,10 +249,10 @@ fn world_eta_helper(assembler: &mut Assembler<'_>) -> Result<Expr> {
 
 impl FetchedSite {
     fn internal_arguments(&self, model: &MachineModel, target: &InternalTarget) -> Result<Expr> {
-        require_same(&self.context, &model.context, "internal fetched context")?;
+        require_same(&self.context, model.context(), "internal fetched context")?;
         require_same(
             &target.target.context,
-            &model.context,
+            model.context(),
             "internal target context",
         )?;
         let fields = self.instruction.get_app_args();
@@ -290,6 +290,8 @@ impl FetchedSite {
         current: &Current,
         premises: InternalCallPremises,
     ) -> Result<InternalCallTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let arguments = self.internal_arguments(model, target)?;
         let values = premises.resolved.right.clone();
@@ -310,7 +312,7 @@ impl FetchedSite {
                 [
                     app(
                         "ir_mod_funcs",
-                        [app("ir_byte_context_module_v1", [model.context.clone()])],
+                        [app("ir_byte_context_module_v1", [model.context().clone()])],
                     ),
                     app("ir_byte_binding_fid_v1", [target.target.binding.clone()]),
                 ],
@@ -378,7 +380,7 @@ impl FetchedSite {
         let push_world = assembler.congruence_function(
             eta.clone(),
             model.config_type(),
-            push_world_mapper(&model.world_type, pushed_machine),
+            push_world_mapper(model.world_type(), pushed_machine),
         )?;
         let start = assembler.conversion(
             model.config_type(),
@@ -392,7 +394,7 @@ impl FetchedSite {
             app(
                 "ir_byte_push_frame_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     memory.clone(),
                     host.clone(),
                     owners.clone(),
@@ -415,7 +417,7 @@ impl FetchedSite {
 
         let normalized = Current {
             world: eta.right.clone(),
-            ..current.clone()
+            ..Current::clone(current)
         };
         // The actual validity primitive takes world last, so use its existing
         // curried application instead of recapturing Current under a binder.
@@ -424,7 +426,7 @@ impl FetchedSite {
             constant("Bool"),
             app(
                 "ir_byte_world_valid_v1",
-                [model.world_type.clone(), current.machine()],
+                [model.world_type().clone(), current.machine()],
             ),
         )?;
         let mapped_start = assembler.conversion(
@@ -459,7 +461,7 @@ impl FetchedSite {
             app(
                 "ir_byte_world_push_shape_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     memory,
                     host,
                     return_frame.returning.clone(),

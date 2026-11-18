@@ -25,6 +25,21 @@
 //! no route for a failing check. The class is read from the entry
 //! ([`ValidityEvidence::tier`]); no status word raises it.
 //!
+//! # A deref the producer holds no fact for (wire v75)
+//!
+//! [`ValidityEvidence::Unestablished`] is not evidence: it is the producer's
+//! statement that it offers NOTHING for the conjunct. It lets a producer that
+//! ran no verifier (or whose verifier reached no verdict for the site) still
+//! spell the instruction, so the obligation travels to the consumer instead
+//! of being dropped or refused before the format sees it. The validator
+//! reports every such entry on every admission
+//! (`BoxDerefConjunctUnestablished`), whatever floor is set, and no premise,
+//! session or floor discharges it. A consumer may discharge that finding
+//! only for a conjunct it RE-DERIVES itself from the instructions of the
+//! instruction's own function, under its own named contract; every other
+//! consumer refuses the instruction (`docs/SPEC_RATIFICATIONS.md` §28,
+//! amendment "A deref with no producer fact").
+//!
 //! # What a consumer may do with the instruction
 //!
 //! The instruction is undefined behaviour when a conjunct is false, and the
@@ -291,7 +306,8 @@ impl StandingAssumption {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxValidityTier {
     /// An evidence kind this version refuses ([`ValidityEvidence::Obligation`],
-    /// [`ValidityEvidence::DominatingCheck`]). As the ordered minimum, a
+    /// [`ValidityEvidence::DominatingCheck`]), and the absence of evidence
+    /// ([`ValidityEvidence::Unestablished`]). As the ordered minimum, a
     /// floor set to `NotAdmitted` is a no-op; the structural rules still
     /// refuse both reserved evidence kinds. Meaningful floors begin at
     /// [`BoxValidityTier::AssumedRootPremise`].
@@ -366,6 +382,16 @@ pub enum ValidityEvidence {
     /// conjunct, so a replayed certificate of any statement sited on the
     /// instruction would otherwise back every conjunct at once.
     Obligation { obligation: ProofId },
+    /// No evidence: the producer holds no fact for this conjunct (wire v75).
+    ///
+    /// Not a premise and not an assumption of any root. The validator reports
+    /// it on every admission (`BoxDerefConjunctUnestablished`); it is below
+    /// every meaningful floor ([`BoxValidityTier::NotAdmitted`]); and it may be
+    /// discharged only by a consumer that re-derives the conjunct itself from
+    /// the instruction's own function. A fact whose every entry is this kind
+    /// offers nothing, so its session is carried and not judged (rule 5
+    /// judges the session of a fact that offers evidence).
+    Unestablished,
 }
 
 impl ValidityEvidence {
@@ -375,6 +401,7 @@ impl ValidityEvidence {
             ValidityEvidence::Premise { .. } => "premise",
             ValidityEvidence::DominatingCheck { .. } => "dominating_check",
             ValidityEvidence::Obligation { .. } => "obligation",
+            ValidityEvidence::Unestablished => "unestablished",
         }
     }
 
@@ -383,9 +410,9 @@ impl ValidityEvidence {
     pub const fn tier(&self) -> BoxValidityTier {
         match self {
             ValidityEvidence::Premise { root, .. } => root.tier(),
-            ValidityEvidence::DominatingCheck { .. } | ValidityEvidence::Obligation { .. } => {
-                BoxValidityTier::NotAdmitted
-            }
+            ValidityEvidence::DominatingCheck { .. }
+            | ValidityEvidence::Obligation { .. }
+            | ValidityEvidence::Unestablished => BoxValidityTier::NotAdmitted,
         }
     }
 }
@@ -583,6 +610,36 @@ impl BoxValidityFact {
         }
     }
 
+    /// A thin-pointee fact that offers NO evidence for any conjunct, in
+    /// canonical form: every conjunct is [`ValidityEvidence::Unestablished`].
+    /// The spelling of a deref whose producer holds no fact; only a consumer
+    /// that re-derives every conjunct itself can admit it.
+    pub fn unestablished(site: BoxDerefSite, session: BoxFactSession) -> Self {
+        Self {
+            site,
+            session,
+            evidence: ValidityConjunct::THIN
+                .into_iter()
+                .map(|conjunct| ConjunctEvidence {
+                    conjunct,
+                    evidence: ValidityEvidence::Unestablished,
+                })
+                .collect(),
+            not_claimed: BoxValidityNonClaim::PINNED.to_vec(),
+        }
+    }
+
+    /// Whether the fact offers no evidence at all: it has entries and every
+    /// one is [`ValidityEvidence::Unestablished`]. Such a fact's session is
+    /// carried, not judged.
+    pub fn offers_no_evidence(&self) -> bool {
+        !self.evidence.is_empty()
+            && self
+                .evidence
+                .iter()
+                .all(|entry| entry.evidence == ValidityEvidence::Unestablished)
+    }
+
     /// The evidence entry for `conjunct`: the first one, if several are
     /// (invalidly) present.
     pub fn evidence_for(&self, conjunct: ValidityConjunct) -> Option<&ValidityEvidence> {
@@ -695,6 +752,41 @@ mod tests {
         fact.evidence.clear();
         assert_eq!(fact.weakest_tier(), None);
         assert_eq!(fact.premise_root(), None);
+    }
+
+    #[test]
+    fn an_unestablished_fact_offers_nothing_and_is_below_every_premise() {
+        let site = BoxDerefSite {
+            item: [5; 16],
+            ordinal: 1,
+        };
+        let session = BoxFactSession {
+            judged: JudgedBody::OptimizedFallback,
+            producing: ProducingSession::NonProofSession,
+        };
+        let fact = BoxValidityFact::unestablished(site, session);
+        let conjuncts: Vec<_> = fact.evidence.iter().map(|e| e.conjunct).collect();
+        assert_eq!(conjuncts, ValidityConjunct::THIN);
+        assert_eq!(fact.not_claimed, BoxValidityNonClaim::PINNED);
+        assert!(fact.offers_no_evidence());
+        assert_eq!(fact.weakest_tier(), Some(BoxValidityTier::NotAdmitted));
+        assert_eq!(fact.premise_root(), None, "no premise, no root");
+        assert_eq!(ValidityEvidence::Unestablished.kind_name(), "unestablished");
+        for root in PremiseRoot::ALL {
+            assert!(
+                ValidityEvidence::Unestablished.tier() < root.tier(),
+                "{root:?}"
+            );
+        }
+        let mut mixed = fact.clone();
+        mixed.evidence[0].evidence = ValidityEvidence::Premise {
+            root: PremiseRoot::ParamByValue,
+            standing: StandingAssumption::PINNED.to_vec(),
+        };
+        assert!(!mixed.offers_no_evidence(), "one entry offers evidence");
+        let mut empty = fact;
+        empty.evidence.clear();
+        assert!(!empty.offers_no_evidence(), "an empty list is not a fact");
     }
 
     #[test]

@@ -95,11 +95,11 @@ fn memory(rows: Expr, byte: u64, cursor: u64) -> Expr {
 }
 
 fn fixture(world_type: Expr, host: Expr) -> (MachineModel, Current) {
-    let model = MachineModel {
-        world_type: world_type.clone(),
-        context: constant("owner_mapper_unused_context"),
-        providers: constant("owner_mapper_unused_providers"),
-    };
+    let model = MachineModel::from_terms(
+        world_type.clone(),
+        constant("owner_mapper_unused_context"),
+        constant("owner_mapper_unused_providers"),
+    );
     let current = Current {
         frame: app(
             "IRFrame.mk",
@@ -288,7 +288,11 @@ fn opaque_world_and_returned_memory_preserve_explicit_allocation_premises() {
         .unwrap();
     let returned = scope.try_local(constant("IRByteMemoryV1")).unwrap();
     let (mut model, mut current) = fixture(constant("Nat"), nat(37));
-    model.world_type = world_type.term().clone();
+    model = MachineModel::from_terms(
+        world_type.term().clone(),
+        model.context().clone(),
+        model.providers().clone(),
+    );
     current.world = world.term().clone();
     let old_memory = projection(&model, &current.world, "memory");
     let left = allocations(returned.term().clone());

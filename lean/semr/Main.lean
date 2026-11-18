@@ -14,6 +14,10 @@ import SemREntryBodyAxiomAudit
 import SemREntryBodyCheck
 import SemRSourceBodyCheck
 import SemRSourceBodyAxiomAudit
+import SemRSitedDivPanicCheck
+import SemRSitedDivPanicAxiomAudit
+import SemRSitedExecutionCheck
+import SemRSitedExecutionAxiomAudit
 
 import SemRRuntimeMain
 

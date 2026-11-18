@@ -27,14 +27,14 @@ impl PrefixSimulation {
             self.source_type.clone(),
             model.config_type(),
             self.source_halted.clone(),
-            app("ir_byte_halted_v1", [model.world_type.clone()]),
+            app("ir_byte_halted_v1", [model.world_type().clone()]),
             self.source_step.clone(),
             app(
                 "ir_byte_step_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
-                    model.providers.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
+                    model.providers().clone(),
                 ],
             ),
             self.relation.clone(),

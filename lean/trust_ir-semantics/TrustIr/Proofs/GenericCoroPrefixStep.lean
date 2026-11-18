@@ -49,7 +49,7 @@ theorem stepInstWithContext_congr (base : EvalContext)
     simp only [stepInstWithContext, frameTypes] <;> rfl
   case Alloca ty count align =>
     simp only [stepInstWithContext]
-    have equal := semAllocateUsing_reader_congr base.memoryLayout
+    have equal := semAllocateUsing_reader_congr base.allocationLayout
       (scopedContext base source sourceTypes).carrierIntegerOperand
       (scopedContext base target targetTypes).carrierIntegerOperand
       ty count align .rustStack false 0 base.byteModel (fun id member value => by

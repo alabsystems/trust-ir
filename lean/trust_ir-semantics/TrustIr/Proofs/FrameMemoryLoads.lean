@@ -160,11 +160,11 @@ theorem fresh_minted_frame_exit (value : Value) (state : MachineState) (valid : 
 
 /-- Actual SSA load publication, for any context selecting the scalar core. -/
 theorem scalar_load_step_frame_exit (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
-    (strict : Bool) (align : Option Nat) (scalar : ctx.memoryServiceFor ty = none) :
+    (strict : Bool) (align : Option Nat) (scalar : ctx.memoryRoute ty = .scalar) :
     FrameActionValid (fun _ result => BodyValueResult result)
       (stepInstWithContext ctx (.Load ty pointer strict align)) := by
   intro state valid
-  simp only [stepInstWithContext,scalar,semLoadUsing,bind_assoc]
+  simp only [stepInstWithContext,EvalContext.loadMemoryValueAligned,scalar,bind_assoc]
   apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
     (lookup_value_frame_action pointer state valid)
   intro pointer before beforeValid _
@@ -182,11 +182,11 @@ theorem canonical_load_step_frame_exit (ctx : EvalContext) (ty : Ty) (pointer : 
     (strict : Bool) (align : Option Nat) (canonical : ty.hasCanonicalMemoryLayout = true) :
     FrameActionValid (fun _ result => BodyValueResult result)
       (stepInstWithContext ctx (.Load ty pointer strict align)) :=
-  scalar_load_step_frame_exit ctx ty pointer strict align (by simp [EvalContext.memoryServiceFor,canonical])
+  scalar_load_step_frame_exit ctx ty pointer strict align (ctx.memoryRoute_canonical ty canonical)
 
 theorem scalar_load_body_frame_exit (recurse : GenericCoro.Prefix.Recurse) (ctx : EvalContext) (depth : Nat)
     (strategy : PanicStrategy) (ty : Ty) (pointer : ValueId) (strict : Bool) (align : Option Nat)
-    (dests : List ValueId) (scalar : ctx.memoryServiceFor ty = none) :
+    (dests : List ValueId) (scalar : ctx.memoryRoute ty = .scalar) :
     FrameActionValid (fun _ _ => True)
       (GenericCoro.Prefix.evalBodyStep recurse ctx depth strategy (.Load ty pointer strict align,dests)) := by
   intro state valid
@@ -213,7 +213,8 @@ for every canonical leaf, irrespective of producer aggregate-service metadata. -
 theorem canonical_context_load_frame_exit (ctx : EvalContext) (ty : Ty) (pointer : Value)
     (strict : Bool) (canonical : ty.hasCanonicalMemoryLayout = true) :
     FrameActionValid MintedValue (ctx.loadMemoryValue ty pointer strict) := by
-  simp only [EvalContext.loadMemoryValue,EvalContext.memoryServiceFor,canonical,↓reduceIte]
+  simp only [EvalContext.loadMemoryValue,EvalContext.loadMemoryValueAligned,
+    ctx.memoryRoute_canonical ty canonical]
   exact scalar_load_value_frame_exit ctx ty pointer strict none
 
 end TrustIr.FrameLifetime

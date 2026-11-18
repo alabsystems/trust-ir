@@ -409,6 +409,16 @@ class VersionedIdentitiesAreAClosedWorld(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn(versioned("trust-ir.sha256-domain", ".", 1), errors[0])
 
+    def test_the_trust_wp_formula_exemptions_are_load_bearing(self) -> None:
+        # Trust allocates the trust-wp formula envelope in both separator
+        # spellings; trust-ir-contract's shared decoder only reads them.
+        for prefix in ("trust-wp.", "trust_wp."):
+            errors = errors_for(drop_lines(REGISTRY_TEXT, f'{{ scan = "literal", name = "{prefix}"'))
+            identity = versioned(f"{prefix}trust-formula", ".", 1)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn(f"`{identity}`", errors[0])
+            self.assertIn("no digest_domain row", errors[0])
+
     def test_exemptions_are_foreign_namespaces_with_reasons_and_never_idle(self) -> None:
         errors = errors_for(drop_lines(REGISTRY_TEXT, '{ scan = "literal", name = "ay."'))
         self.assertTrue(errors and all("`ay." in e for e in errors), errors)

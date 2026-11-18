@@ -1,7 +1,8 @@
 -- Copyright 2026 Andrew Yates | Apache-2.0
 -- Pure decoded data shared by the JSON reader and source-to-source producers.
 -- This module has no JSON import and retains the decoder's original records.
-import TrustIr.Semantics.Eval
+import TrustIr.ModuleSyntax
+import TrustIr.Layout.Schema
 import TrustIr.Template
 
 namespace TrustIrEval
@@ -76,5 +77,16 @@ structure Module where
       than resolve one against an incomplete table. -/
   dropGlue : List (FuncId × Option Ty) := []
 
+
+/-- The original decoded module's layout projection, shared by actual memory
+preparation and source-bound storage queries. No constructor target is inferred
+from these geometry/header tables. -/
+def layoutSourceOf (m : Module) (model : ByteModel) : SourceLayout.Environment :=
+  { model, canonicalScalars := true, hasTargetInfo := m.hasTargetInfo,
+    types := m.types, structs := m.structs, enums := m.enums,
+    records := m.records.filterMap (·.2), closures := m.closureTys,
+    tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts,
+    functions := m.functions.map (fun function => (function.id, function.ty)),
+    funcTypes := m.funcTys }
 
 end TrustIrEval

@@ -11,6 +11,9 @@ use clean_kernel::{BinderInfo, KernelTypeError};
 use clean_verify::eval_ir::{EvalIrVocabulary, shared_specification_with_stack};
 use trust_ir::{CastOp, Endianness, Module, StructPassingPolicy, TargetInfo, Ty};
 
+#[path = "core_execution_ptr_to_int_tests.rs"]
+mod ptr_to_int;
+
 fn environment() -> &'static Environment {
     shared_specification_with_stack(EvalIrVocabulary::ByteV1)
         .expect("canonical byte vocabulary")

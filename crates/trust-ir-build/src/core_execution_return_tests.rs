@@ -36,13 +36,13 @@ fn fixture(scope: &mut Scope, arity: usize) -> Fixture {
         parameters.push(local.clone());
         local.term().clone()
     };
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_context"),
-        providers: constant("test_providers"),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_context"),
+        constant("test_providers"),
+    );
     let target = CallTarget {
-        context: model.context.clone(),
+        context: model.context().clone(),
         function_id: nat(41),
         binding: constant("test_binding"),
         signature: constant("test_signature"),
@@ -56,7 +56,7 @@ fn fixture(scope: &mut Scope, arity: usize) -> Fixture {
     let arguments = list("Nat", &ids);
     let instruction = app("IRInst.ret", [arguments.clone()]);
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(41),
             block: BlockId::new(17),

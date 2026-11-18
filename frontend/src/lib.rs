@@ -33,11 +33,21 @@
 // License: Apache-2.0
 
 #![feature(rustc_private)]
+#![cfg_attr(
+    all(test, any(target_os = "linux", target_os = "macos")),
+    feature(test, custom_test_frameworks, exitcode_exit_method)
+)]
+#![cfg_attr(
+    all(test, any(target_os = "linux", target_os = "macos")),
+    test_runner(crate::native_test_entry::native_test_main)
+)]
 #![allow(rustc::default_hash_types)]
 #![allow(rustc::potential_query_instability)]
 
 extern crate rustc_abi;
 extern crate rustc_ast;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+extern crate rustc_data_structures;
 extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
@@ -66,6 +76,9 @@ use trust_ir_build::{FunctionBuilder, ModuleBuilder};
 pub mod m3;
 pub mod model;
 pub mod span_map;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod native_test_entry;
 
 /// rustc ABI version baked into the private driver this frontend links.
 pub fn linked_rustc_version() -> Option<&'static str> {
@@ -444,7 +457,7 @@ pub(crate) fn enum_layout_of<'tcx>(
         })?;
 
     let size = tal.size.bytes() as i128;
-    let align = tal.align.abi.bytes() as i128;
+    let align = tal.align.bytes() as i128;
 
     // `for_variant` needs a cx implementing BOTH `HasTyCtxt` and `HasTypingEnv`;
     // `TyCtxt` alone is not enough, so wrap it in a `LayoutCx`.

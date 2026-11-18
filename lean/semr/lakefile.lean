@@ -181,3 +181,14 @@ lean_lib SemRUnsignedSelect where
 lean_lib SemRUnsignedSelectCheck where
 
 lean_lib SemRUnsignedSelectAxiomAudit where
+
+-- Pure sited Div/Rem panic prerequisite; no new decoded instruction.
+lean_lib SemRSitedDivPanic where
+lean_lib SemRSitedDivPanicCheck where
+lean_lib SemRSitedDivPanicAxiomAudit where
+
+lean_lib SemRSitedExecution where
+
+lean_lib SemRSitedExecutionCheck where
+
+lean_lib SemRSitedExecutionAxiomAudit where

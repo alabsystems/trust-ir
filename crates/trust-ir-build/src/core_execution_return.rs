@@ -39,7 +39,7 @@ impl ReturnFrame {
             world: app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     self.memory.clone(),
                     self.host.clone(),
                     app(
@@ -68,7 +68,7 @@ impl ReturnFrame {
             world: app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     app(
                         "ir_byte_retire_v1",
                         [self.owner.clone(), self.memory.clone()],
@@ -109,8 +109,8 @@ impl FetchedSite {
         model: &MachineModel,
         target: &CallTarget,
     ) -> Result<Expr> {
-        require_same(&self.context, &model.context, "return fetched context")?;
-        require_same(&target.context, &model.context, "return function context")?;
+        require_same(&self.context, model.context(), "return fetched context")?;
+        require_same(&target.context, model.context(), "return function context")?;
         require_same(
             &target.function_id,
             &nat(u64::from(self.coordinate.function.index())),
@@ -146,7 +146,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_values_match_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         app("ir_byte_signature_returns_v1", [target.signature.clone()]),
                         values,
                     ],
@@ -239,8 +239,8 @@ impl FetchedSite {
         let returned = app(
             "ir_byte_return_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 arguments.clone(),
@@ -256,8 +256,8 @@ impl FetchedSite {
             app(
                 "ir_byte_return_to_caller_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     frame.returning.clone(),
                     frame.caller.clone(),
                     frame.tail.clone(),
@@ -297,7 +297,7 @@ impl FetchedSite {
             app(
                 "ir_byte_world_pop_shape_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     frame.memory.clone(),
                     frame.host.clone(),
                     frame.owner.clone(),

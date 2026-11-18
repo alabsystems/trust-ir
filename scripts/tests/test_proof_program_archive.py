@@ -21,7 +21,10 @@ The cases:
   and so does an archive copied out of any repository;
 * a `*.md` glob in the allowlist, which reaches the archive's Markdown, FAILS
   the publish gate, while the same scratch tree reached under a differently
-  cased path (a case-insensitive volume) PASSES rather than being refused.
+  cased path (a case-insensitive volume) PASSES rather than being refused;
+* the scratch tree carries every `scripts/` file that importing the pin rule
+  loads, derived from the interpreter rather than listed here, and a tree
+  that cannot import it is refused before any case runs on it.
 
 The public snapshot never ships `reports/` (nor `docs/`), so there, and only
 there, the live case is skipped. The snapshot test is the one
@@ -39,7 +42,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Tuple
+from typing import List, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE_REL = Path("reports") / "2026-09-17-two-language-proof-program"
@@ -47,6 +50,46 @@ CHECK = "check_archive.sh"
 # The whole run takes about 6 s (measured 2026-10-01); a hung `shasum` or
 # `git` must not hold gate 0 for ever.
 TIMEOUT_SECONDS = 600
+# What `check_archive.sh` imports from the repository's `scripts/` (its pin
+# gate puts `$REPO/scripts` first on `sys.path` and imports the pin rule).
+ARCHIVE_IMPORTS = ("pin_rewrite",)
+
+# Imports the named modules with the given `scripts/` first on `sys.path`, the
+# way the checker does, and prints every file under that directory the
+# interpreter loaded for them. `-I` keeps the working directory, PYTHONPATH and
+# user site off the path, so nothing outside `scripts/` can stand in for a
+# missing sibling.
+_LOADED_FROM_SCRIPTS = r"""
+import sys
+from pathlib import Path
+scripts = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(scripts))
+for name in sys.argv[2:]:
+    __import__(name)
+for module in list(sys.modules.values()):
+    origin = getattr(module, "__file__", None)
+    if origin and scripts in Path(origin).resolve().parents:
+        print(Path(origin).resolve().relative_to(scripts).as_posix())
+"""
+
+
+def scripts_loaded_by(scripts: Path, names: Sequence[str]) -> List[str]:
+    """The files under `scripts` (relative to it) that importing `names`
+    loads, sibling imports included, read from the interpreter's own
+    `sys.modules` rather than from a list kept here: a new sibling import of
+    the pin rule reaches the scratch tree without an edit to this file.
+
+    Raises when the import fails, naming the directory and the error."""
+    done = subprocess.run(
+        ["python3", "-I", "-B", "-c", _LOADED_FROM_SCRIPTS, str(scripts), *names],
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT_SECONDS,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise AssertionError(f"importing {', '.join(names)} from {scripts} failed:\n{done.stdout}{done.stderr}")
+    return sorted(set(done.stdout.splitlines()))
 
 _SPEC = importlib.util.spec_from_file_location(
     "check_enforcement_links_for_archive", ROOT / "scripts" / "check_enforcement_links.py"
@@ -82,10 +125,16 @@ def archive_verdict(root: Path) -> Tuple[str, str]:
 
 def scratch_repository(tmp: Path) -> Path:
     """A minimal git work tree carrying what `check_archive.sh` reads: the
-    archive, `scripts/pin_rewrite.py` (the pin rule), `publish/manifest.txt`
+    archive, `scripts/pin_rewrite.py` (the pin rule) and every other
+    `scripts/` file importing it loads (`scripts_loaded_by`), `publish/manifest.txt`
     and `Cargo.toml` (the export it computes), and a `docs/` marker so the
     tree is a development checkout, not a snapshot. Nothing is committed: the
     checker reads tracked AND untracked files.
+
+    The tree is refused unless its own `scripts/` imports the pin rule and
+    loads the same files the live tree does. A scratch tree missing a sibling
+    module (2026-11-15: `ay_exec_policy_owner`) killed the checker in its pin
+    gate, before the publish gate the red controls below assert on.
 
     The tree is returned through a SYMLINK, on purpose: `git rev-parse
     --show-toplevel` answers the physical path, and before the checker
@@ -98,10 +147,19 @@ def scratch_repository(tmp: Path) -> Path:
     dest = tmp / "repo"
     dest.symlink_to(real, target_is_directory=True)
     shutil.copytree(ROOT / ARCHIVE_REL, dest / ARCHIVE_REL, ignore=shutil.ignore_patterns("__pycache__"))
-    for rel in ("scripts/pin_rewrite.py", "publish/manifest.txt", "Cargo.toml"):
+    loaded = scripts_loaded_by(ROOT / "scripts", ARCHIVE_IMPORTS)
+    for name in ARCHIVE_IMPORTS:
+        if f"{name}.py" not in loaded:
+            raise AssertionError(f"importing {name} did not load scripts/{name}.py: {loaded}")
+    for rel in [f"scripts/{path}" for path in loaded] + ["publish/manifest.txt", "Cargo.toml"]:
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / rel, dest / rel)
     (dest / "docs").mkdir()
+    scratch_loaded = scripts_loaded_by(dest / "scripts", ARCHIVE_IMPORTS)
+    if scratch_loaded != loaded:
+        raise AssertionError(
+            f"the scratch scripts/ loads {scratch_loaded} for {', '.join(ARCHIVE_IMPORTS)}, the live one {loaded}"
+        )
     return dest
 
 
@@ -191,6 +249,22 @@ class TheArchiveIsAStandingCheck(unittest.TestCase):
             verdict, output = archive_verdict(repo)
             self.assertEqual(verdict, "fail", output)
             self.assertIn("is missing from a development checkout", output)
+
+    def test_the_derived_file_set_follows_sibling_imports_and_refuses_a_missing_one(self) -> None:
+        # The derivation follows sibling imports transitively, leaves the
+        # standard library and unimported siblings out, and refuses a tree
+        # whose import fails instead of handing back a short list.
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = Path(tmp) / "scripts"
+            scripts.mkdir()
+            (scripts / "top.py").write_text("import middle\n", encoding="utf-8")
+            (scripts / "middle.py").write_text("import json\nimport leaf\n", encoding="utf-8")
+            (scripts / "leaf.py").write_text("", encoding="utf-8")
+            (scripts / "unrelated.py").write_text("", encoding="utf-8")
+            self.assertEqual(scripts_loaded_by(scripts, ("top",)), ["leaf.py", "middle.py", "top.py"])
+            (scripts / "leaf.py").unlink()
+            with self.assertRaisesRegex(AssertionError, r"No module named 'leaf'"):
+                scripts_loaded_by(scripts, ("top",))
 
     def test_only_a_public_snapshot_skips(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

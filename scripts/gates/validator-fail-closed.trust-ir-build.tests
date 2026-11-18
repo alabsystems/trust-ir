@@ -84,6 +84,7 @@ box_deref  # Box deref validity fact: each rule reached by one mutation of an ac
 # Opt-in source-value-operational: bytev1_clean_uint32_runtime (qualified explicitly; not a zero-test default gate claim)
 single_inhabited_enum  # Wire65 selected payload, nominal empty type retention, no inactive storage/value authority, observed parity/refusals
 source_bound_calls  # closed genuine same-island defined-callee source composition; old parametric TV unchanged
+source_bound_byte_entry  # opt-in source-value-operational: whole void byte effects; qualified explicitly, never a zero-test default pass
 fn_item_relocation  # Nominal item identity survives ordinary merge/template relocation; valid equal-row array aliases retain exact raw identity and call-boundary refusal priority.
 tensor_contract  # the tensor region (PKG-U13a): InvalidTensorType at every type occurrence (a float element by name), TensorContract static rules 1-4 (InvalidTensorContract), codegen refusal (UnlowerableForCodegen)
 tensor_map_reduce_view  # PKG-U13c: TensorMap/TensorReduce/TensorView against hand loops, their UB by message, rules M1-M5/R1-R3/V1-V6 refused by name (InvalidTensorMap/Reduce/View) on both validation paths, codegen refusal (UnlowerableForCodegen)

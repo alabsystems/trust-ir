@@ -31,6 +31,8 @@
 //!   into the canonical table. It stays unique to its binder: an allocation
 //!   shared with any other position would make that position read as this
 //!   binder's body. Its CONTENT is rebuilt and shared normally.
+//!   An ordinary input alias of that allocation also stays outside both
+//!   sharing tables, and makes its ancestors non-shareable.
 //!
 //! This is a representation change, not proof authority: no declaration,
 //! axiom, or interpretation is installed, and every consumer must still close
@@ -154,6 +156,7 @@ impl TermScope {
             error: None,
             canonical: HashSet::new(),
             memo: HashMap::new(),
+            input_apps: HashMap::new(),
             binder_free: true,
             walk_depth: 0,
         };
@@ -204,6 +207,12 @@ struct Interner<'a> {
     // Input address -> (replacement, binder-free). The input graph is held by
     // the caller for the whole call, so these addresses stay live and stable.
     memo: HashMap<usize, (Option<Arc<Expr>>, bool)>,
+    // Exact child addresses of completed binder-free INPUT applications. All
+    // original children stay live in the retained forest, even when preparing
+    // them changed the output children. This is call-local representation
+    // reuse, with at most one entry per charged completed input, not a proof
+    // cache or a structural equality/hash walk over unvisited descendants.
+    input_apps: HashMap<(usize, usize), Arc<Expr>>,
     // Conjunction accumulator for the node currently being folded, in the same
     // save/restore style the closing walk uses for declaration footprints.
     binder_free: bool,
@@ -230,6 +239,24 @@ impl Interner<'_> {
             .bindings
             .get(&(kind, Arc::as_ptr(body) as usize))
             .map(|binding| binding.id)
+    }
+
+    fn registered_root(&self, address: usize) -> bool {
+        // A registered body root keeps its allocation identity, including
+        // when the same allocation also occurs at an ordinary input position.
+        [BinderKind::Lambda, BinderKind::Pi, BinderKind::Let]
+            .iter()
+            .any(|kind| self.scope.bindings.contains_key(&(*kind, address)))
+    }
+
+    fn input_app(expression: &Arc<Expr>) -> Option<(usize, usize)> {
+        let ExprKind::App(function, argument) = expression.kind() else {
+            return None;
+        };
+        Some((
+            Arc::as_ptr(function) as usize,
+            Arc::as_ptr(argument) as usize,
+        ))
     }
 
     /// Replace a binder-free node with its canonical allocation. Never called
@@ -263,12 +290,33 @@ impl Interner<'_> {
             return None;
         }
         self.stats.examined += 1;
+        self.stats.max_depth = self.stats.max_depth.max(self.walk_depth + 1);
+        let registered_root = self.registered_root(address);
+        let input_app = if registered_root {
+            None
+        } else {
+            Self::input_app(expression)
+        };
+        if let Some(node) = input_app.and_then(|key| self.input_apps.get(&key)).cloned() {
+            // The request and this fresh shell's depth were checked above.
+            // Exact live child identities select a completed binder-free
+            // result; no descendant is examined speculatively or for free.
+            let replacement = (!Arc::ptr_eq(&node, expression)).then_some(node);
+            if replacement.is_some() {
+                self.stats.shared += 1;
+            }
+            self.memo.insert(address, (replacement.clone(), true));
+            return replacement;
+        }
         let parent_free = std::mem::replace(&mut self.binder_free, true);
         self.walk_depth += 1;
         self.stats.max_depth = self.stats.max_depth.max(self.walk_depth);
         let rebuilt = StackBoundary(self).fold_expr_opt(expression);
         self.walk_depth -= 1;
-        let binder_free = std::mem::replace(&mut self.binder_free, parent_free);
+        // Identity belongs to the allocation, not only to its visit position.
+        // An ordinary alias must not put a registered body into canonical,
+        // nor let an ancestor bypass this exclusion through another memo.
+        let binder_free = std::mem::replace(&mut self.binder_free, parent_free) && !registered_root;
         self.binder_free &= binder_free;
         if self.error.is_some() {
             return None;
@@ -278,6 +326,9 @@ impl Interner<'_> {
         }
         let node = rebuilt.map(Arc::new).unwrap_or_else(|| expression.clone());
         let node = if binder_free { self.intern(node) } else { node };
+        if binder_free && let Some(key) = input_app {
+            self.input_apps.insert(key, node.clone());
+        }
         let replacement = (!Arc::ptr_eq(&node, expression)).then_some(node);
         self.memo
             .insert(address, (replacement.clone(), binder_free));

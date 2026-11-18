@@ -323,6 +323,31 @@ mutual
   termination_by sizeOf variants
 end
 
+/-- Capture-only coverage uses the existing canonical field walk. -/
+def coveredCaptureImage (fields : List (Nat × Plan)) (image : ByteImage) : Except SemError (Option Nat) :=
+  coveredFields fields image
+
+/-- Complete child coverage supplies the actual existing field walk's success.
+No padding byte, target identity or decoded value is inferred by this lemma. -/
+theorem coveredCaptureImage_of_children (fields : List (Nat × Plan)) (image : ByteImage)
+    (complete : ∀ offset child, (offset,child) ∈ fields →
+      covered child (image.slice offset child.layout.size) = .ok none) :
+    coveredCaptureImage fields image = .ok none := by
+  unfold coveredCaptureImage
+  induction fields with
+  | nil => rw [coveredFields] <;> rfl
+  | cons field rest ih =>
+    obtain ⟨offset,child⟩ := field
+    rw [coveredFields,complete offset child (by simp)]
+    simp only [Bind.bind,Except.bind,Pure.pure,Except.pure,pure_bind]
+    rw [ih (fun actualOffset actualChild member => complete actualOffset actualChild (List.mem_cons_of_mem _ member))] <;> rfl
+
+/-- The same field decoder as ordinary aggregate payloads, preserving interior
+Char and Uninit rules. No code identity is derived from this byte operation. -/
+def decodeCaptureImage (model : ByteModel) (order : FunctionAddressOrder) (memory : Memory)
+    (fields : List (Nat × Plan)) (image : ByteImage) : Except SemError (List Value) :=
+  decodeFields model order memory fields image false
+
 /-- Constructor closure and the actual scalar leaf contract required by
 producer-plan decoding. Error assumptions retain the original refusals. -/
 structure DecodeRules (valid : Value → Prop) (error : SemError → Prop) : Prop where
@@ -1372,5 +1397,20 @@ theorem decode_fnItem_array (model : ByteModel) (order : FunctionAddressOrder)
       pure (Value.array (CompactArray.Packed.uniform (count + 1) value))) = _
     rw [decodeCore_fnItem]
     rfl
+
+/-- Canonical capture coverage retains the same closed error domain. -/
+theorem coveredCaptureImage_errors (error : SemError → Prop)
+    (typeErrors : ∀ message, error (.typeError message)) (undefined : ∀ message, error (.ub message))
+    (fields : List (Nat × Plan)) (image : ByteImage) :
+    ByteImage.BlockResult (fun _ => True) error (coveredCaptureImage fields image) :=
+  covered_fields_errors error typeErrors undefined fields image
+
+/-- Capture decoding inherits every original nested-value validity rule. -/
+theorem decodeCaptureImage_valid (valid : Value → Prop) (error : SemError → Prop)
+    (rules : DecodeRules valid error) (model : ByteModel) (order : FunctionAddressOrder)
+    (memory : Memory) (fields : List (Nat × Plan)) (image : ByteImage) :
+    ByteImage.BlockResult (fun values => ∀ value ∈ values, valid value) error
+      (decodeCaptureImage model order memory fields image) :=
+  decodeFields_valid valid error rules model order memory fields image false
 
 end TrustIr.AggregateMemory

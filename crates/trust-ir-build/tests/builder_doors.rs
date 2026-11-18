@@ -1048,3 +1048,113 @@ fn intern_func_type_never_merges_nominally_distinct_signatures() {
         4
     );
 }
+
+/// The fixed context is public preprocessing for an ordinary non-TLA consumer.
+/// A well-typed false claim can be materialized, but still has to earn replay.
+#[test]
+fn scoped_materialization_context_is_preprocessing_for_external_consumers() {
+    use trust_ir_build::clean_kernel::{Environment, Expr, Level, Name, TypeChecker};
+    use trust_ir_build::proof_assembly::ProofLimits;
+    use trust_ir_build::proof_components::{
+        OwnedProofCapture, ProofComponents, ScopedMaterializationContext,
+        ScopedProofComponentBundle,
+    };
+    use trust_ir_build::scoped_local::LocalScope;
+    use trust_ir_build::term_scope::TermScopeLimits;
+
+    let mut environment = Environment::new();
+    environment.init_nat().unwrap();
+    environment.init_eq().unwrap();
+    for false_claim in [false, true] {
+        let nat = Expr::const_str("Nat");
+        let mut scope = LocalScope::new();
+        let input = scope.try_local(nat.clone()).unwrap();
+        let mut parts = ProofComponents::new(
+            "external.materialization.consumer",
+            ProofLimits {
+                operations: 100_000,
+                ..Default::default()
+            },
+        );
+        parts.set_base(&scope, vec![]).unwrap();
+        parts
+            .extend_base(OwnedProofCapture::Parameter(input.clone()))
+            .unwrap();
+        let original_value = Expr::nat_lit(7);
+        let unused = parts
+            .bind_scoped_owned(&mut scope, &[], nat.clone(), original_value.clone())
+            .unwrap();
+        let right = if false_claim {
+            Expr::nat_lit(0)
+        } else {
+            input.term().clone()
+        };
+        let goal = Expr::apps(
+            Expr::const_(Name::from_string("Eq"), vec![Level::succ(Level::zero())]),
+            [nat.clone(), input.term().clone(), right],
+        );
+        // The explicit external type and both method calls must be available
+        // from the ordinary non-test library compiled for this integration test.
+        let context: ScopedMaterializationContext = parts
+            .prepare_scoped_materialization_context(&scope, std::slice::from_ref(&input))
+            .unwrap();
+        let candidates = parts
+            .materialize_scoped_terms_in_context(&scope, &context, std::slice::from_ref(&goal))
+            .unwrap();
+        assert_eq!(candidates, vec![goal.clone()]);
+        let candidate = candidates.into_iter().next().unwrap();
+        let claim = scope.close(&input.pi(candidate.clone())).unwrap();
+        // The same reflexivity proof proves the positive goal, but cannot
+        // prove the false forall x : Nat, x = 0 claim in the negative control.
+        let proof = Expr::apps(
+            Expr::const_(
+                Name::from_string("Eq.refl"),
+                vec![Level::succ(Level::zero())],
+            ),
+            [nat.clone(), input.term().clone()],
+        );
+        let bundle = parts
+            .close_scoped(
+                &scope,
+                input.lam(proof),
+                candidate,
+                TermScopeLimits::default(),
+            )
+            .unwrap();
+        let wire = bundle.encode_with_claim(&claim).unwrap();
+        let (decoded, transported) = ScopedProofComponentBundle::decode_with_claim(&wire).unwrap();
+        assert_eq!(transported, claim);
+        assert_eq!(decoded.outer_count, 1);
+        assert_eq!(decoded.declarations.len(), 2);
+        assert!(
+            decoded.declarations.iter().any(|declaration| {
+                declaration.id == unused.local.id()
+                    && declaration.type_ == nat
+                    && declaration.value.as_ref() == Some(&original_value)
+            }),
+            "the original valid unused Nat 7 definition must survive the wire"
+        );
+        // Both transported claims are well-typed propositions. The negative
+        // control differs only in its semantic claim, never in its inventory.
+        let mut checker = TypeChecker::new(&environment);
+        checker.set_allow_unsafe(false);
+        checker.set_allow_partial(false);
+        checker.set_heartbeat_limit(1_000_000);
+        checker.set_max_cache_entries(100_000);
+        checker.check_type(&transported, &Expr::prop()).unwrap();
+        assert!(!checker.heartbeat_spent());
+        let replay = decoded.replay(&environment, &transported, 2_000_000);
+        if false_claim {
+            let error = replay
+                .err()
+                .expect("materializing a well-typed false goal grants no proof authority");
+            assert!(error.contains("TypeMismatch"), "{error}");
+            assert!(
+                !error.contains("BudgetExhausted") && !error.contains("HeartbeatExceeded"),
+                "{error}"
+            );
+        } else {
+            replay.unwrap();
+        }
+    }
+}

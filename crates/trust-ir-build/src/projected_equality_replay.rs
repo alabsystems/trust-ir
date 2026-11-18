@@ -42,13 +42,17 @@ pub enum ProjectedCaseStrategy {
 /// Producer work observations, never evidence or an additional work allowance.
 /// `initialization_complete` distinguishes unavailable initialization counters
 /// from a completed initialization that happened to consume zero visits.
-/// These count the existing case-context ledger, not initial input-forest closure or
-/// kernel heartbeats, which retain their separate limits.
+/// These count the existing case-context ledger, including initial dynamic
+/// telescope admission. Calls without dynamic captures retain their separate
+/// initial input-forest closure limit. Kernel heartbeats remain separate.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectedEqualityWork {
     pub initialization_complete: bool,
+    /// Initial dynamic telescope admission, charged to the original owner.
+    pub initial_capture_context_visits: usize,
     pub normalization_dependency_visits: usize,
     pub normalization_materialization_visits: usize,
+    /// Prepaid inventory admission units, counted once for each actual build.
     pub normalization_inventory_visits: usize,
     /// Charged identity/prefix checks for explicitly materialized definitions.
     pub normalization_cached_definition_visits: usize,
@@ -627,7 +631,8 @@ fn replay_projected_equality_profiled<L: ScopedLocalAllocator>(
     // Retained component references are registered locals too. Authenticate
     // their actual handles through the same owner before materialization;
     // never admit an erased id or a caller-supplied defining value instead.
-    let retained = components.retained_normalization_locals(allocator.local_scope())?;
+    let (retained, capture_inventory_work) =
+        components.normalization_locals_with_dynamic(allocator.local_scope(), dynamic)?;
     let mut allowed = globals.to_vec();
     let mut ids = std::collections::HashSet::new();
     for local in globals {
@@ -640,14 +645,69 @@ fn replay_projected_equality_profiled<L: ScopedLocalAllocator>(
             allowed.push(local);
         }
     }
-    let input = [observed_type, result_type, project, source, expected];
-    let (materialized, _) =
-        allocator
+    // Validate every supplied capture type/value under its actual preceding
+    // telescope before admitting that capture to the body inputs. All original
+    // definitions still remain mandatory complete replay inputs.
+    let positions = if dynamic.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        allowed
+            .iter()
+            .enumerate()
+            .map(|(index, local)| (local.id(), index))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let mut input = Vec::new();
+    let mut visible = Vec::new();
+    for capture in dynamic {
+        let position = *positions
+            .get(&capture.local().id())
+            .ok_or("dynamic normalization capture lost its owner")?;
+        input.push(capture.local().ty().clone());
+        visible.push(position);
+        if let OwnedProofCapture::Definition { value, .. } = capture {
+            input.push(value.as_ref().clone());
+            visible.push(position);
+        }
+    }
+    let capture_roots = input.len();
+    input.extend([observed_type, result_type, project, source, expected]);
+    visible.extend([allowed.len(); 5]);
+    let materialized = if dynamic.is_empty() {
+        let (materialized, _) = allocator
             .local_scope()
-            .close_external_forest(&input, &allowed, &[allowed.len(); 5]);
-    let input = materialized.map_err(|e| e.to_string())?;
-    let (context, _, normalization) =
-        components.untrusted_normalization_context_profiled(allocator.local_scope(), &input)?;
+            .close_external_forest(&input, &allowed, &visible);
+        materialized.map_err(|error| error.to_string())?
+    } else {
+        let before = components.context_work_remaining()?;
+        let materialized = components.charged_materialize_forest(
+            allocator.local_scope(),
+            &allowed,
+            &input,
+            &visible,
+        );
+        work.initial_capture_context_visits = before
+            .checked_sub(components.context_work_remaining()?)
+            .ok_or("projected capture materialization work overflow")?;
+        materialized.map_err(|error| format!("projected capture telescope: {error}"))?
+    };
+    if materialized[..capture_roots]
+        .iter()
+        .any(Expr::has_loose_bvars)
+    {
+        return Err("projected capture telescope retains loose ordinary bound variables".into());
+    }
+    let input = &materialized[capture_roots..];
+    let (context, _, mut normalization) = components
+        .untrusted_normalization_context_with_captures_profiled(
+            allocator.local_scope(),
+            input,
+            dynamic,
+        )?;
+    normalization.inventory_visits = normalization
+        .inventory_visits
+        .checked_add(capture_inventory_work)
+        .ok_or("dynamic normalization inventory work overflow")?;
     let observed = input[0].clone();
     let result = input[1].clone();
     let project = input[2].clone();
@@ -660,17 +720,39 @@ fn replay_projected_equality_profiled<L: ScopedLocalAllocator>(
     // premise. Materialize the same owner's identity binder before WHNF.
     let identity_local = allocator.allocate_local(result.clone())?;
     let identity = identity_local.lam(identity_local.term().clone());
-    let (identity, identity_work) =
-        allocator
-            .local_scope()
-            .close_external_forest(&[identity], &allowed, &[allowed.len()]);
-    let identity = identity.map_err(|e| e.to_string())?.remove(0);
-    let normalization_work = normalization.total()?.saturating_add(identity_work.visits);
+    let (identity, identity_work) = if dynamic.is_empty() {
+        let (identity, stats) =
+            allocator
+                .local_scope()
+                .close_external_forest(&[identity], &allowed, &[allowed.len()]);
+        (identity.map_err(|error| error.to_string())?, stats.visits)
+    } else {
+        let before = components.context_work_remaining()?;
+        let identity = components.charged_materialize_forest(
+            allocator.local_scope(),
+            &allowed,
+            &[identity],
+            &[allowed.len()],
+        )?;
+        let visits = before
+            .checked_sub(components.context_work_remaining()?)
+            .ok_or("projected identity materialization work overflow")?;
+        (identity, visits)
+    };
+    let identity = identity
+        .into_iter()
+        .next()
+        .ok_or("projected identity lost its root")?;
+    let normalization_work = normalization
+        .total()?
+        .checked_add(identity_work)
+        .and_then(|work_| work_.checked_add(work.initial_capture_context_visits))
+        .ok_or("projected initialization work overflow")?;
     work.normalization_dependency_visits = normalization.dependency_visits;
     work.normalization_materialization_visits = normalization.materialization_visits;
     work.normalization_inventory_visits = normalization.inventory_visits;
     work.normalization_cached_definition_visits = normalization.cached_definition_visits;
-    work.identity_materialization_visits = identity_work.visits;
+    work.identity_materialization_visits = identity_work;
     work.initialization_complete = true;
     work.total_context_visits = normalization_work;
     let projected_source = Expr::app(project.clone(), source.clone());
@@ -1600,5 +1682,13 @@ mod recomputed_tests;
 mod materialized_context_tests;
 
 #[cfg(test)]
+#[path = "projected_dynamic_capture_tests.rs"]
+mod dynamic_capture_tests;
+
+#[cfg(test)]
 #[path = "projected_equality_list_receiver_tests.rs"]
 mod list_receiver_tests;
+
+#[cfg(test)]
+#[path = "projected_equality_capture_tests.rs"]
+mod capture_tests;

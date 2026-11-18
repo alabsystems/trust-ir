@@ -351,10 +351,10 @@ impl<'a, A: Algebra> Decoder<'a, '_, A> {
             });
         }
         let op = required_str(object.get("op"), &format!("{path}.op"))?;
-        if self.policy == DecodePolicy::CanonicalArithmeticFree {
-            if let Some(label) = arithmetic_op_label(op) {
-                return Err(DecodeError::new(arithmetic_refusal(label)));
-            }
+        if self.policy == DecodePolicy::CanonicalArithmeticFree
+            && let Some(label) = arithmetic_op_label(op)
+        {
+            return Err(DecodeError::new(arithmetic_refusal(label)));
         }
         match op {
             "not" | "neg" => {
@@ -606,10 +606,10 @@ fn decode_sort(written: &str, path: &str, policy: DecodePolicy) -> Result<WireSo
         "seq" | "Seq" => Ok(WireSort::Seq),
         _ => {
             let mut chars = sort.chars();
-            if let (Some(ch), None) = (chars.next(), chars.next()) {
-                if ch.is_ascii_uppercase() {
-                    return Ok(WireSort::TypeParam(ch));
-                }
+            if let (Some(ch), None) = (chars.next(), chars.next())
+                && ch.is_ascii_uppercase()
+            {
+                return Ok(WireSort::TypeParam(ch));
             }
             Err(DecodeError::new(match policy {
                 DecodePolicy::NativeReplay => format!(

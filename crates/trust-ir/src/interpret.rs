@@ -72,7 +72,7 @@ mod scalar_bool;
 mod tensor_gather_scatter;
 mod tensor_region;
 pub use module_policy::InterpreterModule;
-use module_policy::ModulePreflight;
+use module_policy::{ModuleAbiPreflights, ModulePreflight};
 
 pub use observation_word::{ObservationWord, WordLengthOverflow};
 
@@ -1081,6 +1081,14 @@ pub struct Interpreter<'m> {
     functions: Option<Arc<OnceLock<crate::function_item::FunctionItemIndex>>>,
     /// Borrowed only from an `InterpreterModule` for this exact immutable module.
     module_preflight: Option<&'m std::sync::OnceLock<ModulePreflight>>,
+    /// A direct interpreter also retains that exact immutable module borrow.
+    local_module_preflight: std::sync::OnceLock<ModulePreflight>,
+    /// Storage geometry depends only on the same immutable module borrow.
+    /// ABI/current-option/supplied-function checks still precede storage.
+    module_storage_preflight: Option<&'m std::sync::OnceLock<bool>>,
+    local_module_storage_preflight: std::sync::OnceLock<bool>,
+    module_typed_abi_preflights: Option<&'m ModuleAbiPreflights>,
+    local_module_typed_abi_preflights: ModuleAbiPreflights,
     options: InterpretOptions,
     /// The host model of bodyless declarations (WS2.12); `None` = every call to
     /// a declaration is `UnsupportedCall`.
@@ -1110,6 +1118,11 @@ impl<'m> Interpreter<'m> {
             module: None,
             functions: None,
             module_preflight: None,
+            local_module_preflight: std::sync::OnceLock::new(),
+            module_storage_preflight: None,
+            local_module_storage_preflight: std::sync::OnceLock::new(),
+            module_typed_abi_preflights: None,
+            local_module_typed_abi_preflights: ModuleAbiPreflights::default(),
             options: InterpretOptions::default(),
             host: None,
             float_zero_choice_observer: None,
@@ -1121,6 +1134,11 @@ impl<'m> Interpreter<'m> {
             module: Some(module),
             functions: Some(Arc::new(OnceLock::new())),
             module_preflight: None,
+            local_module_preflight: std::sync::OnceLock::new(),
+            module_storage_preflight: None,
+            local_module_storage_preflight: std::sync::OnceLock::new(),
+            module_typed_abi_preflights: None,
+            local_module_typed_abi_preflights: ModuleAbiPreflights::default(),
             options: InterpretOptions::default(),
             host: None,
             float_zero_choice_observer: None,
@@ -1646,19 +1664,24 @@ impl<'m> Interpreter<'m> {
         args: impl IntoIterator<Item = InterpretValue>,
     ) -> InterpretResult<InterpretOutcome> {
         // Cache only policy facts tied to this immutable module borrow.
-        // Typed descriptors still need the complete current-option/supplied-body
-        // preflight, including unused and FnPtr-only signatures, on every run.
+        // Typed descriptors retain complete current-option/module checks,
+        // including unused and FnPtr-only signatures. Successful module-only
+        // facts may be shared; a supplied body's own ABI is checked each run.
         let preflight = self.module.map_or(ModulePreflight::Ready, |module| {
-            self.module_preflight.map_or_else(
-                || ModulePreflight::inspect(module),
-                |owner| *owner.get_or_init(|| ModulePreflight::inspect(module)),
-            )
+            let cache = self
+                .module_preflight
+                .unwrap_or(&self.local_module_preflight);
+            *cache.get_or_init(|| ModulePreflight::inspect(module))
         });
         let invalid_storage = match preflight {
             ModulePreflight::NeedsTypedAbiPreflight => {
                 self.preflight_typed_abi(function)?;
-                self.module
-                    .is_some_and(|module| module.first_storage_violation().is_some())
+                self.module.is_some_and(|module| {
+                    let cache = self
+                        .module_storage_preflight
+                        .unwrap_or(&self.local_module_storage_preflight);
+                    *cache.get_or_init(|| module.first_storage_violation().is_some())
+                })
             }
             ModulePreflight::InvalidStorage => true,
             ModulePreflight::Ready => false,

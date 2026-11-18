@@ -2,7 +2,7 @@
 -- Licensed under the Apache License, Version 2.0
 
 import TrustIr.Proofs.IntResidue
-import TrustIr.Proofs.MemorySafety
+import TrustIr.Proofs.SemRunEquations
 import TrustIr.Proofs.FunctionMemoryProps
 
 namespace TrustIr

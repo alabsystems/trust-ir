@@ -65,6 +65,14 @@ import TrustIr.Proofs.SingleInhabitedCodecProps
 import TrustIr.Proofs.FunctionItemProps
 import TrustIr.Proofs.BindingFrameSourceProps
 import TrustIr.Proofs.MemorySafety
+import TrustIr.Proofs.ContextualAllocationChecks
+import TrustIr.Proofs.ClosureAllocationChecks
+import TrustIr.Proofs.DecodedClosureStorageChecks
+import TrustIr.Proofs.OriginalClosureMemoryReadback
+import TrustIr.Proofs.OriginalClosureMemoryReadbackChecks
+import TrustIr.Proofs.BorrowedClosureCalls
+import TrustIr.Proofs.BorrowedClosureCallChecks
+import TrustIr.Proofs.OriginalClosureMemoryChecks
 import TrustIr.Proofs.HeldMemoryFrames
 import TrustIr.Proofs.SSAFreshFrames
 import TrustIr.Proofs.TransformCorrectness
@@ -265,3 +273,4 @@ import TrustIr.Proofs.ImageMapStepAudit
 import TrustIr.Proofs.ImageMapCacheAudit
 
 import TrustIr.Proofs.UnsignedDivisionWpControls
+import TrustIr.Proofs.UnsignedRemainderWp

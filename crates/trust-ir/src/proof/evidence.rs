@@ -570,11 +570,23 @@ pub const KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1: &str = "clean_backend_sou
 /// context/memory/address -> memory-result functions against island Definitions.
 pub const KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1: &str = "clean_backend_readonly_calls_v1";
 
+/// Whole-effect C(Ptr,Ptr)->void byte-entry source equations. The reader
+/// reconstructs every actual instruction and complete context/output access
+/// roster using canonical ByteV1 operations; no pointer geometry is authority.
+pub const KERNEL_ANCHOR_CLEAN_BACKEND_BYTE_ENTRY_V1: &str = "clean_backend_byte_entry_v1";
+
+/// Canonical four-pointer, two-read/two-write, U64-return whole ByteV1 effect family.
+pub const KERNEL_ANCHOR_CLEAN_BACKEND_WORD_STATUS_ENTRY_V1: &str =
+    "clean_backend_word_status_entry_v1";
+
 /// The closed source-family anchors; each has its own rederived profile.
 pub fn is_clean_source_call_anchor(anchor: &str) -> bool {
     matches!(
         anchor,
-        KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1 | KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1
+        KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1
+            | KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1
+            | KERNEL_ANCHOR_CLEAN_BACKEND_BYTE_ENTRY_V1
+            | KERNEL_ANCHOR_CLEAN_BACKEND_WORD_STATUS_ENTRY_V1
     )
 }
 

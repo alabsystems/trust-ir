@@ -19,11 +19,11 @@ fn limits() -> Limits {
 }
 
 fn model() -> MachineModel {
-    MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_transport_context"),
-        providers: constant("test_transport_providers"),
-    }
+    MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_transport_context"),
+        constant("test_transport_providers"),
+    )
 }
 
 fn current() -> Current {

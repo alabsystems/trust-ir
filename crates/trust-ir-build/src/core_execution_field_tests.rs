@@ -798,10 +798,11 @@ fn ranked_site_catalog_proves_original_guard_and_refuses_wrong_catalogs() {
     let changed = |items: Vec<Expr>| {
         let mut fields: Vec<_> = fields.iter().map(|field| (*field).clone()).collect();
         fields[4] = list("IRByteSiteV1", &items);
-        MachineModel {
-            context: app("IRByteContextV1.mk", fields),
-            ..model.clone()
-        }
+        MachineModel::from_terms(
+            model.clone().world_type().clone(),
+            app("IRByteContextV1.mk", fields),
+            model.clone().providers().clone(),
+        )
     };
     let mut reversed = sites.clone();
     reversed.reverse();

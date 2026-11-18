@@ -243,11 +243,11 @@ fn composition() -> Composition {
     let providers = scope
         .try_local(app("IRByteProvidersV1", [constant("Nat")]))
         .unwrap();
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: context.term().clone(),
-        providers: providers.term().clone(),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        context.term().clone(),
+        providers.term().clone(),
+    );
     let a = scope.try_local(constant("Nat")).unwrap();
     let b = scope.try_local(constant("Nat")).unwrap();
     let initial = scope.try_local(model.config_type()).unwrap();
@@ -360,22 +360,22 @@ fn direct_run_function_composition_replays_actual_byte_law_with_no_new_locals() 
         let (context, providers, reached) = match lane {
             0 => (
                 empty_context(),
-                model.providers.clone(),
+                model.providers().clone(),
                 result.reached.clone(),
             ),
             1 => (
-                model.context.clone(),
+                model.context().clone(),
                 unused_provider(),
                 result.reached.clone(),
             ),
             2 => (
-                model.context.clone(),
-                model.providers.clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 parameters[5].term().clone(),
             ),
             _ => (
-                model.context.clone(),
-                model.providers.clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 result.reached.clone(),
             ),
         };
@@ -408,11 +408,7 @@ fn direct_run_function_composition_replays_actual_byte_law_with_no_new_locals() 
 
 #[test]
 fn direct_run_composition_replays_closed_zero_fuel_without_execution_hypotheses() {
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: empty_context(),
-        providers: unused_provider(),
-    };
+    let model = MachineModel::from_terms(constant("Nat"), empty_context(), unused_provider());
     let memory = app(
         "IRByteMemoryV1.mk",
         [
@@ -491,9 +487,27 @@ fn direct_run_composition_preserves_exact_model_fuel_and_boundary_refusals() {
             ..
         } = composition();
         match mutation {
-            0 => second.model.world_type = constant("Bool"),
-            1 => second.model.context = constant("changed_context"),
-            2 => second.model.providers = constant("changed_providers"),
+            0 => {
+                second.model = MachineModel::from_terms(
+                    constant("Bool"),
+                    second.model.context().clone(),
+                    second.model.providers().clone(),
+                )
+            }
+            1 => {
+                second.model = MachineModel::from_terms(
+                    second.model.world_type().clone(),
+                    constant("changed_context"),
+                    second.model.providers().clone(),
+                )
+            }
+            2 => {
+                second.model = MachineModel::from_terms(
+                    second.model.world_type().clone(),
+                    second.model.context().clone(),
+                    constant("changed_providers"),
+                )
+            }
             _ => second.initial = first.initial.clone(),
         }
         let mut assembler = Assembler::new(&mut scope, limits()).unwrap();

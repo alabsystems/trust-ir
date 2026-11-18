@@ -14,9 +14,9 @@ use trust_ir_contract::trust_formula_v1::{
 
 #[path = "support/legacy_json_depth.rs"]
 mod compiler_json;
-#[path = "support/legacy_root_formula_v1.rs"]
+#[path = "support/legacy_root_formula.rs"]
 mod legacy_root;
-#[path = "support/legacy_wp_formula_v1.rs"]
+#[path = "support/legacy_wp_formula.rs"]
 mod legacy_wp;
 #[path = "support/legacy_native_json.rs"]
 mod native_json;

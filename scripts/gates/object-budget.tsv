@@ -1,0 +1,73 @@
+# Object budget allowlist, read by scripts/check_object_budget.py (gate 0 and
+# scripts/hooks/pre-push): the exact census of the files over 1 MiB, one row
+# per file, path<TAB>blob<TAB>bytes. Seeded 2026-11-15 from main.
+#
+# A row grants nothing by itself. A commit that introduces a blob over 1 MiB
+# (a new large file, or any edit of one) carries that blob's exact row here
+# in its own tree AND the trailer `Object-Budget: <path>: <reason>` in its
+# message; the check refuses either missing. At the range's tip every row
+# must be exactly the tip's file, so remove a row when its file goes or
+# shrinks under the budget. Rewrite the rows from the staged tree with
+#   python3 scripts/check_object_budget.py --update-allowlist
+# Generated evidence never qualifies: it belongs in the external evidence
+# store (docs/report-artifact-custody.md).
+crates/trust-ir-build/src/validate.rs	56701c299436e8a1a79430d83cd361ace0d3f66f	2023358
+docs/DECISIONS.md	aa0f505ae6d242b6b1845bab6400a6dd47f25159	1111415
+reports/2026-11-07-coro-lookup-byteimage-current/archive/artifact-manifest.json	4ca598d1177f1cec8a012645bce9412c243efc0a	1492041
+reports/2026-11-07-coro-lookup-storage-current/failed-77a91699/archive/artifact-manifest.json	13488e612c8ecaa8aa76bc4e29332dc3e1d1a6ec	1545565
+reports/2026-11-07-coro-lookup-storage-current/qualified-2298a8f8/archive/artifact-manifest.json	355576f8f5efaa77a75038dc6ae78606dbf80528	1946326
+reports/2026-11-07-coro-lookup-storage-current/qualified-2298a8f8/provenance.json	7048e233c6d9937463b9877932eaf9cd397eb1a4	1346403
+reports/2026-11-07-coro-lookup-typed-images-current/archive/artifact-manifest.json	f27b8dc6c9c389a7c175b25a0e4baac2306469fb	1523867
+reports/2026-11-07-coro-module-complete-archives/custody.json	9cf0cbbc3f0dce453d262a780b6a1ae2bf31c26e	2392697
+reports/2026-11-07-coro-module-complete-archives/manifest.json	931edc4c3ed7dfb6a68d9cac50a213c1d1fe8e4f	1350348
+reports/2026-11-07-coro-module-complete-archives/observer-history/first-manifest.json	723e8fe16394d12cae6d3bea8224ddcf56f78612	1348549
+reports/2026-11-07-function-lookup-current-archive/artifact-manifest.json	acde8fe3aea56a35cc0dbf19a6d7af953f6171b2	1213937
+reports/2026-11-07-function-lookup-current-archive/control-evidence/mutated-manifest-subset.json	6b68d5db9ad3323ab30307119ade916cf516106b	1213767
+reports/2026-11-08-decoded-cfg-qualification/complete-c8/artifact-manifest.json	43bd3ebe4a42f8110f941bd2ca177ff4fb020751	24669244
+reports/2026-11-08-decoded-cfg-qualification/current-3acc/artifact-manifest.json	d1b938e5760720aeff930b8872bda4c43ab06856	4769418
+reports/2026-11-08-decoded-cfg-qualification/current-3acc/custody/inventory/artifact-manifest.json	d1b938e5760720aeff930b8872bda4c43ab06856	4769418
+reports/2026-11-08-decoded-cfg-qualification/current-3acc/custody/inventory/source-catalog.json	587cdf96ffea928e13a02d4c5ea5021d783f07cd	7874373
+reports/2026-11-08-decoded-cfg-qualification/current-3acc/custody/owner-portable/corrupt-chunk/artifact-manifest.json	d1b938e5760720aeff930b8872bda4c43ab06856	4769418
+reports/2026-11-08-decoded-cfg-qualification/current-3acc/custody/owner-portable/missing-chunk/artifact-manifest.json	d1b938e5760720aeff930b8872bda4c43ab06856	4769418
+reports/2026-11-08-decoded-cfg-qualification/current-3acc/custody/owner-portable/wrong-manifest/artifact-manifest.json	261d5229b8fbf4bbdec439f53de8fe40c19eb44c	4769418
+reports/2026-11-08-decoded-cfg-qualification/custody/source-catalog.json	b75709fb56d7053d03f23a794585d1c4c84fbfdc	39192008
+reports/2026-11-08-decoded-cfg-qualification/custody/supplement-source-catalog.json	aa65dd34e2d9350f8a0bbcdcbd7c0426d5014c21	20621897
+reports/2026-11-08-decoded-cfg-qualification/supplement-27e6/artifact-manifest.json	e44dba0cc20b06572470e00c475e4df975ff608d	12719535
+reports/2026-11-08-source-value-operational/evidence/actual-clean-profile/source/crates/trust-ir-build/src/validate.rs	0d3361eba23482382287b164c6edba52d9dcc542	1930298
+reports/2026-11-09-frame-atomic-exits/execution.jsonl	80bcd92fdedc14bf249ac6fc41b1edc53f8d8ac6	6195330
+reports/2026-11-09-frame-binary-transport/execution.jsonl	d1313c4b9bd9f1d76b83da215b45136657d20685	1552228
+reports/2026-11-09-frame-block-decoding/execution.jsonl	f9d48323941d5b8ac5a48486842d467e27f471ee	2822438
+reports/2026-11-09-frame-bulk-ownership/ownership.jsonl	f94af317f9ef89bdd1ccfb3543439820606d7d48	16489782
+reports/2026-11-09-frame-cast-preservation/execution.jsonl	f335fdcf171ebea4ba0b20d8cdba0e66fa2ad9f2	5661232
+reports/2026-11-09-frame-closure-exits/execution.jsonl	78e82ef687429fec4bcd2c62bb0fafd52da3fab5	1242768
+reports/2026-11-09-frame-comparison-preservation/execution.jsonl	79462bc1151ed884fa2d77bd301e0f4479b5a28d	2484296
+reports/2026-11-09-frame-indirect-invoke/execution.jsonl	f6691cfb1434f69aa9279415d6b62e8ee4910f66	1225320
+reports/2026-11-09-frame-memory-loads/execution.jsonl	9642fb3caaec380e2e92d765230c05285b32dbab	1998152
+reports/2026-11-09-frame-scalar-exits/binary/execution.jsonl	d1313c4b9bd9f1d76b83da215b45136657d20685	1552228
+reports/2026-11-09-frame-scalar-exits/cast/execution.jsonl	f335fdcf171ebea4ba0b20d8cdba0e66fa2ad9f2	5661232
+reports/2026-11-09-frame-scalar-exits/comparison/execution.jsonl	79462bc1151ed884fa2d77bd301e0f4479b5a28d	2484296
+reports/2026-11-09-frame-unwind-recursion/closure/execution.jsonl	78e82ef687429fec4bcd2c62bb0fafd52da3fab5	1242768
+reports/2026-11-09-frame-unwind-recursion/indirect/execution.jsonl	f6691cfb1434f69aa9279415d6b62e8ee4910f66	1225320
+reports/2026-11-13-structured-handle-original-source/epochs/source-original-structured-handle-original-goal-cold24-89/manifest.json	1aacf51b6f2ed3fd6d9f718d7206e9c62c4e1074	4470401
+reports/2026-11-13-structured-handle-original-source/epochs/source-original-structured-handle-original-goal-serial-89/manifest.json	19efff548fb0c5c21d5a87d1f791f6b74e03d639	4470579
+reports/2026-11-13-structured-handle-original-source/epochs/source-original-structured-handle-scalar-transport-cold24-92/manifest.json	f5b326cc97a9046815ed17d35ccb5ca3ff6ea315	4470218
+reports/2026-11-16-exact-input-shell-sharing/alias2/alias-controls.json	0a6610896d14a7c4cf652fb5c2f425b268fe8d86	3375411
+reports/2026-11-16-exact-input-shell-sharing/alias2/plan.json	6bbd0de4e479da2f4cfecc726f4b3416738a3fd8	3374084
+reports/2026-11-16-exact-input-shell-sharing/attempt1/library.json	a319672367f60f8317c6fdab80384283366a1586	3916236
+reports/2026-11-16-exact-input-shell-sharing/attempt1/plan.json	10e83ffd4692f732b46692be267f420be10fd399	3374083
+reports/2026-11-16-exact-input-shell-sharing/final3/plan.json	2a41af8d59e0cda6f939add75fde6dd6de2a5a07	3374107
+reports/2026-11-16-exact-input-shell-sharing/final3/qualification.json	a3ea0d0f3b2eaea77704556ab4e88f07f8866122	3917945
+reports/2026-11-16-exact-input-shell-sharing/final4/plan.json	c1536b57d377cd57abb3f384ec5c7984f960a9c0	3374107
+reports/2026-11-16-exact-input-shell-sharing/final4/qualification.json	2fdfc07d243855ccb895cd83ce63b238818bbc26	3917432
+reports/2026-11-16-exact-input-shell-sharing/review/alias-repair/after/crates/trust-ir-build/src/validate.rs.txt	9bc7517a52f3313b5cc92b268e61e9e42e5c004c	2020903
+reports/2026-11-16-exact-input-shell-sharing/review/alias-repair/before/crates/trust-ir-build/src/validate.rs.txt	b8ed664e56a236cec4e330064d6c4bacc6c6cab9	2019749
+reports/2026-11-17-balanced-scoped-wire-current-main/content/0fa654f609af264c0c3f5f7c0620b9777acb1032231e7d968e096f256003b290.json	84b2b888d8d6bee0840b1237bcb1f9afaeb90ed3	4808313
+reports/2026-11-17-balanced-scoped-wire-final/content/24ca342bab5da9ed10cbcdf65e77383189dd84bcbf6cf86739b2b477092842c8.json	fbb9d7980e7862de3827d37d616af81e9baee27d	4872308
+reports/2026-11-17-balanced-scoped-wire-final/content/36b8dc1cd6c8e88f8c850b0693b500d74510f48afb9f3aebcbe0a25433ecc0c4.json	95f52347b91fe1c4e14ec1b48c6e0f83e96fcb5b	4872308
+reports/2026-11-17-balanced-scoped-wire-final/content/67d9bee7c7ab4630f590c5bec36334bf22c3486bfd651839401520745a9124d2.json	691d3bb14fd9d0d0db46b08c3cb897b7f0a9e6f4	4872308
+reports/2026-11-17-balanced-scoped-wire-merged/content/4504758cf925396541ee59f9e54ba68e7f9199973321ccc69ce7e247ab2ae593.json	af899e5e2483bdb7d21a8b8e771c52bde2f81629	4779759
+reports/2026-11-17-balanced-scoped-wire/content/b3046ae45bef78ef8ce303b8eaa545649ebd4dbb499f321e19ff284668433097.json	3d1b84a6b945eb0d7bc1c12f92d6966600f045c9	4757711
+reports/2026-11-17-balanced-scoped-wire/content/ddf9ed00914a94441303c5a45a98d64798d30e03e4c5b7c8c92865059f93a70b.json	af2f2130e7a0056ec9606ead3964f571baaf9679	4757711
+reports/2026-11-17-balanced-scoped-wire/content/f8af23cba8f337c8027b5e90b9c2afac4b9037ea44805646a7bef6c041a2616e.json	c512ee6722d37b9ed0dcdc2e65241b5d0f6d7ecd	4794639
+reports/report-artifacts.json	6c81e863544951b352864cdd1a2e31e02b1d3be0	8216127
+scripts/tests/fixtures/verified_lane/schema4_c6_report.json	aef0b7dc22af0d90ba9c39f470cc06cb10b0bfca	2397562

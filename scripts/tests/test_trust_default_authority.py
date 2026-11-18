@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import builtins
 import importlib.util
 import io
 import os
@@ -18,11 +19,21 @@ SPEC = importlib.util.spec_from_file_location("check_trust_default_authority", C
 assert SPEC is not None and SPEC.loader is not None
 CHECKER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = CHECKER
-SPEC.loader.exec_module(CHECKER)
+with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+    SPEC.loader.exec_module(CHECKER)
 
 
 class TrustDefaultAuthorityTests(unittest.TestCase):
     TRUST = '[toolchain]\nchannel = "trust"\n'
+    TRUST_SPELLINGS = (
+        '[toolchain]\nchannel = "trust" # selected compiler\n',
+        '[toolchain]\n"channel" = \'trust\'\n',
+        'toolchain.channel = "trust"\n',
+        '["toolchain"]\nchannel = "tr\\u0075st"\n',
+        'toolchain = { channel = "trust" }\n',
+        '[toolchain]\nchannel = """trust"""\n',
+        '[metadata]\nchannel = "stable"\n[toolchain]\nchannel = "trust"\n',
+    )
     COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
     @staticmethod
@@ -48,6 +59,88 @@ class TrustDefaultAuthorityTests(unittest.TestCase):
         self.assertEqual(
             CHECKER.policy_issues('[toolchain]\nchannel = "1.97.1"\n', ""), []
         )
+
+    def test_equivalent_toml_trust_pins_keep_authority_and_policy_checks(self) -> None:
+        config = '[build]\nrustflags = ["-Ztrust-verify=off"]\n'
+        for pin in self.TRUST_SPELLINGS:
+            with self.subTest(pin=pin):
+                self.assertEqual(CHECKER.toolchain_channel(pin), "trust")
+                self.assertTrue(any("disables verification" in issue
+                                    for issue in CHECKER.policy_issues(pin, config)))
+
+    def test_equivalent_toml_trust_pins_cannot_skip_the_canary(self) -> None:
+        resolved = CHECKER.ResolvedToolchain(Path('/fixture/trustc'), None, None, None, None, None)
+        with self.temporary_directory() as temporary:
+            root = Path(temporary)
+            for pin in self.TRUST_SPELLINGS:
+                (root / 'rust-toolchain.toml').write_text(pin, encoding='utf-8')
+                with self.subTest(pin=pin), self.clean_authority_environment(), \
+                        mock.patch.object(CHECKER, 'resolve_installed', return_value=resolved) as resolve, \
+                        mock.patch.object(CHECKER, 'resolved_issues', return_value=[]), \
+                        mock.patch.object(CHECKER, 'behavioral_issues', return_value=['canary']) as canary:
+                    self.assertEqual(CHECKER.check(root, False), ['canary'])
+                    resolve.assert_called_once_with(root)
+                    canary.assert_called_once_with(resolved.rustc)
+
+    def test_only_the_toolchain_table_selects_the_repository_channel(self) -> None:
+        pin = '[metadata]\nchannel = "trust"\n[toolchain]\nchannel = "stable"\n'
+        self.assertEqual(CHECKER.toolchain_channel(pin), "stable")
+        with self.temporary_directory() as temporary:
+            root = Path(temporary)
+            (root / 'rust-toolchain.toml').write_text(pin, encoding='utf-8')
+            with mock.patch.object(CHECKER, 'resolve_installed', side_effect=AssertionError('upstream default')):
+                self.assertEqual(CHECKER.check(root, False), [])
+                self.assertTrue(CHECKER.check(root, True))
+
+    def test_absent_or_path_only_pin_stays_unverified_without_resolution(self) -> None:
+        with self.temporary_directory() as temporary:
+            root = Path(temporary)
+            path = root / 'rust-toolchain.toml'
+            for pin in (None, '', '[toolchain]\npath = "/fixture/custom"\n'):
+                if pin is not None:
+                    path.write_text(pin, encoding='utf-8')
+                with self.subTest(pin=pin), \
+                        mock.patch.object(CHECKER, 'resolve_installed', side_effect=AssertionError('unverified default')):
+                    self.assertEqual(CHECKER.check(root, False), [])
+                    self.assertTrue(CHECKER.check(root, True))
+
+    def test_malformed_toolchain_toml_never_becomes_an_unverified_pass(self) -> None:
+        malformed = ('[toolchain\nchannel="trust"',
+                     '[toolchain]\nchannel="trust"\nchannel="stable"\n',
+                     'toolchain = true\n', '[toolchain]\nchannel = ["trust"]\n',
+                     '[toolchain]\nchannel = 4\n', 'channel = "trust"\n')
+        with self.temporary_directory() as temporary:
+            root = Path(temporary)
+            for pin in malformed:
+                (root / 'rust-toolchain.toml').write_text(pin, encoding='utf-8')
+                with self.subTest(pin=pin), \
+                        mock.patch.object(CHECKER, 'resolve_installed', side_effect=AssertionError('malformed pin')):
+                    self.assertTrue(CHECKER.policy_issues(pin, ''))
+                    self.assertTrue(CHECKER.check(root, False))
+                    code, out, err = self.run_main(root, [])
+                    self.assertEqual(code, 1)
+                    self.assertNotIn('PASS:', out)
+                    self.assertIn('invalid rust-toolchain.toml', err)
+
+    def test_vendored_parser_keeps_the_bootstrap_import_path(self) -> None:
+        import_module = builtins.__import__
+        def without_stdlib(name, *args, **kwargs):
+            if name == 'tomllib':
+                raise ModuleNotFoundError('forced old-Python parser path', name=name)
+            return import_module(name, *args, **kwargs)
+        name = 'authority_vendored_parser_control'
+        spec = importlib.util.spec_from_file_location(name, CHECKER_PATH)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            sys.modules[name] = module
+            with mock.patch.object(sys, 'path', [str(ROOT / 'scripts'), *sys.path]), \
+                    mock.patch.object(builtins, '__import__', side_effect=without_stdlib):
+                spec.loader.exec_module(module)
+            self.assertEqual(module.tomllib.__name__, '_vendor.tomli')
+            for pin in self.TRUST_SPELLINGS:
+                self.assertEqual(module.toolchain_channel(pin), 'trust')
+        finally:
+            sys.modules.pop(name, None)
 
     def test_advisory_is_the_ramp_and_is_refused_at_the_destination(self) -> None:
         # THE WHOLE POINT OF THE TWO BARS. Advisory is accepted as a ramp

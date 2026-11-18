@@ -44,8 +44,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    from _vendor import tomli as tomllib
 
-CHANNEL_RE = re.compile(r'^\s*channel\s*=\s*["\']([^"\']+)["\']\s*$', re.MULTILINE)
 # Any x.py build tree (`build/host/stage2`, `build/<triple>/stage1`, ...): a
 # compiler a rebuild can replace underneath the checked name. Paths are
 # resolved first, so the `host` symlink resolves to the triple it names.
@@ -104,8 +107,17 @@ class ResolvedToolchain:
 
 
 def toolchain_channel(text: str) -> Optional[str]:
-    match = CHANNEL_RE.search(text)
-    return match.group(1) if match else None
+    """Read the actual TOML pin; parse/type errors must never mean unpinned."""
+    document = tomllib.loads(text)
+    if not document:
+        return None
+    toolchain = document.get("toolchain")
+    if not isinstance(toolchain, dict):
+        raise ValueError("toolchain must be a TOML table")
+    channel = toolchain.get("channel")
+    if channel is not None and not isinstance(channel, str):
+        raise ValueError("toolchain.channel must be a string")
+    return channel
 
 
 def _toml_strings_and_normalized(text: str) -> tuple[list[str], str, list[str]]:
@@ -299,7 +311,11 @@ def policy_issues(
     environment: Optional[dict[str, str]] = None,
     destination: bool = False,
 ) -> list[str]:
-    if toolchain_channel(toolchain_text) != "trust":
+    try:
+        channel = toolchain_channel(toolchain_text)
+    except ValueError as error:
+        return [f"invalid rust-toolchain.toml: {error}"]
+    if channel != "trust":
         return []
 
     strings, normalized, lexical_issues = _toml_strings_and_normalized(config_text)
@@ -935,11 +951,14 @@ def check(root: Path, require_verified_default: bool) -> list[str]:
         )
     if any(path.is_symlink() for path in existing_configs):
         structural_issues.append("verified Cargo configuration must not be a symlink")
-    toolchain_text = toolchain_path.read_text(encoding="utf-8") if toolchain_path.exists() else ""
+    try:
+        toolchain_text = toolchain_path.read_text(encoding="utf-8") if toolchain_path.exists() else ""
+        channel = toolchain_channel(toolchain_text)
+    except (OSError, ValueError) as error:
+        return [f"invalid rust-toolchain.toml: {error}"]
     config_text = "\n".join(
         path.read_text(encoding="utf-8") for path in existing_configs if path.is_file()
     )
-    channel = toolchain_channel(toolchain_text)
     if channel != "trust":
         if require_verified_default:
             return [f"verified default required, but repository channel is {channel or 'unpinned'}"]
@@ -978,7 +997,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     root = args.root.resolve()
     issues = check(root, args.require_verified_default)
     toolchain = root / "rust-toolchain.toml"
-    channel = toolchain_channel(toolchain.read_text(encoding="utf-8")) if toolchain.is_file() else None
+    try:
+        channel = toolchain_channel(toolchain.read_text(encoding="utf-8")) if toolchain.is_file() else None
+    except (OSError, ValueError) as error:
+        channel = None
+        issue = f"invalid rust-toolchain.toml: {error}"
+        if issue not in issues:
+            issues.append(issue)
     # Whatever the verdict, a configured policy is reported with its scope, so
     # nobody reads it as the policy a verified (`targo trust`) run obeys.
     policies = configured_policies(root) if channel == "trust" else []

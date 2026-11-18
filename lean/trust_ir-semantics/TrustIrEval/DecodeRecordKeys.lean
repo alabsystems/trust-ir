@@ -2,6 +2,7 @@
 -- Decoder-boundary proofs. JSON remains outside the pure TrustIr formal root.
 import TrustIrEval.Decode
 import TrustIr.Proofs.SourceInhabitSound
+import TrustIr.Proofs.AxiomAuditCompat
 
 namespace TrustIrEval
 open Lean (Json)
@@ -88,7 +89,7 @@ private theorem mapM_results {α β ε : Type} (rows : List α) (action : α →
       rw [List.mapM_cons]
       apply results_bind
       intro firstValue firstDecoded
-      have firstValid := valid first (trustIrListMemConsSelf first rest) firstValue firstDecoded
+      have firstValid := valid first (trustIrListMemConsSelf _ _) firstValue firstDecoded
       apply results_bind
       intro restValues restDecoded
       have later := ih (fun row member => valid row (List.mem_cons_of_mem first member)) restValues restDecoded
@@ -192,24 +193,135 @@ theorem decoded_variant_no_initialized_payload (document : Json) (decoded : Modu
     (decoded_context_capture_source document decoded parsed maxDepth ctx prepared)
     fields flag values length initialized fuel checked
 
+
+-- Pure Box wire decoder controls; reserved evidence is not validator admission.
+private def boxMalformed {α : Type} : D α → Bool
+  | .error (.malformed _) => true
+  | _ => false
+
+private def boxFactJson (ordinal : Nat) : Json :=
+  Json.mkObj [
+    ("site", Json.mkObj [("item", Lean.toJson (List.replicate 16 (0 : Nat))),
+      ("ordinal", Lean.toJson ordinal)]),
+    ("session", Json.mkObj [("judged", .str "VerificationSnapshot"),
+      ("producing", .str "ProofSession")]),
+    ("evidence", .arr #[]), ("not_claimed", .arr #[])]
+
+private def boxInstJson (operand : Nat) : Json :=
+  Json.mkObj [("BoxDeref", Json.mkObj [("ptr_ty", .str "Ptr"),
+    ("pointee", Json.mkObj [("Sized", Json.mkObj [("ty", .str "I64")])]),
+    ("operand", Lean.toJson operand), ("fact", boxFactJson 0)])]
+
+-- Kernel-checked pure parser regressions: compiling this existing module checks
+-- these propositions using only logical imports and kernel-checked reduction.
+-- Reserved evidence remains parser-only and is not validator admission.
+example :
+    validityEvidence (Json.mkObj [("DominatingCheck", Json.mkObj [])]) = .ok (.dominatingCheck none) := by
+  trustIrReduce
+
+example :
+    validityEvidence (Json.mkObj [("DominatingCheck", Json.mkObj [("align", .null)])]) = .ok (.dominatingCheck none) := by
+  trustIrReduce
+
+example :
+    validityEvidence (Json.mkObj [("DominatingCheck", Json.mkObj [("align", Lean.toJson (0 : Nat))])]) = .ok (.dominatingCheck (some 0)) := by
+  trustIrReduce
+
+example :
+    validityEvidence (Json.mkObj [("DominatingCheck", Json.mkObj [("align", Lean.toJson (18446744073709551615 : Nat))])]) = .ok (.dominatingCheck (some 18446744073709551615)) := by
+  trustIrReduce
+
+example :
+    ([Json.str "8", Json.bool true, Json.arr #[], Lean.toJson (-1 : Int),
+      Lean.toJson (18446744073709551616 : Nat)].all (fun bad =>
+        boxMalformed (validityEvidence (Json.mkObj [("DominatingCheck", Json.mkObj [("align", bad)])])))) = true := by
+  trustIrReduce
+
+example :
+    ([Json.null, Json.arr #[], Json.str "not a record"].all (fun bad =>
+      boxMalformed (validityEvidence (Json.mkObj [("DominatingCheck", bad)])))) = true := by
+  trustIrReduce
+
+example :
+    validityEvidence (Json.mkObj [("Obligation",
+      Json.mkObj [("obligation", Lean.toJson (0 : Nat))])]) = .ok (.obligation ⟨0⟩) := by
+  trustIrReduce
+
+example :
+    (match boxValidityFact (boxFactJson 0) with
+     | .ok fact => fact.siteOrdinal == 0
+     | _ => false) = true := by
+  trustIrReduce
+
+example :
+    (match inst (boxInstJson 0) with
+     | .ok (.BoxDeref _ _ id _) => id.index == 0
+     | _ => false) = true := by
+  trustIrReduce
+
+example :
+    validityEvidence (Json.mkObj [("Obligation",
+      Json.mkObj [("obligation", Lean.toJson (4294967295 : Nat))])]) = .ok (.obligation ⟨4294967295⟩) := by
+  trustIrReduce
+
+example :
+    (match boxValidityFact (boxFactJson 4294967295) with
+     | .ok fact => fact.siteOrdinal == 4294967295
+     | _ => false) = true := by
+  trustIrReduce
+
+example :
+    (match inst (boxInstJson 4294967295) with
+     | .ok (.BoxDeref _ _ id _) => id.index == 4294967295
+     | _ => false) = true := by
+  trustIrReduce
+
+example :
+    boxMalformed (validityEvidence (Json.mkObj [("Obligation",
+      Json.mkObj [("obligation", Lean.toJson (4294967296 : Nat))])])) = true := by
+  trustIrReduce
+
+example :
+    boxMalformed (boxValidityFact (boxFactJson 4294967296)) = true := by
+  trustIrReduce
+
+example :
+    boxMalformed (inst (boxInstJson 4294967296)) = true := by
+  trustIrReduce
+
 end TrustIrEval
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.recordDef_retains_id' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms TrustIrEval.recordDef_retains_id
+-/
+#trustIrAxiomsByCompiler TrustIrEval.recordDef_retains_id == [propext] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.module_record_keys' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms TrustIrEval.module_record_keys
+-/
+#trustIrAxiomsByCompiler TrustIrEval.module_record_keys == [propext, Quot.sound] modern [propext, Classical.choice, Quot.sound]
 
+/- Original printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_context_capture_source' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_context_capture_source
+-/
+#trustIrAxiomsExact TrustIrEval.decoded_context_capture_source == [propext, Quot.sound, Classical.choice]
 
+/- Original printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_uninhabited_capture_empty' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_uninhabited_capture_empty
+-/
+#trustIrAxiomsExact TrustIrEval.decoded_uninhabited_capture_empty == [propext, Quot.sound, Classical.choice]
 
+/- Original printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_variant_no_initialized_payload' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_variant_no_initialized_payload
+-/
+#trustIrAxiomsExact TrustIrEval.decoded_variant_no_initialized_payload == [propext, Quot.sound, Classical.choice]

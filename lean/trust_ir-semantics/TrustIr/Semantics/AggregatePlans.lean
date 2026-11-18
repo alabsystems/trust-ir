@@ -735,6 +735,10 @@ def Service.query (service : Service) (ty : Ty) : Except SemError Plan :=
 
 def Service.model (service : Service) : ByteModel := service.compiler.source.index.source.model
 
+/-- Read-only identity of the actual source tables retained by this compiler. -/
+def Service.sourceEnvironment (service : Service) : Environment :=
+  service.compiler.source.index.source
+
 private def summaryLayout (result : Except CompilerError Summary) : Except CompilerError MemoryTypeLayout := do
   let value ← result
   match value.align with
@@ -762,6 +766,28 @@ def Service.queryLayoutWithWork (service : Service) (ty : Ty) : Except SemError 
 
 def Service.queryLayout (service : Service) (ty : Ty) : Except SemError MemoryTypeLayout :=
   (service.queryLayoutWithWork ty).1
+
+/-- Allocation needs storage geometry, not an executable value-image plan.
+Only a direct nominal Closure asks the same held source session's shape query;
+every other type retains the original execution-layout query and its cache.
+This never adds a codec/cache entry, code target or logical closure value. -/
+def Service.queryAllocationLayout (service : Service) (ty : Ty) : Except SemError MemoryTypeLayout :=
+  match ty with
+  | .Closure _ =>
+    let result := match service.compiler.source.query .shape ty with
+      | .ok (value, _) => .ok value
+      | .error error => .error (layoutError error)
+    semanticResult (summaryLayout result)
+  | _ => service.queryLayout ty
+
+/-- Non-closure storage questions retain their complete original result,
+including cached failures; a shape-layout success is not a generic fallback. -/
+theorem Service.queryAllocationLayout_nonClosure (service : Service) (ty : Ty)
+    (notClosure : ∀ id, ty ≠ .Closure id) :
+    service.queryAllocationLayout ty = service.queryLayout ty := by
+  cases ty <;> try rfl
+  rename_i id
+  exact False.elim (notClosure id rfl)
 
 /-- Diagnostic counts actual plan-compiler invocations. A cached request
     executes neither source layout traversal nor plan compilation. -/
@@ -871,6 +897,19 @@ theorem Service.error_policy (error : SemError → Prop)
   · exact semanticResult_error_policy error typeErrors unsupported (service.queryStatic ty)
   · change ByteImage.BlockResult (fun _ => True) error (semanticResult (service.queryStaticLayout ty))
     exact semanticResult_error_policy error typeErrors unsupported (service.queryStaticLayout ty)
+
+/-- The distinct allocation query has the same static error domain. Neither
+an original source-layout failure nor a cached execution failure can supply
+an exception world or acquire a runtime/callee capability. -/
+theorem Service.allocation_error_policy (error : SemError → Prop)
+    (typeErrors : ∀ message, error (.typeError message))
+    (unsupported : ∀ message, error (.unsupported .layout message))
+    (service : Service) (ty : Ty) :
+    ByteImage.BlockResult (fun _ => True) error (service.queryAllocationLayout ty) := by
+  cases ty <;>
+    first
+    | exact (service.error_policy error typeErrors unsupported _).2
+    | exact semanticResult_error_policy error typeErrors unsupported _
 
 /-- Original preparation discharges the cache invariant for every source
 and root list, including negative cache entries and later uncached queries. -/
@@ -1484,5 +1523,25 @@ theorem Plan.Origin.enum_extent_view {resolves : TyId → Ty → Prop} {valid : 
   | fields ty layout fields kind children value summary extent bindings metadata sizes => exact False.elim kind
   | enumeration id layout info variants value summary present extent children bindings sizes =>
     exact ⟨layout,info,variants,value,rfl,summary,present,extent,children,bindings,sizes⟩
+
+/-- Real root preparation and every successful source-query transition retain
+the complete original environment, including negative cache entries. -/
+theorem prepare_sourceEnvironment (source : Environment) (roots : List Ty) :
+    (prepare source roots).sourceEnvironment = source := by
+  let resolves : TyId → Ty → Prop := fun _ _ => True
+  let valid : Ty → Summary → Prop := fun _ _ => True
+  let sessions : Session → Prop := fun session =>
+    session.DerivationInvariant ∧ session.index.source = source
+  have policy : QueryOriginPolicy resolves valid sessions :=
+    { query := by
+        intro session safe ty value next run
+        have retained := SourceLayout.Session.query_preserves_derivation session .execution ty value next safe.1 run
+        refine ⟨True.intro, retained.1, ?_⟩
+        rw [retained.2.1]
+        exact safe.2
+      resolve := by intros; exact True.intro }
+  have prepared := prepare_compiler_origins resolves valid sessions policy source
+    ⟨SourceLayout.prepare_derivation source, rfl⟩ roots
+  exact prepared.1.2
 
 end TrustIr.AggregateMemory

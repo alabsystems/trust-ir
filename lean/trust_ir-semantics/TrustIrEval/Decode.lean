@@ -22,6 +22,8 @@
 
 import Lean.Data.Json
 import TrustIr.DecodedModule
+import TrustIr.Semantics.FloatFormat
+import TrustIr.Semantics.TypedInteger
 
 namespace TrustIrEval
 
@@ -144,7 +146,8 @@ private def storageTy (j : Json) : D Ty := do
   if alignment ≥ 2 ^ 64 then malformed "Storage.align_bytes: outside u64 range"
   pure (.Storage size alignment)
 
-partial def ty (j : Json) : D Ty := do
+/-- One grammar layer, parameterized by the parser used for recursive children. -/
+private def tyLayer (recurse : Json → D Ty) (j : Json) : D Ty := do
   let (tag, p) ← tagged "Ty" j
   match tag with
   | "I8" => pure .I8
@@ -176,17 +179,17 @@ partial def ty (j : Json) : D Ty := do
   | "Storage" => storageTy p
   | "Unit" => pure .Unit
   | "Never" => pure .Never
-  | "Tuple" => pure (.Tuple (← (← arr "Tuple" p).mapM ty))
+  | "Tuple" => pure (.Tuple (← (← arr "Tuple" p).mapM recurse))
   | "Enum" => pure (.Enum ⟨← nat "Enum" p⟩)
   | "Vector" =>
     -- Rust `Vector(Box<Ty>, u32)` is (elem, lanes); Lean is `Vector lanes elem`.
     let (e, n) ← pair "Vector" p
-    pure (.Vector (← nat "Vector.lanes" n) (← ty e))
-  | "Ref" => pure (.Ref (← ty p))
-  | "RefMut" => pure (.RefMut (← ty p))
-  | "PtrConst" => pure (.PtrConst (← ty p))
-  | "PtrMut" => pure (.PtrMut (← ty p))
-  | "Rc" => pure (.Rc (← ty p))
+    pure (.Vector (← nat "Vector.lanes" n) (← recurse e))
+  | "Ref" => pure (.Ref (← recurse p))
+  | "RefMut" => pure (.RefMut (← recurse p))
+  | "PtrConst" => pure (.PtrConst (← recurse p))
+  | "PtrMut" => pure (.PtrMut (← recurse p))
+  | "Rc" => pure (.Rc (← recurse p))
   | "Set" =>
     let (e, r) ← pair "Set" p
     pure (.Set ⟨← nat "Set.elem" e⟩ (← setRepr r))
@@ -201,6 +204,14 @@ partial def ty (j : Json) : D Ty := do
       (← natField p "version").toUInt32)
   | "Handle" => pure (.Handle (← strField p "name") (← strField p "runtime"))
   | other => unsupported s!"ty.{other}"
+
+
+private partial def tyRecursive (j : Json) : D Ty :=
+  tyLayer tyRecursive j
+
+/-- Decode one type layer transparently; recursive children retain the same partial parser. -/
+def ty (j : Json) : D Ty :=
+  tyLayer tyRecursive j
 
 def tyList (ctx : String) (j : Json) : D (List Ty) := do (← arr ctx j).mapM ty
 
@@ -238,7 +249,7 @@ partial def templateTy (j : Json) : D TemplateTy := do
 def floatConst (j : Json) : D Float := do
   pure (decodeBits .binary64 (← natField j "bits"))
 
-partial def constant (j : Json) : D Constant := do
+def constantLayer (recurse : Json → D Constant) (j : Json) : D Constant := do
   let (tag, p) ← tagged "Constant" j
   match tag with
   | "Int" => pure (.int (← wideInt "Int" p))
@@ -252,22 +263,22 @@ partial def constant (j : Json) : D Constant := do
     pure (.bytes data (← boolField p "utf8"))
   | "Float" => pure (.float (← floatConst p))
   | "Bool" => pure (.bool (← bool "Bool" p))
-  | "Aggregate" => pure (.aggregate (← (← arr "Aggregate" p).mapM constant))
-  | "Array" => pure (.array (← (← arr "Array" p).mapM constant))
+  | "Aggregate" => pure (.aggregate (← (← arr "Aggregate" p).mapM recurse))
+  | "Array" => pure (.array (← (← arr "Array" p).mapM recurse))
   | "Splat" =>
     let count ← natField p "len"
     if count < 2 then malformed "Splat: length must be at least two"
-    pure (.splat (← constant (← field p "elem")) count)
-  | "Vector" => pure (.vector (← (← arr "Vector" p).mapM constant))
-  | "Sequence" => pure (.sequence (← (← arr "Sequence" p).mapM constant))
-  | "Set" => pure (.set (← (← arr "Set" p).mapM constant))
+    pure (.splat (← recurse (← field p "elem")) count)
+  | "Vector" => pure (.vector (← (← arr "Vector" p).mapM recurse))
+  | "Sequence" => pure (.sequence (← (← arr "Sequence" p).mapM recurse))
+  | "Set" => pure (.set (← (← arr "Set" p).mapM recurse))
   | "Record" =>
     pure (.record (← (← arr "Record" p).mapM (fun e => do
       let (n, c) ← pair "Record.field" e
-      pure (← str "Record.name" n, ← constant c))))
+      pure (← str "Record.name" n, ← recurse c))))
   | "Closure" =>
     pure (.closure (← funcId "Closure.func" (← field p "func"))
-      (← (← listField p "captures").mapM constant))
+      (← (← listField p "captures").mapM recurse))
   | "FnDef" => pure (.fnDef (← funcId "FnDef" p))
   | "FnItem" => pure (.fnItem (← fnItemId "FnItem" p))
   | "SymbolAddr" =>
@@ -276,6 +287,37 @@ partial def constant (j : Json) : D Constant := do
   -- Crystal lane (E3b): an unwritten struct/tuple lane (a unit variant in serde).
   | "Uninit" => pure .uninit
   | other => unsupported s!"constant.{other}"
+
+
+/-- Logical transparency of the new public constant proofs belongs only to
+    the modern proof compiler. The pinned legacy executable oracle retains its
+    previously qualified partial parser boundary and gains no proof cohort. -/
+macro "trustIrDecodeModernOnly " declaration:command : command => do
+  let empty : Lean.TSyntax `command := ⟨Lean.mkNullNode #[]⟩
+  `(trustIrDecodeCompilerCommand { $empty } { $declaration })
+
+trustIrDecodeModernOnly
+private partial def constantRecursive (j : Json) : D Constant :=
+  constantLayer constantRecursive j
+
+trustIrDecodeCompilerCommand {
+/-- Original legacy test-oracle boundary, using the one shared grammar. -/
+partial def constant (j : Json) : D Constant :=
+  constantLayer constant j
+} {
+/-- Decode one original constant layer transparently. Recursive children keep
+    the same partial parser, as in the existing type-layer interface. -/
+def constant (j : Json) : D Constant :=
+  constantLayer constantRecursive j
+}
+
+trustIrDecodeModernOnly
+/-- A scalar integer never obtains meaning from an opaque recursive child.
+    This theorem is intentionally unavailable on the legacy test oracle. -/
+theorem constant_int (j payload : Json) (value : Int)
+    (tag : tagged "Constant" j = .ok ("Int", payload))
+    (decoded : wideInt "Int" payload = .ok value) : constant j = .ok (.int value) := by
+  simp [constant, constantLayer, tag, decoded, bind, pure, Except.bind, Except.pure]
 
 -- ---------------------------------------------------------------------------
 -- Sub-op enums
@@ -415,6 +457,21 @@ def optValueId (j : Json) (k : String) : D (Option ValueId) := do
 def optNat (j : Json) (k : String) : D (Option Nat) := do
   optional (← field j k) (nat k)
 
+/-- Box wire integer carriers mirror Rust serde u32/u64 fields exactly. -/
+private def boxUnsignedNat (bits : Nat) (ctx : String) (j : Json) : D Nat := do
+  let n ← nat ctx j
+  if n < 2 ^ bits then pure n else malformed s!"{ctx}: outside u{bits} range"
+
+/-- Only this serde(default) field accepts omission. Its payload must still be
+an object; present nonnull alignments retain the Rust u64 range. -/
+private def boxOptionalAlign (j : Json) : D (Option Nat) :=
+  match j with
+  | .obj _ =>
+    match j.getObjVal? "align" with
+    | .ok value => optional value (boxUnsignedNat 64 "DominatingCheck.align")
+    | .error _ => pure none
+  | _ => malformed "DominatingCheck: expected a record"
+
 /-- `Inst::BoxDeref` payload decoders (wire v74). Every enum refuses an
     unknown variant: a fact this decoder cannot name is malformed, never
     defaulted. -/
@@ -455,8 +512,8 @@ def validityEvidence (j : Json) : D ValidityEvidence := do
     pure (.premise (← premiseRoot (← field p "root"))
       (← (← listField p "standing").mapM standingAssumption))
   | "DominatingCheck" =>
-    pure (.dominatingCheck (← optNat p "align"))
-  | "Obligation" => pure (.obligation ⟨← natField p "obligation"⟩)
+    pure (.dominatingCheck (← boxOptionalAlign p))
+  | "Obligation" => pure (.obligation ⟨← boxUnsignedNat 32 "ValidityEvidence.obligation" (← field p "obligation")⟩)
   | other => malformed s!"ValidityEvidence: unknown variant {other}"
 
 def conjunctEvidence (j : Json) : D ConjunctEvidence := do
@@ -486,7 +543,7 @@ def boxValidityFact (j : Json) : D BoxValidityFact := do
     | "NonProofSession" => pure ProducingSession.nonProofSession
     | other => malformed s!"ProducingSession: unknown variant {other}"
   pure { siteItem := item
-         siteOrdinal := ← natField site "ordinal"
+         siteOrdinal := ← boxUnsignedNat 32 "BoxDerefSite.ordinal" (← field site "ordinal")
          judged := judged
          producing := producing
          evidence := ← (← listField j "evidence").mapM conjunctEvidence
@@ -583,7 +640,8 @@ def inst (j : Json) : D Inst := do
   | "InsertField" =>
     pure (.InsertField (← t "ty") (← v "aggregate") (← natField p "field") (← v "value"))
   | "BoxDeref" =>
-    pure (.BoxDeref (← t "ptr_ty") (← boxPointee (← field p "pointee")) (← v "operand")
+    pure (.BoxDeref (← t "ptr_ty") (← boxPointee (← field p "pointee"))
+      ⟨← boxUnsignedNat 32 "BoxDeref.operand" (← field p "operand")⟩
       (← boxValidityFact (← field p "fact")))
   | "MakeClosure" =>
     pure (.MakeClosure ⟨← natField p "ty"⟩ (← funcId "func" (← field p "func")) (← vs "captures"))

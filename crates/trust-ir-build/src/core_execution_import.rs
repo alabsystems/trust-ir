@@ -26,7 +26,7 @@ impl ImportResult {
         app(
             "IRByteImportResultV1.mk",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 app("IROutcome.ret", [self.values.clone()]),
                 self.memory.clone(),
                 self.host.clone(),
@@ -38,16 +38,16 @@ impl ImportResult {
         app(
             "IRByteWorldV1.mk",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 self.memory.clone(),
                 self.host.clone(),
                 app(
                     "ir_byte_world_owners_v1",
-                    [model.world_type.clone(), current.world.clone()],
+                    [model.world_type().clone(), current.world.clone()],
                 ),
                 app(
                     "ir_byte_world_next_v1",
-                    [model.world_type.clone(), current.world.clone()],
+                    [model.world_type().clone(), current.world.clone()],
                 ),
             ],
         )
@@ -110,8 +110,8 @@ impl ImportTransfer {
 
 impl FetchedSite {
     fn import_arguments(&self, model: &MachineModel, target: &CallTarget) -> Result<Expr> {
-        require_same(&self.context, &model.context, "import fetched context")?;
-        require_same(&target.context, &model.context, "import target context")?;
+        require_same(&self.context, model.context(), "import fetched context")?;
+        require_same(&target.context, model.context(), "import target context")?;
         if !matches!(self.instruction.get_app_fn().kind(), ExprKind::Const(name, _) if name == &Name::from_string("IRInst.call"))
         {
             return Err("import assembler requires an actual direct IRInst.call".into());
@@ -135,17 +135,17 @@ impl FetchedSite {
     ) -> Result<Expr> {
         let _arguments = self.import_arguments(model, target)?;
         Ok(Expr::apps(
-            model.providers.clone(),
+            model.providers().clone(),
             [
                 app("ir_byte_binding_fid_v1", [target.binding.clone()]),
                 arguments,
                 app(
                     "ir_byte_world_memory_v1",
-                    [model.world_type.clone(), current.world.clone()],
+                    [model.world_type().clone(), current.world.clone()],
                 ),
                 app(
                     "ir_byte_world_host_v1",
-                    [model.world_type.clone(), current.world.clone()],
+                    [model.world_type().clone(), current.world.clone()],
                 ),
             ],
         ))
@@ -167,11 +167,11 @@ impl FetchedSite {
                     result.memory.clone(),
                     app(
                         "ir_byte_world_owners_v1",
-                        [model.world_type.clone(), current.world.clone()],
+                        [model.world_type().clone(), current.world.clone()],
                     ),
                     app(
                         "ir_byte_world_next_v1",
-                        [model.world_type.clone(), current.world.clone()],
+                        [model.world_type().clone(), current.world.clone()],
                     ),
                 ],
             ),
@@ -188,7 +188,7 @@ impl FetchedSite {
             typed: app(
                 "ir_byte_values_match_v1",
                 [
-                    model.context.clone(),
+                    model.context().clone(),
                     app("ir_byte_signature_returns_v1", [target.signature.clone()]),
                     result.values.clone(),
                 ],
@@ -217,8 +217,8 @@ impl FetchedSite {
         app(
             "ir_byte_import_result_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 self.results.clone(),
@@ -256,6 +256,8 @@ impl FetchedSite {
         result: &ImportResult,
         premises: ImportPremises,
     ) -> Result<ImportTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let operand_ids = self.import_arguments(model, target)?;
         let arguments = premises.resolved.right.clone();
@@ -267,7 +269,7 @@ impl FetchedSite {
         )?;
         let provider = self.import_provider_call(model, target, current, arguments.clone())?;
         premises.provided.endpoints(
-            &app("IRByteImportResultV1", [model.world_type.clone()]),
+            &app("IRByteImportResultV1", [model.world_type().clone()]),
             &provider,
             &result.provider_result(model),
         )?;
@@ -309,9 +311,9 @@ impl FetchedSite {
             app(
                 "ir_byte_import_call_rule_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
-                    model.providers.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
+                    model.providers().clone(),
                     current.machine(),
                     current.world.clone(),
                     self.results.clone(),
@@ -360,8 +362,8 @@ impl FetchedSite {
             app(
                 "ir_byte_import_return_rule_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.frame.clone(),
                     current.tail.clone(),
                     current.legacy_memory.clone(),
@@ -395,7 +397,7 @@ impl FetchedSite {
             app(
                 "ir_byte_import_world_shape_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     current.world.clone(),
                     current.frame.clone(),
                     after.frame.clone(),

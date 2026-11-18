@@ -563,7 +563,11 @@ fn opaque_site_context_retains_real_discovery_and_cached_hits_at_cap() {
     assert_eq!(cached.site, genuine.site);
     assert_eq!(catalog.lookups, 4);
     let mut model = MachineModel::new(constant("Nat"), &reflected, providers());
-    model.context = opaque;
+    model = MachineModel::from_terms(
+        model.world_type().clone(),
+        opaque,
+        model.providers().clone(),
+    );
     check_step(
         &step(&cached, &model, &current(coordinates[0])),
         true,

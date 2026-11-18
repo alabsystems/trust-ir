@@ -51,34 +51,6 @@ private theorem word_zero_iff (width : Nat) (value : Int)
     apply BitVec.eq_of_toNat_eq
     simp
 
-/-- Core unsigned division retains the full natural quotient of canonical operands. -/
-theorem bitvec_udiv_value (width : Nat) (left right : Int)
-    (leftRange : 0 ≤ left ∧ left < (2 : Int) ^ width)
-    (rightRange : 0 ≤ right ∧ right < (2 : Int) ^ width) :
-    Int.ofNat (BitVec.udiv (BitVec.ofInt width left) (BitVec.ofInt width right)).toNat = left / right := by
-  have leftNat : ((BitVec.ofInt width left).toNat : Int) = left :=
-    bitvec_ofInt_toNat width left leftRange.1 leftRange.2
-  have rightNat : ((BitVec.ofInt width right).toNat : Int) = right :=
-    bitvec_ofInt_toNat width right rightRange.1 rightRange.2
-  change (((BitVec.ofInt width left).toNat / (BitVec.ofInt width right).toNat : Nat) : Int) = _
-  trustIrCompilerProof
-    { rw [Int.ofNat_ediv, leftNat, rightNat] }
-    { rw [Int.natCast_ediv, leftNat, rightNat] }
-
-/-- Core unsigned remainder retains the full natural remainder, including divisor zero. -/
-theorem bitvec_umod_value (width : Nat) (left right : Int)
-    (leftRange : 0 ≤ left ∧ left < (2 : Int) ^ width)
-    (rightRange : 0 ≤ right ∧ right < (2 : Int) ^ width) :
-    Int.ofNat (BitVec.umod (BitVec.ofInt width left) (BitVec.ofInt width right)).toNat = left % right := by
-  have leftNat : ((BitVec.ofInt width left).toNat : Int) = left :=
-    bitvec_ofInt_toNat width left leftRange.1 leftRange.2
-  have rightNat : ((BitVec.ofInt width right).toNat : Int) = right :=
-    bitvec_ofInt_toNat width right rightRange.1 rightRange.2
-  change (((BitVec.ofInt width left).toNat % (BitVec.ofInt width right).toNat : Nat) : Int) = _
-  trustIrCompilerProof
-    { rw [Int.ofNat_emod, leftNat, rightNat] }
-    { rw [Int.natCast_emod, leftNat, rightNat] }
-
 /-- Actual total SMT division agrees exactly with core smtUDiv, including
 its all-ones answer at divisor zero. Typing supplies both operand carriers. -/
 theorem bvUDiv_bitvec_value (width : Nat) (left right : TrustIrExpr)

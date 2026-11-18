@@ -3534,6 +3534,111 @@ pub fn build_refuse_box_deref_non_claim_dropped() -> Result<Module, FixtureError
     Ok(module)
 }
 
+/// `fn subject(<p: ptr>) -> ptr` whose one deref offers NO evidence
+/// (`ValidityEvidence::Unestablished` on every conjunct, stated by a session
+/// that ran no verifier) for the operand `shape` builds from an optional
+/// parameter. Every row built on it is a deref no consumer can re-derive
+/// from the function alone, so every consumer refuses it: a re-deriving
+/// consumer because the function does not establish the conjunct (or shows
+/// it false), every other consumer by rule 10.
+fn box_deref_unestablished_module(
+    name: &str,
+    with_parameter: bool,
+    shape: impl FnOnce(&mut trust_ir_build::FunctionBuilder<'_>, Option<ValueId>) -> ValueId,
+) -> Result<Module, FixtureError> {
+    use trust_ir::box_validity::{
+        BoxDerefSite, BoxFactSession, BoxValidityFact, JudgedBody, ProducingSession,
+    };
+    let mut mb = ModuleBuilder::new(name);
+    let params = if with_parameter {
+        vec![Ty::Ptr]
+    } else {
+        vec![]
+    };
+    let ft = mb.add_func_type(params, vec![Ty::Ptr]);
+    let mut fb = mb.function("subject", ft);
+    let entry = fb.create_block();
+    let parameter = with_parameter.then(|| fb.add_block_param(entry, Ty::Ptr));
+    fb.switch_to_block(entry);
+    let operand = shape(&mut fb, parameter);
+    let boxed = fb.box_deref(
+        Ty::I64,
+        operand,
+        BoxValidityFact::unestablished(
+            BoxDerefSite {
+                item: [0x5e; 16],
+                ordinal: 0,
+            },
+            BoxFactSession {
+                judged: JudgedBody::OptimizedFallback,
+                producing: ProducingSession::NonProofSession,
+            },
+        ),
+    );
+    fb.ret(vec![boxed]);
+    fb.set_body_gate(refuse_structural_license());
+    fb.build();
+    mb.build().or_fixture("ModuleBuilder::build")
+}
+
+/// The operand is the function's parameter: only a caller could establish
+/// any conjunct, and the function alone says nothing about it.
+pub fn build_refuse_box_deref_unestablished_parameter() -> Result<Module, FixtureError> {
+    box_deref_unestablished_module(
+        "refuse_box_deref_unestablished_parameter",
+        true,
+        |_, parameter| parameter.unwrap_or(ValueId::new(u32::MAX)),
+    )
+}
+
+/// The operand is `null_ptr`: NonNull is FALSE, so no re-derivation can
+/// establish it.
+pub fn build_refuse_box_deref_unestablished_null_operand() -> Result<Module, FixtureError> {
+    box_deref_unestablished_module(
+        "refuse_box_deref_unestablished_null_operand",
+        false,
+        |fb, _| fb.null_ptr(),
+    )
+}
+
+/// The operand is a fresh Rust-heap allocation that a `Dealloc` frees on
+/// every path before the deref: Dereferenceable is FALSE.
+pub fn build_refuse_box_deref_unestablished_freed_operand() -> Result<Module, FixtureError> {
+    box_deref_unestablished_module(
+        "refuse_box_deref_unestablished_freed_operand",
+        false,
+        |fb, _| {
+            let raw = fb.heap_alloc(Ty::I64, None, None, trust_ir::inst::AllocOrigin::RustHeap);
+            fb.dealloc(raw);
+            raw
+        },
+    )
+}
+
+/// The operand is a pointer loaded from memory the parameter addresses: its
+/// validity is an invariant of that memory, which the function does not
+/// show.
+pub fn build_refuse_box_deref_unestablished_loaded_operand() -> Result<Module, FixtureError> {
+    box_deref_unestablished_module(
+        "refuse_box_deref_unestablished_loaded_operand",
+        true,
+        |fb, parameter| fb.load(Ty::Ptr, parameter.unwrap_or(ValueId::new(u32::MAX))),
+    )
+}
+
+/// The parameter row under the header one version below the evidence kind's,
+/// which allocates no ValidityEvidence tag 3.
+pub fn build_refuse_bytes_blob_box_deref_unestablished_below_its_version()
+-> Result<Vec<u8>, FixtureError> {
+    let module = build_refuse_box_deref_unestablished_parameter()?;
+    let mut bytes = trust_ir::binary::serialize_module(&module).or_fixture("serialize_module")?;
+    set_header_version(
+        &mut bytes,
+        trust_ir::binary::BOX_DEREF_UNESTABLISHED_FORMAT_VERSION - 1,
+    )?;
+    Ok(bytes)
+}
+
 /// The `box_deref` golden under the header one version below the
 /// instruction's, which allocates no Inst tag 77.
 pub fn build_refuse_bytes_blob_box_deref_below_its_version() -> Result<Vec<u8>, FixtureError> {

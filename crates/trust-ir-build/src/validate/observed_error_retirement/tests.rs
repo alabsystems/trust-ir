@@ -9,6 +9,11 @@ mod payloads;
 mod stops;
 mod witnesses;
 
+// Reuse the independently authored complete witness census in sibling controls.
+pub(in crate::validate) fn validation_error_variant_count() -> usize {
+    witnesses::all().len()
+}
+
 #[derive(Default)]
 struct Observer {
     events: Vec<ExecutionProgress>,

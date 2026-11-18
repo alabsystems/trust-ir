@@ -37,11 +37,11 @@ fn limits() -> Limits {
 fn model(world_type: Expr) -> MachineModel {
     // This isolated helper reads only the host-world type. Neither unused
     // expression is introduced into its claim or its closed proof candidate.
-    MachineModel {
-        world_type,
-        context: constant("world_eta_unused_context"),
-        providers: constant("world_eta_unused_providers"),
-    }
+    MachineModel::from_terms(
+        world_type.clone(),
+        constant("world_eta_unused_context"),
+        constant("world_eta_unused_providers"),
+    )
 }
 
 fn close(scope: &Scope, parameters: &[Local], proof: &PendingEquality) -> (Expr, Expr) {

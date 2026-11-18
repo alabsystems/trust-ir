@@ -8,8 +8,10 @@
 //! [`lowering-target-subset.md`](../../../lowering-target-subset.md) (repo root):
 //! the exact `Inst` / `Ty` / `ProofAnnotation` (+ `CastOp` and dialect-op)
 //! surface a frontend may emit on the "perfectly proven" path. The two MUST
-//! stay in lockstep — the gate test (`tests/lowering_subset.rs`) fails if a
-//! name listed here is missing from the spec doc, and any subset change must
+//! stay in lockstep — the gate test (`tests/lowering_subset.rs`) fails unless
+//! every variant of each closed axis is allowlisted here and in the doc's
+//! Allowed list, or excluded here and in a row of the doc's Excluded table,
+//! with the doc's counts equal to the code's — and any subset change must
 //! bump [`SUBSET_VERSION`] in both places (see the doc's "Versioning and bump
 //! policy" section).
 //!
@@ -994,85 +996,15 @@ fn check_ty(ty: &Ty, at: &str, out: &mut Vec<String>) {
     }
 }
 
-/// Variant name of an `Inst` (compile-breaks when a variant is added).
+/// Variant name of an `Inst`: the name of its
+/// [`InstShape`](trust_ir::inst::InstShape), so it is the variant's
+/// identifier by construction (`variant_shape!` generates the shape enum and
+/// `Inst::shape` from one list, and a new variant is a compile error there
+/// until it is listed). Every name-level verdict below is keyed on it, and
+/// the lockstep gate (`tests/lowering_subset.rs`) classifies every name of
+/// `InstShape::ALL`, so no variant reaches the checker unclassified.
 pub fn inst_name(inst: &Inst) -> &'static str {
-    match inst {
-        Inst::Drop { .. } => "Drop",
-        Inst::BinOp { .. } => "BinOp",
-        Inst::SeqMapAddK { .. } => "SeqMapAddK",
-        Inst::SeqMapNot { .. } => "SeqMapNot",
-        Inst::SeqMap { .. } => "SeqMap",
-        Inst::UnOp { .. } => "UnOp",
-        Inst::Overflow { .. } => "Overflow",
-        Inst::ICmp { .. } => "ICmp",
-        Inst::FCmp { .. } => "FCmp",
-        Inst::Cast { .. } => "Cast",
-        Inst::Load { .. } => "Load",
-        Inst::Store { .. } => "Store",
-        Inst::Alloca { .. } => "Alloca",
-        Inst::HeapAlloc { .. } => "HeapAlloc",
-        Inst::GEP { .. } => "GEP",
-        Inst::Dealloc { .. } => "Dealloc",
-        Inst::MemCopy { .. } => "MemCopy",
-        Inst::MemSet { .. } => "MemSet",
-        Inst::AtomicLoad { .. } => "AtomicLoad",
-        Inst::AtomicStore { .. } => "AtomicStore",
-        Inst::AtomicRMW { .. } => "AtomicRMW",
-        Inst::CmpXchg { .. } => "CmpXchg",
-        Inst::Fence { .. } => "Fence",
-        Inst::Borrow { .. } => "Borrow",
-        Inst::BorrowMut { .. } => "BorrowMut",
-        Inst::EndBorrow { .. } => "EndBorrow",
-        Inst::Retain { .. } => "Retain",
-        Inst::Release { .. } => "Release",
-        Inst::IsUnique { .. } => "IsUnique",
-        Inst::Br { .. } => "Br",
-        Inst::CondBr { .. } => "CondBr",
-        Inst::Switch { .. } => "Switch",
-        Inst::Return { .. } => "Return",
-        Inst::Unreachable => "Unreachable",
-        Inst::Call { .. } => "Call",
-        Inst::CallIndirect { .. } => "CallIndirect",
-        Inst::CallCannotUnwind { .. } => "CallCannotUnwind",
-        Inst::CallIndirectCannotUnwind { .. } => "CallIndirectCannotUnwind",
-        Inst::ExtractField { .. } => "ExtractField",
-        Inst::InsertField { .. } => "InsertField",
-        Inst::MakeAggregate { .. } => "MakeAggregate",
-        Inst::MakeClosure { .. } => "MakeClosure",
-        Inst::BoxDeref { .. } => "BoxDeref",
-        Inst::ArraySplat { .. } => "ArraySplat",
-        Inst::ExtractElement { .. } => "ExtractElement",
-        Inst::InsertElement { .. } => "InsertElement",
-        Inst::Const { .. } => "Const",
-        Inst::NullPtr => "NullPtr",
-        Inst::GlobalAddr { .. } => "GlobalAddr",
-        Inst::Undef { .. } => "Undef",
-        Inst::Assume { .. } => "Assume",
-        Inst::Assert { .. } => "Assert",
-        Inst::Copy { .. } => "Copy",
-        Inst::Select { .. } => "Select",
-        Inst::PtrData { .. } => "PtrData",
-        Inst::PtrMetadata { .. } => "PtrMetadata",
-        Inst::PtrFromParts { .. } => "PtrFromParts",
-        Inst::OpenFrame { .. } => "OpenFrame",
-        Inst::BindSlot { .. } => "BindSlot",
-        Inst::LoadSlot { .. } => "LoadSlot",
-        Inst::CloseFrame { .. } => "CloseFrame",
-        Inst::DialectOp(_) => "DialectOp",
-        Inst::CoroSuspend { .. } => "CoroSuspend",
-        Inst::Invoke { .. } => "Invoke",
-        Inst::LandingPad { .. } => "LandingPad",
-        Inst::Resume { .. } => "Resume",
-        Inst::AssertInvoke { .. } => "AssertInvoke",
-        Inst::DropInvoke { .. } => "DropInvoke",
-        Inst::InvokeIndirect { .. } => "InvokeIndirect",
-        Inst::TensorContract { .. } => "TensorContract",
-        Inst::TensorMap { .. } => "TensorMap",
-        Inst::TensorReduce { .. } => "TensorReduce",
-        Inst::TensorView { .. } => "TensorView",
-        Inst::TensorGather { .. } => "TensorGather",
-        Inst::TensorScatter { .. } => "TensorScatter",
-    }
+    inst.shape().name()
 }
 
 pub fn castop_name(op: CastOp) -> &'static str {
@@ -1153,7 +1085,7 @@ fn proof_name(p: &ProofAnnotation) -> Option<&'static str> {
 
 fn check_proof(p: &ProofAnnotation, at: &str, out: &mut Vec<String>) {
     match proof_name(p) {
-        Some(name) if allow(PROOF_ALLOWLIST_V2, name) => {}
+        Some(name) if allow(PROOF_ALLOWLIST_V6, name) => {}
         Some(name) => out.push(format!(
             "{at}: ProofAnnotation::{name} is outside lowering-target subset v{SUBSET_VERSION}"
         )),
@@ -1286,7 +1218,7 @@ fn check_inst(
         }
         Inst::DialectOp(op) => {
             let qualified = op.qualified_name();
-            if !DIALECT_OP_ALLOWLIST_V3.contains(&qualified.as_str()) {
+            if !DIALECT_OP_ALLOWLIST_V6.contains(&qualified.as_str()) {
                 out.push(format!(
                     "{at}: dialect op `{qualified}` is outside lowering-target subset \
                      v{SUBSET_VERSION} (no proven lowering)"

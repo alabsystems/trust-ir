@@ -83,7 +83,7 @@ masks); `<16 x i8>` / `<8 x i16>` are covered Rust-side by interpreter
 cross-checks (fast-4 "honest boundary"). Widening the Lean executable subset
 lifts the proofs without changing this contract.
 
-## Instructions — `Inst` (53 of 74 allowed)
+## Instructions — `Inst` (53 of 75 allowed)
 
 Allowed:
 
@@ -142,6 +142,7 @@ Excluded:
 | `TensorMap`, `TensorReduce`, `TensorView` | **v5 addendum (the tensor region's map, reduce and view, PKG-U13c, wire v68, 2026-11-14).** The element-wise map of a scalar body over same-shaped tensors and scalars (`tensor_map tensor<i32, 2> (%a, %b) { add i32 $0, $1 }`, Inst tag 72), the left fold of a tensor over strictly ascending axes by one of nine integer operators (`tensor_reduce add tensor<i32, 1> %x axes [1] order row_major`, tag 73), and the read of a tensor through an affine-and-Euclidean coordinate function with an optional fill (`tensor_view`, tag 74: transpose, slice, pad, broadcast, reshape). Operand extents that differ, a node's own scalar verdict, a result count past `usize` and each of the view's five run-time preconditions are undefined behaviour. The reference interpreter and SemR execute all three, and the validator checks their static rules (`InvalidTensorMap`, `InvalidTensorReduce`, `InvalidTensorView`), but no backend lowers them and a tensor has no layout, so the default codegen gate refuses each (`UnlowerableForCodegen`) and `bridge.rs` and the mirror exclude them by name until a subset bump admits them with a lowering. |
 | `TensorGather`, `TensorScatter` | **v5 addendum (the tensor region's gather and scatter, PKG-U13d, wire v69, 2026-11-14).** The read of a tensor at coordinates that are themselves data (`tensor_gather tensor<i32, 1> %x coords [%c0, %c1]`, Inst tag 75: one integer coordinate tensor per data axis, each of the result's rank) and the write of a source tensor over a copy of an initial tensor at such coordinates (`tensor_scatter tensor<i32, 2> %init, %src coords [%c0, %c1]`, tag 76), the row-major-last write to a repeated coordinate winning. Coordinate tensors whose extents differ (from each other, or from the scatter's source) and a coordinate outside its axis (the bounds precondition, a `BoundsCheck` obligation sited on the instruction) are undefined behaviour. The reference interpreter and SemR execute both, and the validator checks their static rules (`InvalidTensorGather`, `InvalidTensorScatter`), but no backend lowers them and a tensor has no layout, so the default codegen gate refuses each (`UnlowerableForCodegen`) and `bridge.rs` and the mirror exclude them by name until a subset bump admits them with a lowering. |
 | `InvokeIndirect` | **v4 addendum (amendment D Part 2, wire v56, 2026-10-02).** The unwinding twin of `CallIndirect` (`invoke_indirect %f(functy.K)(%a, ..) [cc=X] to bbN(..) unwind bbM`, Inst tag 69): `CallIndirect`'s callee, signature, argument, convention and closure rules, then `Invoke`'s successors (its results are defined on the normal edge only). Both models execute it; its unwind edge is taken only under `PanicStrategy::Unwind` (`docs/SPEC_RATIFICATIONS.md` §21). Awaiting a backend lowering of the indirect call and its EH call-site entry: `bridge.rs` and the mirror exclude it by name until the v5 expansion. |
+| `MakeClosure` | **Excluded since it landed (wire v63, Inst tag 70, 2026-11-05); this row was added by the v6 erratum of 2026-11-16, which records what the code already did and moves nothing.** Constructs a closure value from runtime SSA capture values in declaration order; the target's physical signature is the declared captures followed by the apparent parameters (`Constant::Closure` remains the constant form, and closure introduction through `Const` + `InsertField` stays in the subset). The validator checks it (`InvalidMakeClosure`), the reference interpreter executes it, and the Lean contextual evaluator builds the typed closure value (`makeClosureValue`), but the Lean context-free step refuses it as unsupported (operational closure tables and physical signatures are not modelled), the application of the value it makes is outside the subset by structural condition 4, and no backend lowers it. `bridge.rs` (`ConformanceSubset::inst_excluded`) and the mirror (not on `INST_ALLOWLIST_V6`) exclude it by name until a subset bump admits it with a lowering and operational Lean closure semantics. |
 
 **`Invoke` is allowed on the normal-path contract:** under the ratified
 `panic=abort` policy (the UB/numerics policy and the panic/UB decision
@@ -336,12 +337,12 @@ Excluded:
 | `Custom` | A producer-defined `ProofTag` whose meaning is not pinned by any spec — it cannot be part of a *pinned* contract. Consumers needing protocol tags (e.g. the ay CHC batch fixtures) ride outside the proven-path subset by definition. |
 | `FreshSymbolicHavoc` | The deliberately inert `Inst::Undef` marker. It is NOT feature-gated and IS wire-encodable (binary tag `0x25`), but it was never ratified into the subset, so the checker fails closed on it. |
 | `RegionHavocStore` | The `Inst::Store` region-havoc marker (wire-encodable, binary tag `0x26`, not feature-gated). Excluded on the subset's own admission criterion — Lean coverage *as emitted*: the executable model has no region-havoc rule, `semStore` and the reference interpreter write exactly ONE typed location, so nothing in the proven-path semantics covers "treat every location this pointer may reach as freshly unconstrained". It is also the one annotation here that is not an ignorable claim: its consumer contract *requires* a translation havocking at least the store's whole reachable region, or refusal — so admitting it would oblige a conforming backend to a behaviour the model does not state, and a consumer that read the decorated `Store` as an ordinary single-location write would under-approximate the write set (the stale-read false-proof shape). Production emission is real but rides the VERIFICATION lane, not the proven-codegen path: trust's `trust-ir-bridge` emits it for `copy_nonoverlapping` with a symbolic element count, paired with the equally-excluded `FreshSymbolicHavoc` on the fresh value — admitting one without the other would split that pair. |
+| `Goal` | The obligation as a Clean kernel `Expr`, behind feature `clean-expr`: off the default zero-dep surface, so outside the pinned contract by construction (row added by the v6 erratum of 2026-11-16; no allowlist version has named it). The core classifier names it (`ConformanceSubset::proof_annotation_excluded`); the mirror fails closed on it as an annotation it does not recognize. |
 
-The count above is against the whole enum (40 variants); the default build
-sees 39, because the feature-gated `Goal` (`clean-expr`) is outside v1 scope
-by construction (off the default zero-dep surface). The checker fails closed
-on any annotation it does not recognize. `Constant` variants are not
-separately allowlisted: they follow the (checked) type they inhabit.
+The count above is against the whole enum (40 variants, `Goal` included);
+the default build sees 39. The checker fails closed on any annotation it
+does not recognize. `Constant` variants are not separately allowlisted: they
+follow the (checked) type they inhabit.
 
 ## The gate
 
@@ -354,10 +355,16 @@ two-sided (mirroring the B3 schema-parity gate):
 * a fixture **on** the exemption list must actually violate — a stale
   exemption fails the gate.
 
-It also asserts this doc and the machine constants agree (every allowlisted
-name and documented exclusion appears here verbatim), that the gate's
-fixture table stays in lockstep with `conformance.rs::corpus()`, and that
-the worked example below holds.
+It also asserts this doc and the code agree, exhaustively: on each of the
+`Inst`, `Ty`, `CastOp` and `ProofAnnotation` axes, every variant the code
+declares (`InstShape::ALL` for `Inst`, the enum's declaration for the
+others, never a hand list) is either allowlisted and in the section's
+Allowed list, which names exactly the allowlist, or excluded and the first
+cell of a row of the section's Excluded table, and the heading's
+`(N of M allowed)` is the code's count; so a new variant without a
+classification here fails it. It further asserts that the gate's fixture
+table stays in lockstep with `conformance.rs::corpus()`, and that the worked
+example below holds.
 
 ### Exempt fixtures (wire-format coverage is broader than the proven subset)
 
@@ -386,9 +393,8 @@ which rather than forbidding them:
 | `drop_glue` | `Drop`, `DropInvoke` (with the `LandingPad` / `Resume` of its cleanup pad) — amendment D wire coverage of the drop-glue table and the unwinding drop (Inst tag 68, header 55); both execute in both models, but no backend lowers a drop yet, so excluded until the v5 expansion — see the `Inst` exclusion table |
 | `unwind_twins` | `InvokeIndirect` (with the `LandingPad` of its catch-all pad) — amendment D Part 2 wire coverage of the unwinding indirect call (Inst tag 69, header 56); executed by the reference interpreter under both panic strategies, but no backend lowers it, so excluded until the v5 expansion — see the `Inst` exclusion table |
 | `closure_layout` | closure APPLICATION (`CallIndirect` over a `Ty::Closure` callee) — v58 declared-closure-frame wire coverage, applying the closure whose frame the row declares; outside the subset by structural condition 4 (no Lean closure-application rule) |
-
 | `storage_only` | v64 complete parent storage geometry and scalar byte access; storage remains outside the proven Core lowering subset and grants no initialized aggregate/value or callable authority. |
-| `make_closure` | `MakeClosure` and closure application — v63 runtime-capture wire coverage; both remain outside the proven lowering subset and grant no native/provider proof admission |
+| `make_closure` | `MakeClosure` and closure application — v63 runtime-capture wire coverage; both remain outside the proven lowering subset and grant no native/provider proof admission — see the `Inst` exclusion table |
 | `tensor_contract` | `Tensor`, `TensorContract` — the tensor region's wire coverage (an integer matrix multiply over two `tensor<i32, 2>` parameters; the only golden whose header is `TENSOR_FORMAT_VERSION`); both engines execute it, but a tensor has no memory layout and no backend lowers a contraction, so excluded by name — see the `Ty` and `Inst` exclusion tables |
 | `tensor_map_reduce_view` | `Tensor`, `TensorMap`, `TensorReduce`, `TensorView` — the tensor region's map, reduce and view chained in one function (every map node kind, a row sum, a left pad with a fill; the only golden whose header is `TENSOR_MAP_REDUCE_VIEW_FORMAT_VERSION`); both engines execute it, but a tensor has no memory layout and no backend lowers the three, so excluded by name — see the `Ty` and `Inst` exclusion tables |
 | `tensor_weight_blob` | `Tensor` and the `Constant::TensorBlob` its `Const` nodes carry — content-addressed weight blobs (one row named at `i32` and `u8`, an empty row, a blob fed to a contraction; the only golden whose header is `TENSOR_BLOB_FORMAT_VERSION`); both engines read them, but a tensor has no memory layout and no backend lowers a blob constant, so excluded through its tensor type — see the `Ty` exclusion table |
@@ -935,6 +941,21 @@ The subset is versioned as a single integer
 
 ### History
 
+* **v6 erratum (2026-11-16, no version bump)** — no verdict moves: every
+  allowlist, every classification and `SUBSET_VERSION` are unchanged, and
+  nothing is admitted. The `Inst` section had drifted from the v6 code.
+  `Inst::MakeClosure` (wire v63) has been excluded by name in both spellings
+  since it landed (`ConformanceSubset::inst_excluded`; absent from
+  `INST_ALLOWLIST_V6`) but had no row in the exclusion table, and the
+  heading still counted 74 variants after `Inst::BoxDeref` made 75. The
+  section now says "53 of 75" and carries a `MakeClosure` row, and the
+  `ProofAnnotation` table gains the `Goal` row its count of 40 already
+  included. The drift went unseen because the lockstep gate checked a hand
+  list of exclusions; it now classifies every variant the code declares (see
+  "The gate"). The mirror's `inst_name` now returns the variant's
+  `InstShape` name instead of a hand-kept match that spelled every variant
+  the same way, and its proof and dialect checks read the v6 lists by name
+  (aliases of the v2 / v3 lists they read before).
 * **v6 (2026-11-12)** — adds `Ty::FnItem(FuncId)` and the corresponding
   nominal singleton constant/value. A module must contain exactly one actual
   function row for that ID and a resolvable signature; duplicate or missing

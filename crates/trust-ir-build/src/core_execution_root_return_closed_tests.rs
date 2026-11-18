@@ -177,11 +177,11 @@ fn inert_providers(world_type: Expr) -> Expr {
 fn symbolic_data(f: &Fixture, context: Expr, depth: u32) -> (MachineModel, RootReturnFrame, Expr) {
     let at = |position| Expr::bvar(depth - position - 1);
     let world_type = at(1);
-    let model = MachineModel {
-        providers: inert_providers(world_type.clone()),
-        world_type,
-        context,
-    };
+    let model = MachineModel::from_terms(
+        world_type.clone(),
+        context.clone(),
+        inert_providers(world_type.clone()),
+    );
     let word = int_term(at(6));
     let frame = RootReturnFrame {
         returning: app(
@@ -260,12 +260,12 @@ fn root_return_closed_functions_replay_reordered_symbolic_world_and_premises() {
     let independent = app(
         "IRByteConfigV1.halted",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             app("IROutcome.ret", [values]),
             app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     app(
                         "ir_byte_retire_v1",
                         [frame.owner.clone(), frame.memory.clone()],
@@ -414,12 +414,12 @@ fn root_return_closed_functions_retain_false_premises_and_complete_retired_world
     let expected = app(
         "IRByteConfigV1.halted",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             app("IROutcome.ret", [values.clone()]),
             app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     app(
                         "ir_byte_retire_v1",
                         [frame.owner.clone(), frame.memory.clone()],

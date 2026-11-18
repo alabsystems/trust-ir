@@ -5,6 +5,14 @@ The catalog is transport custody, never a proof receipt. Every lookup names an
 immutable source commit, original path, Git blob, byte count and SHA-256. Local
 Git objects are preferred. Network access requires explicit --fetch and uses
 Agh. Missing or ambiguous inputs refuse; no latest-main or missing-file skip.
+
+`check-index` (gate 0) is local: it reads the current index, the catalog and
+the standing fixture's current blobs, never a historical object, so it passes
+in a blobless or shallow clone. `audit` is the explicit history check: every
+catalog row against its original source tree, the fixture seal against its
+source's prefix tree, and no unsealed catalog whose sources hold the fixture
+(local objects, or Agh with --fetch). The standing test
+`CurrentReportTreePolicy` runs `audit` wherever the sources are present.
 """
 from __future__ import annotations
 
@@ -29,9 +37,14 @@ INLINE_FIXTURE = "reports/2026-09-17-two-language-proof-program/"
 # A mutable transport catalog cannot grant itself a new source exception.
 REVIEWED_FIXTURE_SOURCE = "61d9c366cd92420f78fc86f43c376d83b01ac238"
 REVIEWED_FIXTURE_TREE = "81f37bdd14ab20f8c78ac52d8f93e1c082f24019"
+# `tree` is the Git tree of the prefix at the reviewed source
+# (`git rev-parse 61d9c366…:reports/2026-09-17-two-language-proof-program`):
+# one digest over every member's name, mode and blob, so the current index can
+# be held to the seal without reading the source commit.
 REVIEWED_INLINE_FIXTURE = {
     "prefix": INLINE_FIXTURE,
     "source": REVIEWED_FIXTURE_SOURCE,
+    "tree": "4d9b82c5ef7458c3988220e3041a03f162a3d233",
     "manifest_path": INLINE_FIXTURE + "MANIFEST.sha256",
     "manifest_sha256": "713568eea4e05a24a43efbb33a2e2c618fc14e461a2b9a635b8f9b90c1a9ccac",
     "manifest_git_blob": "ec1efbdf72a667585a9dacdb3038a97922cb662f",
@@ -42,6 +55,11 @@ ARCHIVE_SUFFIXES = (".bin", ".gz", ".xz", ".zst", ".zip", ".tar", ".tgz", ".bz2"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+
+
+def is_archive(path):
+    """An archive name in any letter case: `chunk-000.BIN` is one."""
+    return path.lower().endswith(ARCHIVE_SUFFIXES)
 
 
 class ArtifactError(RuntimeError):
@@ -88,6 +106,35 @@ def _hex(value, pattern, label):
     return value
 
 
+def _tree_oid(entries):
+    """The Git tree id of {relative path: (mode, blob)}, computed in memory:
+    the same digest `git write-tree` would give, without writing an object."""
+    root = {}
+    for path, (mode, oid) in entries.items():
+        node = root
+        parts = path.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise ArtifactError("standing fixture path is both a file and a directory")
+        if parts[-1] in node:
+            raise ArtifactError("standing fixture path is both a file and a directory")
+        node[parts[-1]] = (mode, _hex(oid, HEX40, "fixture member Git blob"))
+
+    def digest(node):
+        rows = []
+        for name, value in node.items():
+            raw = os.fsencode(name)
+            if isinstance(value, dict):
+                rows.append((raw + b"/", b"40000 " + raw + b"\0" + bytes.fromhex(digest(value))))
+            else:
+                rows.append((raw, value[0].lstrip("0").encode("ascii") + b" " + raw + b"\0" + bytes.fromhex(value[1])))
+        data = b"".join(row for _, row in sorted(rows))
+        return hashlib.sha1(b"tree " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+    return digest(root)
+
+
 ARTIFACT_OBJECTS_ENV = "TRUST_IR_ARTIFACT_OBJECTS"
 
 
@@ -107,6 +154,22 @@ def _git_environment():
     return env
 
 
+def _read_catalog(path):
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ArtifactError("catalog must be a regular file")
+    flags = os.O_RDONLY
+    for name in ("O_NOFOLLOW", "O_NONBLOCK", "O_BINARY"):
+        flags |= getattr(os, name, 0)
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ArtifactError("catalog must be a regular file")
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as stream:
+            return json.load(stream, object_pairs_hook=_unique_pairs)
+    finally:
+        os.close(descriptor)
+
+
 class Store:
     def __init__(self, root: Path, catalog_path=None, fetch=False):
         self.root = Path(root).resolve(strict=True)
@@ -114,12 +177,13 @@ class Store:
         if type(fetch) is not bool:
             raise ArtifactError("fetch must be an explicit Boolean")
         self.catalog_path = Path(catalog_path) if catalog_path is not None else self.root / CATALOG
-        if self.catalog_path.is_symlink():
-            raise ArtifactError("catalog must be a regular file")
         try:
-            value = json.loads(self.catalog_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_pairs)
+            value = _read_catalog(self.catalog_path)
         except (OSError, ValueError) as error:
             raise ArtifactError(f"cannot read artifact catalog: {error}") from error
+        # An immutable snapshot of the decoded JSON, retaining value types
+        # while ignoring presentation such as CRLF and object-key ordering.
+        self._catalog_snapshot = json.dumps(value, sort_keys=True)
         _fields(value, {"schema", "sources", "artifacts", "inline_fixture"}, {"archive_suffixes", "scope"})
         if value["schema"] != SCHEMA or not isinstance(value["sources"], list) or not isinstance(value["artifacts"], list):
             raise ArtifactError("unsupported artifact catalog schema")
@@ -152,9 +216,10 @@ class Store:
             self.records[key] = dict(row)
         self.fixture = value["inline_fixture"]
         if self.fixture is not None:
-            _fields(self.fixture, {"prefix", "source", "manifest_path", "manifest_sha256", "manifest_git_blob", "files", "bytes"})
+            _fields(self.fixture, {"prefix", "source", "tree", "manifest_path", "manifest_sha256", "manifest_git_blob", "files", "bytes"})
             fixture = self.fixture
             _hex(fixture["source"], HEX40, "fixture source")
+            _hex(fixture["tree"], HEX40, "fixture tree")
             if fixture["prefix"] != INLINE_FIXTURE or fixture["manifest_path"] != INLINE_FIXTURE + "MANIFEST.sha256" or fixture["source"] not in self.sources:
                 raise ArtifactError("unknown inline fixture")
             _hex(fixture["manifest_sha256"], HEX64, "fixture manifest SHA-256")
@@ -193,6 +258,10 @@ class Store:
             name = _path(os.fsdecode(path))
             if name in rows or kind != "blob" or mode not in {"100644", "100755"}:
                 raise ArtifactError("original report has duplicate or unsupported entries")
+            if not size.isdigit():
+                # A blobless clone has the tree but not the blob, so ls-tree
+                # cannot size it (it prints BAD); never guess a byte count.
+                raise ArtifactError("original report blob is unavailable locally: " + name)
             rows[name] = {"path": name, "source": source, "mode": mode, "git_blob": oid, "bytes": int(size)}
         self._trees[source] = rows
         return rows
@@ -490,7 +559,8 @@ class Store:
         except OSError as error:
             raise ArtifactError(f"artifact destination refused: {error}") from error
 
-    def check_index(self):
+    def _index(self):
+        """path -> (mode, blob) of the current index under reports/."""
         result = self._git("ls-files", "--stage", "-z", "--", "reports")
         if result.returncode:
             raise ArtifactError("cannot inspect current report index")
@@ -504,42 +574,123 @@ class Store:
             if stage != "0" or path in index:
                 raise ArtifactError("unmerged or duplicate report index")
             index[path] = (mode, oid)
-        generated = [p for p in index if p.endswith(ARCHIVE_SUFFIXES) and not p.startswith(INLINE_FIXTURE)]
+        return index
+
+    def _current_blob(self, oid):
+        """A blob the current index names, read from local objects only."""
+        result = self._git("cat-file", "blob", oid)
+        if result.returncode:
+            raise ArtifactError("current indexed blob is unavailable: " + result.stderr.decode(errors="backslashreplace")[:500])
+        return result.stdout
+
+    def _check_fixture(self, index):
+        """The standing fixture in `index` equals its independent seal: the Git
+        tree of its prefix, its member count and bytes, and its manifest's
+        identity and SHA-256. Reads only index rows and current blobs."""
+        fixture_paths = sorted(p for p in index if p.startswith(INLINE_FIXTURE))
+        if self.fixture is None:
+            # Synthetic isolated repositories need no fixture. A catalog that
+            # carries the reviewed source cannot drop the seal to erase its duty.
+            if REVIEWED_FIXTURE_SOURCE in self.sources:
+                raise ArtifactError("original standing fixture has no independent seal; never skipped")
+            if fixture_paths:
+                raise ArtifactError("standing fixture has no original seal")
+            return 0
+        if not fixture_paths:
+            raise ArtifactError("standing fixture is missing; never skipped")
+        f = self.fixture
+        members = {p[len(INLINE_FIXTURE):]: index[p] for p in fixture_paths}
+        if len(members) != f["files"] or _tree_oid(members) != f["tree"]:
+            raise ArtifactError("standing fixture members differ from the sealed tree")
+        oids = sorted({oid for _, oid in members.values()})
+        result = subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(self.root), "cat-file", "--batch-check=%(objectname) %(objectsize)"],
+            input=("\n".join(oids) + "\n").encode(), capture_output=True, env=_git_environment())
+        measured = {}
+        for line in result.stdout.decode().splitlines():
+            oid, size = line.split()
+            if size == "missing":
+                raise ArtifactError("current standing fixture blob is unavailable")
+            measured[oid] = int(size)
+        if result.returncode or set(measured) != set(oids):
+            raise ArtifactError("cannot measure the standing fixture")
+        if sum(measured[oid] for _, oid in members.values()) != f["bytes"]:
+            raise ArtifactError("standing fixture member bytes differ from the seal")
+        manifest = index.get(f["manifest_path"])
+        if manifest is None or manifest[1] != f["manifest_git_blob"]:
+            raise ArtifactError("standing fixture manifest identity differs")
+        if hashlib.sha256(self._current_blob(manifest[1])).hexdigest() != f["manifest_sha256"]:
+            raise ArtifactError("standing fixture manifest digest differs")
+        return len(members)
+
+    def check_index(self):
+        """Local custody check of the current index (gate 0). It reads no
+        historical object: `audit` binds the catalog to its source trees."""
+        index = self._index()
+        catalog = index.get(CATALOG)
+        if catalog is None or catalog[0] not in {"100644", "100755"}:
+            raise ArtifactError("artifact catalog must be a regular file in the current index")
+        # Bind the data that was parsed, not a fresh working-file read: a
+        # later edit cannot make this Store's rules match a different index.
+        try:
+            indexed = json.loads(self._current_blob(catalog[1]).decode("utf-8"), object_pairs_hook=_unique_pairs)
+        except ValueError as error:
+            raise ArtifactError(f"cannot read indexed artifact catalog: {error}") from error
+        if json.dumps(indexed, sort_keys=True) != self._catalog_snapshot:
+            raise ArtifactError("parsed artifact catalog differs from the current index; stage the intended catalog")
+        generated = [p for p in index if is_archive(p) and not p.startswith(INLINE_FIXTURE)]
         if generated:
             raise ArtifactError("generated report archives remain in source: " + ", ".join(generated[:8]))
-        fixture_paths = {p for p in index if p.startswith(INLINE_FIXTURE)}
-        # Synthetic isolated repositories need no fixture. In this actual
-        # history, removing the seal from the catalog cannot erase its duty.
-        known = self._git("cat-file", "-t", REVIEWED_FIXTURE_SOURCE)
-        if known.returncode == 0:
-            ancestor = self._git("merge-base", "--is-ancestor", REVIEWED_FIXTURE_SOURCE, "HEAD")
-            if ancestor.returncode not in (0, 1):
-                raise ArtifactError("cannot establish original standing fixture ancestry")
-            if ancestor.returncode == 0 and self.fixture is None:
-                raise ArtifactError("original standing fixture has no independent seal; never skipped")
-        if self.fixture is None and any(any(p.startswith(INLINE_FIXTURE) for p in self._source_rows(source)) for source in self.sources):
-            raise ArtifactError("original standing fixture has no seal; never skipped")
-        if fixture_paths:
-            if self.fixture is None:
-                raise ArtifactError("standing fixture has no original seal")
-            f = self.fixture
-            original = {p: row for p, row in self._source_rows(f["source"]).items() if p.startswith(INLINE_FIXTURE)}
-            if set(original) != fixture_paths or len(original) != f["files"] or sum(r["bytes"] for r in original.values()) != f["bytes"]:
-                raise ArtifactError("standing fixture member denominator differs")
-            if any(index[p] != (row["mode"], row["git_blob"]) for p, row in original.items()):
-                raise ArtifactError("standing fixture source bytes differ")
-            manifest = original[f["manifest_path"]]
-            if manifest["git_blob"] != f["manifest_git_blob"]:
-                raise ArtifactError("standing fixture manifest identity differs")
-            with tempfile.TemporaryFile() as stream:
-                actual = self._copy_verified({**manifest, "sha256": f["manifest_sha256"]}, stream)
-                assert actual["sha256"] == f["manifest_sha256"]
-        elif self.fixture is not None:
-            raise ArtifactError("standing fixture is missing; never skipped")
-        # Validate transport structure/path binding without rehashing historical GB.
+        returned = sorted({path for _, path in self.records} & set(index))
+        if returned:
+            raise ArtifactError("cataloged artifacts are back in source: " + ", ".join(returned[:8]))
+        fixture_files = self._check_fixture(index)
+        return {"archive_files": len(self.records), "archive_bytes": sum(r["bytes"] for r in self.records.values()), "inline_fixture_files": fixture_files, "scope": "Current-index custody check from local index rows and current blobs; `audit` binds every row to its original source tree. No proof or release grade"}
+
+    def _holds_fixture(self, source):
+        """Whether an original source tree has the standing fixture's prefix."""
+        try:
+            return any(p.startswith(INLINE_FIXTURE) for p in self._source_rows(source))
+        except ArtifactError:
+            if not self.fetch:
+                raise
+        reports = self._remote_tree(source, self.sources[source]["tree"]).get("reports")
+        if reports is None or reports["type"] != "tree":
+            return False
+        return INLINE_FIXTURE.split("/")[1] in self._remote_tree(source, reports["sha"])
+
+    def audit(self):
+        """Every catalog row equals its original source tree (path, mode, Git
+        blob, bytes); the fixture seal equals its source's prefix tree, and no
+        source holds the fixture while the catalog has no seal. Reads
+        historical commits: local objects, or Agh with --fetch."""
         for row in self.records.values():
             self._bound(row)
-        return {"archive_files": len(self.records), "archive_bytes": sum(r["bytes"] for r in self.records.values()), "inline_fixture_files": len(fixture_paths), "scope": "Source-tree/custody check only, no proof or release grade"}
+        fixture_files = 0
+        if self.fixture is None:
+            # A catalog whose original sources hold the standing fixture
+            # cannot erase its duty by dropping the seal (check-index holds
+            # only the reviewed source's case, the one it can see locally).
+            if any(self._holds_fixture(source) for source in self.sources):
+                raise ArtifactError("original standing fixture has no seal; never skipped")
+        else:
+            f = self.fixture
+            try:
+                rows = {p: r for p, r in self._source_rows(f["source"]).items() if p.startswith(INLINE_FIXTURE)}
+            except ArtifactError:
+                if not self.fetch:
+                    raise
+                rows = self._remote_rows(f["source"], INLINE_FIXTURE.rstrip("/"))
+            members = {p[len(INLINE_FIXTURE):]: (r["mode"], r["git_blob"]) for p, r in rows.items()}
+            if len(members) != f["files"] or sum(r["bytes"] for r in rows.values()) != f["bytes"] or _tree_oid(members) != f["tree"]:
+                raise ArtifactError("standing fixture seal differs from its original source tree")
+            manifest = rows.get(f["manifest_path"])
+            if manifest is None or manifest["git_blob"] != f["manifest_git_blob"]:
+                raise ArtifactError("standing fixture manifest identity differs from its original source tree")
+            with tempfile.TemporaryFile() as stream:
+                self._copy_verified({**manifest, "sha256": f["manifest_sha256"]}, stream)
+            fixture_files = len(members)
+        return {"audited_files": len(self.records), "audited_bytes": sum(r["bytes"] for r in self.records.values()), "sources": len(self.sources), "inline_fixture_files": fixture_files, "scope": "Every catalog row and the fixture seal equal their original source trees; transport custody only, no proof or release grade"}
 
 
 def main(argv=None):
@@ -548,7 +699,8 @@ def main(argv=None):
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--fetch", action="store_true", help="explicit authenticated Agh retrieval when original Git objects are unavailable")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("check-index", help="refuse generated archives and preserve the exact standing fixture")
+    sub.add_parser("check-index", help="refuse generated archives and preserve the exact standing fixture (local: reads no historical object)")
+    sub.add_parser("audit", help="bind every catalog row and the fixture seal to the original source trees (reads history; --fetch for Agh)")
     for name in ("materialize", "restore-report"):
         item = sub.add_parser(name)
         item.add_argument("selector")
@@ -559,6 +711,8 @@ def main(argv=None):
         store = Store(args.root, args.catalog, args.fetch)
         if args.command == "check-index":
             result = store.check_index()
+        elif args.command == "audit":
+            result = store.audit()
         else:
             result = store.materialize(args.selector, args.destination, args.source, report=args.command == "restore-report")
         print(json.dumps(result, sort_keys=True, indent=2))

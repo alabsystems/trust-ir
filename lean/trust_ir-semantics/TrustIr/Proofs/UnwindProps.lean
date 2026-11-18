@@ -253,6 +253,121 @@ theorem SemPrefix.exitUnwinding {mA mU : Sem (List Value)} (h : SemPrefix mA mU)
 -- The prefix theorem
 -- -----------------------------------------------------------------
 
+-- Inspect syntax before attempting potentially large definitional conversion.
+open Lean Elab Tactic in
+elab "trustIrUnwindStructuralRefl20261116" : tactic => do
+  let target := (← getMainTarget).consumeMData
+  let operands := target.getAppArgs
+  unless target.getAppFn.isConstOf ``TrustIr.SemPrefix && operands.size == 3 do
+    throwError "expected a SemPrefix application"
+  unless operands[1]! == operands[2]! do
+    throwError "SemPrefix operands are not structurally alpha equivalent"
+  evalTactic (← `(tactic| with_reducible exact TrustIr.SemPrefix.refl _))
+
+-- Dispatch on immediate syntax before elaborating any prefix theorem application.
+-- A rejected shape leaves its proof obligation unsolved; there is no broad fallback.
+open Lean Elab Tactic in
+elab "trustIrUnwindPrefixStep20261116 " ih:ident ctx:ident : tactic => withMainContext do
+  let target := (← getMainTarget).consumeMData
+  match target with
+  | .forallE .. =>
+    evalTactic (← `(tactic| intro _))
+    return
+  | _ => pure ()
+  let operands := target.getAppArgs
+  unless target.getAppFn.isConstOf ``TrustIr.SemPrefix && operands.size == 3 do
+    throwError "expected a forall or SemPrefix application"
+  let left := operands[1]!
+  let right := operands[2]!
+  if left == right then
+    evalTactic (← `(tactic| with_reducible exact TrustIr.SemPrefix.refl _))
+    return
+  -- One outer let substitution or lambda-head beta step; never unfold constants.
+  let reduceHead := fun (value : Expr) =>
+    match value.consumeMData with
+    | .letE _ _ assigned body _ => body.instantiate1 assigned
+    | other => other.headBeta
+  let leftReduced := reduceHead left
+  let rightReduced := reduceHead right
+  if leftReduced != left || rightReduced != right then
+    let changedArgs := (operands.set! 1 leftReduced).set! 2 rightReduced
+    let changed := mkAppN target.getAppFn changedArgs
+    let goal ← (← getMainGoal).replaceTargetDefEq changed
+    replaceMainGoal [goal]
+    return
+  -- Select only an immediate, fully applied one-discriminant Nat.succ matcher.
+  -- Actual alternatives stay abstract while the matcher prefix is reduced.
+  let reduceKnownNatSuccMatcher (value : Expr) : MetaM Expr := do
+    let stripped := value.consumeMData
+    let .const matcherName _ := stripped.getAppFn | return value
+    let some info ← Lean.Meta.getMatcherInfo? matcherName | return value
+    let args := stripped.getAppArgs
+    unless info.numDiscrs == 1 && args.size == info.arity do
+      return value
+    let discr := args[info.numParams + 1]!.consumeMData
+    unless discr.getAppFn.isConstOf ``Nat.succ && discr.getAppNumArgs == 1 do
+      return value
+    match (← Lean.Meta.withReducible <| Lean.Meta.reduceMatcher? stripped) with
+    | .reduced result => pure result
+    | _ => pure value
+  let leftMatched ← reduceKnownNatSuccMatcher left
+  let rightMatched ← reduceKnownNatSuccMatcher right
+  if leftMatched != left || rightMatched != right then
+    let changedArgs := (operands.set! 1 leftMatched).set! 2 rightMatched
+    let changed := mkAppN target.getAppFn changedArgs
+    let goal ← (← getMainGoal).replaceTargetDefEq changed
+    replaceMainGoal [goal]
+    return
+  let heads := fun (leftName rightName : Name) =>
+    left.getAppFn.isConstOf leftName && right.getAppFn.isConstOf rightName
+  if heads ``TrustIr.stepNWithContext ``TrustIr.stepNWithContext then
+    -- The induction hypothesis generalizes ctx, including every callee context.
+    evalTactic (← `(tactic| with_reducible exact $ih _ _ _ _ _))
+    return
+  let model ← `(term| ($ctx).byteModel)
+  if heads ``TrustIr.raiseIfUnwind ``TrustIr.raiseIfUnwind then
+    evalTactic (← `(tactic| with_reducible exact TrustIr.SemPrefix.raiseIfUnwind _ $model))
+    return
+  if heads ``TrustIr.semLandingPadWith ``TrustIr.semLandingPadWith then
+    evalTactic (← `(tactic| with_reducible exact TrustIr.SemPrefix.landingPad _ _ _ _))
+    return
+  if heads ``TrustIr.stepTermWithContext ``TrustIr.stepTermWithContext then
+    evalTactic (← `(tactic| with_reducible exact TrustIr.SemPrefix.stepTermWithContext $ctx _ _ _))
+    return
+  if heads ``TrustIr.stepInst ``TrustIr.stepTermUnwind then
+    evalTactic (← `(tactic| with_reducible exact TrustIr.SemPrefix.stepTerm _ _ $model))
+    return
+  if heads ``TrustIr.invokeCatch ``TrustIr.invokeCatch then
+    let some leftChild := left.getAppArgs.back? | throwError "invokeCatch child absent"
+    let some rightChild := right.getAppArgs.back? | throwError "invokeCatch child absent"
+    unless leftChild.consumeMData.getAppFn.isConstOf ``TrustIr.stepNWithContext &&
+        rightChild.consumeMData.getAppFn.isConstOf ``TrustIr.stepNWithContext do
+      throwError "invokeCatch children are not recursive evaluator calls"
+    evalTactic (← `(tactic| with_reducible apply TrustIr.SemPrefix.invokeCatch))
+    evalTactic (← `(tactic| with_reducible exact $ih _ _ _ _ _))
+    return
+  let isBind := fun (value : Expr) =>
+    value.getAppFn.isConstOf ``Bind.bind || value.getAppFn.isConstOf ``StateT.bind
+  if isBind left && isBind right then
+    evalTactic (← `(tactic| refine TrustIr.SemPrefix.seq ?_ ?_))
+    return
+  -- These are exact public operation names, never an internal loop-name prefix.
+  -- Single-quoted Names keep the table parseable even on a pin without an alias.
+  let isLoop := fun (value : Expr) =>
+    value.getAppFn.isConstOf `ForIn.forIn ||
+    value.getAppFn.isConstOf `ForIn'.forIn' ||
+    value.getAppFn.isConstOf `List.forIn'
+  if isLoop left && isLoop right then
+    evalTactic (← `(tactic| refine TrustIr.SemPrefix.loop _ _ ?_))
+    return
+  let isConditional := fun (value : Expr) =>
+    value.getAppFn.isConstOf ``ite || value.getAppFn.isConstOf ``dite
+  if isConditional left || isConditional right ||
+      (← Lean.Meta.isMatcherApp left) || (← Lean.Meta.isMatcherApp right) then
+    evalTactic (← `(tactic| split))
+    return
+  throwError "unsupported immediate Unwind prefix shape"
+
 set_option maxHeartbeats 40000000 in
 /-- **The abort run is a prefix of the unwind run.** For every fuel, call
     depth, CFG, block and arguments, the `.abort` run of the contextual
@@ -265,15 +380,27 @@ theorem stepNWithContext_abort_prefix (ctx : EvalContext) :
     ∀ (fuel depth : Nat) (cfg : CFG) (pc : BlockId) (args : List Value),
       SemPrefix (stepNWithContext ctx fuel depth cfg pc args .abort)
         (stepNWithContext ctx fuel depth cfg pc args .unwind) := by
+  trustIrCompilerProof {
   intro fuel
   induction fuel generalizing ctx with
   | zero =>
     intro depth cfg pc args
-    simp only [stepNWithContext]
+    trustIrCompilerProof {
+      simp only [stepNWithContext]
+    } {
+      rw [stepNWithContext.eq_def ctx (0) depth cfg pc args .abort,
+        stepNWithContext.eq_def ctx (0) depth cfg pc args .unwind]
+    }
     exact SemPrefix.refl _
   | succ n ih =>
     intro depth cfg pc args
-    simp only [stepNWithContext]
+    trustIrCompilerProof {
+      simp only [stepNWithContext]
+    } {
+      rw [stepNWithContext.eq_def ctx (n + 1) depth cfg pc args .abort,
+        stepNWithContext.eq_def ctx (n + 1) depth cfg pc args .unwind]
+    }
+    trustIrCompilerProof {
     repeat' (first
       | with_reducible exact SemPrefix.refl _
       | with_reducible exact ih _ _ _ _ _
@@ -287,6 +414,43 @@ theorem stepNWithContext_abort_prefix (ctx : EvalContext) :
       | intro _
       | split
       | dsimp only)
+    } {
+    repeat' (first
+      | trustIrUnwindStructuralRefl20261116
+      | with_reducible exact ih _ _ _ _ _
+      | with_reducible exact SemPrefix.raiseIfUnwind _ ctx.byteModel
+      | with_reducible exact SemPrefix.landingPad _ _ _ _
+      | with_reducible exact SemPrefix.stepTermWithContext ctx _ _ _
+      | with_reducible exact SemPrefix.stepTerm _ _ ctx.byteModel
+      | (with_reducible apply SemPrefix.invokeCatch; with_reducible exact ih _ _ _ _ _)
+      | refine SemPrefix.seq ?_ ?_
+      | refine SemPrefix.loop _ _ ?_
+      | intro _
+      | split
+      | dsimp only)
+    }
+  } {
+  intro fuel
+  induction fuel generalizing ctx with
+  | zero =>
+    intro depth cfg pc args
+    trustIrCompilerProof {
+      simp only [stepNWithContext]
+    } {
+      rw [stepNWithContext.eq_def ctx (0) depth cfg pc args .abort,
+        stepNWithContext.eq_def ctx (0) depth cfg pc args .unwind]
+    }
+    exact SemPrefix.refl _
+  | succ n ih =>
+    intro depth cfg pc args
+    trustIrCompilerProof {
+      simp only [stepNWithContext]
+    } {
+      rw [stepNWithContext.eq_def ctx (Nat.succ n) depth cfg pc args .abort,
+        stepNWithContext.eq_def ctx (Nat.succ n) depth cfg pc args .unwind]
+    }
+    repeat' (trustIrUnwindPrefixStep20261116 ih ctx)
+  }
 
 set_option maxHeartbeats 4000000 in
 /-- The prefix theorem at the entry (`evalFunctionInContext`). -/

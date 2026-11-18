@@ -6,6 +6,7 @@ use super::*;
 pub const RUN_TO_PULSE: &str = "TrustIR.Eval.Loop.run_to_pulse";
 pub const RUN_TO_PULSE_CPS: &str = "TrustIR.Eval.Loop.run_to_pulse_cps";
 pub const IMAGE_TO_PULSE: &str = "TrustIR.Eval.Loop.image_to_pulse";
+pub const IMAGE_TO_PULSE_OBSERVATION: &str = "TrustIR.Eval.Loop.image_to_pulse_observation";
 fn option_type(a: &Expr) -> Expr {
     Expr::app(c("Option"), a.clone())
 }
@@ -13,8 +14,18 @@ fn pulse_type(s: &Expr, e: &Expr, a: &Expr) -> Expr {
     sum(s, &result(s, e, a))
 }
 fn tag_cases(a: &Expr, motive: Expr, none: Expr, some: Expr, tag: Expr) -> Expr {
+    tag_cases_at(a, motive, none, some, tag, Level::succ(u()))
+}
+fn tag_cases_at(
+    a: &Expr,
+    motive: Expr,
+    none: Expr,
+    some: Expr,
+    tag: Expr,
+    result_level: Level,
+) -> Expr {
     Expr::apps(
-        Expr::const_(Name::from_string("Option.rec"), vec![Level::succ(u()), u()]),
+        Expr::const_(Name::from_string("Option.rec"), vec![result_level, u()]),
         [a.clone(), motive, none, some, tag],
     )
 }
@@ -238,6 +249,226 @@ fn transfer(env: &mut Environment) -> Result<(), SemanticEvaluationError> {
         true,
     )
 }
+
+/// Observe an exact checked cut image through an arbitrary terminal context at
+/// its original answer type. All arguments are explicit, in this order:
+/// `S E V A run code image finish residual state`. With
+/// `D = Prod S (Except E V)`, `finish : D -> A` and `residual : S -> A`, the
+/// result is the pointwise observation law consumed by CPS loop transport:
+///
+/// ```text
+/// code state
+///   (fun post tag => Option.cases (residual post)
+///      (fun value => finish (post, Except.ok value)) tag)
+///   (fun post error => finish (post, Except.error error))
+/// = Sum.rec (fun _ => A) residual finish (run_to_pulse (run state))
+/// ```
+/// Install after `install_cut_run_into`. The exact image function, run, state,
+/// parameters and answer type remain unchanged. This is a forward image law;
+/// it supplies no image premise, termination witness or CPS converse.
+/// Collisions refuse before mutation; discard the environment on a later error.
+pub fn install_cut_observation_into(env: &mut Environment) -> Result<(), SemanticEvaluationError> {
+    if env
+        .get_const(&Name::from_string(IMAGE_TO_PULSE_OBSERVATION))
+        .is_some()
+    {
+        return Err(error(
+            IMAGE_TO_PULSE_OBSERVATION,
+            "owned declaration already exists",
+        ));
+    }
+    recheck_theorem(env, IMAGE_TO_PULSE)?;
+    observation(env)?;
+    recheck_theorem(env, IMAGE_TO_PULSE_OBSERVATION)?;
+    let name = Name::from_string(IMAGE_TO_PULSE_OBSERVATION);
+    if !env.axiom_deps(&name).is_some_and(|deps| deps.is_empty())
+        || !env
+            .foundational_axiom_deps(&name)
+            .is_some_and(|deps| deps.is_empty())
+        || !env
+            .trust_marker_deps(&name)
+            .is_some_and(|deps| deps.is_empty())
+    {
+        return Err(error(
+            IMAGE_TO_PULSE_OBSERVATION,
+            "missing or nonempty axiom or trust-marker closure",
+        ));
+    }
+    Ok(())
+}
+
+fn observation_channels(
+    sc: &mut Scope,
+    s: &Expr,
+    e: &Expr,
+    v: &Expr,
+    answer: &Expr,
+    residual: Expr,
+    finish: Expr,
+) -> (Expr, Expr) {
+    let post = sc.local(s.clone());
+    let tag = sc.local(option_type(v));
+    let value = sc.local(v.clone());
+    let failure = sc.local(e.clone());
+    let terminal = |constructor, payload| {
+        Expr::app(
+            finish.clone(),
+            pair(
+                s,
+                &outcome(e, v),
+                post.term.clone(),
+                apps(constructor, [e.clone(), v.clone(), payload]),
+            ),
+        )
+    };
+    let yes = lams(
+        &[post.clone(), tag.clone()],
+        tag_cases(
+            v,
+            tag.lam(answer.clone()),
+            Expr::app(residual, post.term.clone()),
+            value.lam(terminal("Except.ok", value.term.clone())),
+            tag.term.clone(),
+        ),
+    );
+    let no = lams(
+        &[post.clone(), failure.clone()],
+        terminal("Except.error", failure.term.clone()),
+    );
+    (yes, no)
+}
+
+fn observation(env: &mut Environment) -> Result<(), SemanticEvaluationError> {
+    let mut sc = Scope::default();
+    let [s, e, v, a] = sc.types();
+    let opt = option_type(&v.term);
+    let done = result(&s.term, &e.term, &v.term);
+    let pulse = pulse_type(&s.term, &e.term, &v.term);
+    let m = sc.local(run(&s.term, &e.term, &opt));
+    let f = sc.local(cps(&s.term, &e.term, &opt, &a.term));
+    let image = sc.local(apps(
+        super::super::CPS_IMAGE,
+        [
+            s.term.clone(),
+            e.term.clone(),
+            opt.clone(),
+            a.term.clone(),
+            m.term.clone(),
+            f.term.clone(),
+        ],
+    ));
+    let finish = sc.local(Expr::arrow(done.clone(), a.term.clone()));
+    let residual = sc.local(Expr::arrow(s.term.clone(), a.term.clone()));
+    let state = sc.local(s.term.clone());
+    let (yes, no) = observation_channels(
+        &mut sc,
+        &s.term,
+        &e.term,
+        &v.term,
+        &a.term,
+        residual.term.clone(),
+        finish.term.clone(),
+    );
+    let selected = sc.local(pulse.clone());
+    let ignored = sc.local(pulse);
+    let mapper = selected.lam(cases(
+        &s.term,
+        &done,
+        ignored.lam(a.term.clone()),
+        residual.term.clone(),
+        finish.term.clone(),
+        selected.term.clone(),
+        false,
+    ));
+    let mapped = |raw| Expr::app(mapper.clone(), decode(&s.term, &e.term, &v.term, raw));
+    let converted = |computation| {
+        to_cps(
+            &s.term,
+            &e.term,
+            &opt,
+            &a.term,
+            computation,
+            state.term.clone(),
+            yes.clone(),
+            no.clone(),
+        )
+    };
+    let unused = sc.local(s.term.clone());
+    let equation = |raw: Expr| eq(&a.term, converted(unused.lam(raw.clone())), mapped(raw));
+    let post = sc.local(s.term.clone());
+    let failure = sc.local(e.term.clone());
+    let tag = sc.local(opt.clone());
+    let value = sc.local(v.term.clone());
+    let packed = |constructor, payload| {
+        pair(
+            &s.term,
+            &outcome(&e.term, &opt),
+            post.term.clone(),
+            apps(constructor, [e.term.clone(), opt.clone(), payload]),
+        )
+    };
+    let finished = |constructor, payload| {
+        Expr::app(
+            finish.term.clone(),
+            pair(
+                &s.term,
+                &outcome(&e.term, &v.term),
+                post.term.clone(),
+                apps(constructor, [e.term.clone(), v.term.clone(), payload]),
+            ),
+        )
+    };
+    // Prebuild these generalized branches before the existing Fn-based result
+    // eliminator borrows the scope. Option equality eliminates only into Prop;
+    // the original data decoder still uses the unchanged Type-u recursor.
+    let failed = lams(
+        &[post.clone(), failure.clone()],
+        refl(&a.term, finished("Except.error", failure.term.clone())),
+    );
+    let normal = lams(
+        &[post.clone(), tag.clone()],
+        tag_cases_at(
+            &v.term,
+            tag.lam(equation(packed("Except.ok", tag.term.clone()))),
+            refl(&a.term, Expr::app(residual.term.clone(), post.term.clone())),
+            value.lam(refl(&a.term, finished("Except.ok", value.term.clone()))),
+            tag.term.clone(),
+            Level::zero(),
+        ),
+    );
+    let evaluated = Expr::app(m.term.clone(), state.term.clone());
+    let through = prove_result_cases(
+        &mut sc,
+        &s.term,
+        &e.term,
+        &opt,
+        evaluated.clone(),
+        equation,
+        |post, failure| Expr::apps(failed.clone(), [post, failure]),
+        |post, tag| Expr::apps(normal.clone(), [post, tag]),
+    );
+    let left = Expr::apps(
+        f.term.clone(),
+        [state.term.clone(), yes.clone(), no.clone()],
+    );
+    let middle = converted(m.term.clone());
+    let right = mapped(evaluated);
+    let first = Expr::apps(image.term.clone(), [state.term.clone(), yes, no]);
+    let proof = trans(&a.term, left.clone(), middle, right.clone(), first, through);
+    let goal = eq(&a.term, left, right);
+    add(
+        env,
+        IMAGE_TO_PULSE_OBSERVATION,
+        &[s, e, v, a, m, f, image, finish, residual, state],
+        goal,
+        proof,
+        true,
+    )
+}
+
+#[cfg(test)]
+#[path = "semantic_evaluation_cut_observation_tests.rs"]
+mod observation_tests;
 
 #[cfg(test)]
 mod tests {

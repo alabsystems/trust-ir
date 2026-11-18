@@ -13,6 +13,8 @@ mod storage;
 #[cfg(test)]
 mod tests;
 use storage::Work;
+#[cfg(test)]
+pub(super) use tests::validation_error_variant_count;
 type R = Result<(), ObservedValueError>;
 
 /// Consume every diagnostic and actual owned payload, even if this session

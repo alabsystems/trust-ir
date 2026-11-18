@@ -9,42 +9,38 @@
 //! preserves those bytes while replacing the legacy decoder's unlimited and
 //! trailing-byte-accepting behavior with one exact whole-slice contract.
 
+#[cfg(test)]
+use super::clean_proof_carrier::KERNEL_ENVIRONMENT_DIGEST_V1_DOMAIN;
+use super::clean_proof_carrier::{
+    CLEAN_EXPR_V1_MAX_BYTES, KernelConstantV1, KernelConstructorV1, KernelEnvironmentDigestV1,
+    KernelInductiveV1, KernelQuotientV1, KernelRecursorRuleV1, KernelRecursorV1,
+    clean_cic_statement_carrier_digest_v1, codec, encode_clean_expr_carrier_v1,
+};
 use super::evidence::ProofDigest;
 use bincode::Options;
-use clean_kernel::env::{ConstantInfo, Declaration, Environment};
-use clean_kernel::{
-    ConstructorVal, DecodeResourceLimits, Expr, InductiveVal, Name, QuotVal, RecursorVal,
-};
+#[cfg(test)]
+use clean_kernel::env::ConstantInfo;
+use clean_kernel::env::{Declaration, Environment};
+#[cfg(test)]
+use clean_kernel::{ConstructorVal, InductiveVal, QuotVal, RecursorVal};
+use clean_kernel::{DecodeResourceLimits, Expr, Name};
 
-/// Maximum encoded size of one Clean kernel proof/comparand expression (64 MiB).
-pub const CLEAN_EXPR_V1_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum aggregate Expr/Level/Name nodes decoded from one carrier.
 pub const CLEAN_EXPR_V1_MAX_NODES: usize = 2_000_000;
 /// Maximum recursive Expr/Level/Name depth decoded from one carrier.
 pub const CLEAN_EXPR_V1_MAX_DEPTH: usize = 4_096;
 
-fn codec(limit: usize) -> impl Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_little_endian()
-        .reject_trailing_bytes()
-        .with_limit(limit as u64)
+/// Encode this kernel's expression through the shared unchanged v1 carrier.
+/// This compatibility wrapper retains the existing nominal API; the carrier
+/// itself is data only and the consumer's decoder/replay remains mandatory.
+pub fn encode_clean_expr_v1(expr: &Expr) -> Result<Vec<u8>, String> {
+    encode_clean_expr_carrier_v1(expr)
 }
 
-/// Encode one kernel expression in the existing bincode-1-compatible wire
-/// format, rejecting values whose encoded carrier exceeds the hard limit.
-pub fn encode_clean_expr_v1(expr: &Expr) -> Result<Vec<u8>, String> {
-    let bytes = codec(CLEAN_EXPR_V1_MAX_BYTES)
-        .serialize(expr)
-        .map_err(|error| format!("encode Clean Expr v1: {error}"))?;
-    if bytes.len() > CLEAN_EXPR_V1_MAX_BYTES {
-        return Err(format!(
-            "Clean Expr v1 carrier is {} bytes, exceeds limit {}",
-            bytes.len(),
-            CLEAN_EXPR_V1_MAX_BYTES
-        ));
-    }
-    Ok(bytes)
+/// Identify this kernel's statement using the shared unchanged v1 domain.
+/// This is an identity, not a kernel judgment or proof admission.
+pub fn clean_cic_statement_digest(statement: &Expr) -> Result<ProofDigest, String> {
+    clean_cic_statement_carrier_digest_v1(statement)
 }
 
 /// Decode one untrusted kernel expression with exact whole-slice, byte, node,
@@ -190,31 +186,6 @@ fn decode_island_with_limits(
     Ok(declarations)
 }
 
-/// Digest domain of [`clean_cic_statement_digest`].
-pub const CLEAN_CIC_STATEMENT_DIGEST_V1_DOMAIN: &str = "trust_ir.clean_cic.statement.v1";
-
-/// Digest domain of [`kernel_environment_digest`].
-pub const KERNEL_ENVIRONMENT_DIGEST_V1_DOMAIN: &str = "trust_ir.clean_cic.environment.v1";
-
-/// The identity of a kernel STATEMENT — [`CertificateBinding::statement_digest`]
-/// (roadmap WS1.12a): SHA-256 under `trust_ir.clean_cic.statement.v1` over
-/// the statement's canonical v1 carrier ([`encode_clean_expr_v1`]).
-///
-/// A validator computes it over the statement IT derives (the backend-TV
-/// `∀`-equation, the grounded contract goal) and compares it with what the
-/// certificate claims; the producer never chooses the statement, so a
-/// mismatch is a refusal. Fails only when the statement does not fit the
-/// carrier, which the same validator would refuse anyway.
-///
-/// [`CertificateBinding::statement_digest`]: crate::proof::CertificateBinding::statement_digest
-pub fn clean_cic_statement_digest(statement: &Expr) -> Result<ProofDigest, String> {
-    let bytes = encode_clean_expr_v1(statement)?;
-    Ok(ProofDigest::sha256_domain(
-        CLEAN_CIC_STATEMENT_DIGEST_V1_DOMAIN,
-        &bytes,
-    ))
-}
-
 /// The CONTENT identity of a kernel environment —
 /// [`CertificateBinding::environment_digest`] (roadmap WS1.12a; finding
 /// F-007): SHA-256 under `trust_ir.clean_cic.environment.v1` over every
@@ -241,6 +212,100 @@ pub fn clean_cic_statement_digest(statement: &Expr) -> Result<ProofDigest, Strin
 /// [`CertificateBinding::environment_digest`]: crate::proof::CertificateBinding::environment_digest
 /// [`CleanMode`]: clean_kernel::CleanMode
 pub fn kernel_environment_digest(env: &Environment) -> Result<ProofDigest, String> {
+    fn names(values: &[Name]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+    if env.has_constant_source() {
+        return Err(
+            "kernel environment is lazily backed: its declarations are not enumerable, so its \
+             identity cannot be stated"
+                .to_string(),
+        );
+    }
+    let mut constants: Vec<_> = env.constants().collect();
+    constants.sort_by_key(|c| c.name.to_string());
+    let digest = KernelEnvironmentDigestV1::new(&format!("{:?}", env.mode())).constants(
+        constants.into_iter().map(|c| {
+            Ok(KernelConstantV1 {
+                name: c.name.to_string(),
+                level_params: names(&c.level_params),
+                kind: format!("{:?}", c.kind),
+                is_reducible: c.is_reducible,
+                reducibility: format!("{:?}", c.reducibility),
+                type_: encode_clean_expr_v1(&c.type_)?,
+                value: c.value.as_ref().map(encode_clean_expr_v1).transpose()?,
+            })
+        }),
+    )?;
+    let mut inductives: Vec<_> = env.inductives().collect();
+    inductives.sort_by_key(|i| i.name.to_string());
+    let digest = digest.inductives(inductives.into_iter().map(|i| {
+        Ok(KernelInductiveV1 {
+            name: i.name.to_string(),
+            level_params: names(&i.level_params),
+            type_: encode_clean_expr_v1(&i.type_)?,
+            num_params: i.num_params,
+            num_indices: i.num_indices,
+            all_names: names(&i.all_names),
+            constructor_names: names(&i.constructor_names),
+            flags: [i.is_recursive, i.is_reflexive, i.is_large_elim, i.is_nested],
+        })
+    }))?;
+    let mut constructors: Vec<_> = env.constructors().collect();
+    constructors.sort_by_key(|c| c.name.to_string());
+    let digest = digest.constructors(constructors.into_iter().map(|c| {
+        Ok(KernelConstructorV1 {
+            name: c.name.to_string(),
+            inductive_name: c.inductive_name.to_string(),
+            level_params: names(&c.level_params),
+            type_: encode_clean_expr_v1(&c.type_)?,
+            num_params: c.num_params,
+            num_fields: c.num_fields,
+            constructor_idx: c.constructor_idx,
+        })
+    }))?;
+    let mut recursors: Vec<_> = env.recursors().collect();
+    recursors.sort_by_key(|r| r.name.to_string());
+    let digest = digest.recursors(recursors.into_iter().map(|r| {
+        Ok(KernelRecursorV1 {
+            name: r.name.to_string(),
+            arg_order: format!("{:?}", r.arg_order),
+            level_params: names(&r.level_params),
+            type_: encode_clean_expr_v1(&r.type_)?,
+            inductive_name: r.inductive_name.to_string(),
+            counts: [r.num_params, r.num_indices, r.num_motives, r.num_minors],
+            rules: r
+                .rules
+                .iter()
+                .map(|rule| {
+                    Ok(KernelRecursorRuleV1 {
+                        constructor_name: rule.constructor_name.to_string(),
+                        num_fields: rule.num_fields,
+                        recursive_fields: rule.recursive_fields.clone(),
+                        rhs: encode_clean_expr_v1(&rule.rhs)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            is_k: r.is_k,
+        })
+    }))?;
+    let mut quotients: Vec<_> = env.quotients().collect();
+    quotients.sort_by_key(|q| q.name.to_string());
+    digest
+        .quotients(quotients.into_iter().map(|q| {
+            Ok(KernelQuotientV1 {
+                name: q.name.to_string(),
+                level_params: names(&q.level_params),
+                type_: encode_clean_expr_v1(&q.type_)?,
+                kind: format!("{:?}", q.kind),
+            })
+        }))?
+        .finish()
+}
+
+// Frozen pre-boundary framing is retained only as an independent ABI regression oracle.
+#[cfg(test)]
+fn legacy_environment_digest_v1(env: &Environment) -> Result<ProofDigest, String> {
     use super::evidence::{write_len_stable, write_str_stable, write_u8_stable, write_u32_stable};
     fn names(out: &mut Vec<u8>, names: &[Name]) {
         write_len_stable(out, names.len());
@@ -249,7 +314,8 @@ pub fn kernel_environment_digest(env: &Environment) -> Result<ProofDigest, Strin
         }
     }
     fn expr(out: &mut Vec<u8>, e: &Expr) -> Result<(), String> {
-        let bytes = encode_clean_expr_v1(e)?;
+        let bytes =
+            bincode::serialize(e).map_err(|error| format!("legacy Expr carrier: {error}"))?;
         write_len_stable(out, bytes.len());
         out.extend_from_slice(&bytes);
         Ok(())
@@ -394,6 +460,27 @@ mod tests {
         assert_ne!(
             d1, d3,
             "one added definition changes the environment identity"
+        );
+    }
+
+    #[test]
+    fn neutral_environment_carrier_preserves_the_complete_legacy_kernel_identity() {
+        let mut env = Environment::with_prelude();
+        assert_eq!(
+            kernel_environment_digest(&env).expect("neutral prelude identity"),
+            legacy_environment_digest_v1(&env).expect("frozen legacy prelude identity")
+        );
+        env.add_decl(Declaration::Definition {
+            name: Name::from_string("NeutralBoundary.seven"),
+            level_params: vec![],
+            type_: Expr::const_str("Nat"),
+            value: Expr::nat_lit(7),
+            is_reducible: true,
+        })
+        .expect("the actual kernel accepts a closed definition");
+        assert_eq!(
+            kernel_environment_digest(&env).expect("neutral extended identity"),
+            legacy_environment_digest_v1(&env).expect("frozen legacy extended identity")
         );
     }
 

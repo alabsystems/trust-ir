@@ -106,4 +106,42 @@ trustIrString48 theorem intercalate_eq_standard (separator : String) (xs : List 
 trustIrString430 #trustIrAxiomsExact intercalate_eq_standard == [propext]
 trustIrString48 #trustIrAxiomsExact intercalate_eq_standard == []
 
+trustIrString430 def singleton (c : Char) : String := String.ofList [c]
+trustIrString48 def singleton (c : Char) : String := toString c
+
+trustIrString430 theorem singleton_bytes (c : Char) :
+    (singleton c).toByteArray = [c].utf8Encode := rfl
+
+theorem singleton_eq_standard (c : Char) : singleton c = toString c := by
+  trustIrCompilerProof { rfl } { exact String.singleton_eq_ofList.symm }
+
+#trustIrAxiomsExact singleton == []
+trustIrString430 #trustIrAxiomsExact singleton_bytes == []
+trustIrString48 #trustIrAxiomsExact singleton_eq_standard == []
+trustIrString430 #trustIrAxiomsExact singleton_eq_standard == [propext, Quot.sound]
+
+/-- The same complete left-fold as standard `String.join`, using the
+constructive append's UTF-8 witness on the modern string representation. -/
+def join (xs : List String) : String := xs.foldl append ""
+
+private theorem joinFold_eq_standard (xs : List String) (acc : String) :
+    xs.foldl append acc = xs.foldl (fun left right : String => left ++ right) acc := by
+  induction xs generalizing acc with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [List.foldl_cons]
+    trustIrCompilerProof { exact ih (append acc x) } {
+      rw [append_eq_standard]
+      exact ih (acc ++ x)
+    }
+
+/-- Preserve the original joined string for every input, including empty
+and non-ASCII strings. The comparison does not enter the logical operation. -/
+theorem join_eq_standard (xs : List String) : join xs = String.join xs :=
+  joinFold_eq_standard xs ""
+
+#trustIrAxiomsExact join == []
+trustIrString48 #trustIrAxiomsExact join_eq_standard == []
+trustIrString430 #trustIrAxiomsExact join_eq_standard == [propext]
+
 end TrustIr.StringCompat

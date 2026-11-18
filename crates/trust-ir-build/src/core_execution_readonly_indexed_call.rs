@@ -370,7 +370,7 @@ impl<'m> ReadonlyEightEntered<'m> {
             assembler.convert_endpoints(evaluated, checks.evaluation, result.result())?;
         let incoming_memory = app(
             "ir_byte_world_memory_v1",
-            [model.world_type.clone(), self.current().world.clone()],
+            [model.world_type().clone(), self.current().world.clone()],
         );
         let allocations = assembler.conversion(
             app("IRList", [constant("IRByteAllocationV1")]),
@@ -497,7 +497,7 @@ impl ReadonlyEightLoaded<'_, '_> {
         resumed.world = app(
             "IRByteWorldV1.mk",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 frame.memory.clone(),
                 frame.host.clone(),
                 frame.owners.clone(),
@@ -509,7 +509,7 @@ impl ReadonlyEightLoaded<'_, '_> {
             after.world = app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     memory,
                     frame.host.clone(),
                     frame.owners.clone(),

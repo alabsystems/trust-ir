@@ -13,7 +13,7 @@ theorem decoded_enum_omission_refuses_initialized (document : Lean.Json) (decode
     (id : EnumId) (definition : EnumDef) (resolved : ctx.enums id = some definition)
     (sourcePosition : Nat)
     (indexed : (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel)).enumPositions.find id.index = some sourcePosition)
-    (layoutDefinition : EnumDef) (row : decoded.enums.get? sourcePosition = some layoutDefinition)
+    (layoutDefinition : EnumDef) (row : (trustIrListGet? decoded.enums sourcePosition) = some layoutDefinition)
     (tag : Value) (payload : List Value) (position : Nat)
     (tagSelects : EnumTagSelects definition tag position)
     (omitted : (enumPhysicalSelection layoutDefinition (layoutDefinition.variants.map (fun variant =>
@@ -35,11 +35,11 @@ theorem decoded_enum_active_not_omitted (document : Lean.Json) (decoded : Module
     (id : EnumId) (definition : EnumDef) (resolved : ctx.enums id = some definition)
     (sourcePosition : Nat)
     (indexed : (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel)).enumPositions.find id.index = some sourcePosition)
-    (layoutDefinition : EnumDef) (row : decoded.enums.get? sourcePosition = some layoutDefinition)
+    (layoutDefinition : EnumDef) (row : (trustIrListGet? decoded.enums sourcePosition) = some layoutDefinition)
     (fuel : Nat) (values : List Value) (initialized : (Value.aggregate values).Initialized)
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ tag payload position variant, values = tag :: payload ∧ EnumTagSelects definition tag position ∧
-      definition.variants.get? position = some variant ∧
+      (trustIrListGet? definition.variants position) = some variant ∧
       (enumPhysicalSelection layoutDefinition (layoutDefinition.variants.map (fun variant =>
         variantUninhabited (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel))
           (uninhabitedFacts (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel))) variant.fields))).any
@@ -51,10 +51,18 @@ theorem decoded_enum_active_not_omitted (document : Lean.Json) (decoded : Module
 
 end TrustIrEval
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_omission_refuses_initialized' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_omission_refuses_initialized
+-/
+#print axioms TrustIrEval.decoded_enum_omission_refuses_initialized
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_omission_refuses_initialized == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_active_not_omitted' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_active_not_omitted
+-/
+#print axioms TrustIrEval.decoded_enum_active_not_omitted
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_active_not_omitted == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]

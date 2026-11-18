@@ -318,6 +318,35 @@ inductive IxExpr where
   | min (a b : Nat)
   | max (a b : Nat)
 
+/-- The named, operand-free division panic kinds. Sited assertion helpers
+    support only this bounded slice; this is not a decoder coverage claim. -/
+inductive DivPanicKind where
+  | divByZero | remByZero
+
+/-- A terminal structural panic, rather than its rendering alone. Resolving
+    Global(g) does not allocate or read global storage (ratification19.1). -/
+structure GlobalDivPanic where
+  kind : DivPanicKind
+  operands : Option (List Nat)
+  entry : Nat
+  global : Nat
+  offset : Nat
+
+namespace SitedDivPanic
+
+structure Site where
+  entry : Nat
+  global : Nat
+
+def failure (kind : DivPanicKind) (site : Site) : GlobalDivPanic :=
+  ⟨kind, none, site.entry, site.global, 0⟩
+
+def message : DivPanicKind → String
+  | .divByZero => "attempt to divide by zero"
+  | .remByZero => "attempt to calculate the remainder with a divisor of zero"
+
+end SitedDivPanic
+
 /-- The instructions of the fragment. Value, block and frame ids are `Nat`s. -/
 inductive Inst where
   | binop (op : BinOp) (ty : Ty) (lhs rhs : Nat)
@@ -343,6 +372,8 @@ inductive Inst where
   | nullPtr
   | unreachable
   | assert (cond : Nat) (kind : AssertKind)
+  /-- Quoted-only Div/Rem assertion with a static Global panic site. -/
+  | assertSitedDiv (cond : Nat) (kind : DivPanicKind) (site : SitedDivPanic.Site)
   | call (callee : Nat) (args : List Nat)
   /-- Quoted-only runtime environment construction; not binary-decoded. -/
   | makeClosure (ty target : Nat) (captures : List Nat)
@@ -430,6 +461,15 @@ structure EnumDef where
 structure StructDef where
   id : Nat
   fields : List Ty
+  /-- Original declaration bytes and geometry, in logical field order. Layout
+      queries are delegated to the canonical source-layout service; retaining
+      these records grants no aggregate memory operation. Quoted models that
+      omit them do not acquire inferred physical metadata. -/
+  name : List Nat := []
+  fieldInfo : List (List Nat × Option Nat) := []
+  size : Option Nat := none
+  align : Option Nat := none
+  repr : Nat := 0
 
 /-- Exact target metadata: strings retain their validated UTF-8 bytes, including
     the ABI and the aggregate classification. Neither grants ABI authority. -/
@@ -445,8 +485,8 @@ structure Module where
   enums : List EnumDef
   functions : List Func
   target : Option TargetInfo := none
-  /-- Flat scalar logical structs may also come from canonical bytes. Physical
-      layouts, nominal-origin records and private-cell instructions remain refused. -/
+  /-- Flat scalar structs retain their original physical declarations.
+      Nominal-origin records and aggregate memory operations remain refused. -/
   structs : List StructDef := []
   /-- Quoted-only nominal environment table. The binary decoder still requires
       the canonical closure_types section to be empty. -/
@@ -685,6 +725,7 @@ inductive Out where
   | unsupported (feature : String)
   | outOfFuel
   | panic (msg : String)
+  | globalDivPanic (failure : GlobalDivPanic)
   | outOfMemory
 
 /-- A computation that either continues with a value or stops with a verdict. -/
@@ -1817,6 +1858,49 @@ def assertOn (k : Core) (kind : AssertKind) (cv : Val) : R Core :=
     let msg ← assertMessage k kind
     .stop (.panic msg)
   | none => tyR "TypeError: assert requires bool"
+
+namespace SitedDivPanic
+
+/-- Canonical evaluated-condition semantics for the quoted sited assertion.
+    Static admissibility is separate: true reads only the condition. Failure
+    neither invokes an entry nor touches memory. Binary tags remain refused. -/
+def on (k : Core) (kind : DivPanicKind) (site : Site) (cv : Val) : R Core :=
+  match asBool cv with
+  | some true => pure (next k)
+  | some false => .stop (.globalDivPanic (failure kind site))
+  | none => tyR "TypeError: assert requires bool"
+
+def step (k : Core) (condition : Nat) (kind : DivPanicKind) (site : Site) : R Core := do
+  let cv ← getV k condition
+  rejectPoison cv "assert"
+  on k kind site cv
+
+/-- Independent branch relation; not defined as equality with the helper. -/
+inductive Asserts (k : Core) (kind : DivPanicKind) (site : Site) (cv : Val) : StepR → Prop where
+  | pass : asBool cv = some true → Asserts k kind site cv (.cont (next k))
+  | fail : asBool cv = some false →
+      Asserts k kind site cv (.done (.globalDivPanic ⟨kind, none, site.entry, site.global, 0⟩))
+  | notBool : asBool cv = none →
+      Asserts k kind site cv (.done (.typeError "TypeError: assert requires bool"))
+
+theorem complete (k : Core) (kind : DivPanicKind) (site : Site) (cv : Val) :
+    Asserts k kind site cv (ofR (on k kind site cv)) := by
+  unfold on
+  cases hb : asBool cv with
+  | none => exact Asserts.notBool hb
+  | some b => cases b with
+    | false => exact Asserts.fail hb
+    | true => exact Asserts.pass hb
+
+theorem sound (k : Core) (kind : DivPanicKind) (site : Site) (cv : Val) (r : StepR)
+    (h : Asserts k kind site cv r) : ofR (on k kind site cv) = r := by
+  unfold on
+  cases h with
+  | pass hb => rw [hb]; rfl
+  | fail hb => rw [hb]; rfl
+  | notBool hb => rw [hb]; rfl
+
+end SitedDivPanic
 
 /-- The caller record a call suspends. -/
 def suspend (k : Core) (node : Node) : Caller :=
@@ -3051,6 +3135,7 @@ def execNode (m : Module) (k : Core) (node : Node) : StepR :=
   | .nullPtr => ofR (bindResults (next k) node [.nullPtr])
   | .unreachable => .done (.ub "executed unreachable")
   | .assert c kind => ofR (assertStep k node c kind)
+  | .assertSitedDiv c kind site => ofR (SitedDivPanic.step k c kind site)
   | .call callee args => ofR (callStep m k node callee args)
   | .makeClosure cid target captures => ofR (makeClosureStep m k node cid target captures)
   | .br target args => ofR (brStep m.pointerBits k node target args)
@@ -3142,6 +3227,16 @@ the rules, not to itself. -/
 inductive Seq {α : Type} (x : R α) (P : α → StepR → Prop) : StepR → Prop where
   | ok (a : α) (r : StepR) : x = .ok a → P a r → Seq x P r
   | stop (o : Out) : x = .stop o → Seq x P (.done o)
+
+namespace SitedDivPanic
+
+/-- Canonical SSA lookup and poison precedence surrounding the branch relation.
+    The quoted Step rule consumes these premises directly. -/
+def Reads (k : Core) (condition : Nat) (kind : DivPanicKind) (site : Site) (r : StepR) : Prop :=
+  Seq (getV k condition) (fun cv =>
+    Seq (rejectPoison cv "assert") (fun _ => Asserts k kind site cv)) r
+
+end SitedDivPanic
 
 /-- A step through the frame of lineage `l` continues (`P`) only while `l`
     is open; a handle of a lineage that is not open is undefined behaviour. -/
@@ -3642,6 +3737,10 @@ inductive Step (m : Module) (k : Core) : StepR → Prop where
       nth? k.block.body k.pc = some { inst := .assert c kind, results := results } →
       Seq (getV k c) (fun cv => Seq (rejectPoison cv "assert") (fun _ => Asserts k kind cv)) res →
       Step m k res
+  | assertSitedDiv (results : List Nat) (c : Nat) (kind : DivPanicKind)
+      (site : SitedDivPanic.Site) (res : StepR) :
+      nth? k.block.body k.pc = some { inst := .assertSitedDiv c kind site, results := results } →
+      SitedDivPanic.Reads k c kind site res → Step m k res
   | makeClosure (results : List Nat) (cid target : Nat) (captures : List Nat) (res : StepR) :
       nth? k.block.body k.pc = some { inst := .makeClosure cid target captures, results := results } →
       Seq (getVs k captures) (fun vs => MakesClosure m k results cid target vs) res →
@@ -3777,6 +3876,25 @@ theorem bind_of_seq {α : Type} (x : R α) (f : α → R Core) (P : α → StepR
   cases hs with
   | ok a r hx hp => rw [hx]; exact h a r hp
   | stop o hx => rw [hx]; rfl
+
+namespace SitedDivPanic
+
+theorem step_complete (k : Core) (condition : Nat) (kind : DivPanicKind) (site : Site) :
+    Reads k condition kind site (ofR (step k condition kind site)) := by
+  exact seq_of_bind _ _ _ (fun cv => seq_of_bind _ _ _ (fun _ => complete k kind site cv))
+
+theorem step_sound (k : Core) (condition : Nat) (kind : DivPanicKind) (site : Site) (r : StepR)
+    (h : Reads k condition kind site r) : ofR (step k condition kind site) = r := by
+  unfold step
+  cases h with
+  | stop o hx => rw [hx]; rfl
+  | ok cv r1 hx h1 =>
+    rw [hx, ok_bind]
+    cases h1 with
+    | stop o hx => rw [hx]; rfl
+    | ok u r2 hx h2 => rw [hx, ok_bind]; exact sound _ _ _ _ _ h2
+
+end SitedDivPanic
 
 theorem opened_complete (k : Core) (what : String) (l : Nat) (P : StepR → Prop) (c : R Core)
     (h : P (ofR c)) : Opened k what l P (ofR (openedAt k l what c)) := by
@@ -5068,6 +5186,8 @@ theorem step_complete (m : Module) (k : Core) : Step m k (stepCore m k) := by
       | assert c kind =>
         exact Step.assert results c kind _ hn (seq_of_bind _ _ _ (fun cv =>
           seq_of_bind _ _ _ (fun u => asserts_complete _ _ _)))
+      | assertSitedDiv c kind site =>
+        exact Step.assertSitedDiv results c kind site _ hn (SitedDivPanic.step_complete k c kind site)
       | makeClosure cid target captures =>
         exact Step.makeClosure results cid target captures _ hn (seq_of_bind _ _ _ (fun vs =>
           makesClosure_complete m k ⟨.makeClosure cid target captures, results⟩ cid target vs))
@@ -5206,6 +5326,9 @@ theorem step_sound (m : Module) (k : Core) (r : StepR) (h : Step m k r) : stepCo
   | assert results c kind res hn hs =>
     rw [hn]
     exact assert_sound k _ c kind _ hs
+  | assertSitedDiv results c kind site res hn hs =>
+    rw [hn]
+    exact SitedDivPanic.step_sound k c kind site _ hs
   | makeClosure results cid target captures res hn hs =>
     rw [hn]
     exact makeClosure_sound m k _ cid target captures _ hs
@@ -5323,7 +5446,7 @@ inductive Reaches (m : Module) : Core → Core → Prop where
       Step m a (.cont b) → Reaches m b c → Reaches m a c
 
 def Bad : Out → Prop
-  | .ub _ | .panic _ => True
+  | .ub _ | .panic _ | .globalDivPanic _ => True
   | _ => False
 
 /-- A bad halt after any finite number of actual body transitions. A budget
@@ -5595,6 +5718,14 @@ def optU64 : P (Option Nat) := do
   let t ← u8
   if t == 0 then pure none
   else if t == 1 then do let x ← v64; pure (some x)
+  else bad "invalid tag"
+
+/-- Physical struct declarations use fixed little-endian u64 options.
+    Instruction alignment keeps its distinct existing varint option reader. -/
+def optFixedU64 : P (Option Nat) := do
+  let tag ← u8
+  if tag == 0 then pure none
+  else if tag == 1 then do let value ← u64; pure (some value)
   else bad "invalid tag"
 
 /-- A tensor's element type (`Ty::Tensor`, v67): one `read_ty` tag. Only an
@@ -6158,29 +6289,38 @@ def canonTag (repr : Option IntTy) (discs : List Int) : Option IntTy :=
     also its alignment. -/
 def tagBytes (t : IntTy) : Nat := t.bits 64 / 8
 
-/-- Flat logical scalar structs, without physical layout or nominal-origin
-    claims. Nested/opaque/pointer fields and every explicit layout stay refused. -/
+/-- Flat scalar structs retain original optional physical declarations. Their
+    meaning belongs to the canonical layout service, not a second layout
+    calculation here. Nested/opaque/pointer fields and nominal origins remain
+    outside this decoder's fragment. -/
 def flatStructDef : P StructDef := do
   let v ← version
   let id ← v32
-  strId
+  let name ← strBytes
   let n ← checkedLen
   if 128 < n then unsup "struct.field_count" else pure ()
   let fs ← rep n (do
-    strId
+    let fieldName ← strBytes
     let t ← ty
     if !isScalarTy t || t.beq .ptr then unsup "struct.field_type" else pure ()
-    absent "struct.field_offset"
-    pure t)
-  absent "struct.size"
-  absent "struct.align"
-  if 10 ≤ v then do
-    let r ← u8
-    if r == 0 then pure ()
-    else if r ≤ 3 then unsup "struct.repr" else bad "invalid StructRepr tag"
-  else pure ()
+    let offset ← optFixedU64
+    pure (t, (fieldName, offset)))
+  let size ← optFixedU64
+  let align ← optFixedU64
+  let repr ←
+    if 10 ≤ v then do
+      let r ← u8
+      if r == 0 then pure r
+      else if r ≤ 3 then unsup "struct.repr" else bad "invalid StructRepr tag"
+    else pure 0
   if 58 ≤ v then absent "struct.origin" else pure ()
-  pure { id := id, fields := fs }
+  pure { id := id
+         fields := fs.map Prod.fst
+         name := name
+         fieldInfo := fs.map Prod.snd
+         size := size
+         align := align
+         repr := repr }
 
 /-- `read_enum_def`. An enum with no explicit discriminant, no `repr` and no
     layout record decodes as v0 did (implicit `0…n-1`, tag `u8`, scalar

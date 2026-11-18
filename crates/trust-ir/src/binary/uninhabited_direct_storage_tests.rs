@@ -355,3 +355,39 @@ fn single_inhabited_three_row_identity_retains_v2_v3_observed_parity() {
         );
     }
 }
+
+// Retain the original three-row codec controls under the current native syntax.
+#[cfg(all(feature = "parser", feature = "fmt"))]
+#[test]
+fn single_three_row_text_keeps_selected_index_and_empty_inactive_offsets() {
+    let module = single_inhabited_fixture();
+    let text = format!("{module}");
+    assert!(
+        text.contains("layout(single inhabited=1 size=4 align=4 offsets=[[], [0], []])"),
+        "{text}"
+    );
+    assert!(crate::text_loss::text_losses(&module).is_empty());
+    assert_eq!(crate::parser::parse_module(&text).unwrap(), module);
+    let wrong_selected = text.replace("inhabited=1", "inhabited=3");
+    assert_ne!(
+        wrong_selected, text,
+        "the selected-index mutant must change the input"
+    );
+    assert!(crate::parser::parse_module(&wrong_selected).is_err());
+    let wrong_inactive = text.replace("offsets=[[], [0], []]", "offsets=[[0], [0], []]");
+    assert_ne!(
+        wrong_inactive, text,
+        "the inactive-row mutant must change the input"
+    );
+    assert!(crate::parser::parse_module(&wrong_inactive).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn single_three_row_named_messagepack_and_json_keep_selected_index() {
+    let module = single_inhabited_fixture();
+    let json = serde_json::to_vec(&module).unwrap();
+    assert_eq!(serde_json::from_slice::<Module>(&json).unwrap(), module);
+    let named = rmp_serde::to_vec_named(&module).unwrap();
+    assert_eq!(rmp_serde::from_slice::<Module>(&named).unwrap(), module);
+}

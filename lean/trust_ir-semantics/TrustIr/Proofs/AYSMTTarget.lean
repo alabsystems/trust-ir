@@ -265,7 +265,25 @@ def SMTTerm.literalValue (radix : Nat) (digits : List Nat) : Nat :=
   digits.foldl (fun value digit => value * radix + digit) 0
 
 def SMTTerm.literalDigits (digits : List Nat) : String :=
-  String.join (digits.map (fun digit => toString (Nat.digitChar digit)))
+  StringCompat.join (digits.map (fun digit => StringCompat.singleton (Nat.digitChar digit)))
+
+/-- The complete emitted digit string remains the original standard join. -/
+theorem SMTTerm.literalDigits_eq_standard (digits : List Nat) :
+    literalDigits digits = String.join (digits.map (fun digit => toString (Nat.digitChar digit))) := by
+  have chars : digits.map (fun digit => StringCompat.singleton (Nat.digitChar digit)) =
+      digits.map (fun digit => toString (Nat.digitChar digit)) := by
+    induction digits with
+    | nil => rfl
+    | cons digit digits ih =>
+      exact (congrArg (fun head => head :: digits.map
+        (fun value => StringCompat.singleton (Nat.digitChar value)))
+          (StringCompat.singleton_eq_standard (Nat.digitChar digit))).trans
+        (congrArg (List.cons (toString (Nat.digitChar digit))) ih)
+  exact (StringCompat.join_eq_standard _).trans (congrArg String.join chars)
+
+#trustIrAxiomsExact SMTTerm.literalDigits == []
+trustIrString48 #trustIrAxiomsExact SMTTerm.literalDigits_eq_standard == []
+trustIrString430 #trustIrAxiomsExact SMTTerm.literalDigits_eq_standard == [propext, Quot.sound]
 
 /-- A structural derivation in the emitted typed SMT-LIB term grammar.
 It fixes literal syntax, keyword spelling, operand order and conditional arity. -/

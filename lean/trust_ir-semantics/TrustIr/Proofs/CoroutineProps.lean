@@ -28,6 +28,28 @@ private theorem sr_legacy_store (ty : Ty) (ptr value : ValueId) (strict : Bool)
     semStoreUsing (encodeMemoryAt model ty) ty ptr value strict align model =
       semStore ty ptr value strict align model := rfl
 
+/-- Fold the held-value selector's exact lookup/publication sequence back to
+its original scalar action, under the actual continuation. -/
+private theorem sr_held_load_bind {α : Type} (ty : Ty) (ptr : ValueId) (strict : Bool)
+    (align : Option Nat) (model : ByteModel) (next : ValueId → Sem α) :
+    (do
+      let pointer ← Sem.lookupValue ptr
+      let value ← semLoadValueUsing (fun memory bytes => decodeMemoryAt model memory ty bytes)
+        ty pointer strict align model
+      let id ← Sem.bindFresh value
+      next id) = (semLoad ty ptr strict align model >>= next) := by
+  simp only [semLoad, semLoadUsing, bind_assoc]
+
+private theorem sr_held_store_bind {α : Type} (ty : Ty) (ptr value : ValueId) (strict : Bool)
+    (align : Option Nat) (model : ByteModel) (next : Unit → Sem α) :
+    (do
+      let pointer ← Sem.lookupValue ptr
+      let held ← Sem.lookupValue value
+      let result ← semStoreValueUsing (scalarMemoryLayout model) (encodeMemoryAt model ty)
+        ty pointer held strict align model
+      next result) = (semStore ty ptr value strict align model >>= next) := by
+  simp only [semStore, semStoreUsing, bind_assoc]
+
 private theorem sr_encode_i64 (model : ByteModel) (order : FunctionAddressOrder) :
     encodeMemoryWithFunctions model order .I64 = encodeMemoryAt model .I64 := rfl
 
@@ -901,8 +923,10 @@ theorem entry_run_case (ctx : EvalContext) (fuel depth : Nat) (model : Model) (a
     sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbEntry, entryBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
-    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
-    sr_legacy_load, sr_legacy_store, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
+    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.loadMemoryValueAligned,
+    EvalContext.storeMemoryValueAligned, EvalContext.memoryRoute, EvalContext.originalClosureFor,
+    EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
+    sr_legacy_load, sr_legacy_store, sr_held_load_bind, sr_held_store_bind, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
   simp only [Sem.run, sr_bind, Except.bind]
   rw [sr_bindBlockParams_one]
   dsimp only
@@ -940,8 +964,10 @@ theorem entry_run_default (ctx : EvalContext) (fuel depth : Nat) (model : Model)
     sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbEntry, entryBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
-    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
-    sr_legacy_load, sr_legacy_store, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
+    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.loadMemoryValueAligned,
+    EvalContext.storeMemoryValueAligned, EvalContext.memoryRoute, EvalContext.originalClosureFor,
+    EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
+    sr_legacy_load, sr_legacy_store, sr_held_load_bind, sr_held_store_bind, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc]
   simp only [Sem.run, sr_bind, Except.bind]
   rw [sr_bindBlockParams_one]
   dsimp only
@@ -975,8 +1001,10 @@ theorem suspend_run (ctx : EvalContext) (fuel depth : Nat) (nextState : Int) (a 
     sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, Model.suspend, cfgWith, bbSuspend, suspendBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
-    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
-    sr_legacy_load, sr_legacy_store, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc,
+    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.loadMemoryValueAligned,
+    EvalContext.storeMemoryValueAligned, EvalContext.memoryRoute, EvalContext.originalClosureFor,
+    EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
+    sr_legacy_load, sr_legacy_store, sr_held_load_bind, sr_held_store_bind, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc,
     semCoroSuspend, Constant.hasSymbolAddr, constValueAtChecked_i64, constValueAtChecked_i32, constPointerFormsSupported, Ty.isInteger,
     constValueAt, constWidthAmbiguous, constHasInexactFloat,
     Bool.not_true, Bool.false_eq_true, ↓reduceIte, bitWidthFor_i64, bitWidthFor_i32]
@@ -1019,8 +1047,10 @@ theorem final_run (ctx : EvalContext) (fuel depth : Nat) (model : Model) (a : Ad
     sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, cfgWith, bbFinal, finalBlock, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
-    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
-    sr_legacy_load, sr_legacy_store, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc,
+    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.loadMemoryValueAligned,
+    EvalContext.storeMemoryValueAligned, EvalContext.memoryRoute, EvalContext.originalClosureFor,
+    EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
+    sr_legacy_load, sr_legacy_store, sr_held_load_bind, sr_held_store_bind, stepTermWithContext, closureTermWithContext, stepInst, pure_bind, bind_assoc,
     Constant.hasSymbolAddr, constValueAtChecked_i64, constValueAtChecked_i32, constPointerFormsSupported, constValueAt, Ty.isInteger,
     constWidthAmbiguous, constHasInexactFloat,
     Bool.not_true, Bool.false_eq_true, ↓reduceIte, bitWidthFor_i64, bitWidthFor_i32]
@@ -1286,8 +1316,10 @@ theorem suspend_run_expanded (ctx : EvalContext) (fuel depth : Nat) (nextState :
     sr_items_nil, sr_items_ptr, sr_items_yield, sr_items_final, Sem.fromMemoryExcept, EvalContext.resolveBlock, EvalContext.resolveDrop, List.map_nil, List.map_cons,
     Model.cfg, Model.suspend, cfgWith, bbSuspend, suspendBlockExpanded, bodyInstsWithResultDests, sr_checked_nil, sr_checked_ptr, sr_model_load, sr_model_yield,
     sr_model_final, sr_model_index, sr_model_pointer, sr_model_state, sr_model_store, List.forIn_nil, List.forIn_cons, stepInstWithContext, sr_encode_i64, decodeMemoryWithFunctions,
-    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
-    sr_legacy_load, sr_legacy_store, stepTermWithContext, closureTermWithContext, stepInst, pure_bind,
+    sr_model_gep, EvalContext.semGEPUsing_canonical, EvalContext.loadMemoryValueAligned,
+    EvalContext.storeMemoryValueAligned, EvalContext.memoryRoute, EvalContext.originalClosureFor,
+    EvalContext.memoryServiceFor, Ty.hasCanonicalMemoryLayout, if_true,
+    sr_legacy_load, sr_legacy_store, sr_held_load_bind, sr_held_store_bind, stepTermWithContext, closureTermWithContext, stepInst, pure_bind,
     bind_assoc, Constant.hasSymbolAddr, constValueAtChecked_i64, constValueAtChecked_i32, constPointerFormsSupported, Ty.isInteger,
     constValueAt, constWidthAmbiguous, constHasInexactFloat,
     Bool.not_true, Bool.false_eq_true, ↓reduceIte, bitWidthFor_i64, bitWidthFor_i32]

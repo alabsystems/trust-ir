@@ -54,7 +54,7 @@ impl Callbacks for ActualEnumChecks {
                         "{name}: expected Single({selected:?}), actual {:?}, size {}, align {}",
                         source.variants,
                         source.size.bytes(),
-                        source.align.abi.bytes()
+                        source.align.bytes()
                     );
                     let (module, errors) = lower_module_for_emit(tcx, instance, body)
                         .expect("lower actual Single MIR");
@@ -108,7 +108,7 @@ impl Callbacks for ActualEnumChecks {
                         "{name}: expected Single({selected}), actual {:?}, size {}, align {}",
                         source.variants,
                         source.size.bytes(),
-                        source.align.abi.bytes()
+                        source.align.bytes()
                     );
                     assert_eq!(
                         single_variant_discr(&cx, enum_ty).unwrap(),
@@ -134,7 +134,7 @@ impl Callbacks for ActualEnumChecks {
                         "{name}: expected Direct control, actual {:?}, size {}, align {}",
                         source.variants,
                         source.size.bytes(),
-                        source.align.abi.bytes()
+                        source.align.bytes()
                     );
                     assert!(
                         multi_variant_has_tag(&layout),

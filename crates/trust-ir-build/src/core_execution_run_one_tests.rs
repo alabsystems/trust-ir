@@ -85,13 +85,13 @@ fn close(scope: &Scope, parameters: &[Local], expression: Expr, proof: bool) -> 
 // producer. Its fuel, context, providers and complete reached value all matter.
 fn run_claim(model: &MachineModel, initial: Expr, reached: Expr, fuel: u64) -> Expr {
     eq(
-        &app("IRByteConfigV1", [model.world_type.clone()]),
+        &app("IRByteConfigV1", [model.world_type().clone()]),
         app(
             "ir_byte_run_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 nat(fuel),
                 initial,
             ],
@@ -106,11 +106,11 @@ fn inputs(scope: &mut Scope) -> (MachineModel, Vec<Local>) {
     let providers = scope
         .try_local(app("IRByteProvidersV1", [world.term().clone()]))
         .unwrap();
-    let model = MachineModel {
-        world_type: world.term().clone(),
-        context: context.term().clone(),
-        providers: providers.term().clone(),
-    };
+    let model = MachineModel::from_terms(
+        world.term().clone(),
+        context.term().clone(),
+        providers.term().clone(),
+    );
     (model, vec![world, context, providers])
 }
 
@@ -123,9 +123,9 @@ fn run_one_closed_recursion_replays_for_neutral_configuration_and_symbolic_world
     let step = app(
         "ir_byte_step_v1",
         [
-            model.world_type.clone(),
-            model.context.clone(),
-            model.providers.clone(),
+            model.world_type().clone(),
+            model.context().clone(),
+            model.providers().clone(),
             configuration.term().clone(),
         ],
     );
@@ -171,8 +171,8 @@ fn run_one_both_constructor_cases_keep_complete_world_and_reject_changed_fields(
     let other_outcome = scope.try_local(constant("IROutcome")).unwrap();
     let memory = scope.try_local(constant("IRByteMemoryV1")).unwrap();
     let other_memory = scope.try_local(constant("IRByteMemoryV1")).unwrap();
-    let host = scope.try_local(model.world_type.clone()).unwrap();
-    let other_host = scope.try_local(model.world_type.clone()).unwrap();
+    let host = scope.try_local(model.world_type().clone()).unwrap();
+    let other_host = scope.try_local(model.world_type().clone()).unwrap();
     let owners = scope.try_local(app("IRList", [constant("Nat")])).unwrap();
     let other_owners = scope.try_local(app("IRList", [constant("Nat")])).unwrap();
     let next = scope.try_local(constant("Nat")).unwrap();
@@ -193,7 +193,7 @@ fn run_one_both_constructor_cases_keep_complete_world_and_reject_changed_fields(
     let world = |fields: [Expr; 4]| {
         app(
             "IRByteWorldV1.mk",
-            std::iter::once(model.world_type.clone()).chain(fields),
+            std::iter::once(model.world_type().clone()).chain(fields),
         )
     };
     let original_fields = [
@@ -211,7 +211,7 @@ fn run_one_both_constructor_cases_keep_complete_world_and_reject_changed_fields(
         let initial = app(
             constructor,
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 payload.clone(),
                 original_world.clone(),
             ],
@@ -244,7 +244,7 @@ fn run_one_both_constructor_cases_keep_complete_world_and_reject_changed_fields(
     let initial = app(
         "IRByteConfigV1.halted",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             outcome.term().clone(),
             original_world.clone(),
         ],
@@ -276,7 +276,7 @@ fn run_one_both_constructor_cases_keep_complete_world_and_reject_changed_fields(
         let changed = app(
             "IRByteConfigV1.halted",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 outcome.term().clone(),
                 world(fields),
             ],
@@ -292,7 +292,7 @@ fn run_one_both_constructor_cases_keep_complete_world_and_reject_changed_fields(
     let changed_outcome = app(
         "IRByteConfigV1.halted",
         [
-            model.world_type.clone(),
+            model.world_type().clone(),
             other_outcome.term().clone(),
             original_world,
         ],
@@ -481,7 +481,7 @@ fn run_one_explicit_constructors_take_the_closed_eliminator_not_step_conversion(
     let machine = scope.try_local(constant("IRMachine")).unwrap();
     let outcome = scope.try_local(constant("IROutcome")).unwrap();
     let world = scope
-        .try_local(app("IRByteWorldV1", [model.world_type.clone()]))
+        .try_local(app("IRByteWorldV1", [model.world_type().clone()]))
         .unwrap();
     let foreign = scope.try_local(model.config_type()).unwrap();
     parameters.extend([
@@ -501,7 +501,7 @@ fn run_one_explicit_constructors_take_the_closed_eliminator_not_step_conversion(
         let initial = app(
             constructor,
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 payload.clone(),
                 world.term().clone(),
             ],
@@ -527,9 +527,9 @@ fn run_one_explicit_constructors_take_the_closed_eliminator_not_step_conversion(
             Expr::apps(
                 eliminator,
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
-                    model.providers.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
+                    model.providers().clone(),
                     initial.clone(),
                 ],
             ),

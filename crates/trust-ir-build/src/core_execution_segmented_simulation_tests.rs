@@ -45,11 +45,11 @@ fn fixture() -> Fixture {
     };
     let context = local(constant("IRByteContextV1"));
     let providers = local(app("IRByteProvidersV1", [constant("Nat")]));
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: context.term().clone(),
-        providers: providers.term().clone(),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        context.term().clone(),
+        providers.term().clone(),
+    );
     let source_type = local(Expr::type_());
     let halted = local(Expr::arrow(source_type.term().clone(), constant("Bool")));
     let step = local(Expr::arrow(

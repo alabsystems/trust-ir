@@ -7168,13 +7168,22 @@ pub struct ChcX86IcmpCertificateRule {
 /// `certifying_sha256` moves with it. `ay.rev` and `ay.version` must equal
 /// this repository's AY pin (`dependency_pin_coherence.rs`); `clean.rev` need
 /// not equal the Clean pin, because a Clean pin move re-certifies nothing.
+// These are marginal build-provenance lists, not an asserted cross-product of
+// executions. The retained f528 pairs are d73d/1188 (the published CG packet's
+// exit-5 candidate plus independent 32-cell replay) and 2e8297/2a63f9 (IR860's
+// recorded exit-0 attempts 3/4). Both bind identical query/proof/certificate
+// bytes. The 15e747 checker is inherited pre-f528 history only. No C0 checker,
+// producer-cone conservation or fresh adopted-cohort gate follows from this list.
 pub const CHC_X86_ICMP_CERTIFICATE_RULE: ChcX86IcmpCertificateRule = ChcX86IcmpCertificateRule {
     ay: ChcX86IcmpCertifyingBuild {
         package: "ay",
-        rev: "8bbc43108643d475a81a89b2b4f262e817ee1724",
-        version: "0.28.2",
+        rev: "12d411d420e27eea05099f8cd277eb288e8622c9",
+        version: "0.28.4",
         build_args: &["-p", "ay", "--features", "cli"],
-        certifying_sha256: &["4800b9d8ffff0eab5712f541564ec6daa824d3d60de09b66af5937556e69926d"],
+        certifying_sha256: &[
+            "d73d344a94705f3cab51e87ac72593d8d3b5e701784fe98e54ded8363fa52148",
+            "2e829785a7649cc73cc7d5453d9ea9595a12e138a558a2f73d2fccdfa5608798",
+        ],
     },
     ay_args: &[
         "-smt2",
@@ -7194,10 +7203,14 @@ pub const CHC_X86_ICMP_CERTIFICATE_RULE: ChcX86IcmpCertificateRule = ChcX86IcmpC
     unchecked_proof_rules: &["hole", "lia_generic"],
     clean: ChcX86IcmpCertifyingBuild {
         package: "clean",
-        rev: "fae0c94829740c9ffe527eeeb4ea472f9c08001b",
-        version: "0.9.2",
+        rev: "e86b4b61e665f73b4737dd360773677561462f7e",
+        version: "0.9.4",
         build_args: &["-p", "clean", "--features", "clean/carcara-verify"],
-        certifying_sha256: &["15e747b6b9c4183fba40c9799f75eba87b80c9494c8caa606af3cbbc023b2ee4"],
+        certifying_sha256: &[
+            "15e747b6b9c4183fba40c9799f75eba87b80c9494c8caa606af3cbbc023b2ee4",
+            "1188a5ad3d386edab62efa98d7b270f081bf0535c0d91c1e861031ee0d436e90",
+            "2a63f9f94ed2486404da7ae12122baca2ef4de58c559f637704ea199309f51fa",
+        ],
     },
     clean_args: &["cert", "verify-external", "{certificate}", "--verbose"],
     clean_proof_status: "fully verified",

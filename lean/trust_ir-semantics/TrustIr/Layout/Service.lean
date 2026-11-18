@@ -8998,4 +8998,12 @@ theorem Session.query_of_uncached_compilation_computes
     Bind.bind, Except.bind, Pure.pure, Except.pure]
   all_goals rfl
 
+/-- Preparation installs every reserved source slot in either mode directly from
+its source-row construction, independently of the full completeness theorem. -/
+theorem prepare_reserved_present (source : Environment) (mode : Mode) (position : Nat)
+    (inside : position < (Index.ofEnvironment source).count) :
+    (prepare source).graph.Present ((Index.ofEnvironment source).node mode position) :=
+  build_source_present (Index.ofEnvironment source) (uninhabitedFacts (Index.ofEnvironment source))
+    (indexReady source) mode position inside
+
 end TrustIr.SourceLayout

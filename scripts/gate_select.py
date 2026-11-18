@@ -112,6 +112,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+if __package__:
+    from .rust_string_literals import decode_rust_string, literal_include_positions
+else:
+    from rust_string_literals import decode_rust_string, literal_include_positions
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 PLAN_SCHEMA = "trust-ir-gate-plan-v3"
@@ -481,14 +486,20 @@ _NEUTRAL = str.maketrans({"{": " ", "}": " ", ";": " ", "(": " ", ")": " "})
 
 
 def lex_rust3(
-    text: str, ctx: Optional[List[str]] = None, masked: Optional[List[str]] = None
+    text: str, ctx: Optional[List[str]] = None, masked: Optional[List[str]] = None,
+    *, raw_literals: Optional[List[bool]] = None,
+    effective_literals: Optional[List[str]] = None,
 ) -> Tuple[List[str], str, str]:
     """(string literal contents, code with comments removed and literals
     blanked to `""`, text with comments removed and literals kept). With
     `ctx`, the 48 characters of comment-free text before each literal are
     appended to it (what the literal is an argument of). With `masked`, the
     comment-free text with every `{ } ; ( )` INSIDE a literal blanked is
-    appended to it (so braces and statements can be matched)."""
+    appended to it (so braces and statements can be matched). With
+    `raw_literals`, append each string's raw/cooked kind without changing
+    the returned literal spelling or other existing outputs. With
+    `effective_literals`, append decoded ordinary cooked strings and verbatim
+    raw, byte and C string contents."""
     lits: List[str] = []
     code: List[str] = []
     keep: List[str] = []
@@ -530,6 +541,10 @@ def lex_rust3(
             j = text.find(term, m.end())
             j = n if j < 0 else j
             lits.append(text[m.end():j])
+            if raw_literals is not None:
+                raw_literals.append(True)
+            if effective_literals is not None:
+                effective_literals.append(lits[-1])
             if ctx is not None:
                 ctx.append("".join(keep[-8:])[-48:])
             code.append('""')
@@ -541,6 +556,11 @@ def lex_rust3(
             body = m.group("str")
             q = body.index('"')
             lits.append(body[q + 1:-1])
+            if raw_literals is not None:
+                raw_literals.append(False)
+            if effective_literals is not None:
+                effective_literals.append(
+                    decode_rust_string(lits[-1]) if q == 0 else lits[-1])
             if ctx is not None:
                 ctx.append("".join(keep[-8:])[-48:])
             code.append('""')
@@ -571,7 +591,6 @@ _PATH_ATTR = re.compile(r'#\s*\[\s*path\s*=\s*"(?P<p>[^"]+)"\s*\]')
 # `#[cfg(test)]` / `#[cfg(all(test, ...))]`: compiled only into the crate's own
 # test harness, never when the crate is a dependency.
 _CFG_TEST = re.compile(r"#\s*\[\s*cfg\s*\((?:\s*all\s*\()?\s*test\b")
-_INCLUDE = re.compile(r'\binclude(?:_str|_bytes)?\s*!\s*\(\s*"(?P<p>[^"]+)"\s*\)')
 
 
 @dataclass
@@ -601,7 +620,12 @@ class Sources:
             else:
                 ctx: List[str] = []
                 mask: List[str] = []
-                lits, code, nc = lex_rust3(text, ctx, mask)
+                effective: List[str] = []
+                lits, code, nc = lex_rust3(text, ctx, mask, effective_literals=effective)
+                positions = list(re.finditer('""', code))
+                if len(lits) != len(effective) or len(positions) != len(lits):
+                    raise ValueError("Rust literal inventory mismatch: " + path)
+                values = {m.start(): value for m, value in zip(positions, effective)}
                 mods = []
                 for m in _MOD_NAME.finditer(nc):
                     m_name = m.group(1)
@@ -612,8 +636,8 @@ class Sources:
                     attrs = nc[start + 1:m.start()]
                     pa = _PATH_ATTR.search(attrs)
                     mods.append((m_name, pa.group("p") if pa else None, bool(_CFG_TEST.search(attrs))))
-                includes = [m.group("p") for m in _INCLUDE.finditer(nc)]
-                self._cache[path] = SourceFile(path, lits, code, mods, includes, nc, ctx, "".join(mask))
+                includes = [values[position] for position in literal_include_positions(code)]
+                self._cache[path] = SourceFile(path, effective, code, mods, includes, nc, ctx, "".join(mask))
         return self._cache[path]
 
 
@@ -1262,6 +1286,10 @@ def build_units(g: Graph, env: Dict[str, str]) -> Dict[str, Unit]:
     add(Unit("trust-default-authority", {"rust-toolchain.toml", "rust-toolchain"},
              volatile="the installed toolchain's trees and launchers (ownership, modes, links)",
              spec="check_trust_default_authority.py"))
+    # Every commit origin/main..HEAD would push, add-then-delete included: no
+    # tree diff shows that, so it is judged on every plan and never cached.
+    add(Unit("object-budget", {EVERYTHING}, volatile="the commit range origin/main..HEAD",
+             spec="check_object_budget.py --range origin/main..HEAD", whole_tree=True, always=True))
     add(Unit("dependency-pin-census", {"*.toml", "*.lock", "*.rs"}, spec="pin_rewrite.py census+static-guard"))
     # `check` also holds every pinned owner to a commit in HEAD's history
     add(Unit("wire-allocation-registry", {"wire-allocations.toml", "*.rs", "*.tsv"}, history=True,
@@ -1431,7 +1459,7 @@ ENV_IGNORED = ("TRUST_IR_GATE_CACHE", "TRUST_IR_GATES_BASE", "TRUST_IR_TARGO_JOB
 # execution contract is reviewed here. Changes to this table are gate inputs.
 EXECUTION_SCHEMA = "trust-ir-unit-execution-v2"
 EXECUTION_PROFILES = {
-    **dict.fromkeys(("zero-ignored-rust", "dependency-pin-census", "wire-allocation-registry",
+    **dict.fromkeys(("zero-ignored-rust", "object-budget", "dependency-pin-census", "wire-allocation-registry",
                      "wire-allocation-owners", "enforcement-links"), "python"),
     **dict.fromkeys(("internal-gate-tests", "workspace-format", "workspace-clippy", "lean-schema-parity",
                      "workspace-build", "minimal-feature-build", "cli-gate-tests", "zero-trusted-census-green",

@@ -8,10 +8,7 @@ namespace TrustIr
     scalar actions, including explicit instruction alignment. -/
 def selectedStoreAction (ctx : EvalContext) (ty : Ty) (pointer value : Value)
     (strict : Bool) (align : Option Nat) : Sem Unit :=
-  match ctx.memoryServiceFor ty with
-  | some service => AggregateMemory.storeValue service ctx.functionOrder ty pointer value strict align ctx.byteModel
-  | none => semStoreValueUsing (scalarMemoryLayout ctx.byteModel)
-      (encodeMemoryWithFunctions ctx.byteModel ctx.functionOrder ty) ty pointer value strict align ctx.byteModel
+  ctx.storeMemoryValueAligned ty pointer value strict align
 
 theorem selectedStoreAction_default_align (ctx : EvalContext) (ty : Ty) (pointer value : Value) (strict : Bool) :
     selectedStoreAction ctx ty pointer value strict none = ctx.storeMemoryValue ty pointer value strict := rfl
@@ -25,8 +22,7 @@ theorem stepStore_lookup_action (ctx : EvalContext) (ty : Ty) (pointer value : V
       let heldValue ← Sem.lookupValue value
       selectedStoreAction ctx ty heldPointer heldValue strict align
       pure (.value none)) := by
-  cases selected : ctx.memoryServiceFor ty <;>
-    simp only [stepInstWithContext,selected,selectedStoreAction,AggregateMemory.store,semStoreUsing,bind_assoc]
+  rfl
 
 private theorem lookup_pair_success {α : Type} (pointer value : ValueId) (action : Value → Value → Sem α)
     (before after : MachineState) (result : α)
@@ -116,7 +112,7 @@ theorem aggregateStore_success_operands (service : AggregateMemory.Service) (ord
 
 theorem stepStore_descriptor_execution (ctx : EvalContext) (ty : Ty) (pointer value : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Store ty pointer value strict align)) before = .ok (result,after)) :
     result = .value none ∧ ∃ heldPointer heldValue,
       before.lookupValue pointer = some heldPointer ∧ before.lookupValue value = some heldValue ∧
@@ -124,7 +120,7 @@ theorem stepStore_descriptor_execution (ctx : EvalContext) (ty : Ty) (pointer va
         before = .ok ((),after) := by
   obtain ⟨same,heldPointer,heldValue,pointerFound,valueFound,executed⟩ :=
     stepStore_success_operands ctx ty pointer value strict align before after result run
-  simp only [selectedStoreAction,selected] at executed
+  simp only [selectedStoreAction,EvalContext.storeMemoryValueAligned,selected] at executed
   exact ⟨same,heldPointer,heldValue,pointerFound,valueFound,executed⟩
 
 /-- Canonical types keep the actual scalar path even if the context contains
@@ -140,7 +136,7 @@ theorem stepStore_canonical_execution (ctx : EvalContext) (ty : Ty) (pointer val
         before = .ok ((),after) := by
   obtain ⟨same,heldPointer,heldValue,pointerFound,valueFound,executed⟩ :=
     stepStore_success_operands ctx ty pointer value strict align before after result run
-  simp only [selectedStoreAction,EvalContext.memoryServiceFor,canonical,ite_true] at executed
+  simp only [selectedStoreAction,EvalContext.storeMemoryValueAligned,ctx.memoryRoute_canonical ty canonical] at executed
   exact ⟨same,heldPointer,heldValue,pointerFound,valueFound,executed⟩
 
 theorem memoryServiceFor_descriptor_iff (ctx : EvalContext) (ty : Ty) (service : AggregateMemory.Service) :
@@ -151,7 +147,7 @@ theorem memoryServiceFor_descriptor_iff (ctx : EvalContext) (ty : Ty) (service :
     selected checks, byte image and complete state update from node execution. -/
 theorem stepStore_descriptor_success_steps (ctx : EvalContext) (ty : Ty) (pointer value : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Store ty pointer value strict align)) before = .ok (result,after)) :
     result = .value none ∧ ∃ heldPointer heldValue plan alignment address allocation image,
       before.lookupValue pointer = some heldPointer ∧ before.lookupValue value = some heldValue ∧
@@ -174,7 +170,7 @@ theorem stepStore_descriptor_success_steps (ctx : EvalContext) (ty : Ty) (pointe
     overwritten-window coverage law, including partial and poison transport. -/
 theorem stepStore_descriptor_unwritten_coverage (ctx : EvalContext) (ty : Ty) (pointer value : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (clear : ∀ heldValue, before.lookupValue value = some heldValue → AggregateMemory.carriesUnwritten heldValue = false)
     (run : Sem.run (stepInstWithContext ctx (.Store ty pointer value strict align)) before = .ok (result,after)) :
     result = .value none ∧ ∃ heldPointer heldValue plan address allocation,
@@ -194,7 +190,7 @@ theorem stepStore_descriptor_unwritten_coverage (ctx : EvalContext) (ty : Ty) (p
     then bounded inside the live allocation named by its pointer provenance. -/
 theorem stepStore_descriptor_registered_bounds (ctx : EvalContext) (ty : Ty) (pointer value : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Store ty pointer value strict align)) before = .ok (result,after)) :
     result = .value none ∧ ∃ (heldPointer heldValue : Value) (plan : AggregateMemory.Plan) (address : Nat)
       (allocation : AllocId) (image : AggregateMemory.Image) (live : Allocation),

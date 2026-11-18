@@ -48,46 +48,148 @@ def require(condition: bool, message: str) -> None:
         raise BoundaryError(message)
 
 
-def comments_removed(text: str) -> str:
-    """Remove nested Lean comments while retaining line positions and strings."""
-    out, index, depth, string = [], 0, 0, False
-    while index < len(text):
-        pair = text[index:index + 2]
-        if depth:
-            if pair == "/-":
-                depth += 1
-                out.extend("  ")
-                index += 2
-            elif pair == "-/":
-                depth -= 1
-                out.extend("  ")
-                index += 2
-            else:
-                out.append("\n" if text[index] == "\n" else " ")
-                index += 1
-        elif string:
-            out.append(text[index])
-            if text[index] == "\\" and index + 1 < len(text):
-                index += 1
-                out.append(text[index])
-            elif text[index] == '"':
-                string = False
-            index += 1
-        elif pair == "/-":
-            depth = 1
-            out.extend("  ")
-            index += 2
-        elif pair == "--":
+# Lean 4's identifier classes (`isIdFirst` / `isIdRest` over `isLetterLike` and
+# `isSubScriptAlnum`, Init/Meta.lean). `'` is an identifier-rest character, so a
+# prime inside `x'` or `h''` never reaches the character-literal rule below.
+# U+2C7C (subscript j) is admitted as well: an identifier class wider than a given
+# Lean's can only absorb characters that Lean rejects outright.
+_LEAN_ID_FIRST = ("A-Za-z_\u03b1-\u03ba\u03bc-\u03c9\u0391-\u039f\u03a1-\u03a2\u03a4-\u03a9"
+                  "\u03ca-\u03fb\u1f00-\u1ffe\u2100-\u214f\U0001d49c-\U0001d59f")
+_LEAN_ID_REST = _LEAN_ID_FIRST + "0-9'!?\u2080-\u2089\u2090-\u209c\u1d62-\u1d6a\u2c7c"
+_LEAN_IDENT = re.compile(f"[{_LEAN_ID_FIRST}][{_LEAN_ID_REST}]*")
+# Runs that can open no comment, literal or identifier.
+_LEAN_PLAIN = re.compile(f"[^/\\-\"'\u00ab{_LEAN_ID_FIRST}]+")
+_LEAN_BLOCK_DELIMITER = re.compile(r"/-|-/")
+_LEAN_STRING_STOP = re.compile(r'[\\"]')
+_LEAN_RAW_STRING_OPEN = re.compile(r'r(#*)"')
+# Lean `quotedCharCoreFn` with `isQuotableCharDefault`: `\\ \" \' \r \n \t`, `\xHH`
+# and `\uHHHH`. The braced `\u{H...}` spelling is accepted too: its extent is
+# unambiguous, and a Lean that rejects it refuses the file itself.
+_LEAN_CHAR_ESCAPE = re.compile(
+    r"""\\(?:[\\"'rnt]|x[0-9A-Fa-f]{2}|u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\}))""")
+# Lean core's tokens that glue a prime to a non-identifier character, which the
+# token table munches whole: `]'` (`xs[i]'h`) and the PSigma tokens U+00D7 / U+03A3
+# followed by `'`. A prime after any other such character opens a character
+# literal, so an unreviewed notation token is refused as a malformed literal
+# rather than misread.
+_LEAN_PRIMED_TOKEN_HEADS = frozenset("]\u00d7\u03a3")
+_NOT_NEWLINE = re.compile(r"[^\n]")
+
+
+def _blank(segment: str) -> str:
+    return _NOT_NEWLINE.sub(" ", segment)
+
+
+def _lean_lexed(text: str, keep_literals: bool, *, start: int = 0,
+                stop_at_close: bool = False) -> str:
+    """Blank Lean comments, and literals unless kept, retaining every position.
+
+    A fail-closed source lexer, not a Lean parser: it tracks exactly the tokens
+    whose bodies can hide or fake comment and literal delimiters (nested block and
+    line comments, string, raw string and character literals, identifiers and
+    identifier escapes) and refuses an unterminated or malformed one.
+    """
+    out: list[str] = []
+    index, length, braces = start, len(text), 1
+    while index < length:
+        plain = _LEAN_PLAIN.match(text, index)
+        if plain:
+            if stop_at_close:
+                for offset, char in enumerate(plain[0]):
+                    if char == "{":
+                        braces += 1
+                    elif char == "}":
+                        braces -= 1
+                        if braces == 0:
+                            out.append(text[index:index + offset + 1])
+                            return "".join(out)
+            out.append(plain[0])
+            index = plain.end()
+            continue
+        start, char = index, text[index]
+        literal = True
+        if text.startswith("/-", index):
+            depth, index = 1, index + 2
+            while depth:
+                delimiter = _LEAN_BLOCK_DELIMITER.search(text, index)
+                require(delimiter is not None, "unterminated Lean comment or string")
+                depth += 1 if delimiter[0] == "/-" else -1
+                index = delimiter.end()
+            out.append(_blank(text[start:index]))
+            continue
+        if text.startswith("--", index):
             end = text.find("\n", index)
-            end = len(text) if end < 0 else end
-            out.extend(" " * (end - index))
-            index = end
-        else:
-            string = text[index] == '"'
-            out.append(text[index])
+            index = length if end < 0 else end
+            out.append(_blank(text[start:index]))
+            continue
+        raw = _LEAN_RAW_STRING_OPEN.match(text, index) if char == "r" else None
+        if raw:
+            # Lean ends a raw string at the first `"` followed by its own `#` count.
+            close = '"' + raw[1]
+            end = text.find(close, raw.end())
+            require(end >= 0, "unterminated Lean comment or string")
+            index = end + len(close)
+        elif char == '"':
             index += 1
-    require(depth == 0 and not string, "unterminated Lean comment or string")
+            while True:
+                stop = _LEAN_STRING_STOP.search(text, index)
+                require(stop is not None, "unterminated Lean comment or string")
+                index = stop.end()
+                if stop[0] == '"':
+                    break
+                require(index < length, "unterminated Lean comment or string")
+                index += 1
+        elif char == "'":
+            # Lean `tokenFn`: `'` opens a character literal unless another `'` follows
+            # (`''` is a token); a prime inside an identifier was consumed with it.
+            if index and text[index - 1] in _LEAN_PRIMED_TOKEN_HEADS:
+                out.append("'")
+                index += 1
+                continue
+            if text.startswith("''", index):
+                out.append("''")
+                index += 2
+                continue
+            escape = _LEAN_CHAR_ESCAPE.match(text, index + 1)
+            if escape:
+                index = escape.end()
+            else:
+                require(index + 1 < length and text[index + 1] != "\\",
+                        "malformed Lean character literal")
+                index += 2
+            require(text.startswith("'", index), "unterminated Lean character literal")
+            index += 1
+        elif char == "\u00ab":
+            end = text.find("\u00bb", index + 1)
+            require(end >= 0, "unterminated Lean identifier escape")
+            index, literal = end + 1, False
+        else:
+            ident = _LEAN_IDENT.match(text, index)
+            index, literal = (ident.end() if ident else index + 1), False
+        segment = text[start:index]
+        out.append(_blank(segment) if literal and not keep_literals else segment)
+    require(not stop_at_close, "unterminated Clean island")
     return "".join(out)
+
+
+def island_end(text: str, body_start: int) -> int:
+    """Absolute end after the structural `}` of a Clean body in mixed source.
+
+    Stop before interpreting subsequent Rust. The ordinary whole-Lean guard
+    keeps its existing behavior; comments, literals and escaped names remain
+    opaque to brace counting. A malformed body is refused, never guessed.
+    """
+    return body_start + len(_lean_lexed(text, False, start=body_start, stop_at_close=True))
+
+
+def comments_removed(text: str) -> str:
+    """Remove nested Lean comments while retaining line positions and literals."""
+    return _lean_lexed(text, keep_literals=True)
+
+
+def code_only(text: str) -> str:
+    """Blank Lean comments and literals, so command scans cannot read their bodies."""
+    return _lean_lexed(text, keep_literals=False)
 
 
 def unique(rows: list[dict], keys: tuple[str, ...], label: str) -> set[tuple]:
@@ -154,10 +256,9 @@ def logical_extern_declarations(module: str, text: str) -> list[tuple[str, int, 
         cleaned))
     if not declarations:
         return []
-    # Strings cannot introduce namespace/end commands into the scope walk.
-    commands = re.sub(r'"(?:\\.|[^"\\])*"',
-                      lambda match: re.sub(r"[^\n]", " ", match[0]), cleaned,
-                      flags=re.DOTALL)
+    # Literals cannot introduce namespace/end commands into the scope walk; the one
+    # lexer reads `'"'` as a character literal rather than half of a string.
+    commands = code_only(cleaned)
     stack: list[tuple[str, str]] = []
     result = []
     cursor, index = 0, 0

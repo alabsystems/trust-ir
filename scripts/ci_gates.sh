@@ -782,6 +782,27 @@ wire_owners_audit() {
     return "$code"
 }
 
+# Gate 0: the object budget (scripts/check_object_budget.py) judges every
+# commit origin/main..HEAD would push, not the tip tree: an archive added and
+# deleted inside the range is still uploaded and kept by every clone. Its
+# verdict follows the range, which no tree diff shows, so it runs on every
+# plan. scripts/hooks/pre-push runs the same check at push time. Without
+# origin/main there is no range to judge: a printed SKIP, never a pass claim.
+# Only the checker's own NOT JUDGED (exit 3 with its marker) is that SKIP; any
+# other non-zero exit fails, so a missing or renamed checker (Python exits 2)
+# or a usage error never reads as green.
+object_budget() {
+    local out code
+    out="$(python3 -B "$ROOT/scripts/check_object_budget.py" --root "$ROOT" --range origin/main..HEAD 2>&1)"
+    code=$?
+    printf '%s\n' "$out"
+    if [[ $code -eq 3 ]] && grep -q '^OBJECT-BUDGET NOT JUDGED: ' <<<"$out"; then
+        printf 'SKIP: the object budget judged nothing here (origin/main does not resolve)\n'
+        return 0
+    fi
+    [[ $code -eq 0 ]] || return 1
+}
+
 pin_census() {
     local dep
     local status=0
@@ -803,6 +824,7 @@ gate zero-ignored-rust \
     python3 -B "$ROOT/scripts/check_no_ignored_rust.py" --root "$ROOT"
 gate trust-default-authority \
     python3 -B "$ROOT/scripts/check_trust_default_authority.py" --root "$ROOT"
+gate object-budget object_budget
 gate dependency-pin-census pin_census
 gate wire-allocation-registry \
     python3 -B "$ROOT/scripts/wire_alloc.py" --root "$ROOT" check

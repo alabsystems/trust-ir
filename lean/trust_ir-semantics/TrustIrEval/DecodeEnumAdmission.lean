@@ -45,7 +45,7 @@ theorem decoded_enum_execution_position (document : Lean.Json) (decoded : Module
     (id : EnumId) (definition : EnumDef) (resolved : ctx.enums id = some definition)
     (position : Nat)
     (indexed : (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel)).enumPositions.find id.index = some position) :
-    decoded.enums.get? position = some definition :=
+    (trustIrListGet? decoded.enums position) = some definition :=
   enum_execution_position_resolves _ id definition
     (decoded_enum_lookup_agrees document decoded parsed maxDepth ctx prepared admitted id definition resolved)
     position indexed
@@ -59,7 +59,7 @@ theorem decoded_enum_execution_active (document : Lean.Json) (decoded : Module)
     (id : EnumId) (definition : EnumDef) (resolved : ctx.enums id = some definition)
     (position : Nat)
     (indexed : (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel)).enumPositions.find id.index = some position)
-    (layoutDefinition : EnumDef) (row : decoded.enums.get? position = some layoutDefinition)
+    (layoutDefinition : EnumDef) (row : (trustIrListGet? decoded.enums position) = some layoutDefinition)
     (descriptor : EnumLayoutDescriptor) (selected : Nat)
     (valid : singleInhabitedValid layoutDefinition descriptor
       (layoutDefinition.variants.map (fun variant => variantUninhabited
@@ -69,7 +69,7 @@ theorem decoded_enum_execution_active (document : Lean.Json) (decoded : Module)
     (fuel : Nat) (values : List Value) (initialized : (Value.aggregate values).Initialized)
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ tag payload variant, values = tag :: payload ∧ EnumTagSelects definition tag selected ∧
-      definition.variants.get? selected = some variant ∧
+      (trustIrListGet? definition.variants selected) = some variant ∧
       variantUninhabited (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel))
         (uninhabitedFacts (Index.ofEnvironment (decodedCaptureSource decoded ctx.byteModel))) variant.fields = false :=
   enum_execution_active_of_admission _ ctx
@@ -79,26 +79,50 @@ theorem decoded_enum_execution_active (document : Lean.Json) (decoded : Module)
 
 end TrustIrEval
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.enumAdmission_of_decoded' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms TrustIrEval.enumAdmission_of_decoded
+-/
+#print axioms TrustIrEval.enumAdmission_of_decoded
+#trustIrAxiomsByCompiler TrustIrEval.enumAdmission_of_decoded == [propext] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.enumAdmission_source' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms TrustIrEval.enumAdmission_source
+-/
+#print axioms TrustIrEval.enumAdmission_source
+#trustIrAxiomsByCompiler TrustIrEval.enumAdmission_source == [propext] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.enumAdmission_decoded_true' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms TrustIrEval.enumAdmission_decoded_true
+-/
+#print axioms TrustIrEval.enumAdmission_decoded_true
+#trustIrAxiomsByCompiler TrustIrEval.enumAdmission_decoded_true == [propext] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_lookup_agrees' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_lookup_agrees
+-/
+#print axioms TrustIrEval.decoded_enum_lookup_agrees
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_lookup_agrees == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_execution_position' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_execution_position
+-/
+#print axioms TrustIrEval.decoded_enum_execution_position
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_execution_position == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_execution_active' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_execution_active
+-/
+#print axioms TrustIrEval.decoded_enum_execution_active
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_execution_active == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]

@@ -1840,6 +1840,7 @@ noncomputable def listContextSpec (m : Module) (maxCallDepth : Nat) : D EvalCont
   pure { byteModel := selectedModel
          valueSource := valueSourceOf m
          memoryService := some (memoryServiceSpec m selectedModel)
+         originalClosureMemory := some (originalMemoryServiceOf m selectedModel)
          functions := fun fid =>
            match defs.find? (fun p => p.fst == fid) with
            | some (_, Except.ok function) => some function

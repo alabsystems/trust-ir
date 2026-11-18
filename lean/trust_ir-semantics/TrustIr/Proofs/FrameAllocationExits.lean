@@ -77,6 +77,31 @@ theorem context_memory_layout_no_unwind (ctx : EvalContext) (safe : MemoryContex
       exact DecodeFrameExit.no_unwind _ _ ((block_result_frame_iff _ _).1 held)
     · static_errors
 
+/-- Only the new nominal allocation branch uses shape storage. Its pure
+source query has a proved static error domain; all older layout questions
+retain their original contextual error-policy premise. -/
+theorem context_allocation_layout_no_unwind (ctx : EvalContext)
+    (safe : MemoryContextErrors ctx) (ty : Ty) :
+    ExceptNoUnwind (ctx.allocationLayout ty) := by
+  cases ty
+  case Closure id =>
+    simp only [EvalContext.allocationLayout]
+    cases selected : ctx.memoryServiceFor (.Closure id) with
+    | none =>
+      simp only [selected]
+      exact context_memory_layout_no_unwind ctx safe _
+    | some service =>
+      simp only [selected]
+      unfold AggregateMemory.allocationLayoutQuery
+      split
+      · have held := service.allocation_error_policy BlockDecodeError
+          (fun _ => True.intro) (fun _ => True.intro) (.Closure id)
+        exact DecodeFrameExit.no_unwind _ _ ((block_result_frame_iff _ _).1 held)
+      · static_errors
+  all_goals
+    simp only [EvalContext.allocationLayout]
+    exact context_memory_layout_no_unwind ctx safe _
+
 private theorem allocate_world_action (size alignment slack : Nat) (origin : AllocationOrigin)
     (refCounted : Bool) (model : ByteModel) :
     FrameActionValid (fun _ _ => True) (do
@@ -166,7 +191,7 @@ theorem allocation_step_frame_exit (ctx : EvalContext) (safe : MemoryContextErro
   | stack ty count align =>
     simp only [stepInstWithContext,semAllocaUsing]
     apply FrameActionExit.bind (fun _ _ => True) (fun _ result => BodyValueResult result) _ _ state
-      (allocate_using_frame_exit _ _ (context_memory_layout_no_unwind ctx safe) (carrier_integer_no_unwind ctx) _ _ _ _ _ _ _ state valid)
+      (allocate_using_frame_exit _ _ (context_allocation_layout_no_unwind ctx safe) (carrier_integer_no_unwind ctx) _ _ _ _ _ _ _ state valid)
     intro id state valid _
     exact ⟨valid,True.intro,.refl _⟩
   | heap ty count align origin =>

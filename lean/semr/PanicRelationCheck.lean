@@ -38,7 +38,7 @@ def actualModule : Module :=
     enums := [], functions := [actualCallee],
     target := some ⟨[97,97,114,99,104,54,52,45,97,112,112,108,101,45,100,97,114,119,105,110],
       8, false, none, 0⟩,
-    structs := [⟨0, [.int .i64]⟩] }
+    structs := [{ id := 0, fields := [.int .i64] }] }
 
 def actualRun (tag : Nat) : Out :=
   runFunction actualModule 1 [.struct 0 [.int .i64 tag]] 40 8
@@ -166,7 +166,8 @@ theorem insertion_initializes_only_its_lane :
 theorem scalar_uninit_refuses : constVal actualModule 8 (.int .i64) .uninit =
     .stop (.unsupported "constant.shape") := by rfl
 
-def nestedModule : Module := { actualModule with structs := [⟨0, [.struct 1]⟩, ⟨1, [.int .i64]⟩] }
+def nestedModule : Module := { actualModule with
+  structs := [{ id := 0, fields := [.struct 1] }, { id := 1, fields := [.int .i64] }] }
 theorem nested_uninit_refuses : constVal nestedModule 8 (.struct 0) (.aggregate [uninitSeed]) =
     .stop (.typeError "TypeError: misplaced uninit constant") := by rfl
 

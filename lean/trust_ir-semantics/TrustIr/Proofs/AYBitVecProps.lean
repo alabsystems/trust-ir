@@ -1,18 +1,9 @@
 -- Copyright 2026 Andrew Yates
 -- SPDX-License-Identifier: Apache-2.0
 import TrustIr.Proofs.AYValueProps
-import Init.Data.BitVec.Lemmas
+import TrustIr.Proofs.BitVecUnsignedValues
 
 namespace TrustIr.TrustIrExpr
-
-/-- Core BitVec conversion retains the actual unsigned residue. -/
-theorem bitvec_ofInt_toNat (width : Nat) (value : Int)
-    (nonnegative : 0 ≤ value) (bound : value < (2 : Int) ^ width) :
-    Int.ofNat (BitVec.ofInt width value).toNat = value := by
-  change Int.ofNat (value % Int.ofNat (2 ^ width)).toNat = value
-  have power : Int.ofNat (2 ^ width) = (2 : Int) ^ width := Int.natCast_pow 2 width
-  rw [power, Int.emod_eq_of_lt nonnegative bound]
-  exact Int.toNat_of_nonneg nonnegative
 
 /-- The actual two's-complement interpretation agrees with core BitVec.toInt. -/
 theorem bitvec_ofInt_toSigned (width : Nat) (positive : 0 < width) (value : Int)

@@ -17,11 +17,7 @@ fn limits(operations: usize, items: usize) -> Limits {
 }
 
 fn fixture(op: &str, carrier: &str, width: u64) -> (FetchedSite, MachineModel, Current) {
-    let model = MachineModel {
-        world_type: constant("W"),
-        context: constant("context"),
-        providers: constant("providers"),
-    };
+    let model = MachineModel::from_terms(constant("W"), constant("context"), constant("providers"));
     let current = Current {
         frame: constant("frame"),
         tail: constant("tail"),
@@ -35,7 +31,7 @@ fn fixture(op: &str, carrier: &str, width: u64) -> (FetchedSite, MachineModel, C
     );
     let results = list("Nat", &[nat(9), nat(10)]);
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(0),
             block: BlockId::new(1),
@@ -147,8 +143,8 @@ fn overflow_candidates_retain_opcode_nominal_carrier_width_and_two_ordered_lanes
                 let bound = app(
                     "ir_byte_bind_values_v1",
                     [
-                        model.world_type.clone(),
-                        model.context.clone(),
+                        model.world_type().clone(),
+                        model.context().clone(),
                         current.machine(),
                         current.world.clone(),
                         site.results.clone(),
@@ -400,8 +396,8 @@ fn normalized_mul_keeps_nominal_width_order_and_checked_binding_world() {
             let expected = app(
                 "ir_byte_bind_values_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.machine(),
                     current.world.clone(),
                     site.results.clone(),

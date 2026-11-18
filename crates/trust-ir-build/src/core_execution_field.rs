@@ -86,7 +86,7 @@ impl FetchedSite {
         premises: ExtractFieldPremises,
     ) -> Result<PendingEquality> {
         assembler.charge()?;
-        require_same(&self.context, &model.context, "field extraction context")?;
+        require_same(&self.context, model.context(), "field extraction context")?;
         if premises.field_types.len() > assembler.limits.max_list_items {
             return Err("field extraction nominal field construction cap".into());
         }
@@ -121,7 +121,7 @@ impl FetchedSite {
         let fit = |ty: Expr, scalar: Expr| {
             app(
                 "ir_byte_value_matches_v1",
-                [model.context.clone(), ty, scalar],
+                [model.context().clone(), ty, scalar],
             )
         };
         premises.admitted.endpoints(
@@ -139,7 +139,7 @@ impl FetchedSite {
             constant("Bool"),
             app(
                 "ir_byte_field_layouts_unique_v1",
-                [app("ir_byte_context_layouts_v1", [model.context.clone()])],
+                [app("ir_byte_context_layouts_v1", [model.context().clone()])],
             ),
             constant("Bool.true"),
         )?;
@@ -147,7 +147,7 @@ impl FetchedSite {
             constant("Bool"),
             app(
                 "ir_byte_enum_catalog_valid_v1",
-                [app("ir_byte_context_enums_v1", [model.context.clone()])],
+                [app("ir_byte_context_enums_v1", [model.context().clone()])],
             ),
             constant("Bool.true"),
         )?;
@@ -156,7 +156,7 @@ impl FetchedSite {
             app("IROption", [app("IRList", [constant("IRTy")])]),
             app(
                 "ir_byte_field_types_v1",
-                [model.context.clone(), aggregate_ty.clone(), spine.clone()],
+                [model.context().clone(), aggregate_ty.clone(), spine.clone()],
             ),
             app(
                 "IROption.some",
@@ -181,7 +181,7 @@ impl FetchedSite {
         let typed = app(
             "ir_byte_extract_typed_v1",
             [
-                model.context.clone(),
+                model.context().clone(),
                 aggregate_ty.clone(),
                 field_ty.clone(),
                 aggregate_scalar.clone(),
@@ -196,7 +196,7 @@ impl FetchedSite {
             app(
                 "ir_byte_field_selected_extract_v1",
                 [
-                    model.context.clone(),
+                    model.context().clone(),
                     aggregate_ty.clone(),
                     field_ty.clone(),
                     field_ty.clone(),
@@ -216,7 +216,7 @@ impl FetchedSite {
         let site_valid = app(
             "ir_byte_field_site_valid_v1",
             [
-                model.context.clone(),
+                model.context().clone(),
                 self.site.clone(),
                 (*site[6]).clone(),
                 field_ty.clone(),
@@ -250,7 +250,7 @@ impl FetchedSite {
                 Expr::apps(
                     super::field_site_valid::closed_candidate(),
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         self.site.clone(),
                         (*site[6]).clone(),
                         field_ty.clone(),
@@ -272,7 +272,7 @@ impl FetchedSite {
         let known = app(
             "ir_byte_extract_field_v1",
             [
-                model.context.clone(),
+                model.context().clone(),
                 self.site.clone(),
                 field_ty.clone(),
                 source,
@@ -280,7 +280,7 @@ impl FetchedSite {
                 index.clone(),
             ],
         );
-        let mut arguments = vec![model.context.clone()];
+        let mut arguments = vec![model.context().clone()];
         arguments.extend(site.iter().map(|field| (*field).clone()));
         arguments.extend([
             field_ty,
@@ -314,7 +314,7 @@ impl FetchedSite {
             app(
                 "ir_byte_extract_field_v1",
                 [
-                    model.context.clone(),
+                    model.context().clone(),
                     self.site.clone(),
                     (*instruction[0]).clone(),
                     (*instruction[1]).clone(),

@@ -172,12 +172,19 @@ pub use loops::{
     LOOP_CPS_PREFIX, LOOP_CPS_PREFIX_CONGR, LOOP_CPS_PREFIX_FROM_PULSE, install_cps_loop_into,
 };
 pub use loops::{LOOP_CPS_PREFIX_OBSERVATION, install_cps_observation_into};
+pub use loops::{
+    LOOP_DRIVE_COMPLETE, LOOP_DRIVE_HALT, LOOP_DRIVE_HALTED, LOOP_DRIVE_PREFIX,
+    LOOP_DRIVE_PREFIX_SUM, LOOP_DRIVE_STEP, install_loop_drive_into,
+};
 pub use loops::{LOOP_RANK_COMPLETE, install_ranked_loop_into};
 
 pub use loops::{
     DOMAIN_TAIL_COMPLETE, DOMAIN_TAIL_FOLD, DOMAIN_TAIL_STEP, install_tail_domain_into,
 };
-pub use loops::{IMAGE_TO_PULSE, RUN_TO_PULSE, RUN_TO_PULSE_CPS, install_cut_run_into};
+pub use loops::{
+    IMAGE_TO_PULSE, IMAGE_TO_PULSE_OBSERVATION, RUN_TO_PULSE, RUN_TO_PULSE_CPS,
+    install_cut_observation_into, install_cut_run_into,
+};
 pub use loops::{LOOP_MAP_COMPLETE, LOOP_MAP_PREFIX, LOOP_MAP_PULSE, install_loop_map_into};
 
 pub const RUN: &str = "TrustIR.Eval.Run";

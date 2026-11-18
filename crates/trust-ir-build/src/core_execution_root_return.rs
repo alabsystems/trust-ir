@@ -33,7 +33,7 @@ impl RootReturnFrame {
             world: app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     self.memory.clone(),
                     self.host.clone(),
                     list("Nat", std::slice::from_ref(&self.owner)),
@@ -54,7 +54,7 @@ impl RootReturnFrame {
         app(
             "IRByteWorldV1.mk",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 self.retired_memory(),
                 self.host.clone(),
                 list("Nat", &[]),
@@ -64,7 +64,11 @@ impl RootReturnFrame {
     }
 
     fn halted(&self, model: &MachineModel, values: Expr) -> Expr {
-        root_halted(model.world_type.clone(), self.retired_world(model), values)
+        root_halted(
+            model.world_type().clone(),
+            self.retired_world(model),
+            values,
+        )
     }
 }
 
@@ -100,7 +104,7 @@ impl RootReturnTransfer {
 
 fn guard(model: &MachineModel, frame: &RootReturnFrame, signature: Expr, values: Expr) -> Expr {
     root_guard(
-        model.context.clone(),
+        model.context().clone(),
         frame.returning.clone(),
         signature,
         values,
@@ -287,7 +291,7 @@ impl FetchedSite {
         let guard_function = Expr::apps(
             closed_guard_function(),
             [
-                model.context.clone(),
+                model.context().clone(),
                 frame.returning.clone(),
                 target.signature.clone(),
             ],
@@ -305,8 +309,8 @@ impl FetchedSite {
         let returned = app(
             "ir_byte_return_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 arguments,
@@ -318,7 +322,7 @@ impl FetchedSite {
         let failure = |outcome| {
             app(
                 "IRByteConfigV1.halted",
-                [model.world_type.clone(), outcome, current.world.clone()],
+                [model.world_type().clone(), outcome, current.world.clone()],
             )
         };
         let no_function = failure(app("IROutcome.stuck", [constant("IRFault.no_func")]));
@@ -327,10 +331,10 @@ impl FetchedSite {
         let success = app(
             "ir_byte_lift_v1",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 app(
                     "ir_byte_pop_owner_v1",
-                    [model.world_type.clone(), current.world.clone()],
+                    [model.world_type().clone(), current.world.clone()],
                 ),
                 app("ir_ret_vals", [current.machine(), actual_values.clone()]),
             ],
@@ -357,8 +361,8 @@ impl FetchedSite {
         let signature_branch = Expr::apps(
             closed_signature_function(),
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 frame.returning.clone(),
                 actual_values.clone(),
                 success,
@@ -369,7 +373,7 @@ impl FetchedSite {
             app(
                 "ir_byte_signature_v1",
                 [
-                    model.context.clone(),
+                    model.context().clone(),
                     app("ir_byte_binding_sig_v1", [binding]),
                 ],
             )
@@ -393,8 +397,8 @@ impl FetchedSite {
         let binding_branch = Expr::apps(
             closed_binding_function(),
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 not_function,
                 signature_branch,
             ],
@@ -411,7 +415,7 @@ impl FetchedSite {
                     app(
                         "ir_byte_function_v1",
                         [
-                            model.context.clone(),
+                            model.context().clone(),
                             app("ir_frame_func", [frame.returning.clone()]),
                         ],
                     ),
@@ -428,7 +432,7 @@ impl FetchedSite {
         // This last mapper's charge replaces precisely the old paid local.
         let halted_function = Expr::apps(
             closed_halted_function(),
-            [model.world_type.clone(), frame.retired_world(model)],
+            [model.world_type().clone(), frame.retired_world(model)],
         );
         let result =
             assembler.congruence_function(resolved, model.config_type(), halted_function)?;

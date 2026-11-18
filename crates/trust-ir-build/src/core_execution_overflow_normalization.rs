@@ -24,6 +24,8 @@ impl FetchedSite {
         operands: [Expr; 2],
         premises: OverflowPremises,
     ) -> Result<OverflowTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let OverflowShape {
             op, width, signed, ..
@@ -110,8 +112,8 @@ impl FetchedSite {
             app(
                 "ir_byte_bind_values_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.machine(),
                     current.world.clone(),
                     self.results.clone(),

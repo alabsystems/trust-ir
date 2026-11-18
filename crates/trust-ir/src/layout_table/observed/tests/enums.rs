@@ -511,3 +511,68 @@ fn single_reference_query_preserves_observer_stops_at_each_actual_admission() {
         );
     }
 }
+
+// These exact original public-query mutations run without prior module admission.
+#[test]
+fn original_single_observed_selection_and_geometry_mutations_still_refuse() {
+    let base = single_reference_fixture();
+    let shape = LayoutTable::new(&base).enum_layout(EnumId::new(7)).unwrap();
+    assert_eq!((shape.size_bits, shape.align_bits), (32, 32));
+    assert_eq!(shape.discriminants, vec![-5, 17]);
+    equal(&base);
+    for case in 0..8 {
+        let mut module = base.clone();
+        let definition = &mut module.enums[0];
+        match case {
+            0..=2 => {
+                definition.layout.as_mut().unwrap().encoding = EnumTagEncoding::SingleInhabited {
+                    variant: [0, 2, u32::MAX][case],
+                };
+            }
+            3 => definition.variants[0].fields = vec![Ty::Unit],
+            4 => {
+                definition.layout.as_mut().unwrap().variant_field_offsets[0] = vec![0, 0];
+            }
+            5 => {
+                definition.layout.as_mut().unwrap().variant_field_offsets[1] = vec![1];
+            }
+            6 => definition.layout.as_mut().unwrap().size = 0,
+            7 => definition.layout.as_mut().unwrap().encoding = EnumTagEncoding::Untagged,
+            _ => unreachable!(),
+        }
+        // Selecting the dead row or switching to Untagged makes the original
+        // huge Array physically active. It overflows before descriptor checks.
+        // Keep those precise refusals and the unchanged huge fixture; every
+        // other mutant still reaches the enum-layout refusal.
+        let expected = if matches!(case, 0 | 7) {
+            LayoutError::SizeOverflow
+        } else {
+            LayoutError::EnumLayoutUnavailable(EnumId::new(7))
+        };
+        assert_eq!(
+            LayoutTable::new(&module)
+                .enum_layout(EnumId::new(7))
+                .unwrap_err(),
+            expected,
+            "enum layout mutation {case}",
+        );
+        assert_eq!(
+            module.enum_layout_shape(EnumId::new(7)).unwrap_err(),
+            expected,
+            "shape mutation {case}",
+        );
+        assert_eq!(
+            run(&module, &mut Observer::default()).unwrap().unwrap_err(),
+            expected,
+            "observed enum mutation {case}",
+        );
+        let ty = Ty::Enum(EnumId::new(7));
+        parity(&module, &ty);
+        assert!(LayoutTable::new(&module).ty_layout(&ty).is_err());
+        assert!(
+            observed(&module, &ty, &mut Observer::default())
+                .unwrap()
+                .is_err()
+        );
+    }
+}

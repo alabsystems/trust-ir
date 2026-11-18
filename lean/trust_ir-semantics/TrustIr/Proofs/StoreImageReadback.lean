@@ -89,7 +89,7 @@ end AggregateMemory
 
 theorem stepStore_descriptor_image_bytes (ctx : EvalContext) (ty : Ty) (pointer input : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Store ty pointer input strict align)) before = .ok (result,after)) :
     result = .value none ∧ ∃ heldPointer heldInput plan address allocation image,
       before.lookupValue pointer = some heldPointer ∧ before.lookupValue input = some heldInput ∧
@@ -105,7 +105,7 @@ theorem stepStore_descriptor_image_bytes (ctx : EvalContext) (ty : Ty) (pointer 
 
 theorem stepStore_prepared_snapshot_readback (ctx : EvalContext) (source : SourceLayout.Environment) (roots : List Ty)
     (ty : Ty) (pointer input : ValueId) (strict : Bool) (align : Option Nat)
-    (selected : ctx.memoryServiceFor ty = some (AggregateMemory.prepare source roots))
+    (selected : ctx.memoryRoute ty = .descriptor (AggregateMemory.prepare source roots))
     (before after : MachineState) (result : InstrResult)
     (admitted : ∀ heldInput, before.lookupValue input = some heldInput → ∀ plan,
       (AggregateMemory.prepare source roots).query ty = .ok plan →

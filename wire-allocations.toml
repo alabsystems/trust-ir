@@ -186,6 +186,7 @@ wire_version = [
   { number = 72, feature = "uninhabited-direct-storage", constant = "UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION", status = "landed", owner = "codex/direct-main-integration-20261113", date = "2026-11-15" },
   { number = 73, feature = "fn-item-identity", constant = "FN_ITEM_IDENTITY_FORMAT_VERSION", status = "landed", owner = "codex/fn-item-main-integration-20261113", date = "2026-11-15" },
   { number = 74, feature = "box-deref-validity", constant = "BOX_DEREF_VALIDITY_FORMAT_VERSION", status = "landed", owner = "main", date = "2026-11-15", note = "the Box deref with its carried validity fact (Inst tag 77 and the tag spaces of its payload): a mandatory per-conjunct evidence record, so a deref with no fact has no spelling; ported from lane/box-deref-validity-on-cffe8d2 after v72..v73 and Inst tags 75..76 landed" },
+  { number = 75, feature = "box-deref-unestablished", constant = "BOX_DEREF_UNESTABLISHED_FORMAT_VERSION", status = "landed", owner = "lane/box-deref-consumer-site-20261117", date = "2026-11-17" },
 ]
 
 enum_tag = [
@@ -745,6 +746,7 @@ enum_tag = [
   { enum = "ValidityEvidence", tag = 0, variant = "Premise", since = 74, status = "landed", owner = "main" },
   { enum = "ValidityEvidence", tag = 1, variant = "DominatingCheck", since = 74, status = "landed", owner = "main" },
   { enum = "ValidityEvidence", tag = 2, variant = "Obligation", since = 74, status = "landed", owner = "main" },
+  { enum = "ValidityEvidence", tag = 3, variant = "Unestablished", since = 75, status = "landed", owner = "lane/box-deref-consumer-site-20261117" },
   { enum = "Visibility", tag = 0, variant = "Default", since = 41, status = "landed" },
   { enum = "Visibility", tag = 1, variant = "Hidden", since = 41, status = "landed" },
   { enum = "Visibility", tag = 2, variant = "Protected", since = 41, status = "landed" },
@@ -753,7 +755,9 @@ enum_tag = [
 digest_domain = [
   { domain = "TIR-SATRES", version = 1, sep = "-", status = "landed", binds = "magic of the SAT-resolution certificate payload byte encoding, NUL-terminated on the wire (proof::satres MAGIC)" },
     { domain = "TrustIR.ScopedProof", version = 1, status = "landed", binds = "scoped-proof DAG envelope record tag: outer telescope count, declaration records, frozen external claim, goal and root; inert data, never a kernel premise (ScopedProofComponentBundle encode_with_claim/decode_with_claim)", owner = "proof-components-kernel", note = "Existing published v1 spelling from eb32046ea74e; reconciliation does not mint a new name; future new identities remain canonical trust_ir names" },
+  { domain = "TrustIR.ScopedProof", version = 2, status = "landed", binds = "Explicit v2 scoped-proof one-DAG envelope with counted balanced declaration tree and frozen external claim, goal, root, outer count; inert data requiring unchanged scoped replay", owner = "balanced-scoped-wire" },
     { domain = "TrustIR.ScopedProof.declarations", version = 1, status = "landed", binds = "scoped-proof declaration-list record tag within the DAG envelope: declaration identity, binder/type and optional named let value; inert transport requiring ordinary scoped replay", owner = "proof-components-kernel", note = "Existing published v1 spelling from eb32046ea74e; reconciliation does not mint a new name; future new identities remain canonical trust_ir names" },
+  { domain = "TrustIR.ScopedProof.declarations", version = 2, status = "landed", binds = "Explicit v2 scoped declaration sequence: exact Nat count and canonical balanced tree, at most32 records per leaf; original count and DAG limits retained", owner = "balanced-scoped-wire" },
   { domain = "temporal-field-paths", version = 1, sep = "-", status = "landed", binds = "text-format keyword and diagnostic tag of SpecProjectionTarget::TemporalFieldPathsV1 (spec tag, display, parser)" },
   { domain = "trust-ir.bvblast.cert", version = 1, status = "landed", binds = "schema tag of the bit-blast certificate payload carried inside ProofEvidence::SmtProof (trust-ir-ay bvblast BVBLAST_CERT_SCHEMA)" },
   { domain = "trust-ir.bvblast.goal", version = 1, status = "landed", binds = "schema of the machine-readable claim a bv-blast-backed obligation formula carries (proof::bvgoal BVBLAST_GOAL_SCHEMA); NOT the digest domain trust_ir.proof.bvblast.goal" },
@@ -827,6 +831,10 @@ digest_domain = [
   { domain = "trust_ir.proof.lineage.transform_binding", version = 1, status = "landed", binds = "digest binding a lineage transform to its source and target semantics digests (proof::lineage)" },
   { domain = "trust_ir.proof.satprov", version = 2, status = "landed", binds = "digest of carried SAT provenance in canonical text form, binding it to the certificate (proof::satprov)" },
   { domain = "trust_ir.proof.satres.cnf", version = 2, status = "landed", binds = "digest of the CNF clause set a SAT resolution certificate refutes (proof::satres)" },
+  { domain = "trust_ir.proof.scoped.declarations.branch", version = 1, status = "landed", binds = "Inert canonical binary split of the ordered scoped declaration sequence within the explicit v2 envelope", owner = "balanced-scoped-wire" },
+  { domain = "trust_ir.proof.scoped.declarations.leaf", version = 1, status = "landed", binds = "Inert ordered leaf of at most32 complete scoped declaration records within the explicit v2 envelope", owner = "balanced-scoped-wire" },
+  { domain = "trust_ir.proof.scoped.definition", version = 1, status = "landed", binds = "Inert complete scoped definition record: exact name, type, value, identity, binder attributes and non-dependency flag", owner = "balanced-scoped-wire" },
+  { domain = "trust_ir.proof.scoped.parameter", version = 1, status = "landed", binds = "Inert complete scoped parameter record: exact name, type, identity, binder attributes and non-dependency flag; reserved value slot equals identity", owner = "balanced-scoped-wire" },
   { domain = "trust_ir.proof.source_calls.producer", version = 1, status = "landed", binds = "Versioned producer provenance label emitted by source-bound defined-call CleanCic and inheritance certificates; included in existing certificate reference identities, not a new hash function or proof authority", owner = "ty-source-bound-call-composition" },
   { domain = "trust_ir.proof.table_transform", version = 1, status = "landed", binds = "stable digest of a proof table transform record (proof::transform)" },
   { domain = "trust_ir.rust.type_args", version = 1, status = "landed", binds = "Canonical concrete Rust generic arguments in the Trust producer typed lineage encoding, version one; nominal type data only", owner = "closure-storage" },
@@ -844,5 +852,7 @@ digest_domain = [
 scan_exempt = [
   { scan = "literal", name = "@trust-internal::", reason = "spec-module names the trust compiler (trust-thir-lower) allocates; pinned in trust-ir-build's RESERVED_TRUST_INTERNAL_SPEC_MODULES, which is its own closed reservation list" },
   { scan = "literal", name = "ay.", reason = "AY-owned schema identifiers mirrored in request::consts; ay allocates their versions, this repository only spells them" },
+  { scan = "literal", name = "trust-wp.", reason = "Trust's trust-wp formula envelope, historical hyphen spelling (trust-cg-bridge replay, rustc_mir_transform trust_verify); trust-ir-contract's shared TrustFormulaV1 decoder only reads it" },
+  { scan = "literal", name = "trust_wp.", reason = "Trust's trust-wp formula envelope, canonical producer spelling (trust-wp, trust-certify, rustc_mir_transform trust_verify); trust-ir-contract's shared TrustFormulaV1 decoder only reads it" },
   { scan = "literal", name = "ty.", reason = "ty-owned Petri successor formula schema mirrored in request::consts; ty allocates its version" },
 ]

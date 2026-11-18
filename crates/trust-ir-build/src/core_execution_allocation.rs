@@ -78,7 +78,7 @@ impl AllocationTransfer {
 fn projection(model: &MachineModel, current: &Current, field: &str) -> Expr {
     app(
         &format!("ir_byte_world_{field}_v1"),
-        [model.world_type.clone(), current.world.clone()],
+        [model.world_type().clone(), current.world.clone()],
     )
 }
 
@@ -91,8 +91,8 @@ fn memory_result(
     app(
         "ir_byte_memory_result_v1",
         [
-            model.world_type.clone(),
-            model.context.clone(),
+            model.world_type().clone(),
+            model.context().clone(),
             current.machine(),
             current.world.clone(),
             site.results.clone(),
@@ -111,7 +111,7 @@ impl FetchedSite {
         input: &AllocationInput,
         result: &MemoryResult,
     ) -> Result<AllocationChecks> {
-        require_same(&self.context, &model.context, "allocation fetched context")?;
+        require_same(&self.context, model.context(), "allocation fetched context")?;
         let fields = self.instruction.get_app_args();
         let ExprKind::Const(name, _) = self.instruction.get_app_fn().kind() else {
             return Err("allocation assembler requires fetched Alloca".into());
@@ -125,7 +125,7 @@ impl FetchedSite {
         let evaluation = app(
             "ir_byte_alloc_v1",
             [
-                model.context.clone(),
+                model.context().clone(),
                 (*ty).clone(),
                 input.count.clone(),
                 app("ir_byte_site_align_v1", [self.site.clone()]),
@@ -138,8 +138,8 @@ impl FetchedSite {
             dispatch: app(
                 "ir_byte_alloca_exec_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.machine(),
                     current.world.clone(),
                     self.results.clone(),
@@ -163,7 +163,7 @@ impl FetchedSite {
                     app(
                         "ir_byte_values_match_v1",
                         [
-                            model.context.clone(),
+                            model.context().clone(),
                             app("ir_byte_site_results_v1", [self.site.clone()]),
                             values,
                         ],
@@ -190,6 +190,8 @@ impl FetchedSite {
         result: MemoryResult,
         premises: AllocationPremises,
     ) -> Result<AllocationTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let checks = self.allocation_checks(model, current, &input, &result)?;
         premises
@@ -210,7 +212,7 @@ impl FetchedSite {
         let world = app(
             "ir_byte_with_memory_v1",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 current.world.clone(),
                 result.memory.clone(),
             ],
@@ -225,13 +227,13 @@ impl FetchedSite {
                 )],
             ),
             world: world.clone(),
-            ..current.clone()
+            ..Current::clone(current)
         };
         let bound = app(
             "ir_byte_bind_values_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 world.clone(),
                 self.results.clone(),
@@ -264,7 +266,7 @@ impl FetchedSite {
                     app(
                         "IRByteConfigV1.halted",
                         [
-                            model.world_type.clone(),
+                            model.world_type().clone(),
                             app("IROutcome.type_error", [constant("IRFault.bad_field")]),
                             world,
                         ],
@@ -292,7 +294,7 @@ impl FetchedSite {
             Current {
                 world: app(
                     "ir_byte_with_memory_v1",
-                    [model.world_type.clone(), w, result.memory.clone()],
+                    [model.world_type().clone(), w, result.memory.clone()],
                 ),
                 ..after.clone()
             }
@@ -306,7 +308,7 @@ impl FetchedSite {
         after.world = app(
             "IRByteWorldV1.mk",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 result.memory.clone(),
                 projection(model, current, "host"),
                 projection(model, current, "owners"),
@@ -329,7 +331,7 @@ impl FetchedSite {
             app(
                 "ir_byte_import_world_shape_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     current.world.clone(),
                     current.frame.clone(),
                     after.frame.clone(),

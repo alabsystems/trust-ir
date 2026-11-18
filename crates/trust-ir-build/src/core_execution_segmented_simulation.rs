@@ -107,9 +107,9 @@ impl SegmentedPrefixSimulation {
                 app(
                     "ir_byte_run_v1",
                     [
-                        model.world_type.clone(),
-                        model.context.clone(),
-                        model.providers.clone(),
+                        model.world_type().clone(),
+                        model.context().clone(),
+                        model.providers().clone(),
                     ],
                 ),
                 self.relation.clone(),
@@ -117,7 +117,9 @@ impl SegmentedPrefixSimulation {
         )
     }
 
-    fn source_run(&self, fuel: Expr, state: Expr) -> Expr {
+    /// The original source drive at exactly this fuel. Constructing this
+    /// expression proves neither that the source nor the related Core halts.
+    pub fn source_run(&self, fuel: Expr, state: Expr) -> Expr {
         app(
             "ir_drive_v1",
             [
@@ -127,6 +129,19 @@ impl SegmentedPrefixSimulation {
                 fuel,
                 state,
             ],
+        )
+    }
+
+    /// Independent sufficient-source-fuel obligation for a completed run.
+    /// Finite-prefix simulation alone cannot supply this proof.
+    pub fn halted_after_proposition(&self, fuel: &NatTerm, state: Expr) -> Expr {
+        eq(
+            &constant("Bool"),
+            Expr::app(
+                self.source_halted.clone(),
+                self.source_run(fuel.term().clone(), state),
+            ),
+            constant("Bool.true"),
         )
     }
     fn related(&self, source: Expr, core: Expr) -> Expr {
@@ -271,9 +286,9 @@ impl Assembler<'_> {
         let law = app(
             "ir_byte_run_add_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 tail_cost,
                 ks,
                 c.term().clone(),

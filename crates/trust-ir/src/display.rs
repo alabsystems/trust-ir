@@ -1807,6 +1807,8 @@ fn write_box_validity_fact(
             ValidityEvidence::Obligation { obligation } => {
                 write!(f, "{}", obligation.index())?;
             }
+            // `unestablished()`: no payload.
+            ValidityEvidence::Unestablished => {}
         }
         write!(f, ")")?;
     }

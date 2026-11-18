@@ -500,11 +500,11 @@ fn exact_run_branch_closes_with_fixed_fuel_and_external_worlds() {
     // arbitrary inputs, not proofs of any byte-machine execution in this test.
     let mut scope = Scope::new();
     let world = scope.try_local(Expr::type_()).unwrap();
-    let model = MachineModel {
-        world_type: world.term().clone(),
-        context: constant("test_context"),
-        providers: constant("test_providers"),
-    };
+    let model = MachineModel::from_terms(
+        world.term().clone(),
+        constant("test_context"),
+        constant("test_providers"),
+    );
     let flag = scope.try_local(constant("Bool")).unwrap();
     let initial = scope.try_local(model.config_type()).unwrap();
     let false_world = scope.try_local(model.config_type()).unwrap();
@@ -607,11 +607,11 @@ fn one_step_caches_closed_case_candidate_and_retains_exact_neutral_endpoint() {
     // public method is exercised structurally on an arbitrary neutral config;
     // no alternate byte definitions are installed just to make this test pass.
     let mut scope = Scope::new();
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_context"),
-        providers: constant("test_providers"),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_context"),
+        constant("test_providers"),
+    );
     let initial = scope.try_local(model.config_type()).unwrap();
     let step = model.step(initial.term().clone());
     let mut assembler = Assembler::new(&mut scope, limits()).unwrap();
@@ -670,11 +670,11 @@ fn exact_run_branch_rejects_arm_local_fuel_and_world_escape() {
     use crate::{scoped_local::LocalScopeError, term_scope::TermScopeError};
     for escape_fuel in [false, true] {
         let mut scope = Scope::new();
-        let model = MachineModel {
-            world_type: constant("Nat"),
-            context: constant("test_context"),
-            providers: constant("test_providers"),
-        };
+        let model = MachineModel::from_terms(
+            constant("Nat"),
+            constant("test_context"),
+            constant("test_providers"),
+        );
         let flag = scope.try_local(constant("Bool")).unwrap();
         let initial = scope.try_local(model.config_type()).unwrap();
         let reached = scope.try_local(model.config_type()).unwrap();

@@ -19,6 +19,8 @@
 #![allow(rustc::default_hash_types)]
 #![allow(rustc::potential_query_instability)]
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
@@ -515,7 +517,7 @@ fn run_m3(
 
     eprintln!("== M3: monomorphization + trait static dispatch ==");
     eprintln!(
-        "   API: Instance(def_id+GenericArgsRef) -> tcx.thir_body(generic) + \
+        "   API: Instance(def_id+GenericArgs) -> tcx.thir_body(generic) + \
          instantiate_and_normalize_erasing_regions(args) -> concrete trust_ir::Ty; \
          trait dispatch via Instance::try_resolve"
     );
@@ -2209,6 +2211,12 @@ fn run_differential_for(
 }
 
 fn main() {
+    // SAFETY: the first native-entry operation, before arguments, files or threads.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Err(error) = unsafe { rustc_data_structures::jobserver::capture_early() } {
+        eprintln!("frontend entry: inherited compiler scheduler refused: {error}");
+        std::process::exit(75);
+    }
     let raw: Vec<String> = std::env::args().collect();
     let mut rustc_args: Vec<String> = Vec::new();
     let mut target_fns: Vec<String> = Vec::new();

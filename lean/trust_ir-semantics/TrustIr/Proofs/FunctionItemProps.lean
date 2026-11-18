@@ -759,13 +759,13 @@ private theorem huge_run_using (service : AggregateMemory.Service)
       (dests : List ValueId) :
       GenericCoro.Prefix.evalBodyStep recurse ctx depth .abort
         (.Alloca ty count alignment, dests) = (do
-          let id ← semAllocaUsing ctx.memoryLayout ctx.carrierIntegerOperand
+          let id ← semAllocaUsing ctx.allocationLayout ctx.carrierIntegerOperand
             ty count alignment ctx.byteModel
           ctx.bindInstructionResults (.Alloca ty count alignment) (.value (some id)) dests
           pure (.yield ())) := by
     simp only [GenericCoro.Prefix.evalBodyStep, stepInstWithContext, bind_assoc, pure_bind]
   have active_layout :
-      ((hugeContextUsing service).forFunction hugeEntryView).memoryLayout hugeType = .ok ⟨0, 1⟩ := by
+      ((hugeContextUsing service).forFunction hugeEntryView).allocationLayout hugeType = .ok ⟨0, 1⟩ := by
     change AggregateMemory.layoutQuery service .le64 hugeType = .ok ⟨0, 1⟩
     unfold AggregateMemory.layoutQuery
     rw [model]
@@ -790,16 +790,17 @@ private theorem huge_run_using (service : AggregateMemory.Service)
   simp only [Except.bind, pure_bind]
   have load_step (recurse : GenericCoro.Prefix.Recurse) (ctx : EvalContext)
       (depth : Nat) (ty : Ty) (pointer : ValueId) (strict : Bool) (alignment : Option Nat)
-      (dests : List ValueId) (chosen : ctx.memoryServiceFor ty = some service) :
+      (dests : List ValueId) (chosen : ctx.memoryRoute ty = .descriptor service) :
       GenericCoro.Prefix.evalBodyStep recurse ctx depth .abort
         (.Load ty pointer strict alignment, dests) = (do
           let id ← AggregateMemory.load service ctx.functionOrder ty pointer strict alignment ctx.byteModel
           ctx.bindInstructionResults (.Load ty pointer strict alignment) (.value (some id)) dests
           pure (.yield ())) := by
-    simp only [GenericCoro.Prefix.evalBodyStep, stepInstWithContext, chosen, bind_assoc, pure_bind]
+    simp only [GenericCoro.Prefix.evalBodyStep, stepInstWithContext,
+      EvalContext.loadMemoryValueAligned, chosen, AggregateMemory.load, bind_assoc, pure_bind]
   have active_service :
-      ((hugeContextUsing service).forFunction hugeEntryView).memoryServiceFor hugeType =
-        some service := rfl
+      ((hugeContextUsing service).forFunction hugeEntryView).memoryRoute hugeType =
+        .descriptor service := rfl
   rw [List.forIn_cons]
   simp only [load_step _ _ _ _ _ _ _ _ active_service, bind_assoc, pure_bind, active_model]
   rw [Sem.run_bind, huge_load_run service model plan]

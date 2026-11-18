@@ -15,8 +15,8 @@ V2_INVENTORY = 'ab551e29400bdc25ae4cec2875755236473145690dfe1750fd23c4d15c657906
 # Exact current source profile, not compiler/execution/proof authority. Changes to
 # this reviewed package require a new source-bound profile review; historical
 # PRODUCT/SUPPORT and inventory/helper checks remain required by full check().
-CURRENT_LAKEFILE_PROFILE_CUT = 'aef77ba8c7d3241c95d3d514e4ac8a4d64b2da9f'
-CURRENT_LAKEFILE_PROFILE_SHA256 = '1a863cfdb426d84786c46219cfbf02ee272ace33a82dab6486c5f2d96a786398'
+CURRENT_LAKEFILE_PROFILE_CUT = '6c2ffa1272533c168f0a219adb505e135eb52ffa'
+CURRENT_LAKEFILE_PROFILE_SHA256 = '4acd1c31932bf7f8034bebc62b4ee488df53c34e9dd2f2975c096fb0d49e72e5'
 CURRENT_IMPORTS = ('import TrustIrRuntime', 'import TrustIrEval.Run')
 TARGET = '''-- Optional decoded-CFG phase observer; outside the default proof target.
 lean_exe trustir_cfg_bench where
@@ -224,6 +224,43 @@ def negative_controls(source, lakefile):
     return results
 
 
+LOOKUP_HELPER = 'lean/trust_ir-semantics/Tools/FunctionLookupBenchmark.lean'
+
+
+def helper_contract(rel, current, historical):
+    if rel == LOOKUP_HELPER:
+        # Current native tools import the shared runtime initializer. Keep
+        # every historical observer byte apart from that exact import.
+        anchor = b'import TrustIrEval.Run\n'
+        assert historical.count(anchor) == 1
+        historical = historical.replace(
+            anchor, b'import TrustIrRuntime\n' + anchor, 1)
+    assert current == historical
+
+
+def lookup_helper_negative_controls(current, historical):
+    runtime = b'import TrustIrRuntime\n'
+    run = b'import TrustIrEval.Run\n'
+    mutants = {
+        'lookup_missing_runtime_import': current.replace(runtime, b'', 1),
+        'lookup_duplicate_runtime_import': current.replace(runtime, runtime * 2, 1),
+        'lookup_reordered_runtime_import': current.replace(runtime + run, run + runtime, 1),
+        'lookup_unexpected_import': current.replace(run, run + b'import Lean\n', 1),
+        'lookup_changed_body': current.replace(
+            b'contextOf source (8 + i % 2)', b'contextOf source 8', 1),
+    }
+    results = []
+    for name, mutant in mutants.items():
+        assert mutant != current
+        try:
+            helper_contract(LOOKUP_HELPER, mutant, historical)
+        except AssertionError:
+            results.append(dict(control=name, source_detector_refused=True))
+        else:
+            raise AssertionError(('negative lookup helper detector accepted', name))
+    return results
+
+
 def check(root):
     source_path = Path('lean/trust_ir-semantics/Tools/DecodedCFGBenchmark.lean')
     lake_path = Path('lean/trust_ir-semantics/lakefile.lean')
@@ -266,10 +303,13 @@ def check(root):
              'benchmarks/decoded_cfg/derive_v2.py'),
             ('crates/trust-ir-conformance/examples/decoded_cfg_inputs.rs',
              'crates/trust-ir-conformance/examples/decoded_cfg_inputs.rs'),
-            ('lean/trust_ir-semantics/Tools/FunctionLookupBenchmark.lean',
-             'lean/trust_ir-semantics/Tools/FunctionLookupBenchmark.lean')]:
-        assert (root / rel).read_bytes() == subprocess.check_output(
+            (LOOKUP_HELPER, LOOKUP_HELPER)]:
+        historical = subprocess.check_output(
             ['git', 'show', f'{SUPPORT}:{original_rel}'], cwd=root)
+        current = (root / rel).read_bytes()
+        helper_contract(rel, current, historical)
+        if rel == LOOKUP_HELPER:
+            controls.extend(lookup_helper_negative_controls(current, historical))
     ast.parse(Path(__file__).read_text(), filename=__file__)
     return dict(source_marker_checks=True, negative_source_controls=controls,
                 original_and_V2_cases_unchanged=66, sparse_cases=sparse,

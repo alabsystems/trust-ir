@@ -37,6 +37,14 @@ pub use prefix_simulation::PrefixSimulation;
 mod segmented_simulation;
 pub use segmented_simulation::{SegmentedPrefixSimulation, SimulatedPrefix};
 
+#[path = "core_execution_segmented_halt.rs"]
+mod segmented_halt;
+pub use segmented_halt::{SegmentedHaltProjection, SimulatedHalt};
+
+#[path = "core_execution_pulse_drive.rs"]
+mod pulse_drive;
+pub use pulse_drive::PulseDrive;
+
 #[path = "core_execution_return.rs"]
 mod returning;
 pub use returning::{ReturnFrame, ReturnTransfer};
@@ -172,6 +180,10 @@ pub use initialized_prefix::{
 #[path = "core_execution_pointer.rs"]
 mod pointer;
 pub use pointer::BytePointerWord;
+
+#[path = "core_execution_ptr_to_int.rs"]
+mod ptr_to_int;
+pub use ptr_to_int::BytePtrToInt;
 
 #[path = "core_execution_transport.rs"]
 mod transporting;
@@ -379,118 +391,13 @@ impl NatTerm {
     }
 }
 
-/// Immutable execution semantics. World/frame changes do not retarget an
-/// already-built equation to different providers or a different module.
-#[derive(Clone)]
-pub struct MachineModel {
-    world_type: Expr,
-    context: Expr,
-    providers: Expr,
-}
+#[path = "core_execution_model.rs"]
+mod machine_model;
+pub use machine_model::MachineModel;
 
-impl MachineModel {
-    pub fn new(world_type: Expr, reflected: &ReflectedCoreModuleV1<'_>, providers: Expr) -> Self {
-        Self {
-            world_type,
-            context: reflected.context_term().clone(),
-            providers,
-        }
-    }
-    pub fn world_type(&self) -> &Expr {
-        &self.world_type
-    }
-    pub fn context(&self) -> &Expr {
-        &self.context
-    }
-    pub fn providers(&self) -> &Expr {
-        &self.providers
-    }
-    pub fn config_type(&self) -> Expr {
-        app("IRByteConfigV1", [self.world_type.clone()])
-    }
-    /// The actual run function with world, context, providers and fuel fixed.
-    /// Passing this partial application to [`Assembler::congruence_function`]
-    /// avoids capturing a growing execution suffix beneath a fresh binder.
-    /// This is a candidate expression, not an execution or typing judgment.
-    pub fn run_function(&self, fuel: &NatTerm) -> Expr {
-        app(
-            "ir_byte_run_v1",
-            [
-                self.world_type.clone(),
-                self.context.clone(),
-                self.providers.clone(),
-                fuel.0.clone(),
-            ],
-        )
-    }
-    pub fn run(&self, fuel: &NatTerm, initial: Expr) -> Expr {
-        app(
-            "ir_byte_run_v1",
-            [
-                self.world_type.clone(),
-                self.context.clone(),
-                self.providers.clone(),
-                fuel.0.clone(),
-                initial,
-            ],
-        )
-    }
-    pub fn step(&self, initial: Expr) -> Expr {
-        app(
-            "ir_byte_step_v1",
-            [
-                self.world_type.clone(),
-                self.context.clone(),
-                self.providers.clone(),
-                initial,
-            ],
-        )
-    }
-    fn same(&self, other: &Self) -> Result<()> {
-        require_same(&self.world_type, &other.world_type, "run world type")?;
-        require_same(&self.context, &other.context, "run reflected context")?;
-        require_same(&self.providers, &other.providers, "run providers")
-    }
-}
-
-/// Explicit current machine/world. A new state requires a new world-validity
-/// fact; no cached pre-return validity is silently reused after a call/pop.
-#[derive(Clone)]
-pub struct Current {
-    pub frame: Expr,
-    pub tail: Expr,
-    pub legacy_memory: Expr,
-    pub legacy_cursor: Expr,
-    pub world: Expr,
-}
-
-impl Current {
-    pub fn machine(&self) -> Expr {
-        app(
-            "IRMachine.mk",
-            [
-                app(
-                    "IRList.cons",
-                    [constant("IRFrame"), self.frame.clone(), self.tail.clone()],
-                ),
-                self.legacy_memory.clone(),
-                self.legacy_cursor.clone(),
-            ],
-        )
-    }
-    pub fn running(&self, model: &MachineModel) -> Expr {
-        app(
-            "IRByteConfigV1.running",
-            [model.world_type.clone(), self.machine(), self.world.clone()],
-        )
-    }
-    pub fn valid(&self, model: &MachineModel) -> Expr {
-        app(
-            "ir_byte_world_valid_v1",
-            [model.world_type.clone(), self.machine(), self.world.clone()],
-        )
-    }
-}
+#[path = "core_execution_current.rs"]
+mod current;
+pub use current::Current;
 
 #[derive(Clone)]
 pub struct ExactRun {
@@ -909,9 +816,9 @@ impl<'scope> Assembler<'scope> {
         let term = app(
             "ir_byte_run_zero_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 initial.clone(),
             ],
         );
@@ -986,9 +893,9 @@ impl<'scope> Assembler<'scope> {
             Expr::apps(
                 self.run_one_candidate()?,
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
-                    model.providers.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
+                    model.providers().clone(),
                     initial.clone(),
                 ],
             ),
@@ -1018,9 +925,9 @@ impl<'scope> Assembler<'scope> {
             app(
                 "ir_byte_run_add_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
-                    model.providers.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
+                    model.providers().clone(),
                     second.fuel.0.clone(),
                     first.fuel.0.clone(),
                     first.initial.clone(),
@@ -1769,7 +1676,7 @@ impl CallTarget {
                             app(
                                 "ir_byte_values_match_v1",
                                 [
-                                    model.context.clone(),
+                                    model.context().clone(),
                                     app("ir_byte_signature_params_v1", [self.signature.clone()]),
                                     values,
                                 ],
@@ -1791,9 +1698,9 @@ impl CallTarget {
         app(
             "ir_byte_call_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 current.machine(),
                 current.world.clone(),
                 site.results.clone(),
@@ -1821,9 +1728,9 @@ impl CallTarget {
         app(
             "ir_byte_call_known_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 current.machine(),
                 current.world.clone(),
                 site.results.clone(),
@@ -1860,7 +1767,7 @@ impl CallTarget {
         current: &Current,
         site: &FetchedSite,
     ) -> Result<PendingEquality> {
-        require_same(&self.context, &model.context, "call target context")?;
+        require_same(&self.context, model.context(), "call target context")?;
         if !matches!(site.instruction.get_app_fn().kind(), ExprKind::Const(name, _) if name == &Name::from_string("IRInst.call"))
         {
             return Err("direct call assembler requires an actual IRInst.call".into());
@@ -1890,6 +1797,8 @@ impl CallTarget {
         arguments: Expr,
         left: Expr,
     ) -> Result<PendingEquality> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         let call = self.call(model, current, site, arguments.clone());
         let values = app("ir_resolve", [current.machine(), arguments.clone()]);
         let known = self.known(model, current, site, values);
@@ -1897,9 +1806,9 @@ impl CallTarget {
         let term = app(
             "ir_byte_call_of_catalog_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 current.machine(),
                 current.world.clone(),
                 site.results.clone(),
@@ -1930,7 +1839,9 @@ impl CallTarget {
         callback: &LookupFact,
         exact: PendingEquality,
     ) -> Result<PendingEquality> {
-        require_same(&self.context, &model.context, "indirect target context")?;
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
+        require_same(&self.context, model.context(), "indirect target context")?;
         require_same(
             &callback.machine,
             &current.machine(),
@@ -1966,9 +1877,9 @@ impl CallTarget {
             app(
                 "ir_byte_call_indirect_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
-                    model.providers.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
+                    model.providers().clone(),
                     current.machine(),
                     current.world.clone(),
                     site.results.clone(),
@@ -1993,9 +1904,9 @@ impl CallTarget {
         let rule = app(
             "ir_byte_indirect_call_exact_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 current.machine(),
                 current.world.clone(),
                 site.results.clone(),
@@ -2041,8 +1952,10 @@ impl CallTarget {
         arity: PendingEquality,
         admitted: PendingEquality,
     ) -> Result<PendingEquality> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
-        require_same(&self.context, &model.context, "internal target context")?;
+        require_same(&self.context, model.context(), "internal target context")?;
         require_same(
             &resolved.ty,
             &app("IRList", [constant("IRScalar")]),
@@ -2066,7 +1979,7 @@ impl CallTarget {
                 [
                     app(
                         "ir_mod_funcs",
-                        [app("ir_byte_context_module_v1", [model.context.clone()])],
+                        [app("ir_byte_context_module_v1", [model.context().clone()])],
                     ),
                     app("ir_byte_binding_fid_v1", [self.binding.clone()]),
                 ],
@@ -2104,10 +2017,10 @@ impl CallTarget {
         let push = app(
             "ir_byte_lift_v1",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 app(
                     "ir_byte_push_owner_v1",
-                    [model.world_type.clone(), current.world.clone()],
+                    [model.world_type().clone(), current.world.clone()],
                 ),
                 app(
                     "ir_push",
@@ -2123,9 +2036,9 @@ impl CallTarget {
         let rule = app(
             "ir_byte_internal_call_rule_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 current.machine(),
                 current.world.clone(),
                 site.results.clone(),
@@ -2156,19 +2069,12 @@ impl FetchedSite {
     }
 
     pub fn dispatch(&self, model: &MachineModel, current: &Current) -> Result<Expr> {
-        require_same(&self.context, &model.context, "fetched module context")?;
-        Ok(app(
-            "ir_byte_exec_v1",
-            [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
-                current.machine(),
-                current.world.clone(),
-                self.site.clone(),
-                self.instruction.clone(),
-                self.results.clone(),
-            ],
+        require_same(&self.context, model.context(), "fetched module context")?;
+        Ok(model.dispatch(
+            current,
+            self.site.clone(),
+            self.instruction.clone(),
+            self.results.clone(),
         ))
     }
 
@@ -2181,38 +2087,34 @@ impl FetchedSite {
         current: &Current,
         valid: PendingEquality,
     ) -> Result<PendingEquality> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
-        require_same(&self.context, &model.context, "fetched module context")?;
+        require_same(&self.context, model.context(), "fetched module context")?;
         valid.endpoints(
             &constant("Bool"),
             &current.valid(model),
             &constant("Bool.true"),
         )?;
         let found = |ty, value| refl(&app("IROption", [constant(ty)]), some(ty, value));
-        let term = app(
-            "ir_byte_step_fetched_v1",
-            [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
-                current.frame.clone(),
-                current.tail.clone(),
-                current.legacy_memory.clone(),
-                current.legacy_cursor.clone(),
-                current.world.clone(),
-                self.function.clone(),
-                self.block.clone(),
-                self.instruction.clone(),
-                self.results.clone(),
-                self.site.clone(),
-                valid.term,
-                found("IRFunc", self.function.clone()),
-                found("IRBlock", self.block.clone()),
-                found("IRNode", self.node.clone()),
-                found("IRByteSiteV1", self.site.clone()),
-                refl(&constant("Bool"), constant("Bool.true")),
-            ],
-        );
+        let term = model.fetched_step([
+            current.frame.clone(),
+            current.tail.clone(),
+            current.legacy_memory.clone(),
+            current.legacy_cursor.clone(),
+            current.world.clone(),
+            self.function.clone(),
+            self.block.clone(),
+            self.instruction.clone(),
+            self.results.clone(),
+            self.site.clone(),
+            valid.term,
+            found("IRFunc", self.function.clone()),
+            found("IRBlock", self.block.clone()),
+            found("IRNode", self.node.clone()),
+            found("IRByteSiteV1", self.site.clone()),
+            refl(&constant("Bool"), constant("Bool.true")),
+        ]);
         Ok(PendingEquality::candidate(
             model.config_type(),
             model.step(current.running(model)),
@@ -2221,6 +2123,14 @@ impl FetchedSite {
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "core_execution_current_tests.rs"]
+mod current_tests;
+
+#[cfg(test)]
+#[path = "core_execution_model_tests.rs"]
+mod model_tests;
 
 #[cfg(test)]
 #[path = "core_execution_tests.rs"]

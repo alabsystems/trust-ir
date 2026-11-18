@@ -16,15 +16,15 @@ theorem decoded_enum_plan_covered_encoded_selection (document : Lean.Json) (deco
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ layout info variants tag payload position variant fields,
       plan = .enumeration (.Enum id) layout info variants ∧ values = tag :: payload ∧
-      EnumTagSelects definition tag position ∧ definition.variants.get? position = some variant ∧
-      EnumEncodingSelects info tag position ∧ info.uninhabited.get? position = some false ∧
-      variants.get? position = some (some fields) ∧
+      EnumTagSelects definition tag position ∧ (trustIrListGet? definition.variants position) = some variant ∧
+      EnumEncodingSelects info tag position ∧ (trustIrListGet? info.uninhabited position) = some false ∧
+      (trustIrListGet? variants position) = some (some fields) ∧
       (∀ field ∈ fields, Plan.Origin (SourceElement (decodedCaptureSource decoded ctx.byteModel)) (ActualSummary (decodedCaptureSource decoded ctx.byteModel)) field.2.ty field.2) ∧
       ∀ model order allowUnwritten image,
         encode model order plan (.aggregate values) allowUnwritten = .ok image →
         (∃ fieldPosition base child offset untagged start stop first repr,
           info.encoding = .niche untagged start stop first (base + offset) repr ∧
-          fields.get? fieldPosition = some (base,child) ∧
+          (trustIrListGet? fields fieldPosition) = some (base,child) ∧
           child.CoversLane offset (tagBits repr / 8) ∧
           FieldsAvoidLane (fields.drop (fieldPosition + 1)) (base + offset) (tagBits repr / 8)) →
         image.bytes.size = layout.size ∧ EnumDecodingSelects info image.bytes position :=
@@ -35,6 +35,10 @@ theorem decoded_enum_plan_covered_encoded_selection (document : Lean.Json) (deco
 
 end TrustIrEval
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_plan_covered_encoded_selection' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_plan_covered_encoded_selection
+-/
+#print axioms TrustIrEval.decoded_enum_plan_covered_encoded_selection
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_plan_covered_encoded_selection == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]

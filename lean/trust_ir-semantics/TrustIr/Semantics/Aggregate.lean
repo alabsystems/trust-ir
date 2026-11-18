@@ -841,6 +841,7 @@ theorem seqMapAddKList_length (k : Nat) :
       · next => exact absurd h (by simp)
     | .float _ | .bool _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _ | .sourceFrame _ _ _ _
     | .set _ | .sequence _ | .record _ | .closure _ _ | .fnDef _ _ | .typedClosure _ _ _ | .fatPtr _ _ _
+    | .array _ | .uninit | .fnItem _
     | .partial _ | .undef _ | .nullPtr => exact absurd h (by simp [seqMapAddKList])
 
 /-- `SeqMapNot` preserves length for the same reason. -/
@@ -864,6 +865,7 @@ theorem seqMapNotList_length :
       · next => exact absurd h (by simp)
     | .int _ _ | .float _ | .ptr _ _ | .aggregate _ | .vector _ | .frame _ _ | .sourceFrame _ _ _ _
     | .set _ | .sequence _ | .record _ | .closure _ _ | .fnDef _ _ | .typedClosure _ _ _ | .fatPtr _ _ _
+    | .array _ | .uninit | .fnItem _
     | .partial _ | .undef _ | .nullPtr => exact absurd h (by simp [seqMapNotList])
 
 /-- Evaluate a SeqMapAddK instruction: a new sequence with every element

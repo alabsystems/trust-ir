@@ -142,7 +142,7 @@ theorem scalarLoadValue_success_iff (decode : Memory → List UInt8 → Except S
 /-- Scalar fallback of the original node authenticates its read and decoder
     to the original SSA operand and memory, with the actual function order. -/
 theorem stepLoad_scalar_image (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
-    (strict : Bool) (align : Option Nat) (selected : ctx.memoryServiceFor ty = none)
+    (strict : Bool) (align : Option Nat) (selected : ctx.memoryRoute ty = .scalar)
     (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Load ty pointer strict align)) before = .ok (result,after)) :
     ∃ heldPointer value size alignment address allocation,
@@ -157,7 +157,7 @@ theorem stepLoad_scalar_image (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
       after.lookupValue ⟨before.nextValueId⟩ = some value ∧ after.nextValueId = before.nextValueId + 1 := by
   obtain ⟨heldPointer,value,found,loaded,published,next⟩ :=
     stepLoad_published_value ctx ty pointer strict align before after result run
-  simp only [selectedLoadAction,selected] at loaded
+  simp only [selectedLoadAction,EvalContext.loadMemoryValueAligned,selected] at loaded
   obtain ⟨size,alignment,address,allocation,pointerShape,sized,aligned,accessed,image,_⟩ :=
     scalarLoadValue_success_steps _ ty heldPointer strict align ctx.byteModel before before value loaded
   obtain ⟨_,_,_,_,shape,_⟩ := stepLoad_success_publication ctx ty pointer strict align before after result run

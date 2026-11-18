@@ -287,3 +287,319 @@ fn sharing_reaches_across_sibling_roots_that_no_consumer_pass_could_enter() {
         unshared.stats
     );
 }
+
+#[test]
+fn completed_exact_application_shells_charge_every_root_without_rewalking_children() {
+    let function = Arc::new(Expr::const_str("Nat.succ"));
+    let argument = Arc::new(Expr::nat_lit(0));
+    let roots: Vec<_> = (0..192)
+        .map(|_| Expr::app_arc(function.clone(), argument.clone()))
+        .collect();
+    let limits = TermScopeLimits {
+        max_visits: roots.len() + 2,
+        max_depth: 2,
+    };
+    let mut scope = TermScope::new();
+    let prepared = scope.intern_forest_with_limits(&roots, limits).unwrap();
+    assert_eq!(prepared.terms, roots, "all actual roots remain");
+    assert_eq!(prepared.stats.visits, limits.max_visits);
+    assert_eq!(prepared.stats.examined, roots.len() + 2);
+    assert_eq!(prepared.stats.shared, roots.len() - 1);
+    assert_eq!(prepared.stats.canonical, 3);
+    assert_eq!(prepared.stats.rebuilt, 0);
+    assert_eq!(prepared.stats.max_depth, 2);
+    let failure = TermScope::new()
+        .intern_forest_with_diagnostics(
+            &roots,
+            TermScopeLimits {
+                max_visits: limits.max_visits - 1,
+                ..limits
+            },
+        )
+        .err()
+        .unwrap();
+    assert_eq!(failure.error, TermScopeError::VisitLimit);
+    assert_eq!(failure.stats.visits, limits.max_visits - 1);
+    assert_eq!(failure.completed_roots, roots.len() - 1);
+    assert_eq!(failure.phase, TermScopeInternPhase::Node);
+    assert_eq!(failure.walk_depth, 0);
+    assert_eq!(TermScopeLimits::default().max_visits, 1_000_000);
+    assert_eq!(TermScopeLimits::default().max_depth, 16_384);
+}
+
+#[test]
+fn equal_but_fresh_application_children_are_visited_and_fresh_shell_depth_is_checked() {
+    let function = Arc::new(Expr::const_str("Nat.succ"));
+    let argument = Arc::new(Expr::nat_lit(0));
+    let first = Expr::app_arc(function.clone(), argument.clone());
+    let fresh = Expr::app_arc(
+        Arc::new(function.as_ref().clone()),
+        Arc::new(argument.as_ref().clone()),
+    );
+    assert_eq!(first, fresh);
+    let refusal = TermScope::new()
+        .intern_forest_with_diagnostics(
+            &[first.clone(), fresh],
+            TermScopeLimits {
+                max_visits: 4,
+                max_depth: 100,
+            },
+        )
+        .err()
+        .unwrap();
+    assert_eq!(refusal.error, TermScopeError::VisitLimit);
+    assert_eq!(refusal.completed_roots, 1);
+    assert_eq!(refusal.stats.visits, 4);
+    let nested = Expr::app_arc(
+        function.clone(),
+        Arc::new(Expr::app_arc(function, Arc::new(first.clone()))),
+    );
+    let refusal = TermScope::new()
+        .intern_forest_with_diagnostics(
+            &[first, nested],
+            TermScopeLimits {
+                max_visits: 100,
+                max_depth: 2,
+            },
+        )
+        .err()
+        .unwrap();
+    assert_eq!(refusal.error, TermScopeError::DepthLimit);
+    assert_eq!(refusal.completed_roots, 1);
+    assert_eq!(refusal.walk_depth, 2);
+}
+
+#[test]
+fn completed_application_shells_never_reuse_registered_body_roots_or_named_ancestors() {
+    let mut scope = TermScope::new();
+    let function = Arc::new(Expr::const_str("Nat.succ"));
+    let argument = Arc::new(Expr::fvar(id(7)));
+    let app = || Expr::app_arc(function.clone(), argument.clone());
+    let ordinary = Expr::lam(BinderInfo::Default, nat(), app());
+    let own = scope.lam(id(7), BinderInfo::Default, nat(), app());
+    let inner = scope.lam(id(9), BinderInfo::Default, nat(), app());
+    let outer = scope.lam(id(7), BinderInfo::Default, nat(), inner);
+    let roots = [ordinary, own, outer];
+    let original = [
+        scope.close(&roots[1]).unwrap(),
+        scope.close(&roots[2]).unwrap(),
+    ];
+    let prepared = scope
+        .intern_forest_with_limits(&roots, TermScopeLimits::default())
+        .unwrap();
+    assert_eq!(prepared.terms, roots);
+    assert!(!Arc::ptr_eq(
+        body_arc(&prepared.terms[0]),
+        body_arc(&prepared.terms[1])
+    ));
+    assert!(!Arc::ptr_eq(
+        body_arc(&prepared.terms[1]),
+        body_arc(body_arc(&prepared.terms[2]))
+    ));
+    assert_eq!(
+        scope.close(&prepared.terms[0]).err(),
+        scope.close(&roots[0]).err()
+    );
+    assert!(
+        scope.close(&prepared.terms[0]).is_err(),
+        "the ordinary binder cannot capture named 7"
+    );
+    assert_eq!(scope.close(&prepared.terms[1]).unwrap(), original[0]);
+    assert_eq!(scope.close(&prepared.terms[2]).unwrap(), original[1]);
+
+    let named = Arc::new(scope.lam(id(21), BinderInfo::Default, nat(), Expr::fvar(id(21))));
+    let argument = Arc::new(Expr::nat_lit(0));
+    let roots = [
+        Expr::app_arc(named.clone(), argument.clone()),
+        Expr::app_arc(named, argument),
+    ];
+    let prepared = scope
+        .intern_forest_with_limits(&roots, TermScopeLimits::default())
+        .unwrap();
+    assert_eq!(prepared.terms, roots);
+    assert_eq!(
+        prepared.stats.visits, 8,
+        "named-containing shells retain the original charged child dispatch"
+    );
+}
+
+#[test]
+fn completed_application_shells_preserve_independent_ordinary_kernel_claims_and_refusals() {
+    let function = Arc::new(Expr::bvar(1));
+    let argument = Arc::new(Expr::bvar(0));
+    let function_type = Expr::pi(BinderInfo::Default, Expr::bvar(0), Expr::bvar(1));
+    let roots: Vec<_> = (0..32)
+        .map(|_| {
+            Expr::lam(
+                BinderInfo::Default,
+                Expr::type_(),
+                Expr::lam(
+                    BinderInfo::Default,
+                    function_type.clone(),
+                    Expr::lam(
+                        BinderInfo::Default,
+                        Expr::bvar(1),
+                        Expr::app_arc(function.clone(), argument.clone()),
+                    ),
+                ),
+            )
+        })
+        .collect();
+    let claim = Expr::pi(
+        BinderInfo::Default,
+        Expr::type_(),
+        Expr::pi(
+            BinderInfo::Default,
+            function_type.clone(),
+            Expr::pi(BinderInfo::Default, Expr::bvar(1), Expr::bvar(2)),
+        ),
+    );
+    let wrong_claim = Expr::pi(
+        BinderInfo::Default,
+        Expr::type_(),
+        Expr::pi(
+            BinderInfo::Default,
+            function_type,
+            Expr::pi(BinderInfo::Default, Expr::bvar(1), Expr::type_()),
+        ),
+    );
+    let mut scope = TermScope::new();
+    let prepared = scope
+        .intern_forest_with_limits(&roots, TermScopeLimits::default())
+        .unwrap();
+    assert_eq!(prepared.terms, roots);
+    assert_eq!(prepared.terms.len(), 32);
+    let environment = Environment::new();
+    for (original, prepared) in roots.iter().zip(&prepared.terms) {
+        let original = scope.close(original).unwrap();
+        let prepared = scope.close(prepared).unwrap();
+        assert_eq!(original, prepared);
+        TypeChecker::new(&environment)
+            .check_type(&original, &claim)
+            .unwrap();
+        TypeChecker::new(&environment)
+            .check_type(&prepared, &claim)
+            .unwrap();
+        let error = TypeChecker::new(&environment)
+            .check_type(&prepared, &wrong_claim)
+            .unwrap_err();
+        let reason = format!("{error:?}");
+        assert!(reason.contains("TypeMismatch"), "{reason}");
+        assert!(
+            !reason.contains("BudgetExhausted") && !reason.contains("HeartbeatExceeded"),
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn a_registered_body_aliased_as_an_ordinary_argument_is_never_a_canonical_body() {
+    let mut scope = TermScope::new();
+    let function = Arc::new(Expr::const_str("Nat.succ"));
+    let argument = Arc::new(Expr::fvar(id(7)));
+    let named = scope.lam(
+        id(7),
+        BinderInfo::Default,
+        nat(),
+        Expr::app_arc(function.clone(), argument.clone()),
+    );
+    // First visit the exact registered body allocation as an ordinary App child.
+    let aliased_body = body_arc(&named).clone();
+    let first = Expr::app_arc(Arc::new(Expr::const_str("wrapper")), aliased_body);
+    // This body's root is fresh; its children are the exact same allocations.
+    let ordinary = Expr::lam(
+        BinderInfo::Default,
+        nat(),
+        Expr::app_arc(function, argument),
+    );
+    let original = scope.close(&ordinary);
+    assert!(
+        original.is_err(),
+        "ordinary binder must not capture named local 7"
+    );
+    let prepared = scope
+        .intern_forest_with_limits(&[first, ordinary, named], TermScopeLimits::default())
+        .unwrap();
+    assert!(
+        scope.close(&prepared.terms[1]).is_err(),
+        "ordinary argument alias must not enter the canonical table and turn an ordinary binder into named 7"
+    );
+}
+
+#[test]
+fn a_registered_body_aliased_inside_a_valid_root_cannot_capture_an_ordinary_binder() {
+    let mut scope = TermScope::new();
+    let a = Expr::fvar(id(1));
+    let function_type = Expr::pi(BinderInfo::Default, a.clone(), a.clone());
+    let function = Arc::new(Expr::fvar(id(2)));
+    let argument = Arc::new(Expr::fvar(id(7)));
+    let named = scope.lam(
+        id(7),
+        BinderInfo::Default,
+        a.clone(),
+        Expr::app_arc(function.clone(), argument.clone()),
+    );
+    let first = scope.lam(
+        id(7),
+        BinderInfo::Default,
+        a.clone(),
+        Expr::app_arc(function.clone(), body_arc(&named).clone()),
+    );
+    let ordinary = Expr::lam(BinderInfo::Default, a, Expr::app_arc(function, argument));
+    let wrap = |scope: &mut TermScope, inner| {
+        let f = scope.lam(id(2), BinderInfo::Default, function_type.clone(), inner);
+        scope.lam(id(1), BinderInfo::Default, Expr::type_(), f)
+    };
+    let roots = [
+        wrap(&mut scope, first),
+        wrap(&mut scope, ordinary),
+        wrap(&mut scope, named),
+    ];
+    let original_error = scope.close(&roots[1]).unwrap_err();
+    assert_eq!(original_error, TermScopeError::OutOfScope(id(7)));
+    let function_type = Expr::pi(BinderInfo::Default, Expr::bvar(0), Expr::bvar(1));
+    let claim = Expr::pi(
+        BinderInfo::Default,
+        Expr::type_(),
+        Expr::pi(
+            BinderInfo::Default,
+            function_type,
+            Expr::pi(BinderInfo::Default, Expr::bvar(1), Expr::bvar(2)),
+        ),
+    );
+    let environment = Environment::new();
+    for index in [0, 2] {
+        TypeChecker::new(&environment)
+            .check_type(&scope.close(&roots[index]).unwrap(), &claim)
+            .unwrap();
+    }
+    assert!(
+        scope
+            .close_external_forest(&roots, &[], &[0; 3], TermScopeLimits::default())
+            .0
+            .is_err()
+    );
+    let prepared = scope
+        .intern_forest_with_limits(&roots, TermScopeLimits::default())
+        .unwrap();
+    assert_eq!(prepared.terms, roots, "retain every original forest term");
+    assert_eq!(
+        scope.close(&prepared.terms[1]).unwrap_err(),
+        original_error,
+        "preparation must not capture escaped local 7"
+    );
+    assert!(
+        scope
+            .close_external_forest(&prepared.terms, &[], &[0; 3], TermScopeLimits::default())
+            .0
+            .is_err()
+    );
+    for index in [0, 2] {
+        let original = scope.close(&roots[index]).unwrap();
+        let actual = scope.close(&prepared.terms[index]).unwrap();
+        assert_eq!(actual, original);
+        TypeChecker::new(&environment)
+            .check_type(&actual, &claim)
+            .unwrap();
+    }
+}

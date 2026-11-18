@@ -450,7 +450,6 @@ fn decode_let_expr(
 /// The sort of an expression this decoder produced: every name it emits
 /// carries its declared sort, so the sort follows from the syntax. `None` for
 /// a shape the decoder never emits.
-
 fn decoded_sort(expr: &PureExpr) -> Option<ExprSort> {
     match expr {
         PureExpr::Bool(_) => Some(ExprSort::Bool),
@@ -602,7 +601,6 @@ fn validate_name(name: &str, path: &str) -> Result<(), TrustFormulaDecodeError> 
 /// sigils (`.`, `[`, `]`, `*`, `@`, `-`, `;`, `=`) the trust-vcgen formula layer
 /// produces. The leading character is still constrained to `_` or an ASCII
 /// letter by the caller, matching every base local / source name.
-
 fn is_claim_name_char(ch: char) -> bool {
     ch == '_'
         || ch.is_ascii_alphanumeric()

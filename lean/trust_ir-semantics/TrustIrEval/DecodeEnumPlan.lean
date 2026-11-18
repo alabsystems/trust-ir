@@ -17,8 +17,8 @@ theorem decoded_enum_plan_active_payload (document : Lean.Json) (decoded : Modul
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ layout info variants tag payload position variant fields,
       plan = .enumeration (.Enum id) layout info variants ∧ values = tag :: payload ∧
-      EnumTagSelects definition tag position ∧ definition.variants.get? position = some variant ∧
-      info.uninhabited.get? position = some false ∧ variants.get? position = some (some fields) ∧
+      EnumTagSelects definition tag position ∧ (trustIrListGet? definition.variants position) = some variant ∧
+      (trustIrListGet? info.uninhabited position) = some false ∧ (trustIrListGet? variants position) = some (some fields) ∧
       ∀ field ∈ fields, Plan.Origin (SourceElement (decodedCaptureSource decoded ctx.byteModel)) (ActualSummary (decodedCaptureSource decoded ctx.byteModel)) field.2.ty field.2 :=
   prepared_enum_active_payload _ ctx
     (decoded_context_capture_source document decoded parsed maxDepth ctx prepared)
@@ -27,6 +27,10 @@ theorem decoded_enum_plan_active_payload (document : Lean.Json) (decoded : Modul
 
 end TrustIrEval
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_plan_active_payload' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_plan_active_payload
+-/
+#print axioms TrustIrEval.decoded_enum_plan_active_payload
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_plan_active_payload == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]

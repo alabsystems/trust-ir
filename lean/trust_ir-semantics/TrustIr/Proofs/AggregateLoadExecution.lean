@@ -315,7 +315,7 @@ namespace TrustIr
     to its original SSA pointer, original memory and actual published value. -/
 theorem stepLoad_descriptor_image (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Load ty pointer strict align)) before = .ok (result,after)) :
     ∃ heldPointer value plan alignment address allocation,
       before.lookupValue pointer = some heldPointer ∧

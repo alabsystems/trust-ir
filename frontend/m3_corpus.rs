@@ -2,7 +2,7 @@
 //
 // The frontend (M3) reads the GENERIC `thir_body` of these defs and lowers them
 // PER concrete instantiation, substituting the generic type params using a
-// constructed `Instance` (def_id + GenericArgsRef) so every `Ty` the pass sees
+// constructed `Instance` (def_id + GenericArgs) so every `Ty` the pass sees
 // is concrete -> trust_ir::Ty.
 
 // M5.7a NESTED-CONSTRUCTOR match patterns (`App(deref!(Lam(_)), _)`, the

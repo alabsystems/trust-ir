@@ -64,11 +64,11 @@ fn fixture(scope: &mut Scope, kind: usize) -> Fixture {
         parameters.push(value.clone());
         value.term().clone()
     };
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("actual_test_context"),
-        providers: local(app("IRByteProvidersV1", [constant("Nat")])),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("actual_test_context"),
+        local(app("IRByteProvidersV1", [constant("Nat")])),
+    );
     let current = Current {
         frame: app(
             "IRFrame.mk",
@@ -100,7 +100,7 @@ fn fixture(scope: &mut Scope, kind: usize) -> Fixture {
         constant("IRTy.ptr_")
     };
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(41),
             block: BlockId::new(13),
@@ -217,7 +217,7 @@ fn memory_checks_retain_actual_ssa_type_alignment_volatility_and_inbounds() {
             0 | 1 => app(
                 "ir_byte_load_v1",
                 [
-                    f.model.context.clone(),
+                    f.model.context().clone(),
                     ty,
                     read(11),
                     align,
@@ -228,7 +228,7 @@ fn memory_checks_retain_actual_ssa_type_alignment_volatility_and_inbounds() {
             2 | 3 => app(
                 "ir_byte_store_v1",
                 [
-                    f.model.context.clone(),
+                    f.model.context().clone(),
                     ty,
                     read(11),
                     read(19),
@@ -240,7 +240,7 @@ fn memory_checks_retain_actual_ssa_type_alignment_volatility_and_inbounds() {
             4 | 5 => app(
                 "ir_byte_gep_v1",
                 [
-                    f.model.context.clone(),
+                    f.model.context().clone(),
                     app("IRTy.int_", [nat(8)]),
                     read(11),
                     app(
@@ -253,7 +253,7 @@ fn memory_checks_retain_actual_ssa_type_alignment_volatility_and_inbounds() {
             ),
             _ => app(
                 "ir_byte_fetch_add_relaxed_u64_seq_v1",
-                [f.model.context.clone(), read(11), read(19), memory],
+                [f.model.context().clone(), read(11), read(19), memory],
             ),
         };
         assert_eq!(checks.evaluation, expected);
@@ -281,7 +281,7 @@ fn memory_checks_retain_actual_ssa_type_alignment_volatility_and_inbounds() {
                     app(
                         "ir_byte_values_match_v1",
                         [
-                            f.model.context.clone(),
+                            f.model.context().clone(),
                             app("ir_byte_site_results_v1", [f.site.site.clone()]),
                             values
                         ]
@@ -326,7 +326,7 @@ fn memory_transfer_retains_returned_bytes_and_binds_and_advances_exactly_once() 
         let expected_world = app(
             "IRByteWorldV1.mk",
             [
-                f.model.world_type.clone(),
+                f.model.world_type().clone(),
                 f.result.memory.clone(),
                 projection(&f.model, &f.current.world, "host"),
                 projection(&f.model, &f.current.world, "owners"),

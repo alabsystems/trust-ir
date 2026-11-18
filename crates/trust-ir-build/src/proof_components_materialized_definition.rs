@@ -53,8 +53,15 @@ impl ProofComponents {
             return Err("materialized definition has another retained type".into());
         }
         let mut lookup_work = 0;
-        let cached =
-            self.cached_materialized_definition(scope, index, &actual, &value, &mut lookup_work);
+        let lookup_limit = self.context_work_remaining()?;
+        let cached = self.cached_materialized_definition(
+            scope,
+            index,
+            &actual,
+            &value,
+            &mut lookup_work,
+            lookup_limit,
+        );
         self.spend_context_work(lookup_work)?;
         if let Some((_, value)) = cached? {
             return Ok(value);
@@ -109,11 +116,12 @@ impl ProofComponents {
         local: &ScopedLocal,
         value: &Expr,
         work: &mut usize,
+        lookup_limit: usize,
     ) -> Result<Option<(Expr, Expr)>, String> {
         let charge = |work: &mut usize, amount: usize| -> Result<(), String> {
             *work = work
                 .checked_add(amount)
-                .filter(|total| *total <= self.limits.operations)
+                .filter(|total| *total <= lookup_limit)
                 .ok_or("materialized definition lookup work limit")?;
             Ok(())
         };
@@ -616,6 +624,35 @@ mod tests {
                 .untrusted_normalization_context_profiled(&scope, &[second.reference])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn cached_lookup_stops_at_the_remaining_owner_budget_and_keeps_spent_work() {
+        let mut scope = LocalScope::new();
+        let mut parts = ProofComponents::new("materialized.remaining", ProofLimits::default());
+        parts.set_base(&scope, vec![]).unwrap();
+        let first = parts
+            .bind_scoped_owned(&mut scope, &[], n(), Expr::nat_lit(3))
+            .unwrap();
+        let second = parts
+            .bind_scoped_owned(&mut scope, &[], n(), first.reference)
+            .unwrap();
+        let _materialized = parts
+            .materialize_owned_definition(&scope, &second.local)
+            .unwrap();
+        let remaining = parts.context_work_remaining().unwrap();
+        parts.spend_context_work(remaining - 4).unwrap();
+        let error = parts
+            .materialize_owned_definition(&scope, &second.local)
+            .unwrap_err();
+        assert!(error.contains("lookup work limit"), "{error}");
+        assert_eq!(parts.context_work_remaining().unwrap(), 0);
+        assert!(
+            parts
+                .materialize_owned_definition(&scope, &second.local)
+                .is_err()
+        );
+        assert_eq!(parts.context_work_remaining().unwrap(), 0);
     }
 
     #[test]

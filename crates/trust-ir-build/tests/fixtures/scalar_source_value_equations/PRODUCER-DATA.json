@@ -1,9 +1,12 @@
 {
   "scope": "DATA ONLY. Complete actual modules, original definitions, checked theorem terms and closure data. Independent consumer reconstructs and checks the original judgment; this manifest grants no acceptance/body/ABI/NoUB/machine authority.",
   "producer_repository": "alabsystems/clean",
-  "producer_commit": "e0af3a837189e150f2788682895c3b22b6c2314c",
-  "producer_result_sha256": "4a553eee98018a91b056b8ba71eab9419e233a03ebf053b0e738d831bd13eb5d",
-  "producer_toolchain": "Trust SDK 16387, explicitly unverified build lane; actual kernel source-equation judgments checked by the tests",
+  "producer_commit": "2cda1d4b088f9f1cc8562cce660046b3596ae9b2",
+  "producer_result_sha256": "2cc02335894ed346ad6851e40c31120283eab50e539a9ca95a9658095b44229e",
+  "producer_result_sha256_as_produced": "0096019550981fe5746478328d66130e38f557413b787383c9a64701c24b735a",
+  "producer_result_home_spelling": "The producer's home directory is spelled $HOME in PRODUCER-RESULT.json (cwd and two environment paths); the as-produced digest is the file before that respelling.",
+  "producer_result_file": "PRODUCER-RESULT.json",
+  "producer_toolchain": "Managed Trust source 5062eed55c0bc9df8a79eba1368d88ffde76c741, version 0.14.0; unverified lane. Version observed after run only; no before/after executable conservation claim.",
   "command": [
     "targo",
     "--unverified",
@@ -19,43 +22,50 @@
   "environment": {
     "CLEAN_SCALAR_SOURCE_EQUATION_EXPORT_DIR": "fresh absolute directory"
   },
-  "producer_qualification": "141 reflection tests passed, zero failures/ignores/filters, all-target Tippy warnings denied; exact source/tools/locked inputs unchanged. Not compiler/native/machine qualification.",
+  "producer_qualification": "151 reflection tests passed (137 library, 6 fused-overflow, 8 increment), zero failures/ignores/filters. Fresh Tippy and full CI not run. Independent IR replay is a separate consumer result; no compiler/native/machine authority.",
+  "previous_epoch": {
+    "fixture_revision": "f7fab4f7aab267b959ede220e112f052c08e967d",
+    "producer_commit": "e0af3a837189e150f2788682895c3b22b6c2314c",
+    "producer_result_sha256": "4a553eee98018a91b056b8ba71eab9419e233a03ebf053b0e738d831bd13eb5d",
+    "retention": "Original payloads and manifest remain in immutable Git history; original producer result digest remains historical."
+  },
+  "epoch_comparison": "All nine source declarations and complete theorem terms unchanged. Every module adds only closure_layouts: []; four extended-width source/equation closure digest pairs change. Other five digest pairs unchanged. Original test assertions and consumer proposition unchanged.",
   "files": {
     "extended_u16_bool.json": {
-      "sha256": "4c60b439d18fadc7153879d22b7a2649cc408e052ad8bcc1a27cd43e57c33e05",
-      "bytes": 16819
+      "sha256": "619999f30164cc6d2a2ecd3db2e4905e8c7bada4919d048c3d0c5a814d06c6d3",
+      "bytes": 16853
     },
     "extended_u32_bool.json": {
-      "sha256": "81c61586f6958c487e2c7104e6cb73f2e7e8e1c00114cc3a0fd07915b3e88a9c",
-      "bytes": 16824
+      "sha256": "f622c13f3898145f5051610dd2bc80573be876e0c87c37f0daeeb9aa037a13da",
+      "bytes": 16854
     },
     "extended_u64_bool.json": {
-      "sha256": "3d1643a1ff8e3d9cb6570ead4077c7bd182d0f3974c5948511c36026dfb99548",
-      "bytes": 16834
+      "sha256": "d744f0b54d10cd9871db311a45c2977e6651d9466c714eee84074270272c7fe6",
+      "bytes": 16853
     },
     "extended_u8_bool.json": {
-      "sha256": "9928118c349eb1f102c1ca4287fbdd55279021ac4416175488a5226b278f11c8",
-      "bytes": 16773
+      "sha256": "0fa6328b2519bb0c9ec698483d7caf027432451031b05ecacf91e831f6950c64",
+      "bytes": 16794
     },
     "mixed_u16_bool_u16_bool.json": {
-      "sha256": "dfda319c16e060365be52046c5a3202daf9a87ec880028b8cd39c51abbe728ff",
-      "bytes": 10196
+      "sha256": "4659edfe8656964a997e69a32a82a4c97dd17694777e241d1f71e9fdfccdc6a0",
+      "bytes": 10217
     },
     "mixed_u32_bool_u32_bool.json": {
-      "sha256": "08efc0ab74c79691221c136a76a3947a790a2407e8ffb93138cecf9116a9721f",
-      "bytes": 10205
+      "sha256": "c4dda7b51272f477791da8f50bc85beab7f4e1ea815d9d6dcc374847f248f441",
+      "bytes": 10226
     },
     "mixed_u64_bool_u64_bool.json": {
-      "sha256": "1d116a39107c18d5ba88277869b1b709ede7b6c4b23b7d80a6cfe2dc8fff381f",
-      "bytes": 10204
+      "sha256": "5b6b30a8cefc85133897912e546ac3c54442c5a8b405abf54381ab86ac18ffa4",
+      "bytes": 10225
     },
     "mixed_u8_bool_u8_bool.json": {
-      "sha256": "e141546020ee373af7073e6217f561d3214f08047a5a124db9550fb37be6af8c",
-      "bytes": 10157
+      "sha256": "39a740f2d6501a0f091dd9d40d50777f1b5780ef8a64b05ac2f140fc9c41be8d",
+      "bytes": 10178
     },
     "rex_bool4_u8.json": {
-      "sha256": "26ea6dbf95aeda761d2d026a523e83d82c0bd8db5a0590fc0c2c54a93c8f616c",
-      "bytes": 65177
+      "sha256": "c27a87629a9f03ca845a9815963cfa67f46c0d9f2a3f4e549e4cfc777ba1dd71",
+      "bytes": 65198
     }
   }
 }

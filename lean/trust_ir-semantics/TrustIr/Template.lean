@@ -19,7 +19,7 @@
 
 import TrustIr.Basic
 import TrustIr.Constant
-import TrustIr.Semantics.Eval
+import TrustIr.ModuleSyntax
 
 namespace TrustIr
 

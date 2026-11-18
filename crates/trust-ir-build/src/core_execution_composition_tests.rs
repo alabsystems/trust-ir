@@ -81,11 +81,11 @@ fn symbolic() -> Symbolic {
     let providers = scope
         .try_local(app("IRByteProvidersV1", [world_type.term().clone()]))
         .unwrap();
-    let model = MachineModel {
-        world_type: world_type.term().clone(),
-        context: context.term().clone(),
-        providers: providers.term().clone(),
-    };
+    let model = MachineModel::from_terms(
+        world_type.term().clone(),
+        context.term().clone(),
+        providers.term().clone(),
+    );
     let a = scope.try_local(constant("Nat")).unwrap();
     let b = scope.try_local(constant("Nat")).unwrap();
     let initial = scope.try_local(model.config_type()).unwrap();
@@ -289,11 +289,11 @@ fn closed_zero_and_one_run_fusion_replays_without_execution_hypotheses() {
         (constant("Nat"), nat(37)),
         (constant("Bool"), constant("Bool.false")),
     ] {
-        let model = MachineModel {
-            world_type: world_type.clone(),
-            context: empty_context(),
-            providers: providers(world_type.clone()),
-        };
+        let model = MachineModel::from_terms(
+            world_type.clone(),
+            empty_context(),
+            providers(world_type.clone()),
+        );
         let world = app(
             "IRByteWorldV1.mk",
             [
@@ -356,9 +356,27 @@ fn strict_fusion_keeps_model_boundary_refusals_and_does_not_certify_poisoned_pri
             mut second,
         } = symbolic();
         match mutation {
-            0 => second.model.world_type = constant("Bool"),
-            1 => second.model.context = empty_context(),
-            2 => second.model.providers = providers(constant("Nat")),
+            0 => {
+                second.model = MachineModel::from_terms(
+                    constant("Bool"),
+                    second.model.context().clone(),
+                    second.model.providers().clone(),
+                )
+            }
+            1 => {
+                second.model = MachineModel::from_terms(
+                    second.model.world_type().clone(),
+                    empty_context(),
+                    second.model.providers().clone(),
+                )
+            }
+            2 => {
+                second.model = MachineModel::from_terms(
+                    second.model.world_type().clone(),
+                    second.model.context().clone(),
+                    providers(constant("Nat")),
+                )
+            }
             3 => second.initial = first.initial.clone(),
             4 => first.equality.ty = constant("Nat"),
             5 => first.equality.left = first.initial.clone(),

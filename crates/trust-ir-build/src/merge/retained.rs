@@ -191,8 +191,25 @@ impl RetainedImage {
     /// Different inputs and file-less/unknown origins retain ordinary rules.
     /// On error both immutable images remain unchanged.
     pub fn merge(&self, source: &Self, policy: &MergePolicy) -> Result<(Self, Remap), MergeError> {
+        let (image, remap, _) = self.merge_with_roots(source, policy, &[])?;
+        Ok((image, remap))
+    }
+
+    /// The same actual-original receipt DAG as `merge`, with detached source
+    /// roots mapped by the canonical owner. Roots grant no source/body/proof
+    /// authority and create no synthetic signature or module row.
+    pub fn merge_with_roots(
+        &self,
+        source: &Self,
+        policy: &MergePolicy,
+        roots: &[trust_ir::Ty],
+    ) -> Result<(Self, Remap, Vec<trust_ir::Ty>), MergeError> {
         self.validate()?;
         source.validate()?;
+        let errors = crate::validate::validate_type_roots(&source.module, roots);
+        if !errors.is_empty() {
+            return Err(MergeError::InvalidTypeRoots { errors });
+        }
         let mut reuse = vec![None; source.module.files.len()];
         for incoming in &source.origins {
             let Some(prior) = self
@@ -212,7 +229,7 @@ impl RetainedImage {
         }
         let mut merger = Merger::new(&self.module, &source.module, *policy)?;
         merger.retained_files = Some(reuse);
-        let staged = merger.run()?;
+        let (staged, roots) = merger.run_with_roots(roots)?;
         let mut result = self.module.as_ref().clone();
         let remap = staged.commit(&mut result);
         let result = Arc::new(result);
@@ -266,6 +283,6 @@ impl RetainedImage {
             history,
         };
         output.validate()?;
-        Ok((output, remap))
+        Ok((output, remap, roots))
     }
 }

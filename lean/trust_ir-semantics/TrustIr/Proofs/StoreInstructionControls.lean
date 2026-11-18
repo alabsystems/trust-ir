@@ -51,10 +51,10 @@ private theorem ran (model : ByteModel) :
   }
 
 theorem descriptor_selector_uses_actual_service (model : ByteModel) :
-    (context model).memoryServiceFor root = some (service model) := rfl
+    (context model).memoryRoute root = .descriptor (service model) := rfl
 
 theorem canonical_selector_keeps_scalar_path (model : ByteModel) :
-    (wrongContext model).memoryServiceFor .U8 = none := rfl
+    (wrongContext model).memoryRoute .U8 = .scalar := rfl
 
 theorem actual_store_node_executes (model : ByteModel) :
     Sem.run (stepInstWithContext (context model) (.Store root ⟨0⟩ ⟨1⟩ false none)) (initial held) =

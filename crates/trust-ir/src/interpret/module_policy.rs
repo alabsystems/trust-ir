@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{Interpreter, Module};
+use super::{Interpreter, Module, PanicStrategy};
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug)]
@@ -28,6 +28,24 @@ impl ModulePreflight {
     }
 }
 
+/// Successful module-only ABI checks, tied to this exact immutable borrow.
+/// Panic strategy is the only execution option read by these checks. Errors
+/// are not retained, so each refusal keeps the current entry's diagnostics.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ModuleAbiPreflights {
+    abort: OnceLock<bool>,
+    unwind: OnceLock<bool>,
+}
+
+impl ModuleAbiPreflights {
+    pub(super) fn for_strategy(&self, strategy: PanicStrategy) -> &OnceLock<bool> {
+        match strategy {
+            PanicStrategy::Abort => &self.abort,
+            PanicStrategy::Unwind => &self.unwind,
+        }
+    }
+}
+
 /// Lend interpreters sharing one lazy module-wide execution-policy preflight.
 ///
 /// The immutable module borrow prevents safe mutation for this owner's entire
@@ -39,6 +57,8 @@ impl ModulePreflight {
 pub struct InterpreterModule<'module> {
     module: &'module Module,
     preflight: OnceLock<ModulePreflight>,
+    storage_preflight: OnceLock<bool>,
+    typed_abi_preflights: ModuleAbiPreflights,
 }
 
 impl std::fmt::Debug for InterpreterModule<'_> {
@@ -46,6 +66,7 @@ impl std::fmt::Debug for InterpreterModule<'_> {
         f.debug_struct("InterpreterModule")
             .field("module", &self.module.name)
             .field("preflight", &self.preflight.get())
+            .field("storage_preflight", &self.storage_preflight.get())
             .finish()
     }
 }
@@ -56,6 +77,8 @@ impl<'module> InterpreterModule<'module> {
         Self {
             module,
             preflight: OnceLock::new(),
+            storage_preflight: OnceLock::new(),
+            typed_abi_preflights: ModuleAbiPreflights::default(),
         }
     }
 
@@ -64,6 +87,8 @@ impl<'module> InterpreterModule<'module> {
     pub fn interpreter(&self) -> Interpreter<'_> {
         let mut interpreter = Interpreter::with_module(self.module);
         interpreter.module_preflight = Some(&self.preflight);
+        interpreter.module_storage_preflight = Some(&self.storage_preflight);
+        interpreter.module_typed_abi_preflights = Some(&self.typed_abi_preflights);
         interpreter
     }
 }

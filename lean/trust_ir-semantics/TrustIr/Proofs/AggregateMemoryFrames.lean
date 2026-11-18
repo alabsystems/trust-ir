@@ -1,6 +1,7 @@
 -- Copyright 2026 Andrew Yates | Apache-2.0
 import TrustIr.Proofs.HeldMemoryFrames
 import TrustIr.Semantics.AggregateAccess
+import TrustIr.Semantics.OriginalClosureMemory
 
 namespace TrustIr.HeldMemoryFrames
 
@@ -115,6 +116,51 @@ theorem aggregateStoreValue_eqv (service : AggregateMemory.Service)
     (strict : Bool) (align : Option Nat) (model : ByteModel) :
     Equivariant (AggregateMemory.storeValue service order ty pointer value strict align model) := by
   unfold AggregateMemory.storeValue
+  repeat' (first
+    | with_reducible exact memoryExcept_eqv _
+    | with_reducible exact reject_eqv _ _
+    | with_reducible exact pointer_eqv _ _
+    | with_reducible exact access_eqv _ _ _ _ _ _
+    | with_reducible exact pure_eqv _
+    | exact throw_eqv _
+    | exact throw_bind_eqv _ _
+    | exact modifyMemory_eqv _
+    | exact (by intro state locals nextValueId; rfl)
+    | with_reducible refine bind_eqv _ _ ?_ (fun _ => ?_)
+    | dsimp only
+    | split)
+
+/-- The source-bound closure load observes only memory. Original source/target
+refusals and uninitialized-byte failures remain exact under SSA replacement. -/
+theorem originalClosureLoadValue_eqv (service : OriginalClosureMemory.Service)
+    (order : FunctionAddressOrder) (closure : ClosureTyId) (pointer : Value)
+    (strict : Bool) (align : Option Nat) (model : ByteModel) :
+    Equivariant (OriginalClosureMemory.loadValue service order closure pointer strict align model) := by
+  unfold OriginalClosureMemory.loadValue
+  refine bind_eqv _ _ (memoryExcept_eqv _) ?_; intro binding
+  refine bind_eqv _ _ (memoryExcept_eqv _) ?_; intro layout
+  refine bind_eqv _ _ (memoryExcept_eqv _) ?_; intro fields
+  refine bind_eqv _ _ (memoryExcept_eqv _) ?_; intro alignment
+  refine bind_eqv _ _ (reject_eqv pointer "Load") ?_; intro _
+  refine bind_eqv _ _ (pointer_eqv pointer "Load") ?_; intro pair
+  rcases pair with ⟨address, allocation⟩
+  refine bind_eqv _ _ (access_eqv model "Load" address allocation layout.size alignment) ?_; intro address
+  refine readStateMemory_eqv _ (fun state => rfl) ?_; intro memory
+  dsimp only
+  refine bind_eqv _ _ (memoryExcept_eqv _) ?_; intro missing
+  split
+  · exact throw_bind_eqv _ _
+  · refine bind_eqv _ _ (pure_eqv _) ?_; intro _
+    refine bind_eqv _ _ (memoryExcept_eqv _) ?_; intro captures
+    exact pure_eqv _
+
+/-- A checked original closure store changes only canonical memory and its
+unwritten records; it cannot inspect or replace the caller's SSA frame. -/
+theorem originalClosureStoreValue_eqv (service : OriginalClosureMemory.Service)
+    (order : FunctionAddressOrder) (closure : ClosureTyId) (pointer value : Value)
+    (strict : Bool) (align : Option Nat) (model : ByteModel) :
+    Equivariant (OriginalClosureMemory.storeValue service order closure pointer value strict align model) := by
+  unfold OriginalClosureMemory.storeValue
   repeat' (first
     | with_reducible exact memoryExcept_eqv _
     | with_reducible exact reject_eqv _ _

@@ -814,6 +814,14 @@ const MAGIC: &[u8; 8] = &crate::codec::TRUST_IR_BINARY_MAGIC;
 // module keeps its bytes and its digests; `RawV38` / `CanonicalV38` refuse
 // (`BoxDerefRequiresV74`), which heads the highest-wins chain. No digest
 // domain moves.
+// v75 (a Box deref the producer holds no fact for, ADDITIVE; §28 amendment
+// "A deref with no producer fact"). ValidityEvidence tag 3 `Unestablished`
+// has no payload. Read-gated `version >= 75`: an older header carrying it is
+// refused with `InvalidTag(3)`
+// (`refuse/blob_box_deref_unestablished_below_its_version`). The writer
+// selects 75 only for a module with such an entry, so every v74 module keeps
+// its bytes and its digests; the v38 projections already refuse every
+// `BoxDeref` (`BoxDerefRequiresV74`). No digest domain moves.
 /// Latest format version supported by this build. Writers select v38 for
 /// legacy modules, v39 only when a nominal dialect type occurs, v40 only when a
 /// `FatPtrKind::ContainerVtable` occurs, and v41 only when a contract-surface
@@ -869,12 +877,14 @@ const MAGIC: &[u8; 8] = &crate::codec::TRUST_IR_BINARY_MAGIC;
 /// respectively, each carrying the exact nominal `FuncId` as VInt32.
 /// Existing function pointer tags and every earlier main image stay unchanged.
 ///
-/// An `Inst::BoxDeref` selects v74 (`BOX_DEREF_VALIDITY_FORMAT_VERSION`).
+/// An `Inst::BoxDeref` selects v74 (`BOX_DEREF_VALIDITY_FORMAT_VERSION`), and
+/// one whose fact holds an `Unestablished` entry v75
+/// (`BOX_DEREF_UNESTABLISHED_FORMAT_VERSION`).
 ///
 /// `VERSION` may only equal the highest `shipped` row of
 /// `crates/trust-ir/wire_versions.tsv`; raising it without flipping that
 /// reserved row to `shipped` fails the `wire_version_ledger` test.
-pub const VERSION: u32 = 74;
+pub const VERSION: u32 = 75;
 /// Latest supported TrustIR binary wire-format version.
 pub const FORMAT_VERSION: u32 = VERSION;
 /// Baseline encoding retained for modules without v39 nominal dialect types
@@ -1135,6 +1145,12 @@ mod tensor_region_tests;
 /// 77). Raised PER MODULE by the instruction string collector, so a module
 /// without the instruction keeps the version it wrote before, byte for byte.
 pub const BOX_DEREF_VALIDITY_FORMAT_VERSION: u32 = 74;
+
+/// A Box deref whose fact holds an [`ValidityEvidence::Unestablished`] entry
+/// (ValidityEvidence tag 3): the producer offers no evidence for that
+/// conjunct. Raised PER MODULE like v74, so a module whose every fact offers
+/// evidence keeps the v74 bytes it wrote before.
+pub const BOX_DEREF_UNESTABLISHED_FORMAT_VERSION: u32 = 75;
 
 #[cfg(test)]
 #[path = "binary/param_pointee_place_tests.rs"]
@@ -3333,6 +3349,15 @@ fn collect_inst_strings<X: WireExt>(inst: &InstG<X>, pool: &mut StringPoolBuilde
     if matches!(inst, InstG::BoxDeref { .. }) {
         pool.raise_to(BOX_DEREF_VALIDITY_FORMAT_VERSION);
     }
+    // v75: ValidityEvidence tag 3 is read-gated likewise.
+    if let InstG::BoxDeref { fact, .. } = inst
+        && fact
+            .evidence
+            .iter()
+            .any(|entry| entry.evidence == ValidityEvidence::Unestablished)
+    {
+        pool.raise_to(BOX_DEREF_UNESTABLISHED_FORMAT_VERSION);
+    }
     if matches!(
         inst,
         InstG::CallCannotUnwind { .. } | InstG::CallIndirectCannotUnwind { .. }
@@ -4881,6 +4906,8 @@ fn write_validity_evidence(buf: &mut impl BinarySink, evidence: &ValidityEvidenc
             write_u8(buf, 2);
             write_proof_id(buf, *obligation);
         }
+        // v75: the absence of evidence has no payload.
+        ValidityEvidence::Unestablished => write_u8(buf, 3),
     }
 }
 
@@ -4902,6 +4929,11 @@ fn read_validity_evidence(r: &mut Reader<'_>) -> Result<ValidityEvidence, Binary
         2 => Ok(ValidityEvidence::Obligation {
             obligation: r.read_proof_id()?,
         }),
+        // Read-gated: a header below v75 allocates no tag 3 here
+        // (`refuse/blob_box_deref_unestablished_below_its_version`).
+        3 if r.version >= BOX_DEREF_UNESTABLISHED_FORMAT_VERSION => {
+            Ok(ValidityEvidence::Unestablished)
+        }
         _ => Err(BinaryError::InvalidTag(tag)),
     }
 }
@@ -19992,6 +20024,10 @@ mod wire_version_ledger {
                     BOX_DEREF_VALIDITY_FORMAT_VERSION,
                 ),
                 (
+                    "BOX_DEREF_UNESTABLISHED_FORMAT_VERSION",
+                    BOX_DEREF_UNESTABLISHED_FORMAT_VERSION,
+                ),
+                (
                     "UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION",
                     UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION,
                 ),
@@ -20626,6 +20662,7 @@ mod wire_version_ledger {
             "TENSOR_GATHER_SCATTER_FORMAT_VERSION",
             "TENSOR_BLOB_FORMAT_VERSION",
             "BOX_DEREF_VALIDITY_FORMAT_VERSION",
+            "BOX_DEREF_UNESTABLISHED_FORMAT_VERSION",
             "UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION",
             "FN_ITEM_IDENTITY_FORMAT_VERSION",
             "PROJECTED_MODULE_BINARY_VERSION",

@@ -130,9 +130,11 @@ impl FetchedSite {
         operands: [Expr; 2],
         premises: OverflowPremises,
     ) -> Result<(PendingEquality, [Expr; 2])> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         assembler.items(2)?;
-        require_same(&self.context, &model.context, "overflow fetched context")?;
+        require_same(&self.context, model.context(), "overflow fetched context")?;
         let OverflowShape {
             op,
             ty,
@@ -199,8 +201,8 @@ impl FetchedSite {
         let bound = app(
             "ir_byte_bind_values_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 self.results.clone(),
@@ -219,9 +221,9 @@ impl FetchedSite {
                 "ir_byte_step_overflow_uint_v1"
             },
             [
-                model.world_type.clone(),
-                model.context.clone(),
-                model.providers.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
+                model.providers().clone(),
                 current.frame.clone(),
                 current.tail.clone(),
                 current.legacy_memory.clone(),

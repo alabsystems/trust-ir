@@ -10,18 +10,26 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import subprocess
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    if __package__:
+        from ._vendor import tomli as tomllib
+    else:
+        from _vendor import tomli as tomllib
 
 if __package__:
+    from .check_lean_runtime_boundary import code_only, comments_removed
     from .gate_select import lean_imports, lex_rust3
-    from .lean_proofs import strip_lean_comments
+    from .rust_string_literals import decode_rust_string, literal_include_positions
 else:
+    from check_lean_runtime_boundary import code_only, comments_removed
     from gate_select import lean_imports, lex_rust3
-    from lean_proofs import strip_lean_comments
+    from rust_string_literals import decode_rust_string, literal_include_positions
 
 PACKAGES = ("lean/semr", "lean/semr-memory", "lean/trust_ir-semantics")
 CORE = {"Init", "Lean", "Std", "Lake"}
@@ -31,7 +39,7 @@ def files(root):
     result = set()
     for directory, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = [d for d in dirs if d not in {".git", ".lake", "target", "__pycache__"}]
-        for name in names:
+        for name in names + [d for d in dirs if (Path(directory) / d).is_symlink()]:
             result.add((Path(directory) / name).relative_to(root).as_posix())
     return result
 
@@ -55,20 +63,100 @@ def manifest_selection(root, manifest):
 def check(root, selected):
     root = root.resolve()
     problems, edges = [], []
+    directories = {"."}
+    for path in selected:
+        directories.update(parent.as_posix() for parent in PurePosixPath(path).parents)
 
-    def read(path):
+    def projected_lookup(parts, current=(), active=frozenset(), *, directory=False):
+        # Walk spellings rather than normalizing away prerequisites. A file-only
+        # projection creates parents of selected entries and retains selected links.
+        for index, part in enumerate(parts):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if not current:
+                    problems.append("escaping source path in projection: " + "/".join(parts))
+                    return None
+                current = current[:-1]
+                continue
+            candidate = "/".join(current + (part,))
+            node = root / candidate
+            needs_directory = directory or index + 1 < len(parts)
+            if node.is_symlink():
+                if candidate not in selected:
+                    problems.append("missing source symlink in projection: " + candidate)
+                    return None
+                target = os.readlink(node)
+                if posixpath.isabs(target):
+                    problems.append("nonportable source symlink in projection: " + candidate)
+                    return None
+                if candidate in active:
+                    problems.append("cyclic source symlink in projection: " + candidate)
+                    return None
+                current = projected_lookup(target.split("/"), current, active | {candidate},
+                                           directory=needs_directory)
+                if current is None:
+                    return None
+            else:
+                if needs_directory:
+                    if candidate not in directories or not node.is_dir():
+                        problems.append("missing source directory in projection: " + candidate)
+                        return None
+                elif candidate not in selected or not node.is_file():
+                    problems.append("missing source input in projection: " + candidate)
+                    return None
+                current += (part,)
+        final = "/".join(current) or "."
+        if directory:
+            if final not in directories or not (root / final).is_dir():
+                problems.append("missing source directory in projection: " + final)
+                return None
+        elif final not in selected or not (root / final).is_file():
+            problems.append("missing source input in projection: " + final)
+            return None
+        return current
+
+    def read(path, *, spelling=None):
         file = root / path
         if path not in selected or not file.is_file():
             problems.append("missing source input: " + path)
             return None
-        if not file.resolve().is_relative_to(root):
+        resolved = file.resolve()
+        if not resolved.is_relative_to(root):
             problems.append("escaping source input: " + path)
+            return None
+        if spelling is not None:
+            original = root / spelling
+            if not original.is_file():
+                problems.append("missing source input: " + spelling)
+                return None
+            original_resolved = original.resolve()
+            if not original_resolved.is_relative_to(root):
+                problems.append("escaping source input: " + spelling)
+                return None
+            if original_resolved != resolved:
+                problems.append("source path normalization changes resolution: " + spelling)
+                return None
+        if projected_lookup((spelling if spelling is not None else path).split("/")) is None:
             return None
         return file.read_bytes()
 
+    def read_json_object(path, label):
+        data = read(path)
+        if data is None:
+            return None
+        try:
+            document = json.loads(data)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            problems.append(f"invalid {label} JSON: {path}: {error}")
+            return None
+        if not isinstance(document, dict):
+            problems.append(f"invalid {label} JSON: {path}: expected an object")
+            return None
+        return document
+
     for package in PACKAGES:
-        for metadata in ("lean-toolchain", "lake-manifest.json"):
-            read(package + "/" + metadata)
+        read(package + "/lean-toolchain")
         if not any(package + "/" + name in selected for name in ("lakefile.lean", "lakefile.toml")):
             problems.append("missing package configuration: " + package)
         config = package + "/lakefile.toml"
@@ -85,14 +173,38 @@ def check(root, selected):
         if config in selected:
             data = read(config)
             if data:
-                text = strip_lean_comments(data.decode())
-                targets = list(re.finditer(r"(?m)^lean_(?:lib|exe)\s+([A-Za-z_]\w*)\s+where\b", text))
+                text = comments_removed(data.decode())
+                commands = code_only(text)
+                # The shared lexer validates escaped identifiers but preserves
+                # their contents; those contents cannot declare targets/fields.
+                commands = re.sub(r"«[^»]*»", lambda m: re.sub(r"[^\n]", " ", m[0]), commands)
+                targets = list(re.finditer(r"(?m)^[ \t]*lean_(?:lib|exe)\b", commands))
                 for index, target in enumerate(targets):
-                    block = text[target.end():targets[index + 1].start() if index + 1 < len(targets) else len(text)]
+                    end = targets[index + 1].start() if index + 1 < len(targets) else len(text)
+                    name = re.match(r"\s+([A-Za-z_]\w*)\b", commands[target.end():end])
+                    if name is None or name[1] == "where":
+                        problems.append("unsupported Lean target declaration: " + config)
+                        continue
+                    start = target.end() + name.end()
+                    where = re.match(r"\s+where\b", commands[start:end])
+                    if where:
+                        start += where.end()
+                        block = commands[start:end]
+                    elif re.match(r"[ \t\r]*(?:\n|$)", commands[start:end]):
+                        # A bare target has defaults, never a later command's fields.
+                        block = ""
+                    else:
+                        problems.append("unsupported Lean target configuration: " + config + " -> " + name[1])
+                        continue
                     roots = re.search(r"\broots\s*:=\s*#\[([^]]*)\]", block)
                     single = re.search(r"\broot\s*:=\s*`([\w.]+)", block)
-                    modules = re.findall(r"`([\w.]+)", roots[1]) if roots else [single[1] if single else target[1]]
-                    directory = re.search(r'\bsrcDir\s*:=\s*"([^"]*)"', block)
+                    modules = re.findall(r"`([\w.]+)", roots[1]) if roots else [single[1] if single else name[1]]
+                    directory_key = re.search(r"\bsrcDir\s*:=", block)
+                    directory = (re.match(r'\s*"([^"\\]*)"', text[start + directory_key.end():end])
+                                 if directory_key else None)
+                    if directory_key and directory is None:
+                        problems.append("unsupported Lean source directory: " + config + " -> " + name[1])
+                        continue
                     for module in modules:
                         path = posixpath.normpath(package + "/" + (directory[1] if directory else ".") + "/" + module.replace(".", "/") + ".lean")
                         edges.append((config, path)); read(path)
@@ -102,18 +214,37 @@ def check(root, selected):
         read(required)
 
     for package in PACKAGES:
-        manifest = read(package + "/lake-manifest.json")
-        if manifest:
-            for dependency in json.loads(manifest).get("packages", []):
-                if dependency.get("type") != "path":
-                    problems.append("unexpected nonlocal Lean dependency: " + package)
-                    continue
-                destination = posixpath.normpath(package + "/" + dependency["dir"])
-                if destination.startswith("../") or destination.startswith("/"):
-                    problems.append("escaping Lean dependency: " + destination)
-                else:
-                    target = destination + "/" + dependency["configFile"]
-                    edges.append((package + "/lake-manifest.json", target)); read(target)
+        manifest_path = package + "/lake-manifest.json"
+        manifest = read_json_object(manifest_path, "Lean dependency manifest")
+        if manifest is not None:
+            dependencies = manifest.get("packages", [])
+            if not isinstance(dependencies, list):
+                problems.append("invalid Lean dependency array: " + manifest_path)
+            else:
+                for dependency in dependencies:
+                    if not isinstance(dependency, dict):
+                        problems.append("invalid Lean dependency record: " + manifest_path)
+                        continue
+                    if dependency.get("type") != "path":
+                        problems.append("unexpected nonlocal Lean dependency: " + package)
+                        continue
+                    if not all(isinstance(dependency.get(key), str) for key in ("dir", "configFile")):
+                        problems.append("invalid local Lean dependency paths: " + manifest_path)
+                        continue
+                    original_directory = posixpath.join(package, dependency["dir"])
+                    destination = posixpath.normpath(original_directory)
+                    config_file = dependency["configFile"]
+                    if destination == ".." or destination.startswith(("../", "/")):
+                        problems.append("escaping Lean dependency: " + destination)
+                    elif posixpath.isabs(config_file):
+                        problems.append("escaping Lean dependency: " + config_file)
+                    else:
+                        original_target = posixpath.join(original_directory, config_file)
+                        target = posixpath.normpath(posixpath.join(destination, config_file))
+                        if target == ".." or target.startswith(("../", "/")):
+                            problems.append("escaping Lean dependency: " + target)
+                        else:
+                            edges.append((manifest_path, target)); read(target, spelling=original_target)
         for path in sorted(p for p in selected if p.startswith(package + "/") and p.endswith(".lean")):
             data = read(path)
             if data is None:
@@ -128,64 +259,85 @@ def check(root, selected):
                 else:
                     edges.append((path, found)); read(found)
 
-    # The lexer removes comments and replaces every normal/raw literal by "".
-    # Match only actual literal include calls, never examples inside a string.
-    include = re.compile(r'\binclude(?:_str|_bytes)?\s*!\s*\(\s*(?P<literal>"")\s*,?\s*\)')
+    # The lexer removes comments and replaces each string literal with "".
     for path in sorted(p for p in selected if p.endswith(".rs")):
         data = read(path)
         if data is None:
             continue
-        literals, code, _ = lex_rust3(data.decode())
+        raw_literals = []
+        literals, code, _ = lex_rust3(data.decode(), raw_literals=raw_literals)
         positions = list(re.finditer('""', code))
-        if len(literals) != len(positions):
+        if len(literals) != len(positions) or len(raw_literals) != len(literals):
             problems.append("Rust literal inventory mismatch: " + path); continue
-        values = {m.start(): value for m, value in zip(positions, literals)}
-        for match in include.finditer(code):
-            value = values[match.start("literal")]
+        values = {m.start(): (value, raw) for m, value, raw in zip(positions, literals, raw_literals)}
+        for position in literal_include_positions(code):
+            value, raw = values[position]
+            if not raw:
+                try:
+                    value = decode_rust_string(value)
+                except ValueError as error:
+                    problems.append(f"invalid Rust literal include: {path}: {error}")
+                    continue
             destination = posixpath.normpath(posixpath.dirname(path) + "/" + value)
             if destination.startswith(("lean/semr/", "lean/semr-memory/")):
                 edges.append((path, destination)); read(destination)
 
     for manifest in sorted(p for p in selected if p.startswith("lean/semr/fixtures/") and p.endswith("/MANIFEST.json")):
-        data = read(manifest)
-        if data is None:
+        table = read_json_object(manifest, "SemR fixture manifest")
+        if table is None:
             continue
-        table = json.loads(data)
-        if table.get("schema") != "trust.generic-scalar-model-fixtures.v1" or not table.get("fixtures"):
+        fixtures = table.get("fixtures")
+        if (table.get("schema") != "trust.generic-scalar-model-fixtures.v1" or
+                not isinstance(fixtures, list) or not fixtures):
             problems.append("unsupported or empty SemR fixture manifest: " + manifest)
             continue
-        for row in table["fixtures"]:
-            path = posixpath.normpath("lean/semr/fixtures/" + row["file"])
+        for row in fixtures:
+            if (not isinstance(row, dict) or not isinstance(row.get("file"), str) or
+                    not row["file"] or type(row.get("bytes")) is not int or row["bytes"] < 0 or
+                    not isinstance(row.get("sha256"), str) or
+                    re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None):
+                problems.append("invalid SemR fixture record: " + manifest)
+                continue
+            original_path = posixpath.join("lean/semr/fixtures", row["file"])
+            path = posixpath.normpath(original_path)
             if not path.startswith("lean/semr/fixtures/"):
                 problems.append("escaping SemR fixture: " + path); continue
             edges.append((manifest, path))
-            payload = read(path)
+            payload = read(path, spelling=original_path)
             if payload is not None and (len(payload) != row["bytes"] or hashlib.sha256(payload).hexdigest() != row["sha256"]):
                 problems.append("SemR fixture bytes changed: " + path)
 
-    provenance = read("LICENSES/MiniRust.json")
+    record = read_json_object("LICENSES/MiniRust.json", "MiniRust provenance")
     read("THIRD_PARTY.md"); read("NOTICE")
-    if provenance:
-        record = json.loads(provenance)
-        if record.get("schema") != 1:
-            problems.append("invalid MiniRust provenance schema")
-        if record["translation"] != "lean/semr/MiniRust.lean":
-            problems.append("unexpected MiniRust translation path")
-        translated = read(record["translation"])
-        if translated and hashlib.sha256(translated).hexdigest() != record["translation_sha256"]:
-            problems.append("MiniRust translation identity changed")
-        revision = record.get("revision", "")
-        if not re.fullmatch(r"[0-9a-f]{40}", revision) or (translated and
-                ("from MiniRust " + revision).encode() not in translated):
-            problems.append("MiniRust revision marker disagrees with provenance")
-        if set(record["license_files"]) != {"LICENSES/MiniRust-MIT.txt", "LICENSES/MiniRust-APACHE.txt"}:
-            problems.append("both upstream MiniRust license texts are required")
-        for path, expected in record["license_files"].items():
-            data = read(path)
-            if data is not None:
-                blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-                if hashlib.sha256(data).hexdigest() != expected["sha256"] or blob != expected["git_blob_sha1"]:
-                    problems.append("upstream license bytes changed: " + path)
+    if record is not None:
+        licenses = record.get("license_files")
+        if (type(record.get("schema")) is not int or
+                not all(isinstance(record.get(key), str) for key in ("translation", "translation_sha256")) or
+                not isinstance(record.get("revision", ""), str) or not isinstance(licenses, dict) or
+                not all(isinstance(expected, dict) and
+                        all(isinstance(expected.get(key), str) for key in ("sha256", "git_blob_sha1"))
+                        for expected in licenses.values())):
+            problems.append("invalid MiniRust provenance fields: LICENSES/MiniRust.json")
+        else:
+            if record.get("schema") != 1:
+                problems.append("invalid MiniRust provenance schema")
+            if record["translation"] != "lean/semr/MiniRust.lean":
+                problems.append("unexpected MiniRust translation path")
+            translated = read(record["translation"])
+            if translated is not None and hashlib.sha256(translated).hexdigest() != record["translation_sha256"]:
+                problems.append("MiniRust translation identity changed")
+            revision = record.get("revision", "")
+            if not re.fullmatch(r"[0-9a-f]{40}", revision) or (translated is not None and
+                    ("from MiniRust " + revision).encode() not in translated):
+                problems.append("MiniRust revision marker disagrees with provenance")
+            if set(record["license_files"]) != {"LICENSES/MiniRust-MIT.txt", "LICENSES/MiniRust-APACHE.txt"}:
+                problems.append("both upstream MiniRust license texts are required")
+            for path, expected in record["license_files"].items():
+                data = read(path)
+                if data is not None:
+                    blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                    if hashlib.sha256(data).hexdigest() != expected["sha256"] or blob != expected["git_blob_sha1"]:
+                        problems.append("upstream license bytes changed: " + path)
     return {"scope": "SemR source/import/literal-include and notice closure only",
             "edges": [list(edge) for edge in sorted(set(edges))], "problems": sorted(set(problems))}
 

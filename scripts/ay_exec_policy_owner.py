@@ -18,7 +18,7 @@ VERSION = "0.13.0"
 # independently versioned owner. Accepting the owner only at this version makes
 # an AY pin move re-review it. Publication transform T6 moves it with the public
 # AY pin, after the public AY's own manifests show the same owner.
-OWNER_AY_VERSION = "0.28.2"
+OWNER_AY_VERSION = "0.28.4"
 
 
 class OwnerError(ValueError):

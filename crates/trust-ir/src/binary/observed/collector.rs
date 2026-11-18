@@ -157,6 +157,14 @@ pub(super) fn observed_collect_inst_strings<O: ExecutionObserver>(
     if matches!(inst, InstG::BoxDeref { .. }) {
         pool.raise_to(BOX_DEREF_VALIDITY_FORMAT_VERSION);
     }
+    if let InstG::BoxDeref { fact, .. } = inst
+        && fact
+            .evidence
+            .iter()
+            .any(|entry| entry.evidence == crate::box_validity::ValidityEvidence::Unestablished)
+    {
+        pool.raise_to(BOX_DEREF_UNESTABLISHED_FORMAT_VERSION);
+    }
 
     if matches!(
         inst,

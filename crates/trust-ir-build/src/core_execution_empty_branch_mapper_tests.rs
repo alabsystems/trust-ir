@@ -355,13 +355,13 @@ fn parameterized_and_opaque_targets_keep_the_binder_transport() {
             .unwrap();
         let opaque_block = scope.try_local(constant("IRBlock")).unwrap();
         let parameters = [values_left, values_right, equality, locals, opaque_block];
-        let model = MachineModel {
-            world_type: constant("Nat"),
-            context: constant("branch_mapper_unused_context"),
-            providers: constant("branch_mapper_unused_providers"),
-        };
+        let model = MachineModel::from_terms(
+            constant("Nat"),
+            constant("branch_mapper_unused_context"),
+            constant("branch_mapper_unused_providers"),
+        );
         let target = BranchTarget {
-            context: model.context.clone(),
+            context: model.context().clone(),
             function: FuncId(41),
             block_id: BlockId(53),
             block: if opaque {

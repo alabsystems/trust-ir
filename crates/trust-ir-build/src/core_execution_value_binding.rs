@@ -77,7 +77,7 @@ pub(super) fn result_guard(site: &FetchedSite, model: &MachineModel, values: Exp
             app(
                 "ir_byte_values_match_v1",
                 [
-                    model.context.clone(),
+                    model.context().clone(),
                     app("ir_byte_site_results_v1", [site.site.clone()]),
                     values,
                 ],
@@ -91,7 +91,7 @@ impl FetchedSite {
     pub fn value_binding_check(&self, model: &MachineModel, values: &[Expr]) -> Result<Expr> {
         require_same(
             &self.context,
-            &model.context,
+            model.context(),
             "value binding fetched context",
         )?;
         Ok(result_guard(self, model, list("IRScalar", values)))
@@ -110,11 +110,13 @@ impl FetchedSite {
         values: &[Expr],
         premises: ValueBindingPremises,
     ) -> Result<ValueBinding> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         assembler.items(values.len())?;
         require_same(
             &self.context,
-            &model.context,
+            model.context(),
             "value binding fetched context",
         )?;
         let values = list("IRScalar", values);
@@ -135,13 +137,13 @@ impl FetchedSite {
                     [current.frame.clone(), self.results.clone(), values.clone()],
                 )],
             ),
-            ..current.clone()
+            ..Current::clone(current)
         };
         let bound = app(
             "ir_byte_bind_values_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 current.world.clone(),
                 self.results.clone(),
@@ -153,7 +155,7 @@ impl FetchedSite {
         let bad_field = app(
             "IRByteConfigV1.halted",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 app("IROutcome.type_error", [constant("IRFault.bad_field")]),
                 current.world.clone(),
             ],

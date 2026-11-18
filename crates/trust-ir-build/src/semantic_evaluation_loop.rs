@@ -4,6 +4,13 @@
 //! No source membership, provider totality, termination or native authority.
 use super::*;
 
+#[path = "semantic_evaluation_loop_drive.rs"]
+mod drive;
+pub use drive::{
+    LOOP_DRIVE_COMPLETE, LOOP_DRIVE_HALT, LOOP_DRIVE_HALTED, LOOP_DRIVE_PREFIX,
+    LOOP_DRIVE_PREFIX_SUM, LOOP_DRIVE_STEP, install_loop_drive_into,
+};
+
 #[path = "semantic_evaluation_loop_cps.rs"]
 mod cps_prefix;
 pub use cps_prefix::{
@@ -38,7 +45,10 @@ mod mapping;
 pub use mapping::{LOOP_MAP_COMPLETE, LOOP_MAP_PREFIX, LOOP_MAP_PULSE, install_loop_map_into};
 #[path = "semantic_evaluation_cut_run.rs"]
 mod cut_run;
-pub use cut_run::{IMAGE_TO_PULSE, RUN_TO_PULSE, RUN_TO_PULSE_CPS, install_cut_run_into};
+pub use cut_run::{
+    IMAGE_TO_PULSE, IMAGE_TO_PULSE_OBSERVATION, RUN_TO_PULSE, RUN_TO_PULSE_CPS,
+    install_cut_observation_into, install_cut_run_into,
+};
 #[path = "semantic_evaluation_loop_rank.rs"]
 mod ranking;
 pub use ranking::{LOOP_RANK_COMPLETE, install_ranked_loop_into};

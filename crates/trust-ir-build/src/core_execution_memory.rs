@@ -89,7 +89,7 @@ impl MemoryTransfer {
 fn projection(model: &MachineModel, world: &Expr, field: &str) -> Expr {
     app(
         &format!("ir_byte_world_{field}_v1"),
-        [model.world_type.clone(), world.clone()],
+        [model.world_type().clone(), world.clone()],
     )
 }
 
@@ -153,6 +153,8 @@ fn returned_memory_owners(
     same_allocations: PendingEquality,
     before: &PendingEquality,
 ) -> Result<PendingEquality> {
+    let shared_current = current.shared_machine();
+    let current = &shared_current;
     let owners = projection(model, &current.world, "owners");
     let next = projection(model, &current.world, "next");
     let old_memory = projection(model, &current.world, "memory");
@@ -210,7 +212,9 @@ fn returned_memory_owners(
 
 impl FetchedSite {
     fn memory_operation(&self, model: &MachineModel, current: &Current) -> Result<(Expr, bool)> {
-        require_same(&self.context, &model.context, "memory fetched context")?;
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
+        require_same(&self.context, model.context(), "memory fetched context")?;
         let fields = self.instruction.get_app_args();
         let ExprKind::Const(name, _) = self.instruction.get_app_fn().kind() else {
             return Err("memory assembler requires an actual instruction constructor".into());
@@ -223,7 +227,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_load_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         (*ty).clone(),
                         read(pointer),
                         align,
@@ -237,7 +241,7 @@ impl FetchedSite {
                 app(
                     "ir_byte_store_v1",
                     [
-                        model.context.clone(),
+                        model.context().clone(),
                         (*ty).clone(),
                         read(pointer),
                         read(value),
@@ -256,7 +260,7 @@ impl FetchedSite {
                     app(
                         "ir_byte_gep_site_v1",
                         [
-                            model.context.clone(),
+                            model.context().clone(),
                             self.site.clone(),
                             (*ty).clone(),
                             current.machine(),
@@ -271,7 +275,7 @@ impl FetchedSite {
                     app(
                         "ir_byte_gep_v1",
                         [
-                            model.context.clone(),
+                            model.context().clone(),
                             (*ty).clone(),
                             read(base),
                             app("ir_resolve", [current.machine(), (*indices).clone()]),
@@ -285,7 +289,7 @@ impl FetchedSite {
             ("IRInst.atomic_fetch_add_relaxed_u64_seq", [pointer, value]) => Ok((
                 app(
                     "ir_byte_fetch_add_relaxed_u64_seq_v1",
-                    [model.context.clone(), read(pointer), read(value), memory],
+                    [model.context().clone(), read(pointer), read(value), memory],
                 ),
                 // RMW writes memory but also binds the OLD value. The bool
                 // selects result binding, not whether the operation can write.
@@ -296,7 +300,7 @@ impl FetchedSite {
                     "ir_byte_fetch_add_relaxed_usize_seq_v1",
                     [
                         (*bits).clone(),
-                        model.context.clone(),
+                        model.context().clone(),
                         read(pointer),
                         read(value),
                         memory,
@@ -336,10 +340,12 @@ impl FetchedSite {
         decoded: PendingEquality,
         evaluated: PendingEquality,
     ) -> Result<PendingEquality> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         require_same(
             &self.context,
-            &model.context,
+            model.context(),
             "typed integer GEP fetched context",
         )?;
         let site = exact_constructor_fields::<7>(&self.site, "IRByteSiteV1.mki")
@@ -367,7 +373,7 @@ impl FetchedSite {
         let typed = app(
             "ir_byte_gep_typed_v1",
             [
-                model.context.clone(),
+                model.context().clone(),
                 pointee.clone(),
                 app("ir_getd", [current.machine(), base.clone()]),
                 selected,
@@ -380,7 +386,7 @@ impl FetchedSite {
         // Feed the exact telescope directly to Expr::apps. A temporary growing
         // Vec would allocate and copy this fixed argument list on each call;
         // the chained iterator retains order without that buffer.
-        let arguments = std::iter::once(model.context.clone())
+        let arguments = std::iter::once(model.context().clone())
             .chain(site.iter().map(|field| (**field).clone()))
             .chain([
                 pointee.clone(),
@@ -428,7 +434,7 @@ impl FetchedSite {
                     app(
                         "ir_byte_values_match_v1",
                         [
-                            model.context.clone(),
+                            model.context().clone(),
                             app("ir_byte_site_results_v1", [self.site.clone()]),
                             values,
                         ],
@@ -451,6 +457,8 @@ impl FetchedSite {
         result: MemoryResult,
         premises: MemoryPremises,
     ) -> Result<MemoryTransfer> {
+        let shared_current = current.shared_machine();
+        let current = &shared_current;
         assembler.charge()?;
         let checks = self.memory_checks(model, current, &result)?;
         premises.evaluated.endpoints(
@@ -480,7 +488,7 @@ impl FetchedSite {
         let world = app(
             "ir_byte_with_memory_v1",
             [
-                model.world_type.clone(),
+                model.world_type().clone(),
                 current.world.clone(),
                 result.memory.clone(),
             ],
@@ -495,13 +503,13 @@ impl FetchedSite {
         let mut after = Current {
             frame: updated,
             world: world.clone(),
-            ..current.clone()
+            ..Current::clone(current)
         };
         let bound = app(
             "ir_byte_bind_values_v1",
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 current.machine(),
                 world.clone(),
                 self.results.clone(),
@@ -518,8 +526,8 @@ impl FetchedSite {
             app(
                 "ir_byte_memory_result_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.machine(),
                     current.world.clone(),
                     self.results.clone(),
@@ -542,7 +550,7 @@ impl FetchedSite {
                     app(
                         "IRByteConfigV1.halted",
                         [
-                            model.world_type.clone(),
+                            model.world_type().clone(),
                             app("IROutcome.type_error", [constant("IRFault.bad_field")]),
                             world,
                         ],
@@ -565,7 +573,7 @@ impl FetchedSite {
             model.config_type(),
             app(
                 "IRByteConfigV1.running",
-                [model.world_type.clone(), after.machine()],
+                [model.world_type().clone(), after.machine()],
             ),
         )?;
         let step = assembler.compose(step, changed)?;
@@ -585,7 +593,7 @@ impl FetchedSite {
             app(
                 "ir_byte_import_world_shape_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     current.world.clone(),
                     current.frame.clone(),
                     after.frame.clone(),

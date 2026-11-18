@@ -230,6 +230,12 @@ mutual
   termination_by sizeOf variants
 end
 
+/-- Reuse the canonical capture-field image operation. Callers must supply
+actual child plans and source offsets; this adds no aggregate Plan or target. -/
+def encodeCaptureImage (model : ByteModel) (order : FunctionAddressOrder)
+    (size : Nat) (fields : List (Nat × Plan)) (values : List Value) : Except SemError Image :=
+  encodeFields model order fields values false { bytes := ByteImage.fill size none }
+
 private theorem overwrite_errors (error : SemError → Prop)
     (typeErrors : ∀ message, error (.typeError message)) (image bytes : ByteImage) (offset : Nat) :
     ByteImage.BlockResult (fun _ => True) error (overwrite image offset bytes) := by
@@ -887,6 +893,14 @@ theorem ArrayImageEncoded.uniform_image (callback : Value → Except SemError By
 def ImageOverwrite (before : ByteImage) (offset : Nat) (bytes after : ByteImage) : Prop :=
   overwrite before offset bytes = .ok after
 
+/-- A field that fits has an actual overwrite result, including empty lanes. -/
+theorem ImageOverwrite.exists_of_fits (before : ByteImage) (offset : Nat) (bytes : ByteImage)
+    (fits : offset + bytes.size ≤ before.size) :
+    ∃ after, ImageOverwrite before offset bytes after := by
+  unfold ImageOverwrite overwrite
+  rw [if_pos fits]
+  exact ⟨_,rfl⟩
+
 private theorem overwrite_spec (before : ByteImage) (offset : Nat) (bytes after : ByteImage)
     (run : ImageOverwrite before offset bytes after) :
     after.size = before.size ∧ ByteLane after offset bytes ∧
@@ -1459,6 +1473,72 @@ theorem encode_extent (model : ByteModel) (order : FunctionAddressOrder) (plan :
       | cons tag payload =>
         exact encode_enumeration_extent model order ty layout info variants tag payload allowUnwritten image original
 
+/-- A completed actual field transition is the aggregate encoder result. -/
+theorem encode_fields_of_components (model : ByteModel) (order : FunctionAddressOrder)
+    (ty : Ty) (layout : MemoryTypeLayout) (fields : List (Nat × Plan)) (values : List Value)
+    (allowUnwritten : Bool) (image : Image)
+    (run : FieldsEncoded model order fields values allowUnwritten
+      { bytes := ByteImage.fill layout.size none } image) :
+    encode model order (.fields ty layout fields) (.aggregate values) allowUnwritten = .ok image := by
+  trustIrCompilerProof { rw [encode] } { rw [encode.eq_def] }
+  exact run
+
+/-- Successful child encoders and fitting source lanes construct a successful
+    field store. The actual encoder propagates each child's unwritten ranges;
+    neither a parent store witness nor field separation is assumed. -/
+theorem FieldsEncoded.exists_of_children {model : ByteModel} {order : FunctionAddressOrder}
+    {fields : List (Nat × Plan)} {values : List Value} {allowUnwritten : Bool}
+    (census : fields.length = values.length)
+    (children : ∀ field value, (field,value) ∈ fields.zip values →
+      ∃ child, encode model order field.2 value allowUnwritten = .ok child)
+    (before : Image)
+    (fits : ∀ field ∈ fields, field.1 + field.2.layout.size ≤ before.bytes.size) :
+    ∃ after, FieldsEncoded model order fields values allowUnwritten before after := by
+  induction fields generalizing values before with
+  | nil =>
+    cases values with
+    | nil => exact ⟨before,FieldsEncoded.nil_iff.mpr ⟨rfl,rfl⟩⟩
+    | cons value values => simp only [List.length_nil,List.length_cons] at census <;> omega
+  | cons field fields ih =>
+    cases values with
+    | nil => simp only [List.length_nil,List.length_cons] at census <;> omega
+    | cons value values =>
+      rcases field with ⟨offset,plan⟩
+      obtain ⟨child,encoded⟩ := children (offset,plan) value (by simp)
+      have childSize := encode_extent model order plan value allowUnwritten child encoded
+      have bound : offset + child.bytes.size ≤ before.bytes.size := by
+        rw [childSize]
+        exact fits (offset,plan) (by simp)
+      obtain ⟨bytes,written⟩ := ImageOverwrite.exists_of_fits before.bytes offset child.bytes bound
+      let shifted := child.unwritten.map (fun (start,count) => (offset + start,count))
+      let next : Image := { bytes, unwritten := before.unwritten ++ shifted }
+      have restFits : ∀ field ∈ fields, field.1 + field.2.layout.size ≤ next.bytes.size := by
+        intro field member
+        change field.1 + field.2.layout.size ≤ bytes.size
+        rw [written.extent]
+        exact fits field (by simp only [List.mem_cons]; exact Or.inr member)
+      have restChildren : ∀ field value, (field,value) ∈ fields.zip values →
+          ∃ child, encode model order field.2 value allowUnwritten = .ok child := by
+        intro field value member
+        exact children field value (by rw [List.zip_cons_cons]; exact List.mem_cons_of_mem _ member)
+      obtain ⟨after,rest⟩ := ih (values := values) (before := next)
+        (by simpa only [List.length_cons,Nat.succ.injEq] using census) restChildren restFits
+      exact ⟨after,FieldsEncoded.cons_iff.mpr ⟨child,bytes,encoded,written,rest⟩⟩
+
+/-- Construct an aggregate store from the ordered child stores and source
+    bounds. This includes zero-sized fields and retains unwritten metadata. -/
+theorem encode_fields_exists_of_children (model : ByteModel) (order : FunctionAddressOrder)
+    (ty : Ty) (layout : MemoryTypeLayout) (fields : List (Nat × Plan)) (values : List Value)
+    (allowUnwritten : Bool)
+    (census : fields.length = values.length)
+    (children : ∀ field value, (field,value) ∈ fields.zip values →
+      ∃ child, encode model order field.2 value allowUnwritten = .ok child)
+    (fits : ∀ field ∈ fields, field.1 + field.2.layout.size ≤ layout.size) :
+    ∃ image, encode model order (.fields ty layout fields) (.aggregate values) allowUnwritten = .ok image := by
+  obtain ⟨image,run⟩ := FieldsEncoded.exists_of_children census children
+    { bytes := ByteImage.fill layout.size none } (by simpa only [ByteImage.size_fill] using fits)
+  exact ⟨image,encode_fields_of_components model order ty layout fields values allowUnwritten image run⟩
+
 /-- Nonempty uniform arrays run the real child encoder once and retain its
     tiled byte image. Symbolic arithmetic avoids unfolding a logical count. -/
 theorem encode_uniform_array (model : ByteModel) (order : FunctionAddressOrder)
@@ -1818,5 +1898,63 @@ theorem encode_array (model : ByteModel) (order : FunctionAddressOrder)
   } {
     rw [encode.eq_def] <;> rfl
   }
+
+/-- Successful actual packed-vector bytes reach the aggregate leaf encoder
+without a second value-admission premise. -/
+theorem encode_vector_leaf_of_scalar (model : ByteModel) (order : FunctionAddressOrder)
+    (count : Nat) (ty : Ty) (layout : MemoryTypeLayout) (inputs : List Value)
+    (bytes : List UInt8) (encoded : encodeScalarVectorAt count ty (.vector inputs) = .ok bytes)
+    (extent : bytes.length = layout.size) :
+    encode model order (.leaf (.Vector count ty) layout) (.vector inputs) false =
+      .ok { bytes := ByteImage.ofList (bytes.map some) } := by
+  cases model <;> rw [encode]
+  all_goals simp [encodeLeaf,Value.isUninit,Value.isPoison,Ty.isInteger,
+    fatPtrStoreValueValidFor,fatPtrStoreValueValid,fatPtrStoreValueValidAtModel,
+    encodeMemoryWithFunctions,encodeMemoryAt,checkPointerImageWords,
+    encodeValueAt,encodeTypedAtModel,encoded,extent,
+    Bind.bind,Except.bind,Pure.pure,Except.pure]
+
+/-- The live head variant executes exactly its false-flag payload field row. -/
+theorem VariantEncoded.of_fields_zero (model : ByteModel) (order : FunctionAddressOrder)
+    (fields : List (Nat × Plan)) (variants : List (Option (List (Nat × Plan))))
+    (values : List Value) (before after : Image)
+    (run : FieldsEncoded model order fields values false before after) :
+    VariantEncoded model order (some fields :: variants) 0 values before after := by
+  unfold VariantEncoded
+  rewrite [encodeVariant]
+  exact run
+
+/-- Untagged encoding has no post-payload niche restriction. -/
+theorem NichePayloadChecked.of_untagged (info : Enumeration) (position : Nat)
+    (image : ByteImage) (encoding : info.encoding = .untagged) :
+    NichePayloadChecked info position image := by
+  unfold NichePayloadChecked checkNichePayload
+  rewrite [encoding]
+  rfl
+
+/-- A Boolean leaf keeps the actual contextual scalar codec result and exact
+byte extent; its full initialized Image has no unwritten ranges. -/
+theorem encode_boolean_leaf_of_memory (model : ByteModel) (order : FunctionAddressOrder)
+    (layout : MemoryTypeLayout) (value : Bool) (bytes : List UInt8)
+    (size : bytes.length = layout.size)
+    (encoded : encodeMemoryWithFunctions model order .Bool (.bool value) = .ok bytes) :
+    encode model order (.leaf .Bool layout) (.bool value) false =
+      .ok { bytes := ByteImage.ofList (bytes.map some), unwritten := [] } := by
+  have valid : fatPtrStoreValueValidFor model .Bool (.bool value) = true := by
+    cases model <;> rfl
+  trustIrCompilerProof { rw [encode] } { rw [encode.eq_def] }
+  simp [encodeLeaf, Value.isUninit, Value.isPoison, valid, Ty.isInteger,
+    encoded, size, Bind.bind, Except.bind, Pure.pure, Except.pure]
+
+/-- Source capture transport reuses the canonical encoder's error domain. -/
+theorem encodeCaptureImage_errors (error : SemError → Prop)
+    (typeErrors : ∀ message, error (.typeError message)) (undefined : ∀ message, error (.ub message))
+    (scalar : ∀ model order ty value, ByteImage.BlockResult (fun _ => True) error
+      (encodeMemoryWithFunctions model order ty value))
+    (model : ByteModel) (order : FunctionAddressOrder) (size : Nat)
+    (fields : List (Nat × Plan)) (values : List Value) :
+    ByteImage.BlockResult (fun _ => True) error (encodeCaptureImage model order size fields values) :=
+  encode_fields_errors error typeErrors undefined scalar model order fields values false
+    { bytes := ByteImage.fill size none }
 
 end TrustIr.AggregateMemory

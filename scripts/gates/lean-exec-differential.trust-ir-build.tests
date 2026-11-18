@@ -2,3 +2,5 @@
 # this registry with TRUST_IR_REQUIRE_LEAN=1 whenever $HOME/.elan/bin/lake
 # exists, so a missing Lean fails the target instead of skipping it.
 tensor_contraction_equals_loop_nest  # PKG-U13a: lake-built SemR TensorContraction replayed through Clean's reference kernel; matmul contraction = loop nest for every shape, closure in Ax0, forged statement refused
+semr_sited_divpanic  # Canonical pure helper: exact None/entry/Global(g,0), arbitrary-Core laws, Ax0 and six false controls; no Step/decoder credit
+semr_sited_execution  # Complete quoted guarded word programs, canonical Step, exact contracts and false body/receiver/panic claims; no decoded/byte credit

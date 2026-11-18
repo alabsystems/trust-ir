@@ -29,15 +29,25 @@
 // `trustc`; set it (or pass `--sysroot`) to name another ABI-matching compiler.
 
 #![feature(rustc_private)]
+#![cfg_attr(
+    all(test, any(target_os = "linux", target_os = "macos")),
+    feature(test, custom_test_frameworks, exitcode_exit_method)
+)]
+#![cfg_attr(
+    all(test, any(target_os = "linux", target_os = "macos")),
+    test_runner(crate::native_test_entry::native_test_main)
+)]
 #![allow(rustc::default_hash_types)]
 #![allow(rustc::potential_query_instability)]
 
 extern crate rustc_abi;
+extern crate rustc_attr_ir;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_index;
 extern crate rustc_interface;
-extern crate rustc_attr_ir;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -57,6 +67,9 @@ mod mir_lower;
 // `trust_ir_frontend` lib as `trust_ir_frontend::span_map`). Included as SOURCE
 // so this binary stays lib-independent (like `mir_lower`'s layout re-derivation).
 mod span_map;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod native_test_entry;
 
 #[cfg(test)]
 #[path = "mir_param_attrs_artifact_tests.rs"]
@@ -1183,6 +1196,12 @@ fn tally_body<'tcx>(
 }
 
 fn main() {
+    // SAFETY: the first native-entry operation, before arguments, files or threads.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Err(error) = unsafe { rustc_data_structures::jobserver::capture_early() } {
+        eprintln!("MIR frontend entry: inherited compiler scheduler refused: {error}");
+        std::process::exit(75);
+    }
     let raw: Vec<String> = std::env::args().collect();
     let mut rustc_args: Vec<String> = Vec::new();
     // Default to coverage mode (Phase 1) — that is this driver's whole purpose.

@@ -19,7 +19,11 @@ theorem mutant_decodes : decode mutantBytes = .ok mutant := rfl
 /-- Exact captured formal: one nominal struct lane, no callee declarations. -/
 theorem original_custody :
     original.funcTys = [{params := [.struct 0], returns := [.bool], vararg := false}] ∧
-    original.structs = [{id := 0, fields := [.int .i64]}] ∧
+    original.structs = [{
+      id := 0
+      fields := [.int .i64]
+      name := "trust_ir::proof::obligations::ObligationKindShape".toUTF8.data.toList.map UInt8.toNat
+      fieldInfo := [("__tag".toUTF8.data.toList.map UInt8.toNat, none)]}] ∧
     original.functions.length = 1 := by exact ⟨rfl, rfl, rfl⟩
 def execute (m : Module) (tag : Nat) : Out :=
   runFunction m 0 [.struct 0 [.int .i64 tag]] 40 4
@@ -66,10 +70,10 @@ theorem missing_callee_refuses :
 /-- The decoder admits only logical flat scalar declarations. -/
 theorem flat_scalar_decode :
     flatStructDef 38 #[[]] [0,0,1,0,3,0,0,0,0] =
-      .ok {id := 0, fields := [.int .i64]} [] := rfl
-theorem layout_offset_refuses :
+      .ok {id := 0, fields := [.int .i64], fieldInfo := [([], none)]} [] := rfl
+theorem layout_offset_truncated_refuses :
     flatStructDef 38 #[[]] [0,0,1,0,3,1] =
-      .err (.unsupported "struct.field_offset") := rfl
+      .err (.malformed "unexpected end of input") := rfl
 theorem pointer_field_refuses :
     flatStructDef 38 #[[]] [0,0,1,0,13,0,0,0,0] =
       .err (.unsupported "struct.field_type") := rfl
@@ -78,10 +82,10 @@ theorem tuple_stays_refused : ty 38 #[] [18,0] =
 theorem invalid_field_tag :
     flatStructDef 38 #[[]] [0,0,1,0,254,0,0,0,0] =
       .err (.malformed "invalid Ty tag") := rfl
-theorem explicit_size_refuses :
-    flatStructDef 38 #[[]] [0,0,0,1] = .err (.unsupported "struct.size") := rfl
-theorem explicit_align_refuses :
-    flatStructDef 38 #[[]] [0,0,0,0,1] = .err (.unsupported "struct.align") := rfl
+theorem explicit_size_truncated_refuses :
+    flatStructDef 38 #[[]] [0,0,0,1] = .err (.malformed "unexpected end of input") := rfl
+theorem explicit_align_truncated_refuses :
+    flatStructDef 38 #[[]] [0,0,0,0,1] = .err (.malformed "unexpected end of input") := rfl
 theorem c_layout_refuses :
     flatStructDef 38 #[[]] [0,0,0,0,0,1] = .err (.unsupported "struct.repr") := rfl
 theorem nominal_origin_refuses :

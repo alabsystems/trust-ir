@@ -955,6 +955,10 @@ impl<'a> Parser<'a> {
                         self.expect_char(')')?;
                         ValidityEvidence::Obligation { obligation }
                     }
+                    "unestablished" => {
+                        self.expect_char(')')?;
+                        ValidityEvidence::Unestablished
+                    }
                     other => {
                         return Err(self.error(format!("unknown validity evidence `{other}`")));
                     }

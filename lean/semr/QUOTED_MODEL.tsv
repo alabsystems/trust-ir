@@ -21,3 +21,4 @@ allocaCell	Alloca	decoded.memory	abstract-cell
 loadCell	Load	decoded.memory	abstract-cell
 storeCell	Store	decoded.memory	abstract-cell
 makeClosure	MakeClosure	closure_types	quoted-closure
+assertSitedDiv	Assert	globals	quoted-sited-div

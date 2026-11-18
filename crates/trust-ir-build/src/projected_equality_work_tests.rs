@@ -5,7 +5,8 @@ use super::{tests::*, *};
 use crate::{proof_assembly::ProofLimits, scoped_local::LocalScope, term_scope::TermScopeLimits};
 
 pub(super) fn counted(work: &ProjectedEqualityWork) -> usize {
-    work.normalization_dependency_visits
+    work.initial_capture_context_visits
+        + work.normalization_dependency_visits
         + work.normalization_materialization_visits
         + work.normalization_inventory_visits
         + work.normalization_cached_definition_visits

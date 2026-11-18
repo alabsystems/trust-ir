@@ -16,11 +16,7 @@ fn limits(operations: usize, items: usize) -> Limits {
 }
 
 fn fixture(count: usize) -> (FetchedSite, MachineModel, Current) {
-    let model = MachineModel {
-        world_type: constant("W"),
-        context: constant("context"),
-        providers: constant("providers"),
-    };
+    let model = MachineModel::from_terms(constant("W"), constant("context"), constant("providers"));
     let current = Current {
         frame: constant("frame"),
         tail: constant("tail"),
@@ -37,7 +33,7 @@ fn fixture(count: usize) -> (FetchedSite, MachineModel, Current) {
         [app("IRTy.uint_", [nat(64)]), constant("literal")],
     );
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(0),
             block: BlockId::new(0),
@@ -79,7 +75,7 @@ fn guard(site: &FetchedSite, model: &MachineModel, values: &[Expr]) -> Expr {
             app(
                 "ir_byte_values_match_v1",
                 [
-                    model.context.clone(),
+                    model.context().clone(),
                     app("ir_byte_site_results_v1", [site.site.clone()]),
                     values,
                 ],
@@ -151,8 +147,8 @@ fn ordered_binding_retains_both_lanes_guard_and_complete_world_without_overflow_
             &app(
                 "ir_byte_bind_values_v1",
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     current.machine(),
                     current.world.clone(),
                     site.results.clone(),
@@ -325,10 +321,11 @@ fn binding_limits_and_run_boundary_preserve_charges_initial_configuration_and_fu
     .unwrap();
     assert!(binding.complete_run(&mut assembler, wrong).is_err());
     assert_eq!(assembler.operations(), 5);
-    let foreign_model = MachineModel {
-        providers: constant("foreign_provider"),
-        ..model.clone()
-    };
+    let foreign_model = MachineModel::from_terms(
+        model.clone().world_type().clone(),
+        model.clone().context().clone(),
+        constant("foreign_provider"),
+    );
     let foreign = ExactRun::candidate(
         foreign_model.clone(),
         run.initial.clone(),

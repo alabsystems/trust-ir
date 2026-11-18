@@ -25,6 +25,8 @@ pub mod clause_typing;
 mod clean_expr_codec;
 #[cfg(feature = "clean-expr-codec")]
 mod clean_expr_dag;
+#[cfg(feature = "clean-proof-carrier")]
+mod clean_proof_carrier;
 mod digest_observed;
 mod evidence;
 pub mod formula_schema;
@@ -60,12 +62,11 @@ pub use bvgoal::{
 pub use annotations::ExprObligation;
 #[cfg(feature = "clean-expr-codec")]
 pub use clean_expr_codec::{
-    CLEAN_CIC_STATEMENT_DIGEST_V1_DOMAIN, CLEAN_EXPR_V1_MAX_BYTES, CLEAN_EXPR_V1_MAX_DEPTH,
-    CLEAN_EXPR_V1_MAX_NODES, ISLAND_DECLARATIONS_V1_MAX_BYTES,
+    CLEAN_EXPR_V1_MAX_DEPTH, CLEAN_EXPR_V1_MAX_NODES, ISLAND_DECLARATIONS_V1_MAX_BYTES,
     ISLAND_DECLARATIONS_V1_MAX_DECLARATIONS, ISLAND_DECLARATIONS_V1_MAX_DEPTH,
-    ISLAND_DECLARATIONS_V1_MAX_NODES, KERNEL_ENVIRONMENT_DIGEST_V1_DOMAIN,
-    clean_cic_statement_digest, decode_clean_expr_v1, decode_island_declarations_v1,
-    encode_clean_expr_v1, encode_island_declarations_v1, kernel_environment_digest,
+    ISLAND_DECLARATIONS_V1_MAX_NODES, clean_cic_statement_digest, decode_clean_expr_v1,
+    decode_island_declarations_v1, encode_clean_expr_v1, encode_island_declarations_v1,
+    kernel_environment_digest,
 };
 #[cfg(feature = "clean-expr-codec")]
 pub use clean_expr_dag::{
@@ -74,24 +75,32 @@ pub use clean_expr_dag::{
     CLEAN_EXPR_DAG_V2_MAX_NODES, CLEAN_EXPR_DAG_V2_MAX_SCRATCH_BYTES, decode_clean_expr_dag_v2,
     encode_clean_expr_dag_v2,
 };
+#[cfg(feature = "clean-proof-carrier")]
+pub use clean_proof_carrier::{
+    CLEAN_CIC_STATEMENT_DIGEST_V1_DOMAIN, CLEAN_EXPR_V1_MAX_BYTES,
+    KERNEL_ENVIRONMENT_DIGEST_V1_DOMAIN, KernelConstantV1, KernelConstructorV1,
+    KernelEnvironmentDigestV1, KernelInductiveV1, KernelQuotientV1, KernelRecursorRuleV1,
+    KernelRecursorV1, clean_cic_statement_carrier_digest_v1, encode_clean_expr_carrier_v1,
+};
 pub use evidence::{
     CertificateBinding, CleanCicKernelRecheck, CleanCicModuleProofAuthority,
     CleanCicProofAuthorityRechecker, CleanCicRechecker, CoverageAssurance, CoverageBound,
     ISLAND_DECLARATIONS_DIGEST_V1_DOMAIN, IslandEnvironment,
-    KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1, KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1,
-    KERNEL_ANCHOR_CLEAN_BACKEND_TV, KERNEL_ANCHOR_CLEAN_ISLAND, KERNEL_ANCHOR_CLEAN_ISLAND_MODULE,
-    KERNEL_ANCHOR_FARKAS_CONSTRUCTIVE, KERNEL_ANCHOR_GIVEBACK_AGGREGATE,
-    KERNEL_ANCHOR_GIVEBACK_CLOSURE, KERNEL_ANCHOR_GIVEBACK_COND, KERNEL_ANCHOR_GIVEBACK_ENUM,
-    KERNEL_ANCHOR_GIVEBACK_GENERICS, KERNEL_ANCHOR_GIVEBACK_HASHMAP, KERNEL_ANCHOR_GIVEBACK_LIST,
-    KERNEL_ANCHOR_GIVEBACK_LOOP, KERNEL_ANCHOR_GIVEBACK_NESTED, KERNEL_ANCHOR_GIVEBACK_REFINEMENT,
-    KERNEL_ANCHOR_GIVEBACK_SPLIT, KERNEL_ANCHOR_GIVEBACK_STEP, KERNEL_ANCHOR_GIVEBACK_TRAIT,
-    KERNEL_ANCHOR_GIVEBACK_U32, KERNEL_ANCHOR_GIVEBACK_VEC, KERNEL_ANCHOR_SLACKCERTZ,
-    KERNEL_ANCHOR_TRUST_IR_CONTRACT, KERNEL_ANCHOR_TRUST_IR_CONTRACT_MODULE,
-    KERNEL_ANCHOR_TRUSTCG_LOWERING_RESOLUTION, KernelClaimFamily,
-    LEAN_THEOREM_OBLIGATION_NAMESPACE, ModuleCleanCicRechecker, ModuleProofAuthority,
-    ProofAuthorityRechecker, ProofCertificate, ProofCertificateRef, ProofDigest,
-    ProofDigestAlgorithm, ProofDigestSha256DomainStream, ProofDigestStreamError, ProofEvidence,
-    ProofEvidenceShape, RejectingCleanCicRechecker, RejectingModuleProofAuthority,
+    KERNEL_ANCHOR_CLEAN_BACKEND_BYTE_ENTRY_V1, KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1,
+    KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1, KERNEL_ANCHOR_CLEAN_BACKEND_TV,
+    KERNEL_ANCHOR_CLEAN_BACKEND_WORD_STATUS_ENTRY_V1, KERNEL_ANCHOR_CLEAN_ISLAND,
+    KERNEL_ANCHOR_CLEAN_ISLAND_MODULE, KERNEL_ANCHOR_FARKAS_CONSTRUCTIVE,
+    KERNEL_ANCHOR_GIVEBACK_AGGREGATE, KERNEL_ANCHOR_GIVEBACK_CLOSURE, KERNEL_ANCHOR_GIVEBACK_COND,
+    KERNEL_ANCHOR_GIVEBACK_ENUM, KERNEL_ANCHOR_GIVEBACK_GENERICS, KERNEL_ANCHOR_GIVEBACK_HASHMAP,
+    KERNEL_ANCHOR_GIVEBACK_LIST, KERNEL_ANCHOR_GIVEBACK_LOOP, KERNEL_ANCHOR_GIVEBACK_NESTED,
+    KERNEL_ANCHOR_GIVEBACK_REFINEMENT, KERNEL_ANCHOR_GIVEBACK_SPLIT, KERNEL_ANCHOR_GIVEBACK_STEP,
+    KERNEL_ANCHOR_GIVEBACK_TRAIT, KERNEL_ANCHOR_GIVEBACK_U32, KERNEL_ANCHOR_GIVEBACK_VEC,
+    KERNEL_ANCHOR_SLACKCERTZ, KERNEL_ANCHOR_TRUST_IR_CONTRACT,
+    KERNEL_ANCHOR_TRUST_IR_CONTRACT_MODULE, KERNEL_ANCHOR_TRUSTCG_LOWERING_RESOLUTION,
+    KernelClaimFamily, LEAN_THEOREM_OBLIGATION_NAMESPACE, ModuleCleanCicRechecker,
+    ModuleProofAuthority, ProofAuthorityRechecker, ProofCertificate, ProofCertificateRef,
+    ProofDigest, ProofDigestAlgorithm, ProofDigestSha256DomainStream, ProofDigestStreamError,
+    ProofEvidence, ProofEvidenceShape, RejectingCleanCicRechecker, RejectingModuleProofAuthority,
     RejectingProofAuthorityRechecker, SourceDefinitionRef, clean_cic_lineage_binds,
     clean_cic_lineage_content_v8, clean_cic_lineage_digest, clean_cic_lineage_digest_v8,
     clean_cic_lineage_is_v8, is_clean_source_call_anchor, is_lean_theorem_kind,

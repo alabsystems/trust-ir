@@ -1332,3 +1332,209 @@ fn the_acceptance_check_and_its_refusals_are_the_same_on_every_target() {
         );
     }
 }
+
+// ---------- wire v75: a deref the producer holds no fact for ----------
+
+/// The session a producer that ran no verifier states.
+const NO_VERIFIER: BoxFactSession = BoxFactSession {
+    judged: JudgedBody::OptimizedFallback,
+    producing: ProducingSession::NonProofSession,
+};
+
+fn unestablished(ordinal: u32) -> BoxValidityFact {
+    BoxValidityFact::unestablished(site(ordinal), NO_VERIFIER)
+}
+
+/// The `BoxDerefConjunctUnestablished` findings of `errors`, by conjunct.
+fn unestablished_conjuncts(errors: &[ValidationError]) -> Vec<&'static str> {
+    errors
+        .iter()
+        .filter_map(|error| match error {
+            ValidationError::BoxDerefConjunctUnestablished { conjunct, .. } => Some(*conjunct),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Rule 10: every `Unestablished` entry is reported, once per conjunct, by
+/// the structural validator and by codegen admission at EVERY floor setting
+/// (none, and each tier). No floor discharges it, and the floors that place
+/// it below themselves add their own finding on top.
+#[test]
+fn an_unestablished_conjunct_is_refused_on_every_admission_and_at_every_floor() {
+    let module = premised_module(unestablished(0));
+    let errors = validate_module(&module);
+    assert_eq!(
+        unestablished_conjuncts(&errors),
+        ["nonnull", "aligned", "dereferenceable"],
+        "{errors:?}"
+    );
+    assert_eq!(
+        refusals(&module),
+        vec!["BoxDerefConjunctUnestablished".to_string()],
+        "rule 10 is the only rule a well-formed unestablished fact meets"
+    );
+    for floor in std::iter::once(None).chain(BoxValidityTier::ALL.map(Some)) {
+        let admission = CodegenAdmission::pinned().with_require_box_validity_evidence(floor);
+        let errors = validate_module_for_codegen_with(&module, &admission);
+        assert_eq!(
+            unestablished_conjuncts(&errors),
+            ["nonnull", "aligned", "dereferenceable"],
+            "{floor:?}: {errors:?}"
+        );
+        let below = errors
+            .iter()
+            .filter(|error| matches!(error, ValidationError::BoxValidityEvidenceBelowFloor { .. }))
+            .count();
+        let expected = match floor {
+            None | Some(BoxValidityTier::NotAdmitted) => 0,
+            Some(_) => 3,
+        };
+        assert_eq!(below, expected, "{floor:?}: {errors:?}");
+    }
+}
+
+/// One unestablished conjunct beside two premises: rule 10 reports exactly
+/// that conjunct, and the premises keep every rule of their own (the
+/// session is judged again, because the fact offers evidence).
+#[test]
+fn one_unestablished_conjunct_is_reported_alone_and_premises_keep_their_rules() {
+    let mut fact = premise(0, PremiseRoot::ParamByValue);
+    fact.evidence[2].evidence = ValidityEvidence::Unestablished;
+    let module = premised_module(fact.clone());
+    let errors = validate_module(&module);
+    assert_eq!(
+        unestablished_conjuncts(&errors),
+        ["dereferenceable"],
+        "{errors:?}"
+    );
+    assert_eq!(
+        refusals(&module),
+        vec!["BoxDerefConjunctUnestablished".to_string()]
+    );
+    // The session rule judges a fact that offers evidence.
+    fact.session = NO_VERIFIER;
+    let module = premised_module(fact);
+    let names = refusals(&module);
+    assert!(
+        names.contains(&"BoxDerefSessionRefused".to_string()),
+        "{names:?}"
+    );
+}
+
+/// Rule 5 is not run on a fact that offers nothing, in either session; and
+/// every other structural rule still is (cover, non-claims, types, pointee).
+#[test]
+fn an_unestablished_fact_keeps_every_structural_rule_but_the_session() {
+    for session in [NO_VERIFIER, BoxFactSession::PROOF_SNAPSHOT] {
+        let mut fact = unestablished(0);
+        fact.session = session;
+        assert_eq!(
+            refusals(&premised_module(fact)),
+            vec!["BoxDerefConjunctUnestablished".to_string()],
+            "{session:?}"
+        );
+    }
+    let mut missing = premised_module(unestablished(0));
+    fact_of(&mut missing).evidence.pop();
+    assert!(refusals(&missing).contains(&"BoxDerefConjunctCover".to_string()));
+    let mut dropped = premised_module(unestablished(0));
+    fact_of(&mut dropped).not_claimed.pop();
+    assert!(refusals(&dropped).contains(&"BoxDerefNonClaimsNotPinned".to_string()));
+    let zero_sized = premised_module_on(None, Ty::Unit, unestablished(0));
+    assert!(refusals(&zero_sized).contains(&"BoxDerefPointeeOutOfScope".to_string()));
+    // No premise, so no premise-sanity reading: a null operand is reported
+    // by rule 10 alone (the corpus row `box_deref_unestablished_null_operand`
+    // is refused by every consumer because NonNull is false there).
+    let mut mb = ModuleBuilder::new("box_deref_unestablished_null");
+    let ft = mb.add_func_type(vec![], vec![Ty::Ptr]);
+    let mut fb = mb.function("subject", ft);
+    let entry = fb.create_block();
+    fb.switch_to_block(entry);
+    let null = fb.null_ptr();
+    let boxed = fb.box_deref(Ty::I64, null, unestablished(0));
+    fb.ret(vec![boxed]);
+    fb.set_body_gate(BodyGate::Ungated);
+    fb.build();
+    let module = mb.build().expect("the null module builds");
+    assert_eq!(
+        refusals(&module),
+        vec!["BoxDerefConjunctUnestablished".to_string()]
+    );
+}
+
+/// Transport: the entry has a text spelling, round-trips through the binary
+/// format, and selects v75 only where it occurs (a premise-only module keeps
+/// v74). Under a v74 header the tag is refused, never read.
+#[test]
+fn an_unestablished_entry_travels_in_text_and_binary_and_selects_its_version() {
+    let module = premised_module(unestablished(0));
+    let text = module.to_string();
+    assert!(
+        text.contains(
+            "session optimized_fallback non_proof_session, evidence [nonnull unestablished(), \
+             aligned unestablished(), dereferenceable unestablished()]"
+        ),
+        "{text}"
+    );
+    let reparsed = trust_ir::parser::parse_module(&text).expect("the printed module parses");
+    assert_eq!(reparsed.functions[0].blocks, module.functions[0].blocks);
+    for (from, to) in [
+        ("nonnull unestablished()", "nonnull unestablished(x)"),
+        ("nonnull unestablished()", "nonnull assumed()"),
+    ] {
+        let edited = text.replacen(from, to, 1);
+        assert!(
+            trust_ir::parser::parse_module(&edited).is_err(),
+            "`{from}` -> `{to}` must not parse"
+        );
+    }
+
+    let bytes = trust_ir::binary::serialize_module(&module).expect("the module serializes");
+    let (decoded, version) =
+        trust_ir::binary::deserialize_module_with_wire_version(&bytes).expect("the module decodes");
+    assert_eq!(
+        version.get(),
+        trust_ir::binary::BOX_DEREF_UNESTABLISHED_FORMAT_VERSION
+    );
+    assert_eq!(decoded, module);
+
+    let premised = premised_module(premise(0, PremiseRoot::ParamByValue));
+    let bytes = trust_ir::binary::serialize_module(&premised).expect("serializes");
+    let (_, version) =
+        trust_ir::binary::deserialize_module_with_wire_version(&bytes).expect("decodes");
+    assert_eq!(
+        version.get(),
+        trust_ir::binary::BOX_DEREF_VALIDITY_FORMAT_VERSION,
+        "a module whose facts all offer evidence keeps its v74 bytes"
+    );
+
+    let mut bytes = trust_ir::binary::serialize_module(&module).expect("serializes");
+    // The header's version word is bytes 8..12 (magic, flags, version).
+    assert_eq!(
+        bytes[8..12],
+        trust_ir::binary::BOX_DEREF_UNESTABLISHED_FORMAT_VERSION.to_le_bytes()
+    );
+    bytes[8..12]
+        .copy_from_slice(&trust_ir::binary::BOX_DEREF_VALIDITY_FORMAT_VERSION.to_le_bytes());
+    assert!(
+        trust_ir::binary::deserialize_module(&bytes).is_err(),
+        "a v74 header allocates no ValidityEvidence tag 3"
+    );
+}
+
+/// Target independence: the same unestablished module is refused with the
+/// same findings at every target of the Box program.
+#[test]
+fn an_unestablished_fact_is_refused_alike_on_every_target() {
+    let expected = unestablished_conjuncts(&validate_module(&premised_module(unestablished(0))));
+    for target in parity_targets() {
+        let triple = target.triple.clone();
+        let module = premised_module_on(Some(target), Ty::I64, unestablished(0));
+        assert_eq!(
+            unestablished_conjuncts(&validate_module(&module)),
+            expected,
+            "{triple}"
+        );
+    }
+}

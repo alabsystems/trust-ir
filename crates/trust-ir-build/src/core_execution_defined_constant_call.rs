@@ -601,7 +601,7 @@ impl DefinedConstantCall<'_> {
             app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     memory,
                     root.host.clone(),
                     list("Nat", &[]),
@@ -614,7 +614,7 @@ impl DefinedConstantCall<'_> {
             app(
                 "IRByteConfigV1.halted",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     app("IROutcome.ret", [values.clone()]),
                     world(memory),
                 ],
@@ -626,7 +626,7 @@ impl DefinedConstantCall<'_> {
             app(
                 "IRByteConfigV1.halted",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     app("IROutcome.ret", [values]),
                     terminal_world.clone(),
                 ],

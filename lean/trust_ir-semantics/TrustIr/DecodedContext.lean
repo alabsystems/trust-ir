@@ -2,6 +2,7 @@
 -- Actual pure context assembly shared with the oracle runner.
 -- Prepared lookups preserve the original queries; no JSON decoder is imported.
 import Lean.Data.RBMap
+import TrustIr.Semantics.Eval
 import TrustIr.DecodedFunctionLookup
 import TrustIr.PreparedCFG
 
@@ -125,20 +126,16 @@ def valueSourceOf (m : Module) : FunctionItemPresence.Prepared :=
       records := m.records, closures := m.closureTys,
       functions := m.functions.map (functionDeclarationOf signatures) }
 
-private def memoryServiceOf (m : Module) (model : ByteModel) : AggregateMemory.Service :=
-  let source : SourceLayout.Environment :=
-    { model, canonicalScalars := true, hasTargetInfo := m.hasTargetInfo,
-      types := m.types, structs := m.structs, enums := m.enums,
-      records := m.records.filterMap (·.2), closures := m.closureTys,
-      tupleLayouts := m.tupleLayouts, closureLayouts := m.closureLayouts,
-      functions := m.functions.map (fun function => (function.id, function.ty)),
-      funcTypes := m.funcTys }
+def originalMemoryServiceOf (m : Module) (model : ByteModel) : OriginalClosureMemory.Service :=
   let roots := [.I64] ++ m.globals.map (·.ty) ++ trustIrListBind m.functions (fun function =>
     match function.blocks with
     | .error _ => []
     | .ok blocks => trustIrListBind blocks (fun (_, block) =>
       trustIrListBind (block.body ++ [block.terminator]) (memoryRootsOfInst m)))
-  AggregateMemory.prepare source (roots.filter (fun ty => !ty.hasCanonicalMemoryLayout))
+  OriginalClosureMemory.prepare m model (roots.filter (fun ty => !ty.hasCanonicalMemoryLayout))
+
+private def memoryServiceOf (m : Module) (model : ByteModel) : AggregateMemory.Service :=
+  (originalMemoryServiceOf m model).memoryService
 
 /-- Every function whose body decoded, keyed by id. A function whose body
     did NOT decode is absent (the runner refuses any run that reaches it
@@ -166,9 +163,11 @@ def contextOf (m : Module) (maxCallDepth : Nat) : D EvalContext := do
       else some (f.id, evalFunctionOfWithTypes signatures direct f blocks)
     | .error _ => none)
   let lookups := FunctionLookup.prepare m.functions defs
+  let memory := originalMemoryServiceOf m selectedModel
   pure { byteModel := selectedModel
          valueSource := valueSourceOf m
-         memoryService := some (memoryServiceOf m selectedModel)
+         memoryService := some memory.memoryService
+         originalClosureMemory := some memory
          functions := fun fid => FunctionLookup.findFunction lookups fid
          functionHeaders := fun fid => headers.find? fid.index
          -- Memory code words use original source positions, including entries

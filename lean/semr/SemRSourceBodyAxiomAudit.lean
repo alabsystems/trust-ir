@@ -49,9 +49,9 @@ import SemRSourceBodyCheck
 #guard_msgs in
 #print axioms SemR.SourceBodyCheck.flat_scalar_decode
 
-/-- info: 'SemR.SourceBodyCheck.layout_offset_refuses' depends on axioms: [propext] -/
+/-- info: 'SemR.SourceBodyCheck.layout_offset_truncated_refuses' depends on axioms: [propext] -/
 #guard_msgs in
-#print axioms SemR.SourceBodyCheck.layout_offset_refuses
+#print axioms SemR.SourceBodyCheck.layout_offset_truncated_refuses
 
 /-- info: 'SemR.SourceBodyCheck.pointer_field_refuses' depends on axioms: [propext] -/
 #guard_msgs in
@@ -65,13 +65,13 @@ import SemRSourceBodyCheck
 #guard_msgs in
 #print axioms SemR.SourceBodyCheck.invalid_field_tag
 
-/-- info: 'SemR.SourceBodyCheck.explicit_size_refuses' depends on axioms: [propext] -/
+/-- info: 'SemR.SourceBodyCheck.explicit_size_truncated_refuses' depends on axioms: [propext] -/
 #guard_msgs in
-#print axioms SemR.SourceBodyCheck.explicit_size_refuses
+#print axioms SemR.SourceBodyCheck.explicit_size_truncated_refuses
 
-/-- info: 'SemR.SourceBodyCheck.explicit_align_refuses' depends on axioms: [propext] -/
+/-- info: 'SemR.SourceBodyCheck.explicit_align_truncated_refuses' depends on axioms: [propext] -/
 #guard_msgs in
-#print axioms SemR.SourceBodyCheck.explicit_align_refuses
+#print axioms SemR.SourceBodyCheck.explicit_align_truncated_refuses
 
 /-- info: 'SemR.SourceBodyCheck.c_layout_refuses' depends on axioms: [propext] -/
 #guard_msgs in

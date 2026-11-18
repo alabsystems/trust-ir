@@ -267,3 +267,161 @@ ABI/SP placement, machine instruction binding, callee/model agreement, lifetime,
 full runtime refinement and independent Clean replay remain separate duties.
 The historical frame descriptions are checkable again under the pinned compiler;
 this does not supply their explicit compiler/caller premises or native authority.
+
+
+## Unsigned division and remainder correspondence
+
+`SemRUnsignedDivision` relates the actual `SemR.intBin .udiv` and
+`TrustIr.semIntBinOp .UDiv` computations for every canonical unsigned operand
+at every width and every integer postcondition. They return the same full
+quotient and reject zero with the same UB reason. Even a continuation that
+discards the result owes the nonzero divisor. This is an operator relation;
+whole-body execution, memory, calls, source refinement and compiler-obligation
+authority still require their own proofs.
+
+`SemRUnsignedRemainder` relates the existing `.urem` and `.URem` operators on
+the same full domains and arbitrary continuations. The canonical
+`TrustIr.Proofs.UnsignedRemainderWp` theorem also states the actual U64 value
+operation's success condition. Remainder shares the mandatory nonzero divisor;
+an exact multiple returns zero, while a larger divisor retains the dividend.
+These proofs introduce no new evaluator or production engine capability.
+
+The core word-value lemmas have one definition in
+`TrustIr.Proofs.BitVecUnsignedValues`; their existing public names and proof
+bodies are retained. The canonical operator proof no longer imports an SMT
+printer or solver bridge merely to use these mathematical facts.
+
+```sh
+lake build +SemRUnsignedDivisionChecks:olean
+lake env lean UnsignedDivisionAudit.lean
+lake build +SemRUnsignedRemainderChecks:olean
+lake env lean UnsignedRemainderAudit.lean
+```
+
+These explicit targets check both full-range mathematics and the U8/U32/U64
+value boundaries, zero divisor, false quotient and false postcondition controls.
+The audit replays every declaration of the new relation and control modules
+above only their external imports, refuses new axioms/unsafe/partial/native
+proofs and checks that the replayed types and values are unchanged. This is
+Lean-kernel replay; independent Clean reference replay is not claimed here.
+The remainder audit covers the canonical operator theorems, SemR relation and
+all nine remainder controls, with a base that excludes every target declaration.
+The canonical remainder proof also builds with the separate Lean 4.8 package:
+`lake build TrustIr.Proofs.UnsignedRemainderWp` from `lean/trust_ir-semantics`.
+
+## U64 scalar register transition
+
+`SemRScalarStep` relates the actual `SemR.stepCore` U64 division node to
+`TrustIr.GenericCoro.Prefix.evalBodyStep`, the production body layer anchored
+by the existing `stepNWithContext_succ_layer` definitional equality. The node
+at the original program counter, both exact SSA operand lookups, canonical
+U64 ranges and the original destination declaration check are explicit.
+The theorem computes both full post-states, including the source program
+counter and the target's private temporary publication/retirement. Its
+success-and-arbitrary-continuation equivalence retains nonzero division even
+when the continuation ignores the quotient.
+
+`RegistersAgree` is the U64/Bool scalar register view, not a full value or heap
+embedding. Register preservation additionally owes absence of the canonical
+fresh temporary before the step. The controls exhibit initially agreeing
+registers whose occupied temporary is lost, so this premise cannot be erased.
+The actual reachable-state freshness invariant still needs discharge when
+composing a complete body translation. Destination/input aliases and a
+destination equal to the temporary remain supported. No caller, CFG, return,
+memory, original-artifact or source/ABI refinement is established here.
+No compiler evidence or proof grade is issued.
+
+Run `lake build SemRScalarStepChecks` and `lake env lean ScalarStepAudit.lean`
+with the package's pinned Lean. The audit replays only this component's new
+source and controls above the existing imports, checks every declaration's
+actual type/body and allows only the three foundational axioms. It does not
+replay the unchanged canonical or SemR proof libraries.
+
+`SemRScalarFreshStep` adds
+`SemR.CanonicalScalarStep.division_step_fresh_registers_iff` discharges the one-slot premise using
+the canonical `TrustIr.SSAFreshFrames.FreshState` high-water invariant.
+`cleared_fresh`, `publish_fresh` and the existing `SSAFreshStep` / body-layer
+preservation laws own that invariant. The scalar view intentionally erases
+unmapped source values; relating complete source states and complete bodies
+remains separate. `ScalarFreshStepAudit.lean` checks only this derived theorem
+above the already checked scalar facts and canonical freshness owner.
+
+## Complete U64 division/return function
+
+`SemRScalarReturn.function_wp_iff` (in namespace
+`SemR.CanonicalScalarReturn`) covers the actual `SemR.runFunction` and
+`TrustIr.evalFunctionInContext` entry points. Both original functions have two
+U64 parameters, a U64 return and the exact SSA interface 0/1 -> 2. The source
+function, signature and entry block lookups, target layout, canonical function
+and CFG lookups, destination declaration and absent typed ABI descriptor are
+explicit. Real signature/arity, parameter, poison, nominal-lane and return
+checks remain in both executions. The U64 nominal-lane fact belongs to the
+existing `FunctionItemPresence.Prepared` owner; no replacement predicate is
+introduced. Canonical SSA freshness follows from its existing checked block
+parameter binding theorem, rather than an assumed successful entry.
+
+For every canonical U64 argument pair, every source call-depth budget and every
+canonical context/call-depth budget, source instruction fuel `extra + 2` and
+canonical block fuel `fuel + 1` suffice for this complete call-free function.
+Both return the same full quotient. Success and an arbitrary postcondition on
+both returned value lists hold exactly when the divisor is nonzero and that
+postcondition holds of those values. Zero remains UB before the return,
+including a changed return that discards the quotient.
+
+The 14 named controls execute both real entry points and cover maximum U64,
+zero, a changed return operand, a wrong result destination, false postcondition,
+missing signature, wrong arity, wrong function identity and insufficient fuel.
+The canonical controls reuse admitted step and entry facts instead of expanding
+the whole evaluator. The unchanged return/entry normalization definitions and
+proofs have single shared owners in `ReturnBlockLayer` and `FunctionEntryLayer`;
+existing AY replay users retain the same public names.
+
+Run `lake build +SemRScalarReturnChecks:olean` and
+`lake env lean ScalarReturnAudit.lean`. The audit replays this component and
+both moved leaves above their original external imports, checks every type and
+body and refuses new axioms/unsafe/partial/native proof evaluations. The two
+legacy AY consumers also build under the separate pinned Lean 4.8 package.
+This is a checked function-schema correspondence with the stated exact body
+and SSA interface. Arbitrary CFGs, loops, calls, heap effects, renaming, binary
+decoder correspondence, full original-artifact identity and source/ABI or
+compiler certification remain separate; no proof grade is promoted here.
+
+## Retained flat layouts and declared division
+
+`SemRStructLayout` translates the original flat scalar declaration, including
+its UTF-8 names, offsets, size and alignment, to the existing
+`TrustIr.SourceLayout` service. Geometry and contextual errors come from that
+service. Retention does not enable pointer, nominal, nonflat or aggregate
+memory operations, and incomplete metadata is not repaired.
+
+`SemRDeclaredDivisionReturn.function_wp_iff` covers the one-input U64 function
+`Const 1; UDiv 1,d; Return` through actual `SemR.runFunction` and canonical
+`evalFunctionInContext` entry and return. Both argument checks, canonical
+`FreshState`, every instruction, the mandatory nonzero divisor and arbitrary
+paired return postconditions remain part of the statement. The fuel offset
+counts three SemR instructions and one canonical block. The complete source
+module, including the retained layout declaration, is a parameter.
+
+Run `lake build +SemRDeclaredDivisionChecks:olean` and
+`lake env lean DeclaredDivisionAudit.lean` for the focused controls and
+same-kernel declaration replay. This is an execution correspondence for the
+stated scalar body. It does not check integer-text entry predicates through
+the Boolean-only guarded consumer, establish a source/ABI translation, or
+change any proof grade. General calls, loops and memory still need their
+compositional correspondence and original contract duties.
+
+
+`SemRDeclaredDivisionPacket` instantiates that theorem using the original
+`division_question("d != 0")` capture. The complete packet fixture preserves
+public/native identity, declarations, both original formulas, the actual
+same-derivation VC/witness and result. Its binary module is decoded by SemR;
+its unchanged module JSON is decoded and prepared by the existing canonical
+owner. Both concrete entry/body shapes are checked before applying the
+function theorem. The canonical constant decoder exposes one transparent
+original layer on the pinned modern proof compiler, following its existing
+type-layer interface; recursive runtime children retain the original callback
+and refusal rules. The legacy 4.8 executable oracle uses that same grammar
+through its original partial public parser boundary. It does not export the
+modern public-constant theorem cohort and supplies no packet-proof authority.
+Physical struct options use their fixed eight-byte wire format; instruction
+alignments retain their separate varint reader.

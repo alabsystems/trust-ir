@@ -16,9 +16,9 @@ theorem decoded_enum_plan_encoded_selection (document : Lean.Json) (decoded : Mo
     (checked : checkClosureValueAt ctx (fuel + 1) (.Enum id) (.aggregate values) = .ok ()) :
     ∃ layout info variants tag payload position variant fields,
       plan = .enumeration (.Enum id) layout info variants ∧ values = tag :: payload ∧
-      EnumTagSelects definition tag position ∧ definition.variants.get? position = some variant ∧
-      EnumEncodingSelects info tag position ∧ info.uninhabited.get? position = some false ∧
-      variants.get? position = some (some fields) ∧
+      EnumTagSelects definition tag position ∧ (trustIrListGet? definition.variants position) = some variant ∧
+      EnumEncodingSelects info tag position ∧ (trustIrListGet? info.uninhabited position) = some false ∧
+      (trustIrListGet? variants position) = some (some fields) ∧
       (∀ field ∈ fields, Plan.Origin (SourceElement (decodedCaptureSource decoded ctx.byteModel)) (ActualSummary (decodedCaptureSource decoded ctx.byteModel)) field.2.ty field.2) ∧
       ∀ model order allowUnwritten image,
         encode model order plan (.aggregate values) allowUnwritten = .ok image →
@@ -33,6 +33,10 @@ theorem decoded_enum_plan_encoded_selection (document : Lean.Json) (decoded : Mo
 end TrustIrEval
 
 
+/- Historical legacy printer record, preserved verbatim:
 /-- info: 'TrustIrEval.decoded_enum_plan_encoded_selection' depends on axioms: [propext, Quot.sound, Classical.choice] -/
 #guard_msgs in
 #print axioms TrustIrEval.decoded_enum_plan_encoded_selection
+-/
+#print axioms TrustIrEval.decoded_enum_plan_encoded_selection
+#trustIrAxiomsPinned TrustIrEval.decoded_enum_plan_encoded_selection == [propext, Quot.sound, Classical.choice] modern [propext, Classical.choice, Quot.sound]

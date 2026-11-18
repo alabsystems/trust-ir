@@ -95,20 +95,24 @@ theorem aggregateLoadValue_readOnly (service : AggregateMemory.Service) (order :
   unfold AggregateMemory.loadValue
   load_observes
 
+theorem originalClosureLoadValue_readOnly (service : OriginalClosureMemory.Service)
+    (order : FunctionAddressOrder) (closure : ClosureTyId) (pointer : Value)
+    (strict : Bool) (align : Option Nat) (model : ByteModel) :
+    LoadReadOnly (OriginalClosureMemory.loadValue service order closure pointer strict align model) := by
+  unfold OriginalClosureMemory.loadValue
+  load_observes
+
 def selectedLoadAction (ctx : EvalContext) (ty : Ty) (pointer : Value)
     (strict : Bool) (align : Option Nat) : Sem Value :=
-  match ctx.memoryServiceFor ty with
-  | some service => AggregateMemory.loadValue service ctx.functionOrder ty pointer strict align ctx.byteModel
-  | none => semLoadValueUsing
-      (fun memory bytes => decodeMemoryWithFunctions ctx.byteModel ctx.functionOrder memory ty bytes)
-      ty pointer strict align ctx.byteModel
+  ctx.loadMemoryValueAligned ty pointer strict align
 
 theorem selectedLoadAction_readOnly (ctx : EvalContext) (ty : Ty) (pointer : Value)
     (strict : Bool) (align : Option Nat) : LoadReadOnly (selectedLoadAction ctx ty pointer strict align) := by
-  unfold selectedLoadAction
-  cases ctx.memoryServiceFor ty with
-  | none => exact scalarLoadValue_readOnly _ _ _ _ _ _
-  | some service => exact aggregateLoadValue_readOnly _ _ _ _ _ _ _
+  unfold selectedLoadAction EvalContext.loadMemoryValueAligned
+  cases ctx.memoryRoute ty with
+  | scalar => exact scalarLoadValue_readOnly _ _ _ _ _ _
+  | descriptor service => exact aggregateLoadValue_readOnly _ _ _ _ _ _ _
+  | original closure service => exact originalClosureLoadValue_readOnly _ _ _ _ _ _ _
 
 theorem selectedLoadAction_default_align (ctx : EvalContext) (ty : Ty) (pointer : Value) (strict : Bool) :
     selectedLoadAction ctx ty pointer strict none = ctx.loadMemoryValue ty pointer strict := rfl
@@ -120,8 +124,7 @@ theorem stepLoad_lookup_action (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
       let value ← selectedLoadAction ctx ty heldPointer strict align
       let id ← Sem.bindFresh value
       pure (.value (some id))) := by
-  cases selected : ctx.memoryServiceFor ty <;>
-    simp only [stepInstWithContext,selected,selectedLoadAction,AggregateMemory.load,semLoadUsing,bind_assoc]
+  rfl
 
 /-- Every successful original Load node derives its operand from the original
     locals and its value from actual held execution. Its *only* state update
@@ -209,7 +212,7 @@ theorem stepLoad_published_value (ctx : EvalContext) (ty : Ty) (pointer : ValueI
 
 theorem stepLoad_descriptor_execution (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
     (strict : Bool) (align : Option Nat) (service : AggregateMemory.Service)
-    (selected : ctx.memoryServiceFor ty = some service) (before after : MachineState) (result : InstrResult)
+    (selected : ctx.memoryRoute ty = .descriptor service) (before after : MachineState) (result : InstrResult)
     (run : Sem.run (stepInstWithContext ctx (.Load ty pointer strict align)) before = .ok (result,after)) :
     ∃ heldPointer value, before.lookupValue pointer = some heldPointer ∧
       Sem.run (AggregateMemory.loadValue service ctx.functionOrder ty heldPointer strict align ctx.byteModel)
@@ -217,7 +220,7 @@ theorem stepLoad_descriptor_execution (ctx : EvalContext) (ty : Ty) (pointer : V
       after.lookupValue ⟨before.nextValueId⟩ = some value ∧ after.nextValueId = before.nextValueId + 1 := by
   obtain ⟨heldPointer,value,found,loaded,published,next⟩ :=
     stepLoad_published_value ctx ty pointer strict align before after result run
-  simp only [selectedLoadAction,selected] at loaded
+  simp only [selectedLoadAction,EvalContext.loadMemoryValueAligned,selected] at loaded
   exact ⟨heldPointer,value,found,loaded,stepLoad_memory_unchanged ctx ty pointer strict align before after result run,published,next⟩
 
 theorem stepLoad_canonical_execution (ctx : EvalContext) (ty : Ty) (pointer : ValueId)
@@ -232,7 +235,7 @@ theorem stepLoad_canonical_execution (ctx : EvalContext) (ty : Ty) (pointer : Va
       after.nextValueId = before.nextValueId + 1 := by
   obtain ⟨heldPointer,value,found,loaded,published,next⟩ :=
     stepLoad_published_value ctx ty pointer strict align before after result run
-  simp only [selectedLoadAction,EvalContext.memoryServiceFor,canonical,ite_true] at loaded
+  simp only [selectedLoadAction,EvalContext.loadMemoryValueAligned,ctx.memoryRoute_canonical ty canonical] at loaded
   exact ⟨heldPointer,value,found,loaded,stepLoad_memory_unchanged ctx ty pointer strict align before after result run,published,next⟩
 
 end TrustIr

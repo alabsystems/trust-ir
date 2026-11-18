@@ -15,12 +15,20 @@ inductive Value.Initialized : Value → Prop where
   | ptr (address : Nat) (provenance : Option AllocId) : Initialized (.ptr address provenance)
   | nullPtr : Initialized .nullPtr
   | fnDef (signature : FuncTyId) (function : FuncId) : Initialized (.fnDef signature function)
+  /-- An item identity has no captured values. Declaration/type/ABI validation
+      remains a separate judgment over the actual original context. -/
+  | fnItem (function : FuncId) : Initialized (.fnItem function)
   | aggregate (values : List Value) (children : ∀ value ∈ values, Initialized value) :
       Initialized (.aggregate values)
   | vector (values : List Value) (children : ∀ value ∈ values, Initialized value) :
       Initialized (.vector values)
   | frame (lineage : Nat) (values : List Value) (children : ∀ value ∈ values, Initialized value) :
       Initialized (.frame lineage values)
+  /-- Retain the actual source carrier and require its actual captured values.
+      Source metadata establishes neither initialization nor frame validity. -/
+  | sourceFrame (lineage : Nat) (function : FuncId) (declaration : BindingFrameDef)
+      (values : List Value) (children : ∀ value ∈ values, Initialized value) :
+      Initialized (.sourceFrame lineage function declaration values)
   | set (values : List Value) (children : ∀ value ∈ values, Initialized value) :
       Initialized (.set values)
   | sequence (values : List Value) (children : ∀ value ∈ values, Initialized value) :
@@ -50,6 +58,44 @@ theorem Value.Initialized.aggregate_child {values : List Value}
     value.Initialized := by
   cases valid with
   | aggregate _ children => exact children value member
+
+theorem Value.Initialized.frame_child {lineage : Nat} {values : List Value}
+    (valid : (Value.frame lineage values).Initialized) (value : Value) (member : value ∈ values) :
+    value.Initialized := by
+  cases valid with
+  | frame _ _ children => exact children value member
+
+theorem Value.Initialized.sourceFrame_child {lineage : Nat} {function : FuncId}
+    {declaration : BindingFrameDef} {values : List Value}
+    (valid : (Value.sourceFrame lineage function declaration values).Initialized)
+    (value : Value) (member : value ∈ values) : value.Initialized := by
+  cases valid with
+  | sourceFrame _ _ _ _ children => exact children value member
+
+/-- Every actual source slot is initialized; there is no metadata-only rule
+    for the same carrier. This states initialization, not source/frame validity. -/
+theorem Value.Initialized.sourceFrame_iff_children (lineage : Nat) (function : FuncId)
+    (declaration : BindingFrameDef) (values : List Value) :
+    (Value.sourceFrame lineage function declaration values).Initialized ↔
+      ∀ value ∈ values, value.Initialized := by
+  constructor
+  · intro valid value member
+    exact valid.sourceFrame_child value member
+  · intro children
+    exact .sourceFrame lineage function declaration values children
+
+/-- Only the recursive initialization condition agrees. The two actual runtime
+    carriers, their source metadata and their frame obligations stay distinct. -/
+theorem Value.Initialized.sourceFrame_iff_frame (lineage : Nat) (function : FuncId)
+    (declaration : BindingFrameDef) (values : List Value) :
+    (Value.sourceFrame lineage function declaration values).Initialized ↔
+      (Value.frame lineage values).Initialized := by
+  constructor
+  · intro valid
+    exact .frame lineage values (fun value member => valid.sourceFrame_child value member)
+  · intro valid
+    exact .sourceFrame lineage function declaration values
+      (fun value member => valid.frame_child value member)
 
 theorem Value.Initialized.array_child {values : CompactArray.Packed Value}
     (valid : (Value.array values).Initialized) (index : Nat) (value : Value)

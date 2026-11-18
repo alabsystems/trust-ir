@@ -41,13 +41,13 @@ pub(super) fn replace(
 ) -> Result<PendingEquality> {
     // The public door stays paid before helper construction or any refusal.
     assembler.charge()?;
-    let (ty, left, right) = endpoints(model.world_type.clone(), world.clone(), memory.clone());
+    let (ty, left, right) = endpoints(model.world_type().clone(), world.clone(), memory.clone());
     let term = if calling::is_explicit_world(model, world) {
         refl(&ty, right.clone())
     } else {
         Expr::apps(
             assembler.memory_world_presentation_candidate()?,
-            [model.world_type.clone(), world.clone(), memory],
+            [model.world_type().clone(), world.clone(), memory],
         )
     };
     Ok(PendingEquality::candidate(ty, left, right, term))

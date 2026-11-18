@@ -56,3 +56,48 @@ name = "SemRFrameCaller"
 # Default build covers every frame component; FrameAudit replays all declarations.
 [[lean_lib]]
 name = "SemRFrameChecks"
+
+[[lean_lib]]
+name = "SemRUnsignedDivision"
+
+[[lean_lib]]
+name = "SemRUnsignedDivisionChecks"
+
+[[lean_lib]]
+name = "SemRUnsignedRemainder"
+
+[[lean_lib]]
+name = "SemRUnsignedRemainderChecks"
+
+[[lean_lib]]
+name = "SemRScalarStep"
+
+[[lean_lib]]
+name = "SemRScalarStepChecks"
+
+[[lean_lib]]
+name = "SemRScalarFreshStep"
+
+[[lean_lib]]
+name = "SemRScalarReturn"
+
+[[lean_lib]]
+name = "SemRScalarReturnChecks"
+
+[[lean_lib]]
+name = "SemRStructLayout"
+
+[[lean_lib]]
+name = "SemRStructLayoutChecks"
+
+[[lean_lib]]
+name = "SemRDeclaredDivisionReturn"
+
+[[lean_lib]]
+name = "SemRDeclaredDivisionChecks"
+
+[[lean_lib]]
+name = "SemRDeclaredDivisionPacket"
+
+[[lean_lib]]
+name = "SemRDeclaredDivisionCanonical"

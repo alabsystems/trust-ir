@@ -46,12 +46,33 @@ impl Interpreter<'_> {
         let Some(module) = self.module else {
             return Ok(());
         };
+        let cache = self
+            .module_typed_abi_preflights
+            .unwrap_or(&self.local_module_typed_abi_preflights)
+            .for_strategy(self.options.panic_strategy);
+        let typed = match cache.get() {
+            Some(&typed) => typed,
+            None => {
+                let typed = self.preflight_typed_abi_module(module, supplied.entry)?;
+                // Concurrent readers may perform the same pure check. Only a
+                // success for this exact immutable module/strategy is retained.
+                let _ = cache.set(typed);
+                typed
+            }
+        };
+        if typed {
+            self.preflight_typed_abi_function(module, supplied, supplied.entry)?;
+        }
+        Ok(())
+    }
+
+    fn preflight_typed_abi_module(&self, module: &Module, block: BlockId) -> InterpretResult<bool> {
         if module
             .func_types
             .iter()
             .all(|signature| signature.abi.is_none())
         {
-            return Ok(());
+            return Ok(false);
         }
         for signature in &module.func_types {
             let Some(abi) = &signature.abi else {
@@ -60,38 +81,48 @@ impl Interpreter<'_> {
             abi.validate(signature)
                 .and_then(|()| abi.validate_target(module.target_info.as_ref()))
                 .map_err(|detail| {
-                    signature_mismatch(supplied.entry, format!("typed ABI: {detail}"))
+                    signature_mismatch(block, format!("typed ABI: {detail}"))
                 })?;
             if !abi.can_unwind && self.options.panic_strategy == PanicStrategy::Unwind {
                 return Err(unsupported(
-                    supplied.entry,
+                    block,
                     "typed no-unwind boundary needs an abort-on-crossing model",
                 ));
             }
-            self.check_abi_plan(abi, signature, supplied.entry)?;
+            self.check_abi_plan(abi, signature, block)?;
         }
-        for function in module.functions.iter().chain(core::iter::once(supplied)) {
-            if function.is_declaration() && module.func_type(function.ty).and_then(|signature|signature.abi.as_ref())
-                .is_some_and(|abi|matches!(&abi.result.mode,AbiPassMode::Direct(scalar) if scalar.attributes.no_alias)) {
-                return Err(unsupported(supplied.entry,"fresh host pointer result needs a declared memory/allocation-producing host contract"));
-            }
-            function.fn_abi(module).map_err(|detail| {
-                signature_mismatch(supplied.entry, format!("typed ABI: {detail}"))
-            })?;
-            // A host has no interpreter-memory access. An indirect RESULT
-            // cannot be served by the existing scalar/handle host contract.
-            // Refuse before ANY callback or earlier body effect, even unused.
-            if function.is_declaration()
-                && module
-                    .func_type(function.ty)
-                    .and_then(|sig| sig.abi.as_ref())
-                    .is_some_and(|abi| matches!(abi.result.mode, AbiPassMode::Indirect { .. }))
-            {
-                return Err(unsupported(
-                    supplied.entry,
-                    "indirect host result needs a memory-capable declared host contract",
-                ));
-            }
+        for function in &module.functions {
+            self.preflight_typed_abi_function(module, function, block)?;
+        }
+        Ok(true)
+    }
+
+    fn preflight_typed_abi_function(
+        &self,
+        module: &Module,
+        function: &Function,
+        block: BlockId,
+    ) -> InterpretResult<()> {
+        if function.is_declaration() && module.func_type(function.ty).and_then(|signature|signature.abi.as_ref())
+            .is_some_and(|abi|matches!(&abi.result.mode,AbiPassMode::Direct(scalar) if scalar.attributes.no_alias)) {
+            return Err(unsupported(block,"fresh host pointer result needs a declared memory/allocation-producing host contract"));
+        }
+        function.fn_abi(module).map_err(|detail| {
+            signature_mismatch(block, format!("typed ABI: {detail}"))
+        })?;
+        // A host has no interpreter-memory access. An indirect RESULT
+        // cannot be served by the existing scalar/handle host contract.
+        // Refuse before ANY callback or earlier body effect, even unused.
+        if function.is_declaration()
+            && module
+                .func_type(function.ty)
+                .and_then(|sig| sig.abi.as_ref())
+                .is_some_and(|abi| matches!(abi.result.mode, AbiPassMode::Indirect { .. }))
+        {
+            return Err(unsupported(
+                block,
+                "indirect host result needs a memory-capable declared host contract",
+            ));
         }
         Ok(())
     }

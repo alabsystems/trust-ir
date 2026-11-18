@@ -36,13 +36,13 @@ fn fixture(scope: &mut Scope, arity: usize) -> Fixture {
         parameters.push(local.clone());
         local.term().clone()
     };
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_context"),
-        providers: local(app("IRByteProvidersV1", [constant("Nat")])),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_context"),
+        local(app("IRByteProvidersV1", [constant("Nat")])),
+    );
     let target = CallTarget {
-        context: model.context.clone(),
+        context: model.context().clone(),
         function_id: nat(55),
         binding: constant("test_import_binding"),
         signature: constant("test_import_signature"),
@@ -56,7 +56,7 @@ fn fixture(scope: &mut Scope, arity: usize) -> Fixture {
     );
     let instruction = app("IRInst.call", [nat(55), operand_ids.clone()]);
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(41),
             block: BlockId::new(13),
@@ -303,7 +303,7 @@ fn import_transfer_refuses_wrong_call_provider_and_guard_endpoints() {
     assert!(run(&mut scope, &f.site, &foreign, f.premises.clone()).is_err());
     let mut wrong = f.premises.clone();
     wrong.provided.left = Expr::apps(
-        f.model.providers.clone(),
+        f.model.providers().clone(),
         [
             nat(56),
             f.arguments.clone(),
@@ -320,7 +320,7 @@ fn import_transfer_refuses_wrong_call_provider_and_guard_endpoints() {
     assert!(run(&mut scope, &f.site, &f.target, wrong).is_err());
     let mut wrong = f.premises.clone();
     wrong.provided.left = Expr::apps(
-        f.model.providers.clone(),
+        f.model.providers().clone(),
         [
             app("ir_byte_binding_fid_v1", [f.target.binding.clone()]),
             f.arguments.clone(),

@@ -171,7 +171,11 @@ impl EntryTarget {
         arguments: Expr,
         profile: CoreLogicalEntryProfileV1,
     ) -> Result<Expr> {
-        require_same(&self.target.context, &model.context, "entry module context")?;
+        require_same(
+            &self.target.context,
+            model.context(),
+            "entry module context",
+        )?;
         let and = |a, b| app("Bool.and", [a, b]);
         let not = |a| app("Bool.not", [a]);
         let length = |ty, values| app("ir_byte_length_v1", [constant(ty), values]);
@@ -213,7 +217,7 @@ impl EntryTarget {
                         app(
                             "ir_byte_values_match_v1",
                             [
-                                model.context.clone(),
+                                model.context().clone(),
                                 app(
                                     "ir_byte_signature_params_v1",
                                     [self.target.signature.clone()],
@@ -330,7 +334,7 @@ impl EntryTarget {
             world: app(
                 "IRByteWorldV1.mk",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     memory.clone(),
                     host.clone(),
                     list("Nat", std::slice::from_ref(&owner)),
@@ -345,8 +349,8 @@ impl EntryTarget {
                 | CoreLogicalEntryProfileV1::RustU64AddLiteralV1 => "ir_rust_u64_init_v1",
             },
             [
-                model.world_type.clone(),
-                model.context.clone(),
+                model.world_type().clone(),
+                model.context().clone(),
                 self.target.function_id.clone(),
                 arguments.clone(),
                 memory.clone(),
@@ -374,8 +378,8 @@ impl EntryTarget {
                     }
                 },
                 [
-                    model.world_type.clone(),
-                    model.context.clone(),
+                    model.world_type().clone(),
+                    model.context().clone(),
                     self.target.function_id.clone(),
                     arguments,
                     memory.clone(),
@@ -399,7 +403,7 @@ impl EntryTarget {
             app(
                 "ir_byte_init_current_valid_v1",
                 [
-                    model.world_type.clone(),
+                    model.world_type().clone(),
                     memory,
                     host,
                     current.frame.clone(),

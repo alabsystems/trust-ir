@@ -118,4 +118,16 @@ theorem aggregate_encode_no_unwind (model : ByteModel) (order : FunctionAddressO
       (DecodeFrameExit.of_no_unwind (fun _ => True) _ (encode_functions_no_unwind model order ty value) (fun _ _ => True.intro)))
     model order plan value allowUnwritten
 
+theorem closure_capture_encode_no_unwind (model : ByteModel) (order : FunctionAddressOrder)
+    (size : Nat) (fields : List (Nat × AggregateMemory.Plan)) (values : List Value) :
+    ExceptNoUnwind (AggregateMemory.encodeCaptureImage model order size fields values) := by
+  apply DecodeFrameExit.no_unwind (fun _ => True)
+  apply (block_result_frame_iff _ _).1
+  exact AggregateMemory.encodeCaptureImage_errors BlockDecodeError
+    (fun _ => True.intro) (fun _ => True.intro)
+    (fun model order ty value => (block_result_frame_iff _ _).2
+      (DecodeFrameExit.of_no_unwind (fun _ => True) _
+        (encode_functions_no_unwind model order ty value) (fun _ _ => True.intro)))
+    model order size fields values
+
 end TrustIr.FrameLifetime

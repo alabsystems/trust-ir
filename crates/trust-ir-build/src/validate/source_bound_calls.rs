@@ -48,8 +48,10 @@ mod enabled {
     use trust_ir::proof::{
         CLEAN_EXPR_V1_MAX_BYTES, CLEAN_EXPR_V1_MAX_NODES, CertificateBinding,
         CleanCicKernelRecheck, ISLAND_DECLARATIONS_V1_MAX_DECLARATIONS, IslandEnvironment,
+        KERNEL_ANCHOR_CLEAN_BACKEND_BYTE_ENTRY_V1 as BYTE_ENTRY_ANCHOR,
         KERNEL_ANCHOR_CLEAN_BACKEND_READONLY_CALLS_V1 as READONLY_ANCHOR,
-        KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1 as SCALAR_ANCHOR, ObligationKind,
+        KERNEL_ANCHOR_CLEAN_BACKEND_SOURCE_CALLS_V1 as SCALAR_ANCHOR,
+        KERNEL_ANCHOR_CLEAN_BACKEND_WORD_STATUS_ENTRY_V1 as WORD_STATUS_ANCHOR, ObligationKind,
         ProofEvidence, ProofLineageId, ProofStatus, ProofTransform, ProofTransformStage,
         SourceDefinitionRef, clean_cic_lineage_binds, clean_cic_lineage_digest_v8,
         clean_cic_statement_digest, decode_clean_expr_v1, encode_clean_expr_v1,
@@ -60,24 +62,32 @@ mod enabled {
     enum Model {
         Scalar,
         ReadonlyByte,
+        ByteEntry,
+        WordStatusEntry,
     }
     impl Model {
         fn anchor(self) -> &'static str {
             match self {
                 Self::Scalar => SCALAR_ANCHOR,
                 Self::ReadonlyByte => READONLY_ANCHOR,
+                Self::ByteEntry => BYTE_ENTRY_ANCHOR,
+                Self::WordStatusEntry => WORD_STATUS_ANCHOR,
             }
         }
         fn module(self) -> &'static str {
             match self {
                 Self::Scalar => "CleanCompiler.SourceCallsV1",
                 Self::ReadonlyByte => "CleanCompiler.ReadonlyCallsV1",
+                Self::ByteEntry => "CleanCompiler.ByteEntryV1",
+                Self::WordStatusEntry => "CleanCompiler.WordStatusEntryV1",
             }
         }
         fn carrier_prefix(self) -> &'static [u8] {
             match self {
                 Self::Scalar => b"clean_backend_source_calls_v1\0",
                 Self::ReadonlyByte => b"clean_backend_readonly_calls_v1\0",
+                Self::ByteEntry => b"clean_backend_byte_entry_v1\0",
+                Self::WordStatusEntry => b"clean_backend_word_status_entry_v1\0",
             }
         }
         fn of_module(module: &Module, budget: &mut Allowance) -> Result<Self, String> {
@@ -90,13 +100,12 @@ mod enabled {
                 let next = match d.anchor.as_str() {
                     SCALAR_ANCHOR => Self::Scalar,
                     READONLY_ANCHOR => Self::ReadonlyByte,
+                    BYTE_ENTRY_ANCHOR => Self::ByteEntry,
+                    WORD_STATUS_ANCHOR => Self::WordStatusEntry,
                     _ => continue,
                 };
                 if model.is_some_and(|old| old != next) {
-                    return Err(
-                        "mixed scalar/readonly source families are outside the bounded profile"
-                            .into(),
-                    );
+                    return Err("mixed source-family models are outside the bounded profile".into());
                 }
                 model = Some(next);
             }
@@ -484,6 +493,13 @@ mod enabled {
                 "readonly source family requires the complete two-definition closed module".into(),
             );
         }
+        if matches!(model, Model::ByteEntry | Model::WordStatusEntry)
+            && (module.functions.len() != 1 || sources.len() != 1)
+        {
+            return Err(
+                "byte-entry source family requires the complete single-definition module".into(),
+            );
+        }
         let mut entries = Vec::new();
         for (id, source) in sources {
             let f = catalog.unique(*id).expect("checked above");
@@ -509,6 +525,14 @@ mod enabled {
                     )
                 }
                 Model::ReadonlyByte => readonly_denotation(module, catalog, f, &source_map)?,
+                Model::ByteEntry | Model::WordStatusEntry => {
+                    let (ty, target) = if model == Model::ByteEntry {
+                        crate::source_byte_entry::denote(module, f)?
+                    } else {
+                        crate::source_word_status_entry::denote(module, f)?
+                    };
+                    (ty, vec![], vec![], target)
+                }
             };
             budget.charge(callee_ids.len(), 0)?;
             let source_expr = source_map[id].clone();
@@ -560,7 +584,7 @@ mod enabled {
     ) -> Result<(Environment, Vec<Name>), String> {
         let mut env = match model {
             Model::Scalar => tv::anchor_environment()?,
-            Model::ReadonlyByte => {
+            Model::ReadonlyByte | Model::ByteEntry | Model::WordStatusEntry => {
                 #[cfg(feature = "source-value-operational")]
                 {
                     clean_verify::eval_ir::shared_specification_with_stack(
@@ -975,6 +999,48 @@ mod enabled {
         )
     }
 
+    /// Reconstruct the COMPLETE void byte-entry effect function independently
+    /// of the supplied island definition. The original shared allowance,
+    /// strict kernel audit, source lineage and body license remain mandatory.
+    pub fn certify_source_bound_byte_entry(
+        module: &Module,
+        first_node: ProofLineageId,
+        first_obligation: ProofId,
+        transform: ProofTransform,
+        island: &IslandEnvironment,
+        sources: &[(FuncId, SourceDefinitionRef)],
+    ) -> Result<SourceBoundCallCertificates, String> {
+        certify_family(
+            Model::ByteEntry,
+            module,
+            first_node,
+            first_obligation,
+            transform,
+            island,
+            sources,
+        )
+    }
+
+    /// Certify the distinct four-pointer/U64 whole canonical ByteV1 source family.
+    pub fn certify_source_bound_word_status_entry(
+        module: &Module,
+        first_node: ProofLineageId,
+        first_obligation: ProofId,
+        transform: ProofTransform,
+        island: &IslandEnvironment,
+        sources: &[(FuncId, SourceDefinitionRef)],
+    ) -> Result<SourceBoundCallCertificates, String> {
+        certify_family(
+            Model::WordStatusEntry,
+            module,
+            first_node,
+            first_obligation,
+            transform,
+            island,
+            sources,
+        )
+    }
+
     pub(crate) fn lineage_semantic_carriers(
         module: &Module,
         catalog: &ModuleFunctionCatalog<'_>,
@@ -1029,7 +1095,10 @@ mod enabled {
 }
 
 #[cfg(feature = "clean-tv-anchor")]
-pub use enabled::{certify_source_bound_call_family, certify_source_bound_readonly_call_family};
+pub use enabled::{
+    certify_source_bound_byte_entry, certify_source_bound_call_family,
+    certify_source_bound_readonly_call_family, certify_source_bound_word_status_entry,
+};
 #[cfg(feature = "clean-tv-anchor")]
 pub(super) use enabled::{lineage_semantic_carriers, recheck_family};
 
@@ -1043,6 +1112,29 @@ pub fn certify_source_bound_call_family(
     _sources: &[(trust_ir::FuncId, trust_ir::proof::SourceDefinitionRef)],
 ) -> Result<SourceBoundCallCertificates, String> {
     Err("source-bound call composition requires the clean-tv-anchor feature".into())
+}
+
+#[cfg(not(feature = "clean-tv-anchor"))]
+pub fn certify_source_bound_byte_entry(
+    _module: &Module,
+    _first_node: trust_ir::proof::ProofLineageId,
+    _first_obligation: ProofId,
+    _transform: trust_ir::proof::ProofTransform,
+    _island: &trust_ir::proof::IslandEnvironment,
+    _sources: &[(trust_ir::FuncId, trust_ir::proof::SourceDefinitionRef)],
+) -> Result<SourceBoundCallCertificates, String> {
+    Err("byte-entry source equations require the clean-tv-anchor feature".into())
+}
+#[cfg(not(feature = "clean-tv-anchor"))]
+pub fn certify_source_bound_word_status_entry(
+    _module: &Module,
+    _first_node: trust_ir::proof::ProofLineageId,
+    _first_obligation: ProofId,
+    _transform: trust_ir::proof::ProofTransform,
+    _island: &trust_ir::proof::IslandEnvironment,
+    _sources: &[(trust_ir::FuncId, trust_ir::proof::SourceDefinitionRef)],
+) -> Result<SourceBoundCallCertificates, String> {
+    Err("byte-entry source equations require the clean-tv-anchor feature".into())
 }
 #[cfg(not(feature = "clean-tv-anchor"))]
 pub(crate) fn recheck_family(

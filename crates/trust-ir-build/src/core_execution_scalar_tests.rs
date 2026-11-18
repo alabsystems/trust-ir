@@ -45,11 +45,11 @@ fn premise(
 
 fn fixture(scope: &mut Scope, instruction: Expr, results: Expr) -> Fixture {
     let mut parameters = Vec::new();
-    let model = MachineModel {
-        world_type: constant("Nat"),
-        context: constant("test_context"),
-        providers: constant("test_providers"),
-    };
+    let model = MachineModel::from_terms(
+        constant("Nat"),
+        constant("test_context"),
+        constant("test_providers"),
+    );
     let current = Current {
         frame: app(
             "IRFrame.mk",
@@ -79,7 +79,7 @@ fn fixture(scope: &mut Scope, instruction: Expr, results: Expr) -> Fixture {
         ),
     };
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(41),
             block: BlockId::new(17),
@@ -207,7 +207,7 @@ fn icmp_candidates_use_actual_byte_evaluator_without_erasing_nominal_types() {
                 [31, 41].map(|id| {
                     app(
                         "ir_byte_value_matches_v1",
-                        [f.model.context.clone(), ty.clone(), read(id)],
+                        [f.model.context().clone(), ty.clone(), read(id)],
                     )
                 })
             )
@@ -262,7 +262,7 @@ fn pointer_parts_keep_nominal_type_metadata_sort_and_both_live_operands() {
                 .site
                 .scalar_checks(&f.model, &f.current, constant("test_value"))
                 .unwrap();
-            let mut expected = vec![f.model.context.clone()];
+            let mut expected = vec![f.model.context().clone()];
             expected.extend(typed);
             expected.extend(
                 operands
@@ -336,7 +336,11 @@ fn actual_reflected_nullptr_uses_existing_scalar_transfer_structurally() {
 
     let mut scope = Scope::new();
     let mut f = fixture(&mut scope, instruction.clone(), results.clone());
-    f.model.context = context.clone();
+    f.model = MachineModel::from_terms(
+        f.model.world_type().clone(),
+        context.clone(),
+        f.model.providers().clone(),
+    );
     f.site = FetchedSite {
         context: context.clone(),
         coordinate: Coordinate {
@@ -528,7 +532,7 @@ fn scalar_checks_keep_actual_operand_carriers_and_site_result_types() {
                 app(
                     "ir_byte_extract_field_v1",
                     [
-                        f.model.context.clone(),
+                        f.model.context().clone(),
                         f.site.site.clone(),
                         app("IRTy.struct_", [nat(23)]),
                         nat(29),
@@ -546,7 +550,7 @@ fn scalar_checks_keep_actual_operand_carriers_and_site_result_types() {
                 app(
                     "ir_byte_value_matches_v1",
                     [
-                        f.model.context.clone(),
+                        f.model.context().clone(),
                         ty.clone(),
                         app("ir_getd", [f.current.machine(), nat(id)]),
                     ],
@@ -583,7 +587,7 @@ fn scalar_checks_keep_actual_operand_carriers_and_site_result_types() {
                     app(
                         "ir_byte_values_match_v1",
                         [
-                            f.model.context.clone(),
+                            f.model.context().clone(),
                             app("ir_byte_site_results_v1", [f.site.site.clone()]),
                             list("IRScalar", &[value])
                         ]
@@ -734,7 +738,7 @@ fn branch_fixture(scope: &mut Scope, taken: Option<bool>) -> (Fixture, BranchTar
     let f = fixture(scope, instruction, list("Nat", &[]));
     let block_id = BlockId::new(if taken == Some(false) { 71 } else { 53 });
     let target = BranchTarget {
-        context: f.model.context.clone(),
+        context: f.model.context().clone(),
         function: FuncId::new(41),
         block_id,
         block: app(

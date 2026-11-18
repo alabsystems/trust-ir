@@ -22,6 +22,16 @@ that backlog is real, but it is no longer a missing *tag*.
 
 ### Added
 
+- `ValidityEvidence::Unestablished` (wire v75, ValidityEvidence tag 3): a Box
+  deref the producer holds no fact for. Not evidence: validator rule 10
+  (`BoxDerefConjunctUnestablished`) reports every such entry on every
+  admission and at every floor; only a consumer that re-derives the conjunct
+  itself from the instruction's own function may discharge it
+  (`docs/SPEC_RATIFICATIONS.md` §28a). Rule 5 no longer judges the session of
+  a fact that offers no evidence. Must-refuse rows
+  `box_deref_unestablished_{parameter,null_operand,freed_operand,loaded_operand}`
+  and `blob_box_deref_unestablished_below_its_version`.
+
 - `Inst::BoxDeref` (wire v74, Inst tag 77): a Box deref that carries a
   `BoxValidityFact` with per-conjunct evidence, its session and its explicit
   non-claims. The one admitted evidence kind is a named premise on a pinned
@@ -33,6 +43,76 @@ that backlog is real, but it is no longer a missing *tag*.
   the others. The pinned roots cover no measured program; a later wire
   version extends them. The instruction is outside the lowering-target subset
   and SemR. See `docs/SPEC_RATIFICATIONS.md` §28.
+- Nominal function items (wire v73, Ty tag 42, Constant tag 19).
+  `Ty::FnItem(FuncId)` is a Rust function-item type: the exact module
+  function is part of the type, its byte image is empty and it occupies no
+  ABI lane. Unlike `Ty::Func` it is neither a code pointer nor a
+  signature-only type, so two items of one signature are distinct types.
+  `Constant::FnItem(FuncId)` is its zero-byte value and materializes no
+  address; `Constant::FnDef` keeps its pointer meaning. Text `fnitem.7` and
+  `fnitem<func.7>`; JSON `{"FnItem":7}`. Both tags carry the exact function
+  id as a v32 and are read-gated `version >= 73`
+  (`FN_ITEM_IDENTITY_FORMAT_VERSION`), so an older header carrying either is
+  `InvalidTag(42)` / `InvalidTag(19)`. The writer selects 73 only for a
+  module that uses one, so every other module keeps its bytes and digests
+  and the `Func` / `FnDef` spellings do not move; `RawV38` / `CanonicalV38`
+  refuse (`FnItemIdentityRequiresV73`). The validator refuses an item type
+  that names no function (`DanglingTypeReference`, kind `function_item`), a
+  constant whose function is not its type's (`ConstTypeMismatch`), and a
+  `CallIndirect` through an item that does not name the item's exact
+  signature id and calling convention (`CallEdgeSignatureMismatch`,
+  `CallEdgeConvMismatch`). `ReifyFnPointer` turns an item into a `Func`
+  value, which the reference interpreter yields only at the item's own
+  signature; the interpreter also executes the constant and the call.
+  Module merge relocates the type's and the constant's ids together.
+  `FnItem` joins the lowering-target subset at its v6
+  (`lowering-target-subset.md`). SemR reads wire v38–v70, so it refuses a
+  module that carries one as an unsupported version.
+- Direct enum storage for uninhabited variants (wire v72, EnumTagEncoding
+  tag 4). `EnumTagEncoding::DirectWithUninhabited { tag_offset, variants }`
+  is a stored Direct tag plus one `UninhabitedVariantLayout` storage profile
+  (size, align, and a `FieldStorageLayout` size and align per source field)
+  for each structurally uninhabited source variant, sorted by variant index
+  and covering exactly those variants. Live variants keep their ordinary
+  typed layouts, dead variants keep their source field types, and
+  `variant_field_offsets` stays the only offset table. A profile preserves
+  the storage repr rules reserve; it gives a dead field no value layout and
+  carries no proof authority. Text `direct_uninhabited tag@0
+  profiles=[{variant=0 size=4 align=4 fields=[{size=0 align=1}]}]`. Wire:
+  tag 4, the tag offset, then the counted profiles (variant, size, align,
+  counted field extents), read-gated `version >= 72`
+  (`UNINHABITED_DIRECT_STORAGE_FORMAT_VERSION`), so an older header carrying
+  tag 4 is `InvalidTag(4)`. The writer selects 72 only for a module with
+  such a descriptor; `RawV38` / `CanonicalV38` refuse
+  (`UninhabitedDirectStorageRequiresV72`), and `stable_digest` binds every
+  extent. The layout table checks a profile against the source and the
+  declared image (exact coverage of the uninhabited variants, power-of-two
+  alignments, every extent inside its row and the descriptor, the tag inside
+  each dead row, no overlapping ranges) before it asks any field's layout;
+  `validate_module` refuses a descriptor that fails as `ConstTypeMismatch`
+  ("invalid Direct uninhabited storage"), and the reference interpreter
+  repeats the check, since a module may run unvalidated. The ABI lane count
+  sees only the live payloads and gives no register placement when the
+  footprint is larger or more aligned than the packed live tag and payload
+  image. SemR reads wire v38–v70, so it refuses such a module as an
+  unsupported version.
+- Exact thin-pointer contracts for template type holes (wire v71,
+  TypeContract tag 3). `TypeContract::ThinPointer`, appended, requires a
+  type hole's answer to be exactly `Ty::Ptr`: instantiation refuses an
+  integer, a fat pointer or a pointer/metadata tuple as
+  `InstantiateError::AnswerContract` before level-R validation, and the
+  skolem instance `validate_template` checks answers the hole with `Ptr`, so
+  the ordinary level-R rules still judge every pointer operation (an
+  `Opaque` hole's comparison stays `OpaqueOperation`). It constrains
+  representation only: no pointee type, provenance, memory validity, source
+  correspondence or execution permission follows, and a source host must
+  establish thinness after substitution on its own. Text `type thinptr`.
+  Read-gated `version >= 71` (`THIN_POINTER_CONTRACT_FORMAT_VERSION`), so an
+  older template header carrying tag 3 is `InvalidTag(3)`. The writer
+  selects 71 only for a template that carries the contract: every other
+  template keeps its bytes and digest, and a thin-pointer template's digest
+  differs from its `Opaque` twin's. No level-R content is new at v71, so no
+  module writes it.
 
 ### Fixed
 

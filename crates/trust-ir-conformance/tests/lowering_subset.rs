@@ -21,13 +21,21 @@
 // subset. Exempt fixtures are not "wrong" — they document exactly which
 // coverage is wire-format-only rather than proven-path.
 //
-// A third check keeps the spec doc and the machine constants in lockstep:
-// every allowlisted name (and every documented exclusion) must appear
-// verbatim in lowering-target-subset.md (repo root), alongside the version
-// marker.
+// A third check keeps the spec doc and the code in lockstep, EXHAUSTIVELY:
+// on each closed axis (`Inst`, `Ty`, `CastOp`, `ProofAnnotation`) every
+// variant the code declares — listed from the code (`InstShape::ALL`, or the
+// enum's declaration), never by hand — must be allowlisted and in the doc's
+// Allowed list, or not allowlisted and the first cell of a row of the doc's
+// Excluded table, and each heading's `(N of M allowed)` must be the code's
+// count. A new variant without a classification fails the gate. The version
+// marker and the exempt fixtures are checked too.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use trust_ir::Ty;
+use trust_ir::inst::InstShape;
+use trust_ir::level::NoExt;
 use trust_ir_conformance::subset::{
     CASTOP_ALLOWLIST_V6, DIALECT_OP_ALLOWLIST_V6, INST_ALLOWLIST_V6, PROOF_ALLOWLIST_V6,
     SUBSET_VERSION, TY_ALLOWLIST_V6, module_subset_violations,
@@ -471,155 +479,375 @@ fn native_bundle_module_respects_the_subset() {
     );
 }
 
-/// The spec doc and the machine-readable constants must not drift: every
-/// allowlisted name, every documented exclusion, and the version marker must
-/// appear verbatim (backticked) in lowering-target-subset.md (repo root).
+// `Ty` is `TyG<NoExt>`: its `Ext` variant carries a `NoExt`, which has no
+// value, so no level-R module carries one and the subset has nothing to
+// classify (`subset::ty_name` answers it with `NoExt::unreachable`). The
+// compiler checks both halves: the coercion needs `Ty::Ext` to take a
+// `NoExt`, and the empty match needs `NoExt` to have no variant. Should either
+// change, this file stops compiling, and the `Ty` axis below must classify
+// `Ext` like every other variant.
+const _: fn(NoExt) -> Ty = Ty::Ext;
+const _: fn(NoExt) -> ! = {
+    fn absurd(never: NoExt) -> ! {
+        match never {}
+    }
+    absurd
+};
+
+/// The variant the `Ty` axis leaves out, by the rule above.
+const LEVEL_EXTENSION_VARIANT: &str = "Ext";
+
+/// Top-level variant names of the enum declared by `head` (`pub enum NAME {`
+/// or `pub enum NAMEG<X> {`) in the repository source `relative`: the reading
+/// `tests/lean_schema_parity.rs` and the wire census use. A comment line is
+/// skipped whole, and neither a comment nor an attribute names a variant.
+/// [`source_reader_agrees_with_the_compiler`] holds this reading to
+/// `InstShape::ALL` on the one axis the compiler enumerates.
+fn declared_variants(relative: &str, head: &str) -> BTreeSet<String> {
+    let path = repo_root().join(relative);
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let start = src
+        .find(head)
+        .unwrap_or_else(|| panic!("{relative} declares no `{head}`"))
+        + head.len();
+    let mut out = BTreeSet::new();
+    let mut depth: i64 = 0;
+    for line in src[start..].lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let code = trimmed.split("//").next().unwrap_or_default();
+        if depth == 0
+            && !code.starts_with("#[")
+            && code.starts_with(|c: char| c.is_ascii_uppercase())
+        {
+            let end = code
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(code.len());
+            let rest = code[end..].trim_start();
+            if rest.is_empty() || rest.starts_with(['{', '(', ',']) {
+                out.insert(code[..end].to_owned());
+            }
+        }
+        let opened = i64::try_from(code.matches('{').count()).expect("a line is short");
+        let closed = i64::try_from(code.matches('}').count()).expect("a line is short");
+        depth += opened - closed;
+        if depth < 0 {
+            break;
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "read no variant of `{head}` from {relative}: the reading is vacuous"
+    );
+    out
+}
+
+/// The `Inst` variants, as the compiler lists them: `InstShape::ALL`, which
+/// `variant_shape!` generates from the same list `Inst::shape` matches with
+/// no wildcard arm, so a new `Inst` variant is a compile error until it is
+/// listed. `subset::inst_name` is the shape's name, so these are the names
+/// the checker's verdicts are keyed on.
+fn inst_variants() -> BTreeSet<String> {
+    InstShape::ALL
+        .iter()
+        .map(|shape| shape.name().to_owned())
+        .collect()
+}
+
+/// The textual reading the `Ty`, `CastOp` and `ProofAnnotation` axes rest on
+/// must read the `Inst` declaration as exactly the compiler's `InstShape::ALL`
+/// (struct, tuple and unit variants, many with doc comments and
+/// attributes): a reader that skipped or invented a variant fails here.
+#[test]
+fn source_reader_agrees_with_the_compiler() {
+    let read = declared_variants("crates/trust-ir/src/inst.rs", "pub enum InstG<X> {");
+    let compiled = inst_variants();
+    assert_eq!(
+        read,
+        compiled,
+        "the source reading of `InstG` differs from InstShape::ALL: read but not compiled \
+         {:?}, compiled but not read {:?}",
+        read.difference(&compiled).collect::<Vec<_>>(),
+        compiled.difference(&read).collect::<Vec<_>>()
+    );
+}
+
+/// One closed axis of the subset: every variant the code declares, and the
+/// machine allowlist naming the ones in the subset.
+struct EnumAxis {
+    /// The doc section's heading prefix.
+    heading: &'static str,
+    /// The enum's name, for messages.
+    name: &'static str,
+    /// Every variant the code declares.
+    declared: BTreeSet<String>,
+    /// `trust_ir_conformance::subset`'s current allowlist.
+    allowed: &'static [&'static str],
+}
+
+/// The section of `doc` whose heading starts with `heading`, to the next
+/// `## ` heading.
+fn axis_section<'d>(doc: &'d str, heading: &str) -> &'d str {
+    let start = doc
+        .find(heading)
+        .unwrap_or_else(|| panic!("spec doc is missing the `{heading}` section"));
+    let rest = &doc[start..];
+    match rest[heading.len()..].find("\n## ") {
+        Some(next) => &rest[..heading.len() + next],
+        None => rest,
+    }
+}
+
+/// The lines of the first paragraph after the line `marker` (blank lines
+/// before it skipped), or of the table after it when `table` is set: the run
+/// of `|` rows. Empty when the section has no `marker` line.
+fn block_after<'s>(section: &'s str, marker: &str, table: bool) -> Vec<&'s str> {
+    let mut lines = section.lines().skip_while(|line| line.trim() != marker);
+    if lines.next().is_none() {
+        return Vec::new();
+    }
+    lines
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| {
+            if table {
+                line.trim_start().starts_with('|')
+            } else {
+                !line.trim().is_empty()
+            }
+        })
+        .collect()
+}
+
+/// Every backticked span of `text`.
+fn backticked(text: &str) -> impl Iterator<Item = &str> {
+    text.split('`').skip(1).step_by(2)
+}
+
+/// The backticked identifiers of `lines`.
+fn backticked_identifiers(lines: &[&str]) -> BTreeSet<String> {
+    lines
+        .iter()
+        .copied()
+        .flat_map(backticked)
+        .filter(|span| {
+            !span.is_empty() && span.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The first cell of every row of an Excluded table: the names the row
+/// excludes. A name the rationale merely mentions is not one.
+fn first_cells<'s>(rows: &[&'s str]) -> Vec<&'s str> {
+    rows.iter()
+        .filter_map(|row| row.trim_start().strip_prefix('|'))
+        .filter_map(|row| row.split('|').next())
+        .collect()
+}
+
+/// The `(N of M allowed)` counts of a section's heading line.
+fn heading_counts(section: &str) -> Option<(usize, usize)> {
+    let heading = section.lines().next()?;
+    let inner = heading.rsplit_once('(')?.1.strip_suffix(" allowed)")?;
+    let (allowed, of) = inner.split_once(" of ")?;
+    Some((allowed.trim().parse().ok()?, of.trim().parse().ok()?))
+}
+
+/// The `(N allowed` count of a section's heading line.
+fn heading_allowed_count(section: &str) -> Option<usize> {
+    let heading = section.lines().next()?;
+    let inner = heading.rsplit_once('(')?.1;
+    inner.split_once(" allowed")?.0.trim().parse().ok()
+}
+
+/// Classify every variant of `axis` against `doc`, pushing each disagreement
+/// onto `problems`. Exhaustive by construction: the code's verdict on a
+/// variant is its allowlist membership, the doc's is the Allowed list or a
+/// first-column cell of the Excluded table, and the two must be the same
+/// partition of the declared variants, with the heading counting both.
+fn check_enum_axis(doc: &str, axis: &EnumAxis, problems: &mut Vec<String>) {
+    let EnumAxis {
+        heading,
+        name,
+        declared,
+        allowed,
+    } = axis;
+    let section = axis_section(doc, heading);
+    let allowed: BTreeSet<String> = allowed.iter().map(|n| (*n).to_owned()).collect();
+    let excluded: BTreeSet<String> = declared.difference(&allowed).cloned().collect();
+    let doc_allowed = backticked_identifiers(&block_after(section, "Allowed:", false));
+    let doc_excluded =
+        backticked_identifiers(&first_cells(&block_after(section, "Excluded:", true)));
+
+    for variant in allowed.difference(declared) {
+        problems.push(format!(
+            "{name}::{variant} is allowlisted but {name} declares no such variant"
+        ));
+    }
+    for variant in allowed.difference(&doc_allowed) {
+        problems.push(format!(
+            "{name}::{variant} is allowed by the code but missing from the doc's {name} \
+             Allowed list"
+        ));
+    }
+    for variant in doc_allowed.difference(&allowed) {
+        problems.push(format!(
+            "{name}::{variant} is in the doc's {name} Allowed list but the code does not \
+             allow it"
+        ));
+    }
+    for variant in excluded.difference(&doc_excluded) {
+        problems.push(format!(
+            "{name}::{variant} is excluded by the code (declared, not allowlisted) but has \
+             no row in the doc's {name} Excluded table"
+        ));
+    }
+    for variant in doc_excluded.difference(&excluded) {
+        let why = if allowed.contains(variant) {
+            "but the code allows it"
+        } else {
+            "but the code declares no such variant"
+        };
+        problems.push(format!(
+            "{name}::{variant} has a row in the doc's {name} Excluded table {why}"
+        ));
+    }
+    let counts = (allowed.len(), declared.len());
+    match heading_counts(section) {
+        Some(doc_counts) if doc_counts == counts => {}
+        Some((said_allowed, said_of)) => problems.push(format!(
+            "the doc's {name} heading says `({said_allowed} of {said_of} allowed)`, the code \
+             `({} of {} allowed)`",
+            counts.0, counts.1
+        )),
+        None => problems.push(format!(
+            "the doc's {name} heading carries no `(N of M allowed)` count"
+        )),
+    }
+}
+
+/// The spec doc and the code must not drift, and the doc must classify
+/// EVERYTHING the code declares. On each closed axis (`Inst`, `Ty`, `CastOp`,
+/// `ProofAnnotation`) every variant, listed from the code rather than by
+/// hand, is either allowlisted (and then in the doc's Allowed list, which
+/// names exactly the allowlist) or excluded (and then the first cell of a row
+/// of the doc's Excluded table), and the heading's `(N of M allowed)` is the
+/// code's count. A new variant with no classification fails here. The dialect
+/// axis is an open namespace, not an enum: its allowlist must appear in the
+/// section and its count in the heading. The version marker and the exempt
+/// fixtures are checked too.
 #[test]
 fn spec_doc_matches_machine_readable_subset() {
     let doc_path = repo_root().join("lowering-target-subset.md");
     let doc = std::fs::read_to_string(&doc_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", doc_path.display()));
+    let mut problems = Vec::new();
 
+    if !doc.contains(&format!("**Version:** v{SUBSET_VERSION}")) {
+        problems.push(format!(
+            "the doc must carry the version marker `**Version:** v{SUBSET_VERSION}`"
+        ));
+    }
+
+    let mut ty = declared_variants("crates/trust-ir/src/ty.rs", "pub enum TyG<X> {");
     assert!(
-        doc.contains(&format!("**Version:** v{SUBSET_VERSION}")),
-        "spec doc must carry the version marker `**Version:** v{SUBSET_VERSION}`"
+        ty.remove(LEVEL_EXTENSION_VARIANT),
+        "`TyG` no longer declares `{LEVEL_EXTENSION_VARIANT}`: revisit the level rule above"
     );
-
-    // Placement-aware lockstep: an allowlisted name must appear backticked in
-    // its axis section OUTSIDE the "Excluded:" table, and each documented
-    // exclusion must appear INSIDE that table — so a doc edit that moves a
-    // construct between the allowed and excluded regions fails this gate, not
-    // just a wholesale deletion.
-    fn axis_section<'d>(doc: &'d str, heading: &str) -> &'d str {
-        let start = doc
-            .find(heading)
-            .unwrap_or_else(|| panic!("spec doc is missing the `{heading}` section"));
-        let rest = &doc[start..];
-        match rest[heading.len()..].find("\n## ") {
-            Some(next) => &rest[..heading.len() + next],
-            None => rest,
-        }
-    }
-    /// Split a section at its `Excluded:` table: (outside, exclusion_table).
-    /// The table is the run of `|`-prefixed (or blank) lines after `Excluded:`.
-    fn split_excluded(section: &str) -> (String, String) {
-        let Some(idx) = section.find("\nExcluded:") else {
-            return (section.to_string(), String::new());
-        };
-        let (before, after) = section.split_at(idx);
-        let mut table = String::new();
-        let mut tail = String::new();
-        let mut in_table = true;
-        for line in after.lines().skip(2) {
-            let is_row = line.trim_start().starts_with('|') || line.trim().is_empty();
-            if in_table && is_row {
-                table.push_str(line);
-                table.push('\n');
-            } else {
-                in_table = false;
-                tail.push_str(line);
-                tail.push('\n');
-            }
-        }
-        (format!("{before}\n{tail}"), table)
+    let axes = [
+        EnumAxis {
+            heading: "## Instructions",
+            name: "Inst",
+            declared: inst_variants(),
+            allowed: INST_ALLOWLIST_V6,
+        },
+        EnumAxis {
+            heading: "## Types",
+            name: "Ty",
+            declared: ty,
+            allowed: TY_ALLOWLIST_V6,
+        },
+        EnumAxis {
+            heading: "## Casts",
+            name: "CastOp",
+            declared: declared_variants("crates/trust-ir/src/inst.rs", "pub enum CastOp {"),
+            allowed: CASTOP_ALLOWLIST_V6,
+        },
+        EnumAxis {
+            heading: "## Proof annotations",
+            name: "ProofAnnotation",
+            declared: declared_variants(
+                "crates/trust-ir/src/proof/annotations.rs",
+                "pub enum ProofAnnotation {",
+            ),
+            allowed: PROOF_ALLOWLIST_V6,
+        },
+    ];
+    for axis in &axes {
+        check_enum_axis(&doc, axis, &mut problems);
     }
 
-    let mut missing = Vec::new();
-    let mut misplaced = Vec::new();
-    let mut check_axis = |heading: &str, allowed: &[&str], excluded: &[&str]| {
-        let (outside, table) = split_excluded(axis_section(&doc, heading));
-        for name in allowed {
-            let tick = format!("`{name}`");
-            if !outside.contains(&tick) {
-                if table.contains(&tick) {
-                    misplaced.push(format!(
-                        "{name} (allowed, but only in {heading} Excluded table)"
-                    ));
-                } else {
-                    missing.push(format!("{name} ({heading})"));
-                }
-            }
+    // Dialect ops are named by `dialect.op`, an open namespace: everything
+    // not allowlisted is excluded, so the check is that the allowlist and the
+    // one named exclusion (`vector.fma`, carried without a lowering by
+    // ratified policy) are where the doc says they are.
+    let dialect = axis_section(&doc, "## Dialect ops");
+    let dialect_table = block_after(dialect, "Excluded:", true);
+    let dialect_excluded: Vec<&str> = first_cells(&dialect_table)
+        .into_iter()
+        .flat_map(backticked)
+        .collect();
+    let dialect_outside: Vec<&str> = dialect
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('|'))
+        .flat_map(backticked)
+        .collect();
+    for op in DIALECT_OP_ALLOWLIST_V6 {
+        if !dialect_outside.contains(op) {
+            problems.push(format!(
+                "dialect op {op} is allowed by the code but missing from the doc's Dialect ops \
+                 section"
+            ));
         }
-        for name in excluded {
-            let tick = format!("`{name}`");
-            if !table.contains(&tick) {
-                misplaced.push(format!(
-                    "{name} (excluded, but not in {heading} Excluded table)"
-                ));
-            }
+        if dialect_excluded.contains(op) {
+            problems.push(format!(
+                "dialect op {op} has a row in the doc's Dialect ops Excluded table but the \
+                 code allows it"
+            ));
         }
-    };
-    check_axis(
-        "## Instructions",
-        INST_ALLOWLIST_V6,
-        // `Dealloc` left the subset in G18-1 (2026-09-01): the format cannot
-        // state the allocator origin or the layout a correct free needs.
-        // `MakeAggregate` (WS3.5, 2026-09-19) landed after v3 was cut without
-        // its wire tag or a backend lowering; a v3 addendum records it as
-        // excluded (see the doc's history).
-        &[
-            "Dealloc",
-            "CoroSuspend",
-            "LandingPad",
-            "Resume",
-            "MakeAggregate",
-            // WS3.20: semantics landed, admission is a subset-contract bump.
-            "MemCopy",
-            "MemSet",
-            // Crystal lane (wave-DS): no destructor model in either executable model.
-            "Drop",
-            // v50: wire tags and semantics landed, no backend lowering yet.
-            "ArraySplat",
-            // Amendment P (v54): no consumer lowers its unwind edge yet.
-            "AssertInvoke",
-            // Amendment D Part 2 (v56): no backend lowers it yet.
-            "InvokeIndirect",
-            // The tensor region (PKG-U13a): no backend lowers a contraction.
-            "TensorContract",
-            // Its map, reduce and view (PKG-U13c): no backend lowers them.
-            "TensorMap",
-            "TensorReduce",
-            "TensorView",
-            // Its gather and scatter (PKG-U13d): likewise.
-            "TensorGather",
-            "TensorScatter",
-        ],
-    );
-    check_axis(
-        "## Types",
-        TY_ALLOWLIST_V6,
-        // v4 (WS2.17) promoted `Isize` / `Usize` / `Char` out of this table.
-        // The tensor region (PKG-U13a): `Tensor` has no memory layout.
-        &[
-            "F16", "Error", "Refine", "Dialect", "Handle", "Storage", "Tensor",
-        ],
-    );
-    check_axis(
-        "## Casts",
-        CASTOP_ALLOWLIST_V6,
-        &["ReifyFnPointer", "FPToSISat", "FPToUISat"],
-    );
-    check_axis("## Dialect ops", DIALECT_OP_ALLOWLIST_V6, &["vector.fma"]);
-    check_axis(
-        "## Proof annotations",
-        PROOF_ALLOWLIST_V6,
-        // Both havoc markers are wire-encodable, NOT feature-gated, and were
-        // never ratified into the subset — `proof_annotation_excluded`
-        // (trust-ir::bridge) and `PROOF_ALLOWLIST_V6` both fail closed on
-        // them, so the doc must carry them in its Excluded table too.
-        &["Custom", "FreshSymbolicHavoc", "RegionHavocStore"],
-    );
+    }
+    if !dialect_excluded.contains(&"vector.fma") || DIALECT_OP_ALLOWLIST_V6.contains(&"vector.fma")
+    {
+        problems.push(
+            "dialect op vector.fma must be excluded by the code and have a row in the doc's \
+             Dialect ops Excluded table"
+                .to_owned(),
+        );
+    }
+    if heading_allowed_count(dialect) != Some(DIALECT_OP_ALLOWLIST_V6.len()) {
+        problems.push(format!(
+            "the doc's Dialect ops heading must say `({} allowed`",
+            DIALECT_OP_ALLOWLIST_V6.len()
+        ));
+    }
+
     // Every exempt fixture must be listed in the doc's exemption table.
     for (name, _) in SUBSET_EXEMPT_FIXTURES {
         if !doc.contains(&format!("`{name}`")) {
-            missing.push(format!("{name} (exempt fixture)"));
+            problems.push(format!(
+                "exempt fixture {name} is missing from the doc's exemption table"
+            ));
         }
     }
+
     assert!(
-        missing.is_empty() && misplaced.is_empty(),
-        "lowering-target-subset.md and trust_ir_conformance::subset must stay \
-         in lockstep — missing: {missing:?}; misplaced (wrong side of an Excluded \
-         table): {misplaced:?}"
+        problems.is_empty(),
+        "lowering-target-subset.md and trust_ir_conformance::subset must stay in \
+         lockstep:\n  {}",
+        problems.join("\n  ")
     );
 }
 

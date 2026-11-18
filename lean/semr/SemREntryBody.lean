@@ -12,6 +12,9 @@ private theorem bind_success {α β : Type} {x : R α} {f : α → R β} {b : β
   | stop o => cases h
   | ok a => exact ⟨a, rfl, h⟩
 
+private theorem pure_eq_ok {α : Type} (value : α) :
+    (pure value : R α) = R.ok value := rfl
+
 /-- The value is an actual selected lane, not a fabricated inhabitant of its
     declared field type. Type/range admission is the real evaluator check. -/
 theorem evalExtract_enum_of_checked (m : Module) (ty : Ty) (id field : Nat)
@@ -29,18 +32,15 @@ theorem evalExtract_enum_success {m : Module} {ty : Ty} {id field : Nat}
     (h : evalExtract m ty (.enum id lanes) field = .ok value) :
     checkLane m id lanes field ty = .ok () ∧
     nth? lanes field = some value ∧ expectTy m.pointerBits value ty = .ok () := by
-  have hx : (checkLane m id lanes field ty >>= fun _ =>
-      match nth? lanes field with
-      | none => ubR "field is out of bounds"
-      | some v => do expectTy m.pointerBits v ty; pure v) = .ok value := by
-    simpa [evalExtract, rejectPoison, hp, ok_bind] using h
+  have hx := h
+  simp only [evalExtract, rejectPoison, hp, ok_bind, pure_eq_ok] at hx
   obtain ⟨u, hc, hr⟩ := bind_success hx
   cases u
   cases hv : nth? lanes field with
   | none => simp [hv, ubR] at hr
   | some v =>
     have ht : (expectTy m.pointerBits v ty >>= fun _ => R.ok v) = .ok value := by
-      simpa [hv] using hr
+      simpa [hv, pure_eq_ok] using hr
     obtain ⟨u, htype, he⟩ := bind_success ht
     cases u
     have heq : v = value := R.ok.inj he

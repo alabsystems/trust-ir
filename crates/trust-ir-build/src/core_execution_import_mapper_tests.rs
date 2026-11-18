@@ -37,14 +37,14 @@ fn fixture(scope: &mut Scope) -> Fixture {
         local.term().clone()
     };
     let world_type = local(Expr::type_());
-    let model = MachineModel {
-        world_type: world_type.clone(),
-        context: local(constant("IRByteContextV1")),
+    let model = MachineModel::from_terms(
+        world_type.clone(),
+        local(constant("IRByteContextV1")),
         // The actual mapper never invokes or mentions the provider function.
-        providers: constant("unused_mapper_providers"),
-    };
+        constant("unused_mapper_providers"),
+    );
     let target = CallTarget {
-        context: model.context.clone(),
+        context: model.context().clone(),
         function_id: nat(55),
         binding: constant("unused_mapper_binding"),
         signature: local(constant("IRByteSignatureV1")),
@@ -58,7 +58,7 @@ fn fixture(scope: &mut Scope) -> Fixture {
     };
     let results = local(app("IRList", [constant("Nat")]));
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(41),
             block: BlockId::new(13),
@@ -92,8 +92,8 @@ fn dispatch(f: &Fixture, current: &Current, result: Expr) -> Expr {
     app(
         "ir_byte_import_result_v1",
         [
-            f.model.world_type.clone(),
-            f.model.context.clone(),
+            f.model.world_type().clone(),
+            f.model.context().clone(),
             current.machine(),
             current.world.clone(),
             f.site.results.clone(),
@@ -333,8 +333,7 @@ fn provider_result_mapper_does_not_capture_external_type_world_and_result_bvars(
     let mut f = fixture(&mut scope);
     // Construct the actual mapper BEFORE introducing these ordinary binders.
     // The final context is U, ctx, frame, world, destinations, signature, a, b, h.
-    f.model.world_type = Expr::bvar(8);
-    f.model.context = Expr::bvar(7);
+    f.model = MachineModel::from_terms(Expr::bvar(8), Expr::bvar(7), f.model.providers().clone());
     f.current.frame = Expr::bvar(6);
     f.current.tail = list("IRFrame", &[]);
     f.current.legacy_memory = list("IRMemSlot", &[]);

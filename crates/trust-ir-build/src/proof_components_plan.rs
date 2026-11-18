@@ -11,6 +11,8 @@ use clean_kernel::{Expr, Name, expr::FVarId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+type NormalizationEntries = Vec<(ScopedLocal, Option<Expr>)>;
+
 #[derive(Clone)]
 pub enum OwnedProofCapture {
     Parameter(ScopedLocal),
@@ -24,6 +26,9 @@ pub enum OwnedProofCapture {
 pub(crate) struct NormalizationContextWork {
     pub dependency_visits: usize,
     pub materialization_visits: usize,
+    /// Prepaid declaration-inventory work units, not observed CPU visits.
+    /// Dynamic inventories debit these units before construction, including
+    /// constructions that later refuse. Successful reports count each once.
     pub inventory_visits: usize,
     pub cached_definition_visits: usize,
 }
@@ -194,10 +199,7 @@ impl ProofComponents {
             self.analysis_visits + self.analysis_words,
         )
     }
-    fn normalization_entries(
-        &self,
-        scope: &LocalScope,
-    ) -> Result<Vec<(ScopedLocal, Option<Expr>)>, String> {
+    fn normalization_entries(&self, scope: &LocalScope) -> Result<NormalizationEntries, String> {
         if !self
             .owner
             .as_ref()
@@ -236,6 +238,92 @@ impl ProofComponents {
             .map(|(local, _)| local)
             .collect())
     }
+    fn normalization_entries_with_dynamic(
+        &mut self,
+        scope: &LocalScope,
+        dynamic: &[OwnedProofCapture],
+    ) -> Result<(NormalizationEntries, usize), String> {
+        if dynamic.is_empty() {
+            return Ok((self.normalization_entries(scope)?, 0));
+        }
+        if !self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.matches(&scope.memo_owner()))
+        {
+            return Err("normalization context has no matching component owner".into());
+        }
+        let retained = self
+            .base
+            .len()
+            .checked_add(self.bindings.len())
+            .ok_or("dynamic normalization declaration count overflow")?;
+        let work = dynamic
+            .len()
+            .checked_mul(5)
+            .and_then(|n| n.checked_add(retained))
+            .filter(|n| *n <= self.limits.operations)
+            .ok_or("dynamic normalization inventory work limit")?;
+        if dynamic.len() > self.limits.captures
+            || retained.saturating_add(dynamic.len())
+                > self.limits.contexts.saturating_add(self.limits.captures)
+        {
+            return Err("dynamic normalization capture inventory limit".into());
+        }
+        if work > self.context_work_remaining()? {
+            return Err("dynamic normalization inventory admission limit".into());
+        }
+        // Prepay the unchanged inventory fee before cloning retained entries,
+        // allocating lookup maps or inspecting capture handles/values. This
+        // admission remains spent on every later error; the returned count is
+        // only for reporting and must never be debited by the caller again.
+        self.spend_context_work(work)?;
+        let mut entries = self.normalization_entries(scope)?;
+        let mut positions = entries
+            .iter()
+            .enumerate()
+            .map(|(index, (local, _))| (local.id(), index))
+            .collect::<HashMap<_, _>>();
+        let mut seen = HashSet::new();
+        for capture in dynamic {
+            let local = capture.local();
+            if !scope.owns(local) || !seen.insert(local.id()) {
+                return Err("foreign or duplicate dynamic normalization capture".into());
+            }
+            let value = match capture {
+                OwnedProofCapture::Parameter(_) => None,
+                OwnedProofCapture::Definition { value, .. } => Some(value.as_ref().clone()),
+            };
+            if let Some(&index) = positions.get(&local.id()) {
+                let (original, original_value) = &entries[index];
+                let same_value = match (&value, original_value) {
+                    (None, None) => true,
+                    (Some(value), Some(original)) => same_graph(value, original),
+                    _ => false,
+                };
+                if !same_graph(local.ty(), original.ty()) || !same_value {
+                    return Err(
+                        "dynamic capture changes a retained declaration kind or value".into(),
+                    );
+                }
+            } else {
+                positions.insert(local.id(), entries.len());
+                entries.push((local.clone(), value));
+            }
+        }
+        Ok((entries, work))
+    }
+    /// Authenticate exact dynamic declarations without changing the retained
+    /// component inventory. Dynamic inventory work is prepaid before any
+    /// construction. The returned count reports that debit, not another fee.
+    pub(crate) fn normalization_locals_with_dynamic(
+        &mut self,
+        scope: &LocalScope,
+        dynamic: &[OwnedProofCapture],
+    ) -> Result<(Vec<ScopedLocal>, usize), String> {
+        let (entries, work) = self.normalization_entries_with_dynamic(scope, dynamic)?;
+        Ok((entries.into_iter().map(|(local, _)| local).collect(), work))
+    }
     /// Producer-only normalization data, never evidence of well-typedness.
     /// Deferred binders are materialized with their actual preceding captures;
     /// all original defining values remain in mandatory complete scoped replay.
@@ -259,7 +347,29 @@ impl ProofComponents {
         ),
         String,
     > {
-        self.normalization_context_profiled(scope, inputs, &[])
+        self.normalization_context_profiled(scope, inputs, &[], &[])
+    }
+    /// Include an already authenticated call-local capture telescope in the
+    /// producer view. These untrusted declarations never extend the retained
+    /// base, publish persistent dependency keys, or supply replay premises.
+    pub(crate) fn untrusted_normalization_context_with_captures_profiled(
+        &mut self,
+        scope: &LocalScope,
+        inputs: &[Expr],
+        dynamic: &[OwnedProofCapture],
+    ) -> Result<
+        (
+            clean_kernel::LocalContext,
+            Vec<ScopedLocal>,
+            NormalizationContextWork,
+        ),
+        String,
+    > {
+        if dynamic.is_empty() {
+            self.untrusted_normalization_context_profiled(scope, inputs)
+        } else {
+            self.normalization_context_profiled(scope, inputs, &[], dynamic)
+        }
     }
     /// Leave exact owned operation definitions opaque to a PRODUCER only.
     /// The complete carrier is unchanged and still checks every original
@@ -271,7 +381,8 @@ impl ProofComponents {
         inputs: &[Expr],
         opaque: &[ScopedLocal],
     ) -> Result<(clean_kernel::LocalContext, Vec<ScopedLocal>, usize), String> {
-        let (context, locals, work) = self.normalization_context_profiled(scope, inputs, opaque)?;
+        let (context, locals, work) =
+            self.normalization_context_profiled(scope, inputs, opaque, &[])?;
         Ok((context, locals, work.total()?))
     }
     fn normalization_context_profiled(
@@ -279,6 +390,7 @@ impl ProofComponents {
         scope: &LocalScope,
         inputs: &[Expr],
         opaque: &[ScopedLocal],
+        dynamic: &[OwnedProofCapture],
     ) -> Result<
         (
             clean_kernel::LocalContext,
@@ -287,8 +399,9 @@ impl ProofComponents {
         ),
         String,
     > {
-        let mut entries = self.normalization_entries(scope)?;
-        let mut inventory_work = 0usize;
+        let retained_len = self.base.len() + self.bindings.len();
+        let (mut entries, mut inventory_work) =
+            self.normalization_entries_with_dynamic(scope, dynamic)?;
         if !opaque.is_empty() {
             // Charge inventory setup and every requested probe before any
             // opacity can be published. No cache or unknown-footprint reuse.
@@ -299,6 +412,7 @@ impl ProofComponents {
             inventory_work = entries
                 .len()
                 .checked_add(probes)
+                .and_then(|n| n.checked_add(inventory_work))
                 .filter(|work| *work <= self.limits.operations)
                 .ok_or("opaque normalization inventory operation limit")?;
             let indices = entries
@@ -329,15 +443,29 @@ impl ProofComponents {
         // defining values. Named-binder formal references are conservatively
         // retained too; no binder-dependent subtraction can omit a dependency.
         let reusable = self.normalization_references.is_some();
-        let walk_limit = if reusable {
+        let charged = reusable || !dynamic.is_empty();
+        let walk_limit = if charged {
             self.context_work_remaining()?
         } else {
             self.limits.operations
         };
-        let mut walker = complete_references::References::new(
-            self.normalization_references.as_deref_mut(),
-            walk_limit,
-        )?;
+        // Only immutable retained declarations may publish persistent summary
+        // keys. A dynamic telescope lives for this call, so use the original
+        // fresh bounded walk, without clearing or reviving an existing cache.
+        if !dynamic.is_empty()
+            && self
+                .normalization_references
+                .as_ref()
+                .is_some_and(|cache| cache.has_failed())
+        {
+            return Err("normalization dependency cache retains a failed scan".into());
+        }
+        let cache = if dynamic.is_empty() {
+            self.normalization_references.as_deref_mut()
+        } else {
+            None
+        };
+        let mut walker = complete_references::References::new(cache, walk_limit)?;
         let mut needed = Vec::new();
         // Definitions are ordered by actual preceding scope, so reverse
         // traversal computes the transitive closure without guessing handles.
@@ -349,9 +477,18 @@ impl ProofComponents {
             for (index, (local, value)) in entries.iter().enumerate().rev() {
                 if walker.contains(local.id())? {
                     needed[index] = true;
-                    walker.scan_retained(local.ty())?;
-                    if let Some(value) = value {
-                        walker.scan_retained(value)?;
+                    if index < retained_len {
+                        walker.scan_retained(local.ty())?;
+                        if let Some(value) = value {
+                            walker.scan_retained(value)?;
+                        }
+                    } else {
+                        // Temporary dynamic values are not retained component
+                        // data and must not publish persistent reference keys.
+                        walker.scan_input(local.ty())?;
+                        if let Some(value) = value {
+                            walker.scan_input(value)?;
+                        }
                     }
                 }
             }
@@ -359,9 +496,18 @@ impl ProofComponents {
         })();
         let work = walker.work();
         drop(walker);
-        if reusable {
-            // Persistent shared summaries are paid by this original owner even
-            // when a later producer materialization/replay attempt refuses.
+        if !dynamic.is_empty()
+            && scanned.is_err()
+            && let Some(cache) = &mut self.normalization_references
+        {
+            // A fresh scan may not publish temporary keys, but it must retain
+            // the same monotonic owner failure as the reused input walker.
+            cache.poison();
+        }
+        if charged {
+            // Persistent summaries and temporary dynamic scans are paid by
+            // this original owner even when a later materialization or replay
+            // attempt refuses.
             // The projected caller still receives/spends its full work report.
             self.spend_context_work(work)?;
         }
@@ -374,22 +520,38 @@ impl ProofComponents {
         } else {
             Vec::new()
         };
-        let mut cached_definition_visits = 0;
+        let mut cached_definition_visits = 0usize;
         for (index, (local, value)) in entries.iter().enumerate() {
             if !needed[index] {
                 continue;
             }
             if use_cache
                 && index >= self.base.len()
+                && index < retained_len
                 && let Some(value) = value
             {
-                cached[index] = self.cached_materialized_definition(
+                let before = cached_definition_visits;
+                // Bound the lookup itself before it inspects the retained prefix.
+                // Completed probes remain charged even when a later probe refuses.
+                let lookup_limit = if dynamic.is_empty() {
+                    self.limits.operations
+                } else {
+                    before
+                        .checked_add(self.context_work_remaining()?)
+                        .ok_or("dynamic cached definition lookup work overflow")?
+                };
+                let result = self.cached_materialized_definition(
                     scope,
                     index - self.base.len(),
                     local,
                     value,
                     &mut cached_definition_visits,
-                )?;
+                    lookup_limit,
+                );
+                if !dynamic.is_empty() {
+                    self.spend_context_work(cached_definition_visits - before)?;
+                }
+                cached[index] = result?;
                 if cached[index].is_some() {
                     continue;
                 }
@@ -401,7 +563,22 @@ impl ProofComponents {
                 visible.push(index);
             }
         }
-        let (materialized, stats) = scope.close_external_forest(&forest, &locals, &visible);
+        let (materialized, stats) = if dynamic.is_empty() {
+            scope.close_external_forest(&forest, &locals, &visible)
+        } else {
+            scope.close_external_forest_with_limits(
+                &forest,
+                &locals,
+                &visible,
+                crate::term_scope::TermScopeLimits {
+                    max_visits: self.context_work_remaining()?,
+                    max_depth: 16_384,
+                },
+            )
+        };
+        if !dynamic.is_empty() {
+            self.spend_context_work(stats.visits)?;
+        }
         let mut materialized = materialized.map_err(|error| error.to_string())?.into_iter();
         let mut context = clean_kernel::LocalContext::new();
         for (index, (local, value)) in entries.into_iter().enumerate() {
@@ -455,8 +632,8 @@ impl ProofComponents {
             cached_definition_visits,
         };
         let total = work.total()?;
-        if !opaque.is_empty() && total > self.limits.operations {
-            return Err("opaque normalization aggregate operation limit".into());
+        if (!opaque.is_empty() || !dynamic.is_empty()) && total > self.limits.operations {
+            return Err("normalization aggregate operation limit".into());
         }
         Ok((context, locals, work))
     }
@@ -803,6 +980,7 @@ mod bounded_instantiate;
 #[path = "proof_components_external_context.rs"]
 mod external_context;
 pub(crate) use external_context::ExternalContext;
+pub use external_context::ScopedMaterializationContext;
 
 #[cfg(test)]
 #[path = "proof_components_complete_references_tests.rs"]
@@ -811,3 +989,7 @@ mod complete_reference_tests;
 #[cfg(test)]
 #[path = "proof_components_materialized_capture_tests.rs"]
 mod materialized_capture_tests;
+
+#[cfg(test)]
+#[path = "proof_components_inventory_admission_tests.rs"]
+mod inventory_admission_tests;

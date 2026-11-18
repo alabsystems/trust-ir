@@ -290,6 +290,11 @@ impl MergePolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MergeError {
+    /// Detached source roots fail the existing module type-root rules. The
+    /// actual typed validator diagnostics remain available to the consumer.
+    InvalidTypeRoots {
+        errors: Vec<crate::validate::ValidationError>,
+    },
     /// `src` cites `id` in `table`, which `src` does not have.
     Dangling { table: &'static str, id: u32 },
     /// `src`'s `table` row `id` cannot be remapped as stored (a duplicate
@@ -332,6 +337,9 @@ pub enum MergeError {
 impl fmt::Display for MergeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            MergeError::InvalidTypeRoots { errors } => {
+                write!(f, "invalid extra source type roots: {errors:?}")
+            }
             MergeError::Dangling { table, id } => {
                 write!(f, "dangling id {id} in the {table} table")
             }
@@ -533,6 +541,27 @@ pub fn merge_into(
 ) -> Result<Remap, MergeError> {
     let staged = Merger::new(dst, src, *policy)?.run()?;
     Ok(staged.commit(dst))
+}
+
+/// Ordinary canonical merge plus additional types in `src`'s namespace.
+///
+/// Roots use the existing exhaustive mapper AFTER all source tables have their
+/// canonical placements. They add no signature, function, table row or licence;
+/// the output module is exactly the ordinary merge's output. The source and
+/// root values remain immutable. As with `merge_into`, whole-module validation
+/// of the result is still required by its consumer. `dst` is unchanged on error.
+pub fn merge_into_with_roots(
+    dst: &mut Module,
+    src: &Module,
+    policy: &MergePolicy,
+    roots: &[Ty],
+) -> Result<(Remap, Vec<Ty>), MergeError> {
+    let errors = crate::validate::validate_type_roots(src, roots);
+    if !errors.is_empty() {
+        return Err(MergeError::InvalidTypeRoots { errors });
+    }
+    let (staged, roots) = Merger::new(dst, src, *policy)?.run_with_roots(roots)?;
+    Ok((staged.commit(dst), roots))
 }
 
 /// The reserved Trust disclosures whose rows bind NO module-local id, so the
@@ -827,7 +856,11 @@ impl<'a> Merger<'a> {
         })
     }
 
-    fn run(mut self) -> Result<Staged, MergeError> {
+    fn run(self) -> Result<Staged, MergeError> {
+        self.run_with_roots(&[]).map(|(staged, _)| staged)
+    }
+
+    fn run_with_roots(mut self, roots: &[Ty]) -> Result<(Staged, Vec<Ty>), MergeError> {
         // The exhaustive module destructure: a new `Module` field is a
         // compile error until it is merged below.
         let Module {
@@ -916,7 +949,18 @@ impl<'a> Merger<'a> {
         let blobs = self.merge_blobs(blobs)?;
         let (completeness, resolved_unlowered) = self.merge_completeness(completeness.as_ref());
 
-        self.finish(
+        // Every source table was mapped eagerly in its original order. Extra
+        // inline roots now use those final placements; they cannot seed a
+        // different table allocation order or introduce a synthetic carrier.
+        let roots = self.tys(roots)?;
+        if !self.journal_is_settled() {
+            return Err(MergeError::Malformed {
+                table: "extra type roots",
+                id: 0,
+                detail: "canonical source placement is not complete",
+            });
+        }
+        let staged = self.finish(
             target_info,
             staged_globals,
             replaced_functions,
@@ -932,7 +976,8 @@ impl<'a> Merger<'a> {
             resolved_unlowered,
             drop_glue,
             blobs,
-        )
+        )?;
+        Ok((staged, roots))
     }
 
     fn journal_is_settled(&self) -> bool {

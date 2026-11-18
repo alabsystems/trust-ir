@@ -108,49 +108,96 @@ theorem scalar_store_value_frame_exit (ctx : EvalContext) (ty : Ty) (pointer val
     | exact True.intro
     | exact False.elim (encode_functions_no_unwind ctx.byteModel ctx.functionOrder ty value _ _ encoded)
 
+private theorem original_check_action {α : Type} (result : Except SemError α)
+    (safe : ByteImage.BlockResult (fun _ => True) BlockDecodeError result) :
+    FrameActionValid (fun _ _ => True) (Sem.fromMemoryExcept result) :=
+  check_action result (DecodeFrameExit.no_unwind _ _ ((block_result_frame_iff _ _).1 safe))
+
+/-- Actual original-source nominal storage changes only memory. Source checks,
+canonical child encoding and all failure exits remain in this proved action. -/
+theorem original_closure_store_value_frame_exit (service : OriginalClosureMemory.Service)
+    (order : FunctionAddressOrder) (closure : ClosureTyId) (pointer value : Value)
+    (strict : Bool) (align : Option Nat) (model : ByteModel) :
+    FrameActionValid (fun _ _ => True)
+      (OriginalClosureMemory.storeValue service order closure pointer value strict align model) := by
+  intro state valid
+  unfold OriginalClosureMemory.storeValue
+  by_cases rejected : (strict && (value.isPoison || AggregateMemory.carriesUnwritten value)) = true
+  · simp only [rejected,↓reduceIte]
+    exact True.intro
+  · simp only [rejected,↓reduceIte,pure_bind]
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (original_check_action _
+        (OriginalClosureMemory.binding_errors BlockDecodeError (fun _ => True.intro)
+          (fun _ => True.intro) service model closure) state valid)
+    intro held state valid _
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (original_check_action _
+        (OriginalClosureMemory.layout_errors BlockDecodeError (fun _ => True.intro) _) state valid)
+    intro storage state valid _
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (original_check_action _
+        (OriginalClosureMemory.capturePlans_errors BlockDecodeError (fun _ => True.intro)
+          (fun _ => True.intro) service _ _ _ _) state valid)
+    intro fields state valid _
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (check_action _ (alignment_no_unwind storage.alignment align) state valid)
+    intro alignment state valid _
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (reject_partial_frame_action pointer "Store" state valid)
+    intro unit state valid _
+    cases unit
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (expect_pointer_frame_action pointer "Store" state valid)
+    intro pair state valid _
+    obtain ⟨address,allocation⟩ := pair
+    apply FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+      (checked_access_frame_action "Store" address allocation storage.size alignment model state valid)
+    intro address state valid _
+    repeat' first
+      | (solve | exact True.intro)
+      | (solve | exact ⟨⟨valid.table,valid.values⟩,True.intro,⟨Nat.le_refl _,fun _ _ closed => closed⟩⟩)
+      | (simp only [pure_bind])
+      | (refine FrameActionExit.bind (fun _ _ => True) (fun _ _ => True) _ _ state
+          (check_action _ (closure_capture_encode_no_unwind _ _ _ _ _) state valid) ?_; intro image state valid _)
+      | split
+      | (dsimp only; split)
+
+theorem context_store_aligned_frame_exit (ctx : EvalContext) (safe : MemoryContextErrors ctx)
+    (ty : Ty) (pointer value : Value) (strict : Bool) (align : Option Nat) :
+    FrameActionValid (fun _ _ => True) (ctx.storeMemoryValueAligned ty pointer value strict align) := by
+  unfold EvalContext.storeMemoryValueAligned
+  cases selected : ctx.memoryRoute ty with
+  | scalar => exact scalar_store_value_frame_exit ctx ty pointer value strict align
+  | descriptor service =>
+    exact aggregate_store_value_frame_exit service
+      (safe ty service (ctx.memoryRoute_descriptor_source ty service selected)) _ _ _ _ _ _ _
+  | original closure service => exact original_closure_store_value_frame_exit service _ _ _ _ _ _ _
+
 theorem context_store_value_frame_exit (ctx : EvalContext) (safe : MemoryContextErrors ctx)
     (ty : Ty) (pointer value : Value) (strict : Bool) :
-    FrameActionValid (fun _ _ => True) (ctx.storeMemoryValue ty pointer value strict) := by
-  unfold EvalContext.storeMemoryValue
-  cases selected : ctx.memoryServiceFor ty with
-  | none => exact scalar_store_value_frame_exit ctx ty pointer value strict none
-  | some service => exact aggregate_store_value_frame_exit service (safe ty service selected) _ _ _ _ _ _ _
+    FrameActionValid (fun _ _ => True) (ctx.storeMemoryValue ty pointer value strict) :=
+  context_store_aligned_frame_exit ctx safe ty pointer value strict none
 
-/-- Actual operand lookup and contextual store dispatch; the Store result
-publishes no value and carries its original body-result shape. -/
+/-- The actual common operand/route selector publishes no SSA result across
+all three routes, including the original-source nominal branch. -/
 theorem context_store_step_frame_exit (ctx : EvalContext) (safe : MemoryContextErrors ctx)
     (ty : Ty) (pointer value : ValueId) (strict : Bool) (align : Option Nat) :
     FrameActionValid (fun _ result => BodyValueResult result)
       (stepInstWithContext ctx (.Store ty pointer value strict align)) := by
   intro state valid
   unfold stepInstWithContext
-  cases selected : ctx.memoryServiceFor ty with
-  | none =>
-    simp only [selected,semStoreUsing,bind_assoc]
-    apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
-      (lookup_value_frame_action pointer state valid)
-    intro pointer state valid _
-    apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
-      (lookup_value_frame_action value state valid)
-    intro value state valid _
-    apply FrameActionExit.bind (fun _ _ => True) (fun _ result => BodyValueResult result) _ _ state
-      (scalar_store_value_frame_exit ctx ty pointer value strict align state valid)
-    intro unit state valid _
-    cases unit
-    exact ⟨valid,True.intro,.refl _⟩
-  | some service =>
-    simp only [selected,AggregateMemory.store,bind_assoc]
-    apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
-      (lookup_value_frame_action pointer state valid)
-    intro pointer state valid _
-    apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
-      (lookup_value_frame_action value state valid)
-    intro value state valid _
-    apply FrameActionExit.bind (fun _ _ => True) (fun _ result => BodyValueResult result) _ _ state
-      (aggregate_store_value_frame_exit service (safe ty service selected) _ _ _ _ _ _ _ state valid)
-    intro unit state valid _
-    cases unit
-    exact ⟨valid,True.intro,.refl _⟩
+  apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
+    (lookup_value_frame_action pointer state valid)
+  intro pointer state valid _
+  apply FrameActionExit.bind MintedValue (fun _ result => BodyValueResult result) _ _ state
+    (lookup_value_frame_action value state valid)
+  intro value state valid _
+  apply FrameActionExit.bind (fun _ _ => True) (fun _ result => BodyValueResult result) _ _ state
+    (context_store_aligned_frame_exit ctx safe ty pointer value strict align state valid)
+  intro unit state valid _
+  cases unit
+  exact ⟨valid,True.intro,.refl _⟩
 
 theorem context_store_body_frame_exit (recurse : GenericCoro.Prefix.Recurse) (ctx : EvalContext)
     (safe : MemoryContextErrors ctx) (depth : Nat) (strategy : PanicStrategy)

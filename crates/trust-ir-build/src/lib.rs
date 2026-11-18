@@ -38,12 +38,14 @@ pub mod proof_components;
 pub mod satcert;
 pub mod scoped_local;
 pub mod semantic_evaluation;
+pub mod source_byte_entry;
 #[cfg(feature = "source-value-operational")]
 pub mod source_call_operational;
 #[cfg(feature = "source-value-operational")]
 pub mod source_readonly_calls;
 #[cfg(feature = "source-value-operational")]
 pub mod source_value_operational;
+pub mod source_word_status_entry;
 pub mod template;
 pub mod term_scope;
 #[cfg(feature = "clean-tv-anchor")]
@@ -92,7 +94,7 @@ pub use linked::{
 // stop re-teaching every id-bearing table to a private remapper.
 pub use merge::{
     DuplicateDecl, DuplicateDef, MergeError, MergePolicy, Remap, RetainedImage, StrippedProofState,
-    merge_into,
+    merge_into, merge_into_with_roots,
 };
 // The codegen interlock (`validate_module_for_codegen` and its composed
 // `_with(CodegenAdmission)` lane, `codegen_license_errors`,
@@ -127,8 +129,9 @@ pub use validate::{
     TRUST_INTERNAL_SPEC_PREFIX, TRUSTED_HANDLE_RUNTIMES, TRUSTED_RC_RUNTIMES, UnlicensedBodyPolicy,
     ValidationConfig, ValidationError, certify_identity_lineage_rung,
     certify_identity_lineage_rung_bound, certify_identity_lineage_rung_island_bound,
-    certify_island_theorem, certify_module_give_backs, certify_source_bound_call_family,
-    certify_source_bound_readonly_call_family, codegen_global_asm_errors, codegen_license_errors,
+    certify_island_theorem, certify_module_give_backs, certify_source_bound_byte_entry,
+    certify_source_bound_call_family, certify_source_bound_readonly_call_family,
+    certify_source_bound_word_status_entry, codegen_global_asm_errors, codegen_license_errors,
     codegen_license_errors_with, codegen_lowerability_errors, codegen_lowerability_errors_in,
     codegen_switch_case_literal_errors, codegen_switch_case_literal_errors_observed,
     consumption_role, gate_evidence_rule, is_admitted_obligation_namespace,

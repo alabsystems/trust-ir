@@ -39,13 +39,13 @@ fn fixture(scope: &mut Scope) -> Fixture {
         local.term().clone()
     };
     let world_type = local(Expr::type_());
-    let model = MachineModel {
-        world_type: world_type.clone(),
-        context: local(constant("IRByteContextV1")),
-        providers: local(app("IRByteProvidersV1", [world_type.clone()])),
-    };
+    let model = MachineModel::from_terms(
+        world_type.clone(),
+        local(constant("IRByteContextV1")),
+        local(app("IRByteProvidersV1", [world_type.clone()])),
+    );
     let target = CallTarget {
-        context: model.context.clone(),
+        context: model.context().clone(),
         function_id: nat(55),
         binding: local(constant("IRByteFunctionV1")),
         signature: local(constant("IRByteSignatureV1")),
@@ -58,7 +58,7 @@ fn fixture(scope: &mut Scope) -> Fixture {
         world: local(app("IRByteWorldV1", [world_type.clone()])),
     };
     let site = FetchedSite {
-        context: model.context.clone(),
+        context: model.context().clone(),
         coordinate: Coordinate {
             function: FuncId::new(41),
             block: BlockId::new(13),
@@ -96,9 +96,9 @@ fn known(f: &Fixture, binding: Expr, site: Expr, current: &Current, values: Expr
     app(
         "ir_byte_call_known_v1",
         [
-            f.model.world_type.clone(),
-            f.model.context.clone(),
-            f.model.providers.clone(),
+            f.model.world_type().clone(),
+            f.model.context().clone(),
+            f.model.providers().clone(),
             current.machine(),
             current.world.clone(),
             f.site.results.clone(),
@@ -379,9 +379,7 @@ fn known_argument_mapper_keeps_external_type_provider_world_and_list_bvars_uncap
     let mut scope = Scope::new();
     let mut f = fixture(&mut scope);
     // Build the mapper before the twelve ordinary binders below are present.
-    f.model.world_type = Expr::bvar(11);
-    f.model.context = Expr::bvar(10);
-    f.model.providers = Expr::bvar(9);
+    f.model = MachineModel::from_terms(Expr::bvar(11), Expr::bvar(10), Expr::bvar(9));
     f.current.frame = Expr::bvar(8);
     f.current.tail = list("IRFrame", &[]);
     f.current.legacy_memory = list("IRMemSlot", &[]);
